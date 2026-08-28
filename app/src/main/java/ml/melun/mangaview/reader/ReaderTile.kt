@@ -54,8 +54,17 @@ internal object ReaderExactDecodeStoragePolicy {
     private const val MAX_SHARED_FULL_PAGE_RGBA_BYTES = 24L * 1024L * 1024L
     private const val MIN_ROLLING_RESIDENCY_PAGE_COUNT = 160
     private const val MIN_ROLLING_RESIDENCY_RGBA_BYTES = 1_536L * 1024L * 1024L
-    private const val MAX_SHORT_WEBTOON_ROLLING_PAGE_COUNT = 8
-    private const val MIN_SHORT_WEBTOON_ROLLING_RGBA_BYTES = 1_024L * 1024L * 1024L
+    // Host display storage is width/height bucketed and can be substantially larger than the
+    // logical source RGBA size. Keep enough headroom below the pool's 320 MiB atomic boundary for
+    // the physical viewport and adjacent runway; a launch scene above this size must recycle
+    // offscreen slots while retaining its exact encoded bodies and monotonic completion proof.
+    private const val MAX_RETAINED_HOST_DISPLAY_BYTES = 256L * 1024L * 1024L
+    // The direct Surface renderer and the next-episode runway share one 64 MiB settled pool.
+    // Retaining more than half of it for the launch episode makes p0/p1 allocate an overlap buffer
+    // instead of reusing already-read slots. Keep the other half available for the physical native
+    // band, transition card and the exact successor runway. This is a transport/runtime contract,
+    // not a title- or test-specific page-count exception.
+    private const val MAX_DIRECT_WIFI_LAUNCH_DISPLAY_BYTES = 32L * 1024L * 1024L
 
     fun useSharedFullPageBitmap(
         forceOriginal: Boolean,
@@ -67,18 +76,18 @@ internal object ReaderExactDecodeStoragePolicy {
 
 
     /**
-     * Multi-GiB numeric volumes and a direct-Wi-Fi current short webtoon whose exact originals
-     * exceed one GiB use bounded decoded-pixel residency. Every exact encoded body remains owned
-     * by the source session and every page is still decoded/identity-checked, but an offscreen
-     * winner may be recycled and decoded again from that resident body when it enters the forward
-     * runway. Carrier/SNI and ordinary-size webtoons remain outside this policy.
+     * Multi-GiB numeric volumes and direct-Wi-Fi current episodes that would consume the native
+     * runway's half of the settled HardwareBuffer pool use bounded decoded-pixel residency. Every
+     * exact encoded body remains owned by the source session and identity-checked, but offscreen
+     * pixels may be recycled and decoded again from that resident body when they enter the physical
+     * window. Carrier/SNI and small launch episodes remain outside this policy.
      */
     fun useBoundedRollingResidency(
         episodePath: String,
         pageCount: Int,
         sourceWidth: Int,
         sourceHeight: Int,
-        directWifiCurrentWebtoon: Boolean = false,
+        directWifiCurrentEpisode: Boolean = false,
     ): Boolean {
         if (sourceWidth <= 0 || sourceHeight <= 0 || pageCount <= 0) return false
         val pageBytes = sourceWidth.toLong() * sourceHeight.toLong() * 4L
@@ -89,14 +98,26 @@ internal object ReaderExactDecodeStoragePolicy {
         } else {
             pageBytes * pageCount.toLong()
         }
-        if (episodePath.startsWith("/webtoon/")) {
-            return directWifiCurrentWebtoon &&
-                pageCount <= MAX_SHORT_WEBTOON_ROLLING_PAGE_COUNT &&
-                totalBytes >= MIN_SHORT_WEBTOON_ROLLING_RGBA_BYTES
+        val hostPageBytes = HostExactDisplayStorageGeometry.capacityWidth(sourceWidth).toLong() *
+            HostExactDisplayStorageGeometry.capacityHeight(sourceWidth, sourceHeight).toLong() *
+            4L
+        val hostDisplayBytes = if (hostPageBytes <= 0L ||
+            hostPageBytes > Long.MAX_VALUE / pageCount.toLong()
+        ) {
+            Long.MAX_VALUE
+        } else {
+            hostPageBytes * pageCount.toLong()
         }
-        return episodePath.startsWith("/manhwa/") &&
-            pageCount >= MIN_ROLLING_RESIDENCY_PAGE_COUNT &&
-            totalBytes >= MIN_ROLLING_RESIDENCY_RGBA_BYTES
+        val supportedLongForm = episodePath.startsWith("/webtoon/") ||
+            episodePath.startsWith("/manhwa/")
+        if (!supportedLongForm) return false
+        if (directWifiCurrentEpisode &&
+            hostDisplayBytes > MAX_DIRECT_WIFI_LAUNCH_DISPLAY_BYTES
+        ) return true
+        if (episodePath.startsWith("/webtoon/")) return false
+        return hostDisplayBytes > MAX_RETAINED_HOST_DISPLAY_BYTES ||
+            (pageCount >= MIN_ROLLING_RESIDENCY_PAGE_COUNT &&
+                totalBytes >= MIN_ROLLING_RESIDENCY_RGBA_BYTES)
     }
 }
 
@@ -111,6 +132,55 @@ internal object ReaderStrictBitmapResidencyPolicy {
     private const val MIN_TOTAL_BITMAP_BYTES = 64L * 1024L * 1024L
     private const val MAX_TOTAL_BITMAP_BYTES = 64L * 1024L * 1024L
     private const val MIN_NON_BITMAP_HEAP_RESERVE_BYTES = 160L * 1024L * 1024L
+
+    /**
+     * A cold short-webtoon open may receive physical input before its first retained-window event.
+     * Keep exactly the established p0..p5 scroll runway until that real viewport event moves the
+     * rolling window. Keeping only p0 makes p1..p5 get installed and immediately retired, so the
+     * preserved pre-content fling can never cross the first page despite resident exact bodies.
+     */
+    fun initialForwardRunwayPages(directWifiRolling: Boolean, ordinaryPages: Int): Int {
+        require(ordinaryPages > 0)
+        return if (directWifiRolling) {
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_SCROLL_RUNWAY_BODIES
+        } else {
+            ordinaryPages
+        }
+    }
+
+    fun forwardRetainAheadPages(directWifiRolling: Boolean, ordinaryPages: Int): Int {
+        require(ordinaryPages >= 0)
+        return if (directWifiRolling) {
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy.STEADY_FORWARD_RETAIN_AHEAD_PAGES
+        } else {
+            ordinaryPages
+        }
+    }
+
+    /**
+     * Returns the single display page which may refill the direct-Wi-Fi rolling pixel ring while
+     * the reader is idle. Asking for the complete suffix at once makes gfxstream serialize several
+     * AHardwareBuffer publications in the short gap before the next gesture. One nearest missing
+     * successor is enough for each pump turn; successful publication schedules the next turn,
+     * while any new input stops the chain at its next reversible edge.
+     */
+    fun nextIdleForwardWarmPage(
+        directWifiRolling: Boolean,
+        busy: Boolean,
+        direction: Int,
+        visibleLast: Int,
+        retainedLast: Int,
+        pageCount: Int,
+        residentPages: Set<Int> = emptySet(),
+    ): Int? {
+        if (!directWifiRolling || busy || direction < 0 || pageCount <= 0 || visibleLast < 0) {
+            return null
+        }
+        val first = visibleLast + 1
+        val last = minOf(retainedLast, pageCount - 1)
+        if (first > last) return null
+        return (first..last).firstOrNull { it !in residentPages }
+    }
 
     fun totalBitmapBudgetBytes(requiredLaunchBytes: Long, maxHeapBytes: Long): Long {
         val heap = maxHeapBytes.coerceAtLeast(0L)
@@ -152,6 +222,17 @@ internal object ReaderStrictBitmapResidencyPolicy {
             !successorPhysicallyPresented
 
     /**
+     * A finite strict scene may pin its complete launch episode, but a rolling scene must use the
+     * same directional window as every appended episode. Expanding that window back to the whole
+     * launch span defeats hard eviction and can consume the entire native tile pool before the
+     * successor runway acquires its first slots.
+     */
+    fun protectsFullLaunchSpan(
+        strictColdSession: Boolean,
+        rollingPixelResidency: Boolean,
+    ): Boolean = strictColdSession && !rollingPixelResidency
+
+    /**
      * Normal strict-cold chapters keep traversed adjacent pixels as a budgeted LRU. Their exact
      * encoded bodies remain independently recoverable, but deleting every drawable as soon as it
      * leaves the directional window makes a forward/reverse fling decode the same chapter forever.
@@ -160,12 +241,12 @@ internal object ReaderStrictBitmapResidencyPolicy {
     fun shouldHardEvictOutsideRetainedWindow(
         strictColdSession: Boolean,
         rollingPixelResidency: Boolean,
-        shortWebtoonRolling: Boolean,
+        directWifiRolling: Boolean,
     ): Boolean =
-        !strictColdSession || rollingPixelResidency || shortWebtoonRolling
+        !strictColdSession || rollingPixelResidency || directWifiRolling
 
     fun shouldTrimRetainedUnderBudgetPressure(
-        shortWebtoonRolling: Boolean,
+        directWifiRolling: Boolean,
         immediateGeneratedUx: Boolean,
         strictColdSession: Boolean,
         rollingPixelResidency: Boolean,
@@ -173,7 +254,7 @@ internal object ReaderStrictBitmapResidencyPolicy {
         viewportBusy: Boolean,
         initialSettleActive: Boolean,
     ): Boolean {
-        if (shortWebtoonRolling) return true
+        if (directWifiRolling) return true
         if (!immediateGeneratedUx) return false
         // A normal strict-cold session can keep a broad numerical retained range while traversing
         // multiple chapters. That range is an admission/reverse-recovery contract, not decoded

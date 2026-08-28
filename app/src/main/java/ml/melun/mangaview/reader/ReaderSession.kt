@@ -51,6 +51,7 @@ import java.util.WeakHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -138,10 +139,10 @@ internal object NtkStrictDecodeReleasePolicy {
         require(pageCount > 0)
         if (pageCount <= 12) return pageCount
         // Keep the small overlap lane active, but do not open the bulk pool while the first H2
-        // burst is establishing throughput. Twelve resident originals are enough to keep the
-        // bounded decoder pool busy while the remaining H2 bodies continue; waiting for a full
-        // 36-body ring made post-first-image scrolling starve the background decode queue.
-        return (if (webtoon) 6 else 12).coerceAtMost(pageCount)
+        // burst is establishing throughput. A webtoon releases at its exact five-page physical
+        // scroll runway: waiting for unrelated page 5 after pages 0-4 were already resident kept
+        // page 4 encoded-but-undecoded at the user's first boundary. Other strips retain twelve.
+        return (if (webtoon) 5 else 12).coerceAtMost(pageCount)
     }
 
     fun shouldRelease(residentPageCount: Int, pageCount: Int, webtoon: Boolean = false): Boolean =
@@ -245,15 +246,59 @@ internal object NtkStrictTerminalDecodePolicy {
 }
 
 internal object NtkStrictActiveScrollDecodePolicy {
+    const val HOST_INITIAL_INTERACTION_GRACE_MS = 1_500L
+
+    /**
+     * The first exact frame is the point at which a reader can immediately put a finger down.
+     * Keep encoded offscreen bodies private through that short reaction window; otherwise a
+     * non-preemptible native decode admitted just before ACTION_DOWN can monopolize the host GPU
+     * throughout the whole gesture. The finite p0..p4 runway and an identity-bound physical
+     * blocker never use this hold.
+     */
+    fun shouldHoldHostOffscreenBeforeFirstInteraction(
+        hostSurfaceRuntime: Boolean,
+        currentForegroundEpisode: Boolean,
+        anchor: Boolean,
+        initialScrollRunway: Boolean,
+        initialViewportRequired: Boolean = false,
+        physicalScrollEverStarted: Boolean,
+        firstPhysicalFrameAtMs: Long,
+        firstAnchorPixelsAtMs: Long = firstPhysicalFrameAtMs,
+        nowMs: Long,
+    ): Boolean {
+        if (!hostSurfaceRuntime || !currentForegroundEpisode || anchor ||
+            initialScrollRunway || initialViewportRequired || physicalScrollEverStarted
+        ) return false
+        val graceOriginMs = if (firstPhysicalFrameAtMs > 0L) {
+            firstPhysicalFrameAtMs
+        } else {
+            firstAnchorPixelsAtMs
+        }
+        // Before p0 exists, keeping speculative pixels private is still correct. Once p0 owns
+        // pixels, however, a missing/coalesced compositor callback must not become an unbounded
+        // decode lock. Short comic pages may need p1 to create that first complete frame at all.
+        return graceOriginMs <= 0L ||
+            nowMs - graceOriginMs < HOST_INITIAL_INTERACTION_GRACE_MS
+    }
+
     /**
      * A dense decode/NativeAlloc-GC wave can starve the independent Surface producer even when
-     * every decoder is background-priority. Once a host-GPU reader has become interactive, keep
-     * all current-episode offscreen decode behind the existing two-permit gate for the rest of
-     * that session. A momentary gap between gestures is not spare capacity: native allocation and
-     * GC commonly outlive that gap and then collide with the next physical DOWN. Devices retain
-     * the narrower direct-WiFi manhwa policy; the visible anchor and adjacent episodes stay
-     * independent on every runtime.
+     * every decoder is background-priority. A host-GPU reader therefore parks speculative
+     * offscreen work throughout physical input and its existing quiet interval; the exact Surface
+     * blocker remains independently admissible. Once that interval expires, the fixed rolling
+     * executor may consume the verified-body backlog in parallel. This avoids running one
+     * 110-140 ms JPEG decode continuously under every gesture without turning a genuinely idle
+     * reader into a permanently serial ten-second tail.
      */
+    fun shouldDeferHostOffscreenUntilQuiet(
+        hostSurfaceRuntime: Boolean,
+        physicalScrollEverStarted: Boolean,
+        currentForegroundEpisode: Boolean,
+        anchor: Boolean,
+    ): Boolean = hostSurfaceRuntime && physicalScrollEverStarted &&
+        currentForegroundEpisode && !anchor
+
+    /** Mobile direct-WiFi manhwa keeps its established one-at-a-time active-input gate. */
     fun shouldShareVisibleDecodeGate(
         hostSurfaceRuntime: Boolean,
         physicalScrollEverStarted: Boolean,
@@ -262,10 +307,11 @@ internal object NtkStrictActiveScrollDecodePolicy {
         activeInput: Boolean,
         anchor: Boolean,
         manhwa: Boolean,
-    ): Boolean = currentForegroundEpisode && !anchor && (
-        (hostSurfaceRuntime && physicalScrollEverStarted) ||
-            (directWifi && activeInput && manhwa)
-        )
+    ): Boolean = currentForegroundEpisode && !anchor &&
+        directWifi && activeInput && manhwa &&
+        // Host Surface work uses the stronger park-or-blocker policy above. Keep these parameters
+        // explicit so a caller cannot silently forget which runtime/interaction proof it captured.
+        (!hostSurfaceRuntime || !physicalScrollEverStarted)
 
 }
 
@@ -386,6 +432,56 @@ internal object NtkStrictAdjacentProgressiveRunwayPolicy {
         if (currentSourceIndex < 0) return true
         return firstMissingSourceIndex > currentSourceIndex
     }
+}
+
+/** Single decoded-pixel admission contract shared by every direct-Wi-Fi adjacent call path. */
+internal object NtkDirectAdjacentPixelAdmissionPolicy {
+    fun shouldDefer(
+        viewportInsideEpisode: Boolean,
+        sourceIndex: Int,
+        currentSourceIndex: Int,
+        physicalIntent: Boolean,
+        foregroundMotionActive: Boolean,
+        idleForwardRunway: Int,
+    ): Boolean {
+        if (sourceIndex < 0 || idleForwardRunway < 0) return true
+        // Only p0 is required to cross an offscreen chapter boundary. p1 and later stay as exact
+        // encoded bodies until the chapter becomes physical; writing their HostExact mirrors while
+        // the predecessor is moving takes the emulator gfxstream lock away from the display thread.
+        // Alternate p0 paths also honor this motion gate; the sparse p0 owner has its own longer
+        // pointer-quiet admission before promotion.
+        if (!viewportInsideEpisode) return sourceIndex > 0 || foregroundMotionActive
+        // A Surface intent may cover several placeholder pages when exact geometry is still being
+        // appended. Only the next source in reading order is a real blocker; letting a distant
+        // placeholder (for example p8 while p0 is absent) bypass the gate recreates the whole
+        // offscreen GPU-write wave under the predecessor gesture.
+        if (physicalIntent &&
+            sourceIndex <= (currentSourceIndex + 1).coerceAtLeast(0)
+        ) return false
+        if (currentSourceIndex < 0 || sourceIndex > currentSourceIndex + idleForwardRunway) {
+            return true
+        }
+        // Near-forward pixels may fill only after the current gesture/fling becomes quiet.
+        return foregroundMotionActive
+    }
+}
+
+/**
+ * Resolves source progress for an exact adjacent episode without requiring the pixels which are
+ * currently being repaired to already be installed. A previously presented, identity-bound
+ * physical anchor is valid progress after pressure/rolling eviction; an unproven placeholder is
+ * represented by -1 and remains unable to widen the decode frontier.
+ */
+internal object NtkDirectAdjacentViewportSourcePolicy {
+    fun resolve(
+        installedPhysicalSource: Int,
+        installedBoundarySource: Int,
+        previouslyPresentedPhysicalAnchorSource: Int,
+    ): Int = maxOf(
+        installedPhysicalSource,
+        installedBoundarySource,
+        previouslyPresentedPhysicalAnchorSource,
+    )
 }
 
 /** Exact identity gate for the event-owned remainder of a strict adjacent episode. */
@@ -924,6 +1020,45 @@ internal object NtkProtectedBitmapWindowSnapshotPolicy {
         index in snapshot!!.first..snapshot.last
 }
 
+/** Keeps strict source admission and the first drawable/decode anchor on the same resume page. */
+internal object NtkStrictResumeAnchorPolicy {
+    fun resolve(
+        strictExact: Boolean,
+        startAtFirstPage: Boolean,
+        strictSourceFloor: Int,
+        storedPage: Int,
+    ): Int {
+        if (startAtFirstPage) return 0
+        // The generation-owned discovery floor is the page whose byte source was admitted. If it
+        // is non-zero, using an older preference value as the UI/decode anchor makes every
+        // admitted follower wait for an excluded p0 forever. A zero floor cannot distinguish a
+        // genuine p0 resume from missing registry state, so preserve the stored fallback there.
+        return if (strictExact && strictSourceFloor > 0) {
+            strictSourceFloor
+        } else {
+            storedPage.coerceAtLeast(0)
+        }
+    }
+}
+
+/**
+ * Binds the opening decode owner to the immutable launch source rather than transient UI motion.
+ * A swipe can move the reported page before any pixels exist; that must not turn a follower into
+ * the anchor or make the real launch source wait on its own installation latch.
+ */
+internal object NtkStrictLaunchDecodeAnchorPolicy {
+    fun resolve(
+        initialRunwayDecode: Boolean,
+        sourceIndex: Int,
+        launchSourceIndex: Int,
+        requestedAnchor: Boolean,
+    ): Boolean = if (initialRunwayDecode && launchSourceIndex >= 0) {
+        sourceIndex == launchSourceIndex
+    } else {
+        requestedAnchor
+    }
+}
+
 class ReaderSession(
     private val context: Context,
     private val manga: Manga,
@@ -1120,8 +1255,19 @@ class ReaderSession(
             pageHeight: Int,
             tiles: List<ReaderTile>
         ): InitialPrerenderResult = InitialPrerenderResult.NOT_RENDERED
+        /** Begins the renderer-only native twin while an adjacent card is still far offscreen. */
+        fun onPageCardPreparationRequested(title: String) {}
         fun onPageCard(index: Int, title: String)
         fun onPageError(index: Int, message: String)
+        /**
+         * Reports that the immutable current-episode source exhausted its finite operation ledger.
+         * The Activity may replace the source only for a transport failure and only after a real
+         * unvalidated -> validated network edge; identity/integrity failures remain fail-closed.
+         */
+        fun onStrictExactSourceTerminal(
+            episodePath: String,
+            retryableTransport: Boolean,
+        ) {}
         fun onPageCleared(index: Int)
         /**
          * Releases a far-offscreen pixel winner while retaining the proof that this canonical
@@ -1221,6 +1367,35 @@ class ReaderSession(
         val physicalLastOffset: Int,
         val busy: Boolean,
         val directionHint: Int,
+    )
+
+    /**
+     * Immutable page identities from the last clean native frame that contained current-launch
+     * bodies. Unlike reported layout coordinates, these cannot be widened by provisional heights
+     * for unresolved pages and survive prefix index rebasing without pointing at a different body.
+     */
+    private data class ExactCompositorWindow(
+        val firstPage: PageRef,
+        val lastPage: PageRef,
+        val direction: Int,
+    )
+
+    /** Exactly one current-launch source following the last clean composited source. */
+    private data class ExactLaunchCompositorForwardWarm(
+        val visibleLastSourceIndex: Int,
+        val page: PageRef,
+    )
+
+    /**
+     * One immutable body immediately after an exact adjacent frame's visible source tail.
+     *
+     * This is deliberately a PageRef rather than a numeric index: prefix compaction may move the
+     * same body while a decode is in flight, whereas a later frame replaces this proof outright.
+     */
+    private data class ExactAdjacentCompositorForwardWarm(
+        val normalizedPath: String,
+        val visibleLastSourceIndex: Int,
+        val page: PageRef,
     )
 
     private data class AppendUrlLoad(
@@ -1334,6 +1509,11 @@ class ReaderSession(
          * replaces the protected bitmap snapshot before decode completes.
          */
         val exactAdjacentPhysicalIntent: Boolean = false,
+        /**
+         * The latest clean adjacent frame proved this exact body is source+1. This admission is
+         * narrower than a retained numeric window and never originates from preload/test code.
+         */
+        val compositorForwardWarmIntent: Boolean = false,
     )
 
     internal class StrictInlineOriginalDecodeFlights {
@@ -1386,6 +1566,7 @@ class ReaderSession(
         val token: Any,
         val startedAtMs: Long,
         val residentBodySignal: Semaphore = Semaphore(0),
+        val completion: CompletableFuture<Unit> = CompletableFuture(),
     )
 
     private data class PreparedInitialAdjacentMetadata(
@@ -1451,6 +1632,17 @@ class ReaderSession(
                 pool.corePoolSize = size
                 true
             }.getOrDefault(false)
+        }
+
+        /**
+         * Removes the exact not-yet-started command without constructing a dormant executor.
+         * Callers can then transfer the same Runnable (and therefore the same single-flight
+         * ownership) to an urgent lane instead of starting a duplicate decode.
+         */
+        fun removeQueued(command: Runnable): Boolean {
+            val pool = delegate as? ThreadPoolExecutor ?: return false
+            if (pool.isShutdown) return false
+            return pool.queue.remove(command)
         }
 
         fun shutdown() {
@@ -1572,9 +1764,11 @@ class ReaderSession(
             readerThreadFactory("ReaderStrictExactBulkDecode", Process.THREAD_PRIORITY_BACKGROUND)
         )
     }
-    // Keep the proven eight-wide path for ordinary episodes. A multi-GiB rolling scene can have
-    // 160+ full ARGB JPEG decodes in flight; six workers retain network/decode overlap while
-    // reserving host CPU and memory bandwidth for the urgent native Surface producer.
+    // A rolling scene can have 160+ full ARGB JPEG decodes queued. Six simultaneous native JPEG
+    // workers measured 560-930 ms each on the host emulator (versus 80-170 ms alone) and starved
+    // the H3 callbacks badly enough to turn complete responses into partial-body timeouts. Three
+    // workers preserve useful network/decode overlap while leaving CPU and memory bandwidth for
+    // both the urgent Surface producer and the finite body wave.
     private val strictExactRollingDecode = LazySessionExecutor {
         Executors.newFixedThreadPool(
             STRICT_EXACT_ROLLING_DECODE_PARALLELISM,
@@ -1589,6 +1783,19 @@ class ReaderSession(
         Executors.newFixedThreadPool(
             STRICT_EXACT_OVERLAP_DECODE_PARALLELISM,
             readerThreadFactory("ReaderStrictExactOverlapDecode", Process.THREAD_PRIORITY_BACKGROUND)
+        )
+    }
+    // Every finite opening-runway follower must be able to reach its canonical ordering gate even
+    // when generic overlap work has already filled its small pool. A two-source sliding preparation
+    // window overlaps useful JPEG work without recreating the four-wide gfxstream contention; the
+    // one-wide public handoff below still makes Surface ownership strictly canonical.
+    private val strictExactInitialRunwayDecode = LazySessionExecutor {
+        Executors.newFixedThreadPool(
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_SCROLL_RUNWAY_BODIES - 1,
+            readerThreadFactory(
+                "ReaderStrictExactInitialRunwayDecode",
+                Process.THREAD_PRIORITY_DEFAULT,
+            ),
         )
     }
     private val primeNetwork = LazySessionExecutor {
@@ -1637,11 +1844,24 @@ class ReaderSession(
         )
     }
     // Physical motion already runs main, the direct-frame producer and the native presenter.
-    // A pair of simultaneous full-original decodes saturates the remaining emulator vCPUs and
-    // deschedules the producer even though both workers have background nice values. One decode
-    // still stays ahead of the bounded physical runway; network/body acquisition remains fully
-    // concurrent and idle completion uses the larger decode executors unchanged.
+    // Direct pointer input keeps a single full-original decoder so CPU work cannot deschedule the
+    // producer. Network/body acquisition remains fully concurrent and the passive-fling/idle
+    // stages below restore bounded throughput after the pointer quiet proof.
     private val activeVisibleDecodeGate = Semaphore(1)
+    // Once direct pointer input and its 750 ms quiet fence have ended, a passive fling needs enough
+    // throughput to release the complete exact scene without waking the full seven-worker pool.
+    // Two background decoders halve the long suffix while the separately paced mirror lane keeps
+    // gfxstream work below one upload per display interval.
+    private val passiveMotionDecodeGate = Semaphore(2, true)
+    // A drawable-prefix clamp force-finishes the scroller while preserving its forward target.
+    // No moving frame exists in that interval, so one additional background decoder can close the
+    // pixel gap without competing with Surface. As soon as motion resumes, new work returns to the
+    // two-lane passive gate; the exact visible blocker remains independently admissible.
+    private val blockedMotionDecodeGate = Semaphore(3, true)
+    /** Bounds private pN/pN+1 native preparation before their canonical public handoff. */
+    private val initialHostExactRunwayNativeDecodePermits = Semaphore(2, true)
+    /** Serializes the first exact viewport and any real pre-content gesture runway handoff. */
+    private val initialHostExactViewportDecodeGate = Semaphore(1, true)
     private val busyDecodeGate = Semaphore(ReaderPipelinePolicy.BUSY_DECODE_PARALLELISM)
     private val idleDecodeGate = Semaphore(ReaderPipelinePolicy.IDLE_DECODE_PARALLELISM)
     private val protectedNumericNetworkGate = Semaphore(NTK_PROTECTED_NETWORK_PARALLELISM, true)
@@ -1742,7 +1962,13 @@ class ReaderSession(
     private val strictInlineOriginalDecodeFlights = StrictInlineOriginalDecodeFlights()
     private val initialDeliveryBacklog = ConcurrentHashMap<Int, Delivery>()
     private val initialPreparedBacklog = ConcurrentHashMap<Int, PreparedDelivery>()
-    private val initialContinuousPostedWidths = ConcurrentHashMap<Int, Int>()
+    /**
+     * Main-loop delivery claims are content identities, never display indexes. Prefix compaction
+     * can move an in-flight adjacent PageRef while its Runnable still owns the old numeric index;
+     * shifting an index-keyed claim then leaves a tombstone at the new index and makes every
+     * subsequent exact rehydrate look like a duplicate forever.
+     */
+    private val initialContinuousPostedWidthsByIdentity = ConcurrentHashMap<String, Int>()
     private val deliveryDrainPosted = AtomicBoolean(false)
     private val initialDeliveryFallbackPosted = AtomicBoolean(false)
     private val initialDeliveryFlushInProgress = AtomicBoolean(false)
@@ -1750,8 +1976,19 @@ class ReaderSession(
         if (strictExactColdRolling) Long.MAX_VALUE else 0L
     )
     private val currentViewportAnchor = AtomicInteger(-1)
+    /** Current-launch body span that the native compositor proved was clean in a real frame. */
+    private val latestExactCompositorWindow =
+        AtomicReference<ExactCompositorWindow?>(null)
+    private val latestExactLaunchCompositorForwardWarm =
+        AtomicReference<ExactLaunchCompositorForwardWarm?>(null)
     /** Last PageRef that Surface proved to be its real forward physical maximum. */
     private val latestPhysicalForwardBoundaryPage = AtomicReference<PageRef?>(null)
+    // A current-launch page that Surface proved is the first missing body holding a real forward
+    // gesture. Do not share this with [latestPhysicalForwardIntentPage]: that pointer belongs to
+    // adjacent viewport publication and is deliberately cleared by a reverse WindowEvent. Exact
+    // layout corrections can briefly report reverse while the user is still clamped at the same
+    // forward blocker, so sharing the pointer made continuous input erase its own decode priority.
+    private val latestCurrentLaunchBlockedForwardPage = AtomicReference<PageRef?>(null)
     /**
      * Latest appended body named by Surface's physical-input interval, including the first body
      * that drawable-prefix clamping prevented from becoming visible. Unlike the latest-only
@@ -1774,6 +2011,8 @@ class ReaderSession(
     // cannot use that prefetch horizon as proof that newly appended tail pages were consumed.
     private val latestReportedReadingPage = AtomicReference<PageRef?>(null)
     private val latestReportedWindow = AtomicReference<ReportedWindow?>(null)
+    /** Latest Surface ingress level, including callbacks suppressed as numeric duplicates. */
+    private val latestWindowIngressBusy = AtomicBoolean(false)
     private val forwardReadingObservationRevision = AtomicLong(0L)
     private val latestReportedReadingPageRevision = AtomicLong(0L)
     private val forwardReadingPosition = AtomicInteger(-1)
@@ -1783,6 +2022,12 @@ class ReaderSession(
     private val forwardReadingDrainPosted = AtomicBoolean(false)
     private val forwardReadingRetryPosted = AtomicBoolean(false)
     private val forwardHistoryPixelClearPending = AtomicBoolean(false)
+    /**
+     * HOME/task return can produce a clean frame immediately before the user's first DOWN is
+     * delivered. Keep destructive prefix retirement out of that predictable input race; decoded
+     * pixels remain independently budgeted while lightweight PageRefs wait for a real quiet gap.
+     */
+    private val forwardHistoryHostResumeNotBeforeMs = AtomicLong(0L)
     private val forwardHistoryTrimDeferralLogs = ConcurrentHashMap.newKeySet<String>()
     private val forwardPixelRetirementLedger = NtkForwardPixelRetirementLedger()
     private val completedEpisodeWarmupKeys = ConcurrentHashMap.newKeySet<String>()
@@ -1883,6 +2128,9 @@ class ReaderSession(
     private var retainedAnchorPage = 0
     @Volatile private var physicalDeliveryFirstPage = 0
     @Volatile private var physicalDeliveryLastPage = -1
+    /** One rolling pixel refill grant per newly observed idle forward viewport. */
+    private val lastDirectWifiIdleForwardWarmVisibleLast = AtomicInteger(Int.MIN_VALUE)
+    private val directWifiIdleForwardWarmPumpScheduled = AtomicBoolean(false)
     private val firstBitmapLogged = AtomicBoolean(false)
     private val firstDrawableDelivered = AtomicBoolean(false)
     private val firstBitmapFollowupsStarted = AtomicBoolean(false)
@@ -1922,6 +2170,10 @@ class ReaderSession(
     private val pendingAdjacentAppendPublishes = ConcurrentHashMap<String, PendingAdjacentAppendPublish>()
     private val pendingAdjacentEarlyAppendTargets = ConcurrentHashMap<String, PendingAdjacentEarlyAppend>()
     private val scheduledInitialAdjacentRunwayRetryKeys = ConcurrentHashMap.newKeySet<String>()
+    /** Direct exact p0 owners waiting for a real busy->idle viewport edge, keyed by episode path. */
+    private val parkedInitialAdjacentRunwayRetries = ConcurrentHashMap<String, Runnable>()
+    private val parkedInitialAdjacentRunwayPathsByRetryKey = ConcurrentHashMap<String, String>()
+    private val parkedInitialAdjacentIdleWakePosted = AtomicBoolean(false)
     private val hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
         Build.FINGERPRINT,
         Build.MODEL,
@@ -1985,6 +2237,18 @@ class ReaderSession(
         ConcurrentHashMap<String, PreparedAdjacentRemainderDrawable>()
     private val parkedAdjacentRemainderAppends =
         ConcurrentHashMap<String, ParkedAdjacentRemainderAppend>()
+
+    private fun finishInitialAdjacentRunwayPreparation(
+        path: String,
+        preparation: InitialAdjacentRunwayPreparation,
+    ): Boolean {
+        val removed = preparingInitialAdjacentRunways.remove(path, preparation)
+        // Complete even when an expiry claimant already removed the map entry. The original
+        // owner and every joiner still share this generation-specific object, so this is the
+        // terminal edge that wakes them without a frame-rate polling loop.
+        preparation.completion.complete(Unit)
+        return removed
+    }
     private val pendingRemainingAdjacentRunwayAppends =
         ConcurrentHashMap<String, ParkedAdjacentRemainderAppend>()
     private val waitingStrictRemainingAdjacentAppends =
@@ -2013,7 +2277,12 @@ class ReaderSession(
      * first-actual edge. Each owner decodes one source at a time and yields to physical input.
      */
     private val enteredExactEpisodePixelCompletionPaths = ConcurrentHashMap.newKeySet<String>()
+    /** One slow safety edge for descriptor/publication callbacks that cross registry visibility. */
+    private val enteredExactEpisodePixelCompletionAuditPaths =
+        ConcurrentHashMap.newKeySet<String>()
     private val latestEnteredExactEpisodePath = AtomicReference("")
+    private val latestExactAdjacentCompositorForwardWarm =
+        AtomicReference<ExactAdjacentCompositorForwardWarm?>(null)
     private val initialNearAfterAnchorDecodeStarted = AtomicBoolean(false)
     private val initialAnchorDeliveryPosted = AtomicBoolean(false)
     @Volatile
@@ -2030,6 +2299,26 @@ class ReaderSession(
     private val strictExactBoundsDrainRunnable = Runnable { drainStrictExactBoundsOnMain() }
     private val strictExactDecodeInFlight = ConcurrentHashMap.newKeySet<Int>()
     private val strictExactSplitSourceDecodeInFlight = ConcurrentHashMap.newKeySet<String>()
+    /**
+     * Full-scene rolling decode remains FIFO for throughput, but a verified body can arrive far
+     * out of source order. Keep the exact queued Runnable so the physical viewport blocker can be
+     * moved—not copied—to the anchor lane before unrelated offscreen originals.
+     */
+    private val strictExactRollingQueuedDecodes = ConcurrentHashMap<Int, Runnable>()
+    private val strictExactRollingPromotedDecodes = ConcurrentHashMap.newKeySet<Int>()
+    /**
+     * Exact offscreen pages that reached the final native-decode edge as a real touch/fling began.
+     *
+     * The earlier admission loop parks queued work, but a worker can leave that loop during an
+     * idle frame and lose the race to the next ACTION_DOWN. Keeping this identity-bound retry set
+     * lets the native allocator/decoder fail closed at its own edge without turning that harmless
+     * deferral into a permanent blank page or a user-visible error.
+     */
+    private val strictExactMotionDeferredPages = ConcurrentHashMap<Int, PageRef>()
+    private val strictExactMotionDeferredRetryPosted = AtomicBoolean(false)
+    private val strictExactMotionDeferredRetryRunnable = Runnable {
+        drainStrictExactMotionDeferredPages()
+    }
     private val strictExactAuthoritativeHandoffPages = ConcurrentHashMap.newKeySet<Int>()
     private val strictExactRollingRehydratePages = ConcurrentHashMap.newKeySet<Int>()
     private val hostExactPoolPressureRetiredPages = ConcurrentHashMap.newKeySet<Int>()
@@ -2039,6 +2328,11 @@ class ReaderSession(
     private val hostPressureSurfaceRetirementsInFlight =
         java.util.Collections.newSetFromMap(IdentityHashMap<PageRef, Boolean>())
     private val strictExactInitialAnchorPixelsInstalled = CountDownLatch(1)
+    private val strictExactInitialAnchorPixelsInstalledAtMs = AtomicLong(0L)
+    private val strictExactInitialPhysicalFramePresented = CountDownLatch(1)
+    private val strictExactInitialPhysicalFramePresentedAtMs = AtomicLong(0L)
+    /** Next canonical source allowed through the pre-presentation serial decode runway. */
+    private val strictExactInitialDecodeRunwayNextSource = AtomicInteger(-1)
     private val strictExactBulkDecodeReleased = AtomicBoolean(false)
     private val strictExactTerminalDecodeExpanded = AtomicBoolean(false)
     private val strictExactOverlapDecodeAdmissions = AtomicInteger(0)
@@ -2046,7 +2340,8 @@ class ReaderSession(
     private val strictExactDecodeTerminals = AtomicInteger(0)
     private val strictExactRequiredBitmapBytes = AtomicLong(0L)
     private val strictExactRollingPixelResidency = AtomicBoolean(false)
-    private val strictExactShortWebtoonRollingPixelResidency = AtomicBoolean(false)
+    /** Direct-Wi-Fi current episodes share a bounded native-pixel ring with their successor. */
+    private val strictExactDirectWifiRollingPixelResidency = AtomicBoolean(false)
     private val strictExactSuccessorPhysicallyPresented = AtomicBoolean(false)
     private val strictExactSourceTransport = AtomicReference<NtkStrictSourceTransport?>()
     private val strictExactSourceBinding = AtomicReference<Closeable?>()
@@ -2137,13 +2432,31 @@ class ReaderSession(
         val visibleIntent: Boolean,
         val hostPressurePhysicalReentry: AtomicBoolean,
         val exactAdjacentPhysicalIntent: AtomicBoolean,
+        val compositorForwardWarmIntent: AtomicBoolean,
+        val enteredIdleCompletionIntent: AtomicBoolean = AtomicBoolean(false),
         val retryCount: AtomicInteger = AtomicInteger(0),
         val ownerScheduledOrRunning: AtomicBoolean = AtomicBoolean(false),
+        val ownerAttemptVersion: AtomicLong = AtomicLong(0L),
         val parked: AtomicBoolean = AtomicBoolean(false),
+        val motionDeferred: AtomicBoolean = AtomicBoolean(false),
         val wakeVersion: AtomicLong = AtomicLong(0L),
     )
     private val strictAdjacentRehydrateFlights =
         ConcurrentHashMap<String, StrictAdjacentRehydrateFlight>()
+    private val strictAdjacentMotionDeferredWakePosted = AtomicBoolean(false)
+    private val strictAdjacentMotionDeferredWakeRunnable = Runnable {
+        strictAdjacentMotionDeferredWakePosted.set(false)
+        if (cancelled.get() || viewportBusy.get()) return@Runnable
+        if (NtkReaderTransferPacer.isPhysicalMotionActive()) {
+            // The final idle WindowEvent can arrive while the pacer's short post-motion grace is
+            // still active. The event already observed a pending timer, so simply returning here
+            // would lose the only wake edge. Re-arm this single global owner once; a new gesture
+            // makes it stop, while genuine idle opens all parked identities together.
+            scheduleStrictAdjacentMotionDeferredWake()
+            return@Runnable
+        }
+        wakeStrictAdjacentMotionDeferredFlights()
+    }
     private enum class HostPressureRehydrateClaim {
         NOT_RETIRED,
         BLOCKED,
@@ -2164,6 +2477,8 @@ class ReaderSession(
     private val adjacentExactP0OwnerSequence = AtomicLong(1L)
     private val adjacentExactP0Flights = ConcurrentHashMap<Long, AdjacentExactP0Flight>()
     private val adjacentExactP0PreparePaths = ConcurrentHashMap.newKeySet<String>()
+    private val publishedExactAdjacentInitialRunwayCompletionPaths =
+        ConcurrentHashMap.newKeySet<String>()
     private val adjacentStrictPredecessorPaths = ConcurrentHashMap<String, String>()
     private data class ForwardAdjacentExactManifestAppend(
         val target: Manga,
@@ -2597,6 +2912,16 @@ class ReaderSession(
                 acceptStrictExactBodyDescriptor(event.descriptor)
             }
             is SourceEvent.TerminalFailure -> {
+                val retryableTransport =
+                    NtkStrictSourceFailurePolicy.isRetryableTransportFailure(event.error)
+                main.post {
+                    if (!cancelled.get()) {
+                        listener.onStrictExactSourceTerminal(
+                            launchSeal.normalizedEpisodePath,
+                            retryableTransport,
+                        )
+                    }
+                }
                 displayIndexesForStrictSource(event.pageIndex).forEach { displayIndex ->
                     pageRef(displayIndex)?.let { postPageError(displayIndex, it, event.error as? Exception
                         ?: java.io.IOException(event.error)) }
@@ -2652,8 +2977,8 @@ class ReaderSession(
                 current + sourceRgbaBytes
             }
         }
-        val directWifiCurrentWebtoon =
-            launchSeal.normalizedEpisodePath.startsWith("/webtoon/") &&
+        val directWifiCurrentEpisode =
+            isNtkManhwaOrWebtoonEpisodePath(launchSeal.normalizedEpisodePath) &&
                 NtkSourceSpoolRegistry.isCurrentDirectWifiRendererProfile(
                     launchSeal.normalizedEpisodePath,
                     strictExactForegroundViewerGenerationAtCreation,
@@ -2664,11 +2989,11 @@ class ReaderSession(
                 launchSeal.pageCount,
                 descriptor.metadata.sourceWidth,
                 descriptor.metadata.sourceHeight,
-                directWifiCurrentWebtoon = directWifiCurrentWebtoon,
+                directWifiCurrentEpisode = directWifiCurrentEpisode,
             )
         ) {
-            if (directWifiCurrentWebtoon) {
-                strictExactShortWebtoonRollingPixelResidency.set(true)
+            if (directWifiCurrentEpisode) {
+                strictExactDirectWifiRollingPixelResidency.set(true)
             }
             activateStrictExactRollingPixelResidency(launchSeal.pageCount, sourceRgbaBytes)
         }
@@ -2842,19 +3167,20 @@ class ReaderSession(
             return
         }
         val initialAnchor = currentStartPage().coerceIn(0, pageCount - 1)
-        val shortWebtoon = strictExactShortWebtoonRollingPixelResidency.get()
+        val directWifiRolling = strictExactDirectWifiRollingPixelResidency.get()
+        val initialForwardRunwayPages = ReaderStrictBitmapResidencyPolicy
+            .initialForwardRunwayPages(
+                directWifiRolling = directWifiRolling,
+                ordinaryPages = STRICT_OVERSIZED_INITIAL_FORWARD_RUNWAY_PAGES,
+            )
         synchronized(deliveredBitmaps) {
             retainedFirstPage = max(
                 0,
-                initialAnchor - if (shortWebtoon) 0 else STRICT_OVERSIZED_BEHIND_PAGES,
+                initialAnchor - if (directWifiRolling) 0 else STRICT_OVERSIZED_BEHIND_PAGES,
             )
             retainedLastPage = minOf(
                 pageCount - 1,
-                initialAnchor + if (shortWebtoon) {
-                    0
-                } else {
-                    STRICT_OVERSIZED_INITIAL_FORWARD_RUNWAY_PAGES - 1
-                },
+                initialAnchor + initialForwardRunwayPages - 1,
             )
             retainedAnchorPage = initialAnchor
         }
@@ -2864,11 +3190,7 @@ class ReaderSession(
             "reader_strict_oversized_rolling_residency pages=$pageCount," +
                 "representativePageBytes=$representativePageBytes," +
                 "budget=$NTK_STRICT_OVERSIZED_BITMAP_BYTES," +
-                "runway=${if (shortWebtoon) {
-                    1
-                } else {
-                    STRICT_OVERSIZED_INITIAL_FORWARD_RUNWAY_PAGES
-                }}",
+                "runway=$initialForwardRunwayPages",
         )
         trimDeliveredBitmapsToBudget()
     }
@@ -10809,7 +11131,43 @@ class ReaderSession(
     /** Revalidates event-parked suffixes after Android returns the existing reader to foreground. */
     fun onHostResumed() {
         if (cancelled.get()) return
+        val maintenanceDeadline =
+            SystemClock.uptimeMillis() + NTK_FORWARD_HISTORY_RESUME_QUIET_MS
+        forwardHistoryHostResumeNotBeforeMs.getAndUpdate { current ->
+            maxOf(current, maintenanceDeadline)
+        }
         redriveParkedAdjacentRemaindersAfterEvent()
+        if (!viewportBusy.get()) scheduleParkedInitialAdjacentRunwayWakeAfterPhysicalIdle()
+    }
+
+    /**
+     * Coalesces the physical quiet edge for exact p0 structure publication. Descriptor residency is
+     * already true for these owners, so repeatedly polling it cannot reveal new information. The
+     * next real idle edge is the publication authority; one long watchdog remains only for a lost
+     * lifecycle callback.
+     */
+    private fun scheduleParkedInitialAdjacentRunwayWakeAfterPhysicalIdle() {
+        if (cancelled.get() || parkedInitialAdjacentRunwayRetries.isEmpty() ||
+            !parkedInitialAdjacentIdleWakePosted.compareAndSet(false, true)
+        ) return
+        val quietDelayMs = physicalTouchQuietRemainingMs(
+            NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS,
+        ).coerceAtLeast(1L)
+        val posted = main.postDelayed({
+            parkedInitialAdjacentIdleWakePosted.set(false)
+            if (!cancelled.get() && !viewportBusy.get()) {
+                wakeParkedInitialAdjacentRunwayRetries()
+            }
+        }, quietDelayMs)
+        if (!posted) parkedInitialAdjacentIdleWakePosted.set(false)
+    }
+
+    private fun wakeParkedInitialAdjacentRunwayRetries() {
+        if (cancelled.get() || parkedInitialAdjacentRunwayRetries.isEmpty()) return
+        parkedInitialAdjacentRunwayRetries.values.toList().forEach { retry ->
+            main.removeCallbacks(retry)
+            retry.run()
+        }
     }
 
     /**
@@ -10832,6 +11190,7 @@ class ReaderSession(
         firstVisibleSourceIndex: Int = 0,
         lastVisibleSourceIndex: Int = firstVisibleSourceIndex,
         direction: Int = 1,
+        viewportOwnsEpisode: Boolean = true,
     ) {
         if (cancelled.get()) return
         val normalizedPath = NtkStripDigests.normalizeEpisodePath(episodePath)
@@ -10850,13 +11209,20 @@ class ReaderSession(
             lastVisibleSourceIndex,
             direction,
         )
+        recordExactAdjacentCompositorForwardWarm(
+            normalizedPath,
+            claim,
+            lastVisibleSourceIndex,
+            direction,
+        )
         releaseStrictLaunchPixelProtectionAfterSuccessorPresented()
-        // Viewport demand belongs to the compositor-confirmed episode transition, not to the
-        // legacy PageRef remainder publisher. Full exact structure is now published atomically,
-        // so that publisher may never run even though p0 has physically entered the viewport.
-        // Deliver this distinct source signal first; the strict actor requires it (along with the
-        // already committed drawable runway and predecessor proof) before admitting p5+ bodies.
-        if (claim.viewportActivated.compareAndSet(false, true)) {
+        // A mixed predecessor-tail/adjacent-p0 frame proves p0 demand, but opening p5+ bulk work
+        // there makes network/actor callbacks compete with the p0->p1 compositor transition. The
+        // initial exact runway already owns every body needed to clear that boundary. Release the
+        // remaining source wave only after one immutable committed viewport contains this episode
+        // and no other episode's pixels. This also prevents a B/C boundary from releasing C merely
+        // because the original launch episode A has already left the long-lived session.
+        if (viewportOwnsEpisode && claim.viewportActivated.compareAndSet(false, true)) {
             try {
                 claim.transport.onAdjacentViewportActivated(claim.episode)
                 Log.d(
@@ -10872,11 +11238,23 @@ class ReaderSession(
                 }
                 return
             }
+        } else if (!viewportOwnsEpisode && !claim.viewportActivated.get() &&
+            shouldLogRateLimitedDiagnostic(
+                "adjacent_viewport_wait_clean|$normalizedPath",
+                60_000L,
+            )
+        ) {
+            Log.d(
+                TAG,
+                "append_adjacent_strict_source_viewport_release_wait_clean " +
+                    "path=$normalizedPath,digest=${claim.manifestDigest}",
+            )
         }
         if (!claim.firstActualFramePresented.compareAndSet(false, true)) {
             // Re-entry can reuse the same immutable claim. Refresh the foreground identity and
             // close any descriptor-before-waiter race without repeating the transport callback.
             latestEnteredExactEpisodePath.set(normalizedPath)
+            requestLatestExactAdjacentCompositorForwardWarm()
             requestEnteredExactEpisodePixelCompletion(normalizedPath)
             return
         }
@@ -10889,11 +11267,138 @@ class ReaderSession(
             )
             latestEnteredExactEpisodePath.set(normalizedPath)
             wakeRemainingAdjacentAppendAfterExactFirstActual(normalizedPath)
+            requestLatestExactAdjacentCompositorForwardWarm()
         } catch (failure: Exception) {
             // A later compositor-proven frame may retry if the transport rejected this delivery.
             claim.firstActualFramePresented.set(false)
             recordIfUnexpected(failure)
         }
+    }
+
+    /**
+     * Records exactly one source ahead of a clean adjacent native frame.
+     *
+     * Source demand above may fetch its encoded body, but this method never starts network work.
+     * Pixel decode is admitted only after the generation-bound descriptor/body is already resident.
+     */
+    private fun recordExactAdjacentCompositorForwardWarm(
+        normalizedPath: String,
+        claim: AdjacentStrictSourceClaim,
+        lastVisibleSourceIndex: Int,
+        direction: Int,
+    ) {
+        if (direction < 0 || lastVisibleSourceIndex < 0 ||
+            lastVisibleSourceIndex >= claim.pageCount - 1
+        ) {
+            latestExactAdjacentCompositorForwardWarm.set(null)
+            return
+        }
+        val nextSourceIndex = lastVisibleSourceIndex + 1
+        val target = synchronized(pagesLock) {
+            pages.firstOrNull { candidate ->
+                candidate.transitionTitle == null &&
+                    candidate.sourceIndex == nextSourceIndex &&
+                    candidate.manifestDigest == claim.manifestDigest &&
+                    NtkStripDigests.normalizeEpisodePath(
+                        candidate.manga.ntkEpisodePath.orEmpty(),
+                    ) == normalizedPath &&
+                    strictAdjacentRehydrateIdentity(candidate) != null
+            }
+        }
+        latestExactAdjacentCompositorForwardWarm.set(
+            target?.let { page ->
+                ExactAdjacentCompositorForwardWarm(
+                    normalizedPath = normalizedPath,
+                    visibleLastSourceIndex = lastVisibleSourceIndex,
+                    page = page,
+                )
+            },
+        )
+        if (target != null && shouldLogRateLimitedDiagnostic(
+                "compositor_forward_warm_record|$normalizedPath|$nextSourceIndex",
+                60_000L,
+            )
+        ) {
+            Log.d(
+                TAG,
+                "reader_compositor_forward_warm_record path=$normalizedPath " +
+                    "visibleLast=$lastVisibleSourceIndex target=$nextSourceIndex " +
+                    "direction=$direction index=${target.pageIndex}",
+            )
+        }
+    }
+
+    private fun isLatestExactAdjacentCompositorForwardWarm(
+        index: Int,
+        page: PageRef,
+    ): Boolean {
+        val proof = latestExactAdjacentCompositorForwardWarm.get() ?: return false
+        val proofIdentity = strictAdjacentRehydrateIdentity(proof.page) ?: return false
+        if (strictAdjacentRehydrateIdentity(page) != proofIdentity ||
+            page.sourceIndex != proof.visibleLastSourceIndex + 1 ||
+            latestEnteredExactEpisodePath.get() != proof.normalizedPath
+        ) return false
+        val claim = adjacentStrictSourceClaims[proof.normalizedPath] ?: return false
+        if (!claim.firstActualFramePresented.get() ||
+            !isAdjacentStrictSourceClaimLive(proof.normalizedPath, claim) ||
+            page.manifestDigest != claim.manifestDigest
+        ) return false
+        return synchronized(pagesLock) {
+            val currentIndex = pageIndexLocked(page, index)
+            val proofIndex = pageIndexLocked(proof.page, proof.page.pageIndex)
+            currentIndex in pages.indices && pages[currentIndex] === page &&
+                proofIndex in pages.indices && pages[proofIndex] === proof.page
+        }
+    }
+
+    private fun requestLatestExactAdjacentCompositorForwardWarm() {
+        if (cancelled.get()) return
+        val proof = latestExactAdjacentCompositorForwardWarm.get() ?: return
+        val currentIndex = synchronized(pagesLock) {
+            pageIndexLocked(proof.page, proof.page.pageIndex)
+        }
+        if (currentIndex < 0 ||
+            !isLatestExactAdjacentCompositorForwardWarm(currentIndex, proof.page)
+        ) {
+            latestExactAdjacentCompositorForwardWarm.compareAndSet(proof, null)
+            return
+        }
+        // The viewport source-demand actor owns byte acquisition. A compositor warm may consume
+        // only a body it has already published; body publication calls this helper again.
+        if (strictAdjacentBodyDescriptor(proof.page) == null &&
+            strictAdjacentPublishedBody(proof.page) == null
+        ) {
+            if (shouldLogRateLimitedDiagnostic(
+                    "compositor_forward_warm_body_wait|${proof.normalizedPath}|" +
+                        proof.page.sourceIndex,
+                    60_000L,
+                )
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_compositor_forward_warm_body_wait path=${proof.normalizedPath} " +
+                        "source=${proof.page.sourceIndex} index=$currentIndex",
+                )
+            }
+            return
+        }
+        if (shouldLogRateLimitedDiagnostic(
+                "compositor_forward_warm_route|${proof.normalizedPath}|${proof.page.sourceIndex}",
+                60_000L,
+            )
+        ) {
+            Log.d(
+                TAG,
+                "reader_compositor_forward_warm_route path=${proof.normalizedPath} " +
+                    "source=${proof.page.sourceIndex} index=$currentIndex",
+            )
+        }
+        routeStrictAdjacentExactRehydrate(
+            currentIndex,
+            proof.page,
+            visibleIntent = true,
+            compositorForwardWarmIntent = true,
+        )
     }
 
     /**
@@ -10997,6 +11502,53 @@ class ReaderSession(
         direction: Int
     ) {
         if (!strictExactColdRolling || cancelled.get()) return
+        // Capture exact immutable identities before the latest-only control mailbox can coalesce
+        // this presentation with a newer layout report. Provisional placeholder heights can make
+        // the latter claim that ten unrendered pages fit on screen; only a clean native frame is
+        // authoritative for decoded-pixel residency. Structural cards and adjacent bodies are
+        // deliberately excluded from the current launch's rolling pixel window.
+        val published = publishedPageIndex.get()
+        if (firstVisibleDisplay in published.indices &&
+            lastVisibleDisplay in firstVisibleDisplay until published.size
+        ) {
+            var firstExact: PageRef? = null
+            var lastExact: PageRef? = null
+            for (displayIndex in firstVisibleDisplay..lastVisibleDisplay) {
+                val candidate = published[displayIndex]
+                if (candidate.transitionTitle == null && isStrictExactLaunchPage(candidate)) {
+                    if (firstExact == null) firstExact = candidate
+                    lastExact = candidate
+                }
+            }
+            if (firstExact != null && lastExact != null) {
+                val exactLast = checkNotNull(lastExact)
+                latestExactCompositorWindow.set(
+                    ExactCompositorWindow(
+                        firstPage = checkNotNull(firstExact),
+                        lastPage = exactLast,
+                        direction = direction,
+                    )
+                )
+                val nextSource = exactLast.sourceIndex + 1
+                val warmPage = if (direction >= 0) {
+                    published.firstOrNull { candidate ->
+                        candidate.transitionTitle == null &&
+                            isStrictExactLaunchPage(candidate) &&
+                            candidate.sourceIndex == nextSource
+                    }
+                } else {
+                    null
+                }
+                latestExactLaunchCompositorForwardWarm.set(
+                    warmPage?.let { page ->
+                        ExactLaunchCompositorForwardWarm(
+                            visibleLastSourceIndex = exactLast.sourceIndex,
+                            page = page,
+                        )
+                    },
+                )
+            }
+        }
         // Native presentation arrives through the Activity's main-thread semantic listener.
         // Never make input wait for the session page-table monitor here: adjacent publication,
         // pixel retirement and budget trimming legitimately hold that monitor on ReaderControl.
@@ -11009,6 +11561,27 @@ class ReaderSession(
             direction
         )
         if (scheduleDrain) scheduleStrictRollingControlDrain()
+    }
+
+    /**
+     * The current-launch counterpart of adjacent compositor warming. It proves only source+1 from
+     * an immutable clean frame and never creates byte demand; the normal admission/retention
+     * window remains authoritative for whether that already-resident body may decode.
+     */
+    private fun isLatestExactLaunchCompositorForwardWarm(
+        index: Int,
+        page: PageRef,
+    ): Boolean {
+        val proof = latestExactLaunchCompositorForwardWarm.get() ?: return false
+        if (proof.page !== page || page.sourceIndex != proof.visibleLastSourceIndex + 1 ||
+            !isStrictExactLaunchPage(page)
+        ) return false
+        val window = latestExactCompositorWindow.get() ?: return false
+        if (window.direction < 0 || window.lastPage.sourceIndex != proof.visibleLastSourceIndex) {
+            return false
+        }
+        val currentIndex = currentPageIndex(page, index)
+        return currentIndex >= 0 && pageRef(currentIndex) === page
     }
 
     private fun applyExactNtkPhysicalDrawPresented(
@@ -11024,7 +11597,7 @@ class ReaderSession(
         if (!previous.shouldOpenPhysicalDrawGate()) return
         val launchSeal = strictExactLaunchSeal ?: return
         var displayCount = 0
-        var initialSource = -1
+        var firstPresentedLaunchDisplay = -1
         var physicalForwardEvidence: PageRef? = null
         val visibleSources = IntArray(
             (lastVisibleDisplay - firstVisibleDisplay + 1).coerceAtLeast(0),
@@ -11035,11 +11608,15 @@ class ReaderSession(
             if (firstVisibleDisplay !in 0 until displayCount ||
                 lastVisibleDisplay !in firstVisibleDisplay until displayCount
             ) return
-            initialSource = pages.getOrNull(currentStartPage())?.sourceIndex ?: -1
             for (displayIndex in firstVisibleDisplay..lastVisibleDisplay) {
                 val page = pages[displayIndex]
                 if (page.transitionTitle != null) continue
-                visibleSources[visibleSourceCount++] = page.sourceIndex
+                if (isStrictExactLaunchPage(page)) {
+                    if (firstPresentedLaunchDisplay < 0) {
+                        firstPresentedLaunchDisplay = displayIndex
+                    }
+                    visibleSources[visibleSourceCount++] = page.sourceIndex
+                }
                 if (direction == ReaderSurfaceView.DIRECTION_NEXT && page.sourceIndex >= 0 &&
                     (physicalForwardEvidence == null ||
                         page.sourceIndex > checkNotNull(physicalForwardEvidence).sourceIndex)
@@ -11063,20 +11640,24 @@ class ReaderSession(
                 .takeIf(String::isNotEmpty)
                 ?.let(::wakeStrictRemainingAdjacentAppend)
         }
-        // A resume launch proves the stored canonical source; a new episode proves source zero.
-        // Requiring source zero unconditionally makes a valid restored viewport unable to open the
-        // physical-draw gate and leaves its forward runway stuck behind the cold-start fence.
-        if (initialSource < 0) return
-        var sawInitialSource = false
+        // The first HWUI callback is coalesced on the latest-only control mailbox. A fast physical
+        // fling can therefore present p0, advance to p4, and replace that callback before this
+        // worker enters pagesLock. Requiring the launch anchor in the later visible range strands
+        // every rolling decoder behind a frame that already happened. Any exact PageRef belonging
+        // to this immutable launch seal is equally strong compositor evidence; adjacent episodes
+        // are excluded by the full episode/source identity check above.
         if (visibleSourceCount <= 0) return
         for (index in 0 until visibleSourceCount) {
             val sourceIndex = visibleSources[index]
             if (sourceIndex !in launchSeal.canonicalAssets.indices) return
-            if (sourceIndex == initialSource) sawInitialSource = true
         }
-        if (!sawInitialSource) return
+        strictExactInitialPhysicalFramePresentedAtMs.compareAndSet(
+            0L,
+            SystemClock.elapsedRealtime(),
+        )
+        strictExactInitialPhysicalFramePresented.countDown()
         viewerActivated.compareAndSet(false, true)
-        currentViewportAnchor.set(firstVisibleDisplay)
+        currentViewportAnchor.set(firstPresentedLaunchDisplay)
         val episode = strictExactEpisodeToken ?: return
         strictExactSourceTransport.get()?.onFirstActualFramePresented(episode)
         // The current manifest and first compositor-proven pixels are authoritative now. Resolve
@@ -11146,8 +11727,8 @@ class ReaderSession(
     fun structuralPageCount(): Int =
         (pendingPublishedPageIndex.get() ?: publishedPageIndex.get()).size
 
-    fun usesDirectWifiShortWebtoonRollingResidency(): Boolean =
-        strictExactShortWebtoonRollingPixelResidency.get()
+    fun usesDirectWifiRollingResidency(): Boolean =
+        strictExactDirectWifiRollingPixelResidency.get()
 
     /**
      * Admits the first source that physically intersects a restored viewport.
@@ -11215,11 +11796,11 @@ class ReaderSession(
      * pruned, so source identity -- never the raw display number -- owns this decision.
      */
     @JvmOverloads
-    fun directWifiShortWebtoonForwardRequestStartPage(
+    fun directWifiRollingForwardRequestStartPage(
         physicalFirstPage: Int,
         directionHint: Int = 0,
     ): Int {
-        if (!strictExactShortWebtoonRollingPixelResidency.get() || physicalFirstPage < 0) {
+        if (!strictExactDirectWifiRollingPixelResidency.get() || physicalFirstPage < 0) {
             return physicalFirstPage
         }
         val pageIndex = publishedPageIndex.get()
@@ -11287,7 +11868,7 @@ class ReaderSession(
         NtkReaderTransferPacer.noteTouch(this, active)
         lastPhysicalTouchMs.set(SystemClock.uptimeMillis())
         noteUserInteraction()
-        if (strictExactShortWebtoonRollingPixelResidency.get()) {
+        if (strictExactDirectWifiRollingPixelResidency.get()) {
             // ACTION_DOWN reaches the Activity before the Surface's coalesced busy WindowEvent.
             // This level closes that admission race. ACTION_UP releases only pointer ownership;
             // the Surface-motion level remains authoritative while a fling is alive.
@@ -11300,6 +11881,7 @@ class ReaderSession(
             // scrolling itself remains unconstrained and decoded pixels are never held for an
             // artificial touch/UP boundary.
             scheduleDeliveryDrain()
+            scheduleStrictAdjacentMotionDeferredWake()
         }
     }
 
@@ -11314,6 +11896,14 @@ class ReaderSession(
         physicalLast: Int = last,
     ) {
         if (cancelled.get()) return
+        if (directionHint < 0) {
+            // A real reverse gesture revokes the older forward drawable-prefix blocker. This is
+            // deliberately keyed by Surface's sticky direction evidence rather than an inferred
+            // anchor delta: geometry repair can move the clean viewport backward without user
+            // reverse input, while an actual reverse must be allowed to abandon the missing page.
+            latestCurrentLaunchBlockedForwardPage.set(null)
+        }
+        latestWindowIngressBusy.set(busy)
         val pageIndex = publishedPageIndex.get()
         if (!publishedWindowIngressGate.reserve(
                 pageIndex,
@@ -11339,6 +11929,42 @@ class ReaderSession(
             directionHint,
         )
         offerWindowAsync(first, last, anchor, busy, directionHint)
+    }
+
+    /**
+     * Replays an otherwise identical window only when Surface proves that its physical viewport
+     * still contains loading pixels. Normal high-rate traffic remains deduplicated by
+     * [publishedWindowIngressGate]; this narrow recovery edge promotes existing PageRef
+     * single-flights after pixel retirement without creating duplicate network ownership.
+     */
+    fun requestVisibleLoadingWindowAsync(
+        first: Int,
+        last: Int,
+        anchor: Int,
+        physicalFirst: Int,
+        physicalLast: Int,
+        busy: Boolean,
+        directionHint: Int,
+    ) {
+        if (cancelled.get()) return
+        // This callback is a pixel-liveness replay, not a physical-motion edge. Its snapshot can
+        // have been captured while a structure mutation still reported the preceding busy level.
+        // Only requestWindowAsync owns the latest physical busy state; otherwise a loading page can
+        // resurrect motion after Surface has already published idle and park its own re-decode.
+        val physicalBusy = latestWindowIngressBusy.get()
+        val pageIndex = publishedPageIndex.get()
+        if (pageIndex.isEmpty()) return
+        publishReportedWindow(
+            pageIndex,
+            first,
+            last,
+            anchor,
+            physicalFirst,
+            physicalLast,
+            physicalBusy,
+            directionHint,
+        )
+        offerWindowAsync(first, last, anchor, physicalBusy, directionHint)
     }
 
     /**
@@ -11460,6 +12086,54 @@ class ReaderSession(
         val first = (reportedAnchor + reported.physicalFirstOffset).coerceIn(0, pages.lastIndex)
         val last = (reportedAnchor + reported.physicalLastOffset).coerceIn(first, pages.lastIndex)
         return first..last
+    }
+
+    /**
+     * Caller holds [pagesLock]. Decoded rolling pixels follow only the last compositor-proven
+     * current-launch span. Before the first proof, admit at most the cold launch pair; never trust
+     * placeholder geometry to widen that fallback. A real forward drag may add exactly one missing
+     * body immediately after the proven span, identified by PageRef rather than a mutable index.
+     */
+    private fun compositorProvenStrictExactPixelWindowLocked(
+        fallbackAnchor: Int,
+        fallbackFirst: Int,
+        fallbackLast: Int,
+    ): IntRange {
+        check(Thread.holdsLock(pagesLock))
+        if (pages.isEmpty()) return IntRange.EMPTY
+        val safeFallbackAnchor = fallbackAnchor.coerceIn(0, pages.lastIndex)
+        val safeFallbackFirst = fallbackFirst.coerceIn(0, pages.lastIndex)
+        val safeFallbackLast = fallbackLast.coerceIn(safeFallbackFirst, pages.lastIndex)
+        val coldFirst = safeFallbackAnchor.coerceIn(safeFallbackFirst, safeFallbackLast)
+        val coldLast = minOf(safeFallbackLast, coldFirst + 1)
+        val proof = latestExactCompositorWindow.get()
+        val proofFirst = proof?.firstPage?.let { page -> pageIndexLocked(page, -1) } ?: -1
+        val proofLast = proof?.lastPage?.let { page -> pageIndexLocked(page, -1) } ?: -1
+        val base = if (proof != null &&
+            proofFirst in pages.indices &&
+            proofLast in proofFirst until pages.size &&
+            pages[proofFirst] === proof.firstPage &&
+            pages[proofLast] === proof.lastPage &&
+            proof.firstPage.transitionTitle == null &&
+            proof.lastPage.transitionTitle == null &&
+            isStrictExactLaunchPage(proof.firstPage) &&
+            isStrictExactLaunchPage(proof.lastPage)
+        ) {
+            proofFirst..proofLast
+        } else {
+            coldFirst..coldLast
+        }
+        val blocker = latestCurrentLaunchBlockedForwardPage.get() ?: return base
+        val blockerIndex = pageIndexLocked(blocker, -1)
+        return if (blockerIndex in base.last..minOf(pages.lastIndex, base.last + 1) &&
+            pages[blockerIndex] === blocker &&
+            blocker.transitionTitle == null &&
+            isStrictExactLaunchPage(blocker)
+        ) {
+            base.first..maxOf(base.last, blockerIndex)
+        } else {
+            base
+        }
     }
 
     /** Caller holds [pagesLock]; protects one page of input hysteresis on both viewport edges. */
@@ -11629,9 +12303,6 @@ class ReaderSession(
             ?.takeIf { it.isNotEmpty() }
             ?: manga.ntkEpisodePath
         activeViewportPath?.let(::resumeParkedAdjacentRemainder)
-        NtkStripDigests.normalizeEpisodePath(activeViewportPath.orEmpty())
-            .takeIf(String::isNotEmpty)
-            ?.let(publishedExactOffscreenRunwayPaths::remove)
         if (
             anchorPage != null &&
             !Manga.sameEpisodeIdentity(anchorPage.manga, manga) &&
@@ -11686,6 +12357,8 @@ class ReaderSession(
                     }
                 }, quietDelayMs)
             }
+            scheduleParkedInitialAdjacentRunwayWakeAfterPhysicalIdle()
+            scheduleStrictAdjacentMotionDeferredWake()
         }
         if (isStructurePublishPending()) {
             requestHostPressureStablePrefixDuringAppendOnlyPublish(
@@ -12216,6 +12889,12 @@ class ReaderSession(
         // once here instead of losing a real physical reverse gesture.
         val pendingReverseFloor = strictActiveSourceFloor.get()
         val hasPendingReverseExpansion = pendingReverseFloor < previous.allowedFirstSource
+        // Resolve the immutable blocker without nesting pagesLock inside windowLock. Several
+        // renderer callbacks publish page-table state before recording their window direction,
+        // so preserving the global lock order here is part of the scroll hot-path contract.
+        val blockedForwardIndex = latestCurrentLaunchBlockedForwardPage.get()?.let { blocker ->
+            synchronized(pagesLock) { pageIndexLocked(blocker, -1) }
+        } ?: -1
         val direction: Int
         synchronized(windowLock) {
             direction = when {
@@ -12229,6 +12908,7 @@ class ReaderSession(
                     previousDirection = lastWindowDirection,
                     directionHint = 0,
                     busy = busy,
+                    blockedForwardIndex = blockedForwardIndex,
                 ).takeIf { it != 0 } ?: 1
             }
             lastWindowAnchor = safeAnchor
@@ -12236,12 +12916,21 @@ class ReaderSession(
         }
         currentViewportAnchor.set(safeAnchor)
         val physicalVisibleRange = synchronized(pagesLock) {
-            reportedPhysicalDecodeProtectionWindowLocked(
+            // Both logical and reported physical coordinates can contain provisional placeholder
+            // heights. Pixel residency therefore follows the last clean native frame plus only the
+            // immutable body that a real forward gesture proved is blocking that frame.
+            compositorProvenStrictExactPixelWindowLocked(
                 fallbackAnchor = safeAnchor,
                 fallbackFirst = visibleFirst,
                 fallbackLast = visibleLast,
             )
         }
+        val rollingPixelDemandRange = NtkStrictRollingDecodeDemandPolicy
+            .bridgePhysicalFrameToLogicalAnchor(
+                physicalVisibleRange = physicalVisibleRange,
+                logicalAnchor = safeAnchor,
+                pageCount = pageCount,
+            )
         val visibleSources = synchronized(pagesLock) {
             (visibleFirst..visibleLast)
                 .mapNotNull { pages.getOrNull(it) }
@@ -12301,6 +12990,7 @@ class ReaderSession(
                 direction = direction,
                 visibleFirst = visibleFirst,
                 visibleLast = visibleLast,
+                physicalVisibleRange = physicalVisibleRange,
                 protectedBitmapWindowTicket = protectedBitmapWindowTicket,
                 protectedBitmapWindowStructureGeneration =
                     protectedBitmapWindowStructureGeneration,
@@ -12310,9 +13000,13 @@ class ReaderSession(
         val transactionBitmapBounds = if (retainWindow && protectedBitmapWindowTicket > 0L) {
             if (strictExactRollingPixelResidency.get()) {
                 // Rolling source admission can span the immutable launch manifest, but decoded
-                // pixel admission is the physical frame only.  Keeping those concepts separate
-                // prevents a budget-evicted offscreen page from immediately decoding again.
-                intArrayOf(visibleFirst, visibleLast)
+                // pixel admission is only the continuous physical-frame-to-logical-anchor
+                // corridor. The compositor intentionally holds its last clean frame while a
+                // reverse page is absent. Protecting only that stale physical span while decode
+                // demand used the bridge made shouldSkipDecodeOutsideProtectedNumericWindow()
+                // reject every page capable of replacing the frame. Use the exact same bounded
+                // corridor for demand and lifetime ownership.
+                intArrayOf(rollingPixelDemandRange.first, rollingPixelDemandRange.last)
             } else {
                 protectedNumericBitmapWindowBoundsForSession(
                     pageCount,
@@ -12353,6 +13047,35 @@ class ReaderSession(
         // its historic handoff bit is validated against Surface ownership and, when missing,
         // safely re-decoded from the already-admitted source.
         if (admission === previous) {
+            if (admission.physicalDrawPresented && strictExactRollingPixelResidency.get()) {
+                // Same source demand does not mean the same pixel demand. During reverse input
+                // the source admission can already cover the whole historical range while the
+                // logical anchor continues moving behind the compositor's held clean frame.
+                // The old shortcut re-requested the bridge pages but left retainedFirst/Last at
+                // the previous viewport, so each successful install was immediately selected for
+                // retirement. Reuse the normal bounded pixel commit with sourceDemandChanged=false
+                // to update retention, delivery and decode from one corridor transaction.
+                finishStrictExactColdWindowDemand(
+                    admission = admission,
+                    sourceDemandChanged = false,
+                    generation = windowGeneration.get(),
+                    pageCount = pageCount,
+                    retainWindow = retainWindow,
+                    protectedBitmapWindowTicket = protectedBitmapWindowTicket,
+                    protectedBitmapWindowStructureGeneration =
+                        protectedBitmapWindowStructureGeneration,
+                    retainedRedriveRevisionAtStart = retainedRedriveRevisionAtStart,
+                    safeAnchor = safeAnchor,
+                    direction = direction,
+                    visibleFirst = visibleFirst,
+                    visibleLast = visibleLast,
+                    visibleSources = visibleSources,
+                    transactionBitmapBounds = transactionBitmapBounds,
+                    physicalVisibleRange = physicalVisibleRange,
+                    busy = busy,
+                )
+                return
+            }
             if (transactionBitmapBounds != null && !strictExactRollingPixelResidency.get()) {
                 val committed = synchronized(pagesLock) {
                     if (!isProtectedBitmapWindowTransactionCurrent(
@@ -12387,14 +13110,6 @@ class ReaderSession(
                 }
             }
             if (retainWindow) acknowledgeRetainedWindowRedrive(retainedRedriveRevisionAtStart)
-            if (admission.physicalDrawPresented && strictExactRollingPixelResidency.get()) {
-                rehydrateSameStrictExactColdWindow(
-                    visibleFirst,
-                    visibleLast,
-                    safeAnchor,
-                    admission,
-                )
-            }
             return
         }
         // Display-boundary jitter still updates pixel retention and visible decode requests, but
@@ -12505,14 +13220,22 @@ class ReaderSession(
     ) {
         if (sourceDemandChanged) applyStrictExactSourceDemand(admission)
 
+        val rollingDecodeCorridor = NtkStrictRollingDecodeDemandPolicy
+            .bridgePhysicalFrameToLogicalAnchor(
+                physicalVisibleRange = physicalVisibleRange,
+                logicalAnchor = safeAnchor,
+                pageCount = pageCount,
+            )
         val demandedDisplays = synchronized(pagesLock) {
             // Rolling residency needs source bytes for the admitted episode runway, but decoded
-            // pixels only for the physical viewport. Iterating and re-requesting every admitted
-            // display on each 60/90 Hz viewport sample made the control lane progressively busy
-            // even though requestStrictExactSourcePage rejected all off-window pixels. The source
-            // transport continues fetching the full admitted range independently.
+            // pixels only for the physical viewport and the continuous bridge to the latest
+            // logical anchor. The compositor intentionally holds its last complete frame while a
+            // retired reverse page is missing; using only that stale physical range would never
+            // request the pixels needed to replace it. Iterating every admitted display on each
+            // 60/90 Hz sample is still avoided, and the source transport independently fetches the
+            // complete admitted byte range.
             val indexes = if (strictExactRollingPixelResidency.get()) {
-                visibleFirst..visibleLast
+                rollingDecodeCorridor
             } else {
                 pages.indices
             }
@@ -12533,16 +13256,18 @@ class ReaderSession(
             }
             return
         }
-        val demandFirst = demandedDisplays.minOrNull() ?: visibleFirst
-        val demandLast = demandedDisplays.maxOrNull() ?: visibleLast
+        val demandFirst = demandedDisplays.minOrNull() ?: physicalVisibleRange.first
+        val demandLast = demandedDisplays.maxOrNull() ?: physicalVisibleRange.last
         if (!retainWindow) {
             physicalDeliveryFirstPage = demandFirst
             physicalDeliveryLastPage = demandLast
         }
 
+        var directWifiForwardWarmPage: Int? = null
+        var exactLaunchCompositorForwardWarmPage: Int? = null
         if (retainWindow) {
             val rollingPixels = strictExactRollingPixelResidency.get()
-            val shortWebtoon = strictExactShortWebtoonRollingPixelResidency.get()
+            val directWifiRolling = strictExactDirectWifiRollingPixelResidency.get()
             // Adjacent exact pages at the launch tail are decoded through the same scoped pixel
             // admission used by the generic window path. Retention and pending-delivery pruning
             // must use that identical range; keeping only launch demand here caused every
@@ -12559,12 +13284,21 @@ class ReaderSession(
                 null
             }
             val retainedFirst = if (rollingPixels) {
-                if (shortWebtoon) {
+                if (directWifiRolling) {
                     // Display indexes may be split views of one canonical source. On reverse,
                     // retain every display belonging to the visible source and at most three
                     // predecessor sources; never compare a source floor directly to a display
                     // index. Forward traversal keeps the exact physical window as before.
-                    val visibleSourceFloor = visibleSources.minOrNull() ?: 0
+                    val physicalVisibleSources = synchronized(pagesLock) {
+                        physicalVisibleRange.mapNotNull { index ->
+                            pages.getOrNull(index)?.takeIf { page ->
+                                page.transitionTitle == null && isStrictExactLaunchPage(page)
+                            }?.sourceIndex
+                        }
+                    }
+                    val visibleSourceFloor = physicalVisibleSources.minOrNull()
+                        ?: visibleSources.minOrNull()
+                        ?: 0
                     val retainedSourceFloor = if (direction < 0) {
                         maxOf(
                             admission.allowedFirstSource,
@@ -12580,10 +13314,21 @@ class ReaderSession(
                             page.transitionTitle == null && isStrictExactLaunchPage(page) &&
                                 page.sourceIndex in retainedSourceFloor..visibleSourceFloor
                         }?.index
-                    } ?: visibleFirst
-                    minOf(visibleFirst, firstRetainedDisplay)
+                    } ?: physicalVisibleRange.first
+                    // Source-based reverse history is a useful extra cushion, but the compositor
+                    // may still be holding a newer clean frame than the logical scroll anchor.
+                    // Never let the direct-Wi-Fi specialization discard the continuous bridge
+                    // that decode demand and protected ownership already require.
+                    minOf(rollingDecodeCorridor.first, firstRetainedDisplay)
                 } else {
-                    maxOf(0, visibleFirst - STRICT_OVERSIZED_BEHIND_PAGES)
+                    // A missing reverse page makes the compositor deliberately preserve its
+                    // last clean physical frame. The logical viewport can therefore already be
+                    // several pages behind [physicalVisibleRange]. Decode demand and the
+                    // protected publication snapshot use [rollingDecodeCorridor] to bridge that
+                    // gap; retaining only the stale physical frame immediately recycled every
+                    // successfully rehydrated bridge page and started an endless decode/install/
+                    // retire loop. Pixel lifetime must cover the exact same continuous corridor.
+                    maxOf(0, rollingDecodeCorridor.first - STRICT_OVERSIZED_BEHIND_PAGES)
                 }
             } else {
                 installableBounds?.get(0) ?: demandFirst
@@ -12591,15 +13336,70 @@ class ReaderSession(
             val retainedLast = if (rollingPixels) {
                 minOf(
                     pageCount - 1,
-                    visibleLast + if (shortWebtoon) {
-                        0
-                    } else {
-                        STRICT_OVERSIZED_FORWARD_RUNWAY_PAGES
-                    },
+                    rollingDecodeCorridor.last + ReaderStrictBitmapResidencyPolicy.forwardRetainAheadPages(
+                        directWifiRolling = directWifiRolling,
+                        ordinaryPages = STRICT_OVERSIZED_FORWARD_RUNWAY_PAGES,
+                    ),
                 )
             } else {
                 installableBounds?.get(1) ?: demandLast
             }.coerceAtLeast(retainedFirst)
+            if (rollingPixels && directWifiRolling && direction >= 0) {
+                val compositorWarm = latestExactLaunchCompositorForwardWarm.get()
+                val compositorWarmIndex = compositorWarm?.let { proof ->
+                    synchronized(pagesLock) {
+                        pageIndexLocked(proof.page, proof.page.pageIndex)
+                    }
+                } ?: -1
+                if (compositorWarmIndex in retainedFirst..retainedLast &&
+                    compositorWarm != null &&
+                    admission.admitsSource(compositorWarm.page.sourceIndex) &&
+                    isLatestExactLaunchCompositorForwardWarm(
+                        compositorWarmIndex,
+                        compositorWarm.page,
+                    ) &&
+                    !listener.isPageAuthoritativeDrawableCurrentlyInstalled(compositorWarmIndex)
+                ) {
+                    exactLaunchCompositorForwardWarmPage = compositorWarmIndex
+                }
+            }
+            val physicalVisibleLast = physicalVisibleRange.last
+            val ownsIdleForwardWarmGrant = directWifiRolling && !busy && direction >= 0 &&
+                lastDirectWifiIdleForwardWarmVisibleLast.getAndSet(physicalVisibleLast) !=
+                physicalVisibleLast
+            if (ownsIdleForwardWarmGrant) {
+                val residentForwardPages = HashSet<Int>()
+                for (index in physicalVisibleLast + 1..retainedLast) {
+                    if (listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)) {
+                        residentForwardPages += index
+                    }
+                }
+                directWifiForwardWarmPage = ReaderStrictBitmapResidencyPolicy
+                    .nextIdleForwardWarmPage(
+                        directWifiRolling = true,
+                        busy = false,
+                        direction = direction,
+                        visibleLast = physicalVisibleLast,
+                        retainedLast = retainedLast,
+                        pageCount = pageCount,
+                        residentPages = residentForwardPages,
+                    )
+                    ?.takeIf { index ->
+                        synchronized(pagesLock) {
+                            val page = pages.getOrNull(index)
+                            page != null && page.transitionTitle == null &&
+                                isStrictExactLaunchPage(page) &&
+                                admission.admitsSource(page.sourceIndex)
+                        }
+                    }
+                directWifiForwardWarmPage?.let { page ->
+                    Log.d(
+                        TAG,
+                        "reader_direct_wifi_idle_forward_pixel_warm page=$page," +
+                            "visibleLast=$physicalVisibleLast,retainedLast=$retainedLast",
+                    )
+                }
+            }
             val commitRetainedWindow = {
                 physicalDeliveryFirstPage = demandFirst
                 physicalDeliveryLastPage = demandLast
@@ -12615,8 +13415,8 @@ class ReaderSession(
                 // access-ordered maps and retire only LRU entries when the production bitmap budget
                 // requires it. ReaderSurfaceView still clears every page that budget trimming
                 // actually releases, so a stale drawable cannot be rebound to another slot.
-                if (shortWebtoon) {
-                    trimShortWebtoonLaunchPixelsOutsideWindow()
+                if (directWifiRolling) {
+                    trimDirectWifiLaunchPixelsOutsideWindow()
                 }
                 trimDeliveredBitmapsToBudget()
                 trimPendingProtectedNumericBitmaps(retainedFirst, retainedLast)
@@ -12649,15 +13449,19 @@ class ReaderSession(
             acknowledgeRetainedWindowRedrive(retainedRedriveRevisionAtStart)
         }
 
-        val order = windowOrder(demandFirst, demandLast, safeAnchor, direction)
+        val order = buildList {
+            addAll(windowOrder(demandFirst, demandLast, safeAnchor, direction))
+            exactLaunchCompositorForwardWarmPage?.takeIf { it !in this }?.let(::add)
+            directWifiForwardWarmPage?.takeIf { it !in this }?.let(::add)
+        }
         for (index in order) {
             if (!isStrictExactColdPageDemanded(index)) continue
             val visible = index in visibleFirst..visibleLast
             val physicallyVisible = HostExactHardwareTilePoolPressurePolicy
                 .isPhysicalRehydrateEligible(
                     pageIndex = index,
-                    physicalVisibleFirst = physicalVisibleRange.first,
-                    physicalVisibleLast = physicalVisibleRange.last,
+                    physicalVisibleFirst = rollingDecodeCorridor.first,
+                    physicalVisibleLast = rollingDecodeCorridor.last,
                 )
             if (hostExactPoolPressureRetiredPages.contains(index)) {
                 // The source admission can span the complete immutable chapter. A host-pressure
@@ -12672,12 +13476,22 @@ class ReaderSession(
                 if (listener.isPageAuthoritativeDrawableInstalled(index)) continue
                 if (!hostExactPoolPressureRetiredPages.remove(index)) continue
             }
-            requestPage(
-                index,
-                busy = visible || (busy && index == safeAnchor),
-                anchor = index == safeAnchor,
-                generation = generation
-            )
+            if (strictExactColdRolling) {
+                requestStrictExactSourcePage(
+                    index = index,
+                    anchor = index == safeAnchor,
+                    generation = generation,
+                    compositorForwardWarmIntent =
+                        index == exactLaunchCompositorForwardWarmPage,
+                )
+            } else {
+                requestPage(
+                    index,
+                    busy = visible || (busy && index == safeAnchor),
+                    anchor = index == safeAnchor,
+                    generation = generation,
+                )
+            }
         }
         trimDecodedWidth(safeAnchor, busy)
         if (sourceDemandChanged) {
@@ -12704,6 +13518,7 @@ class ReaderSession(
         direction: Int,
         visibleFirst: Int,
         visibleLast: Int,
+        physicalVisibleRange: IntRange,
         protectedBitmapWindowTicket: Long,
         protectedBitmapWindowStructureGeneration: Int,
         retainedRedriveRevisionAtStart: Long,
@@ -12778,14 +13593,14 @@ class ReaderSession(
                         pageCount = pageCount,
                         anchor = safeAnchor,
                         direction = direction,
-                        launchFirst = 0,
-                        launchLast = launchSeal.pageCount - 1,
+                        launchFirst = if (rollingPixelResidency) -1 else 0,
+                        launchLast = if (rollingPixelResidency) -1 else launchSeal.pageCount - 1,
                     ).also { bounds ->
                         includePhysicalSpanInBitmapWindow(
                             bounds,
                             pageCount,
-                            visibleFirst,
-                            visibleLast,
+                            physicalVisibleRange.first,
+                            physicalVisibleRange.last,
                         )
                         if (ntkInitialInteractiveSettleRemainingMs() > 0L) {
                             bounds[0] = minOf(
@@ -12873,6 +13688,9 @@ class ReaderSession(
                     strictActiveSourceFloor.getAndUpdate { current ->
                         minOf(current, admission.allowedFirstSource)
                     }
+                }
+                if (strictExactDirectWifiRollingPixelResidency.get()) {
+                    trimDirectWifiLaunchPixelsOutsideWindow()
                 }
                 return true
         }
@@ -13277,6 +14095,22 @@ class ReaderSession(
         return structurePublishPending.get() > 0
     }
 
+    /**
+     * Runs an Activity-owned reconciliation only after every queued Surface page-table mutation
+     * has completed and [publishedPageIndex] exposes the matching numeric layout.  A removal
+     * callback itself runs while the old public snapshot is intentionally still visible; reading
+     * pageInfo() from that callback with a post-removal index can otherwise transiently adopt the
+     * predecessor episode.
+     */
+    fun runAfterStructureStable(callback: Runnable) {
+        if (cancelled.get()) return
+        dispatchWhenStructureStable(
+            Runnable {
+                if (!cancelled.get()) callback.run()
+            },
+        )
+    }
+
     /** Runs on main only after all queued Surface page-table mutations have completed. */
     private fun dispatchWhenStructureStable(callback: Runnable) {
         val deferred = synchronized(structureStableCallbackLock) {
@@ -13431,6 +14265,8 @@ class ReaderSession(
 
     private fun cancelInternal(preserveNtkVolatilePath: String?) {
         if (!cancelled.compareAndSet(false, true)) return
+        strictExactInitialAnchorPixelsInstalled.countDown()
+        strictExactInitialPhysicalFramePresented.countDown()
         NtkReaderTransferPacer.release(this)
         publishedWindowIngressGate.clear()
         hostExactPoolPressureSubscription?.close()
@@ -13471,9 +14307,12 @@ class ReaderSession(
         adjacentStrictSourceClaims.clear()
         adjacentStrictBodyDescriptors.clear()
         strictAdjacentRehydrateFlights.clear()
+        strictAdjacentMotionDeferredWakePosted.set(false)
+        main.removeCallbacks(strictAdjacentMotionDeferredWakeRunnable)
         waitingInitialAdjacentExactP0Appends.cancelAll()
         waitingInitialAdjacentManhwaRunwayAppends.cancelAll()
         initialAdjacentManhwaRunwayEventWakeKeys.clear()
+        publishedExactAdjacentInitialRunwayCompletionPaths.clear()
         forwardAdjacentExactManifestSubscription.getAndSet(null)?.close()
         adjacentStrictRecoveryManifestSubscription.getAndSet(null)?.close()
         forwardAdjacentExactManifestAppendGate.clear()
@@ -13492,12 +14331,17 @@ class ReaderSession(
         main.removeCallbacks(strictExactBoundsDrainRunnable)
         strictExactDecodeInFlight.clear()
         strictExactSplitSourceDecodeInFlight.clear()
+        strictExactMotionDeferredPages.clear()
+        strictExactMotionDeferredRetryPosted.set(false)
+        main.removeCallbacks(strictExactMotionDeferredRetryRunnable)
         strictExactAuthoritativeHandoffPages.clear()
         strictExactRollingRehydratePages.clear()
         hostExactPoolPressureRetiredPages.clear()
         publishedExactOffscreenRunwayPaths.clear()
         enteredExactEpisodePixelCompletionPaths.clear()
+        enteredExactEpisodePixelCompletionAuditPaths.clear()
         latestEnteredExactEpisodePath.set("")
+        latestExactAdjacentCompositorForwardWarm.set(null)
         synchronized(pagesLock) {
             hostPressurePendingSurfaceRetirements.clear()
             hostPressureSurfaceRetirementsInFlight.clear()
@@ -13511,6 +14355,7 @@ class ReaderSession(
         earlyNtkImageUrlsUnregister?.invoke()
         earlyNtkImageUrlsUnregister = null
         viewportBusy.set(false)
+        latestWindowIngressBusy.set(false)
         deliveryResumeAtMs.set(0L)
         lastUserInteractionMs.set(0L)
         lastPhysicalTouchMs.set(0L)
@@ -13555,6 +14400,10 @@ class ReaderSession(
         preparedAdjacentRemainderDrawables.clear()
         parkedAdjacentRemainderAppends.clear()
         waitingStrictRemainingAdjacentAppends.clear()
+        parkedInitialAdjacentRunwayRetries.values.forEach(main::removeCallbacks)
+        parkedInitialAdjacentRunwayRetries.clear()
+        parkedInitialAdjacentRunwayPathsByRetryKey.clear()
+        parkedInitialAdjacentIdleWakePosted.set(false)
         scheduledRemainingAdjacentRunwayRetries.clear().forEach { scheduled ->
             main.removeCallbacks(scheduled.token)
         }
@@ -13588,6 +14437,7 @@ class ReaderSession(
         urgentNetwork.shutdownNow()
         urgentDecode.shutdownNow()
         strictExactOverlapDecode.shutdownNow()
+        strictExactInitialRunwayDecode.shutdownNow()
         strictExactBulkDecode.shutdownNow()
         strictExactRollingDecode.shutdownNow()
         primeNetwork.shutdownNow()
@@ -15512,7 +16362,7 @@ class ReaderSession(
             .filter { it.transitionTitle == null }
             .take(initialDrawablePages)
         if (refs.size < minOf(urls.size, initialDrawablePages)) {
-            preparingInitialAdjacentRunways.remove(path, preparation)
+            finishInitialAdjacentRunwayPreparation(path, preparation)
             return false
         }
         val predictedStart = synchronized(pagesLock) { pages.size }
@@ -15525,7 +16375,7 @@ class ReaderSession(
             // A live exact manhwa manifest must never fall through to the generic cache merely
             // because its generation-bound source claim has not reached this session yet.
             holdOrRecoverAdjacentStrictSource(target)
-            preparingInitialAdjacentRunways.remove(path, preparation)
+            finishInitialAdjacentRunwayPreparation(path, preparation)
             return false
         }
         if (exactAuthority != null && ensureAdjacentStrictSourceClaim(target, exactAuthority)) {
@@ -15553,26 +16403,46 @@ class ReaderSession(
                     )
                     return false
                 }
-                if (strictExactManhwaLeaseRequired) {
-                    // The visible atomic p0..p3 publisher re-opens all exact descriptors in one
-                    // turn. Building a weakly keyed p0 batch here is duplicate work and could be
-                    // carried into a later cellular/SNI turn after a network transition.
-                    Log.d(TAG, "append_adjacent_exact_manhwa_prefetch_deferred_to_atomic_runway path=$path")
-                    return true
-                }
                 if (isDirectWifiStrictAdjacentRunwayProfile(target) &&
-                    NtkStripDigests.normalizeEpisodePath(path).startsWith("/webtoon/") &&
+                    isNtkManhwaOrWebtoonEpisodePath(path) &&
                     refs.singleOrNull()?.sourceIndex == 0
                 ) {
-                    // The append publisher decodes and installs only p0 head slots 0/1 first.
-                    // A speculative full decode here would recreate the measured 1.8 s p0 wall
-                    // and would also let p1-p3 contend before those first pixels are renderer-owned.
+                    // The sparse exact publisher is the sole owner of direct-Wi-Fi p0. Starting
+                    // the older private HardwareBuffer decode here races that publisher after the
+                    // same descriptor becomes resident: the sparse software head is already on
+                    // Surface while this task allocates a second p0 behind the structural-card
+                    // allocator. On gfxstream that duplicate allocation serialized for 238 ms and
+                    // stopped otherwise-ready physical frames. Hand off both /manhwa/ and
+                    // /webtoon/ to the identity-bound sparse publisher; it installs p0 and then
+                    // wakes the software p1 runway without skipping any source body or proof.
                     Log.d(TAG, "append_adjacent_exact_p0_prefetch_deferred_to_sparse_head path=$path")
                     // The resident p0 body is ready. Report preparation success so the caller
                     // continues into appendResolvedEpisode(), where the sparse head is decoded and
                     // published. Returning false here is a terminal handoff bug: every caller treats
                     // it as preparation failure and skips the publisher entirely.
                     return true
+                }
+                if (strictExactManhwaLeaseRequired) {
+                    // Decode only the exact p0 head into private pooled storage while the current
+                    // episode remains authoritative. Structure, scroll and metadata are untouched.
+                    // Waiting until the clean-tail callback to allocate these same slots produced
+                    // a measured 465 ms boundary wall on gfxstream. The prepared identity now
+                    // includes path+manifest digest+count, so it cannot cross a refreshed route or
+                    // generation before the atomic publisher consumes it.
+                    val batch = prepareAdjacentRunwayDrawableBatch(
+                        predictedStart,
+                        refs,
+                        NtkAdjacentExactDecodeMotionPolicy.PRIVATE_EXACT_HEAD_STAGING_REASON,
+                        requireStrictDescriptor = true,
+                    ) ?: return false
+                    return publishPreparedInitialAdjacentRunway(
+                        path,
+                        preparation,
+                        refs,
+                        batch,
+                        startedAt,
+                        "strict_exact_head",
+                    )
                 }
                 val batch = prepareAdjacentRunwayDrawableBatch(
                     predictedStart,
@@ -15600,7 +16470,7 @@ class ReaderSession(
                 }
                 return false
             } finally {
-                preparingInitialAdjacentRunways.remove(path, preparation)
+                finishInitialAdjacentRunwayPreparation(path, preparation)
             }
         }
 
@@ -15666,7 +16536,7 @@ class ReaderSession(
             fetchTasks.forEach { task ->
                 if (!task.isDone) task.cancel(true)
             }
-            preparingInitialAdjacentRunways.remove(path, preparation)
+            finishInitialAdjacentRunwayPreparation(path, preparation)
         }
     }
 
@@ -16664,7 +17534,11 @@ class ReaderSession(
         physicalFirst: Int = anchor,
         physicalLast: Int = anchor,
     ): IntArray {
-        val launchSpan = if (strictExactColdRolling) synchronized(pagesLock) {
+        val launchSpan = if (ReaderStrictBitmapResidencyPolicy.protectsFullLaunchSpan(
+                strictColdSession = strictExactColdRolling,
+                rollingPixelResidency = strictExactRollingPixelResidency.get(),
+            )
+        ) synchronized(pagesLock) {
             val anchorPage = pages.getOrNull(anchor)
             if (anchorPage == null || anchorPage.transitionTitle != null ||
                 !isStrictExactLaunchPage(anchorPage)
@@ -17353,11 +18227,34 @@ class ReaderSession(
                     terminalFailureObserved,
                     "descriptor_duplicate_mutated:$sourceIndex",
                 )
+            } else {
+                // The resident replay and source-event channels are deliberately at-least-once.
+                // A rehydrate owner can be registered after the first callback and finish its
+                // bounded unavailable-body wave just before this replay arrives. Treat every
+                // validated immutable publication as an idempotent condition edge: the
+                // identity-bound single-flight owner below prevents duplicate decode work.
+                wakeStrictAdjacentExactRehydrate(
+                    path,
+                    seal.digestSha256,
+                    sourceIndex,
+                )
+                requestPublishedExactAdjacentInitialRunwayCompletion(path)
             }
             return
         }
         cancelAdjacentStrictDescriptorWaitWatchdog(path)
         preparingInitialAdjacentRunways[path]?.residentBodySignal?.release()
+        // Body authority is sufficient to wake the exact page that was already requested by the
+        // real viewport. Do not gate this edge on firstActualFramePresented: for a short p0 the
+        // compositor needs p1 to form its first clean incoming viewport, while first-actual itself
+        // requires that clean viewport. Waiting for either side creates a permanent p1/entry cycle.
+        // The wake is source-identity scoped and the rehydrate route retains its protected-window,
+        // motion and one-owner admission checks, so this does not predecode an offscreen suffix.
+        wakeStrictAdjacentExactRehydrate(
+            path,
+            seal.digestSha256,
+            sourceIndex,
+        )
         wakeInitialAdjacentExactP0Append(
             path,
             seal.digestSha256,
@@ -17386,6 +18283,7 @@ class ReaderSession(
             )
             requestEnteredExactEpisodePixelCompletion(path)
         }
+        requestPublishedExactAdjacentInitialRunwayCompletion(path)
     }
 
     /**
@@ -18679,22 +19577,29 @@ class ReaderSession(
         val readyRunwayCount = adjacentRunwayPublishablePrefixCount(runwayRefs)
         val exactP0Shape = isDirectWifiAdjacentExactP0HeadCandidate(target, runwayRefs)
         if (exactP0Shape) {
-            val p0 = runwayRefs.getOrNull(1)
+            runwayRefs.firstOrNull { it.transitionTitle != null }
+                ?.transitionTitle
+                ?.let(listener::onPageCardPreparationRequested)
             val path = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
-            val claim = adjacentStrictSourceClaims[path]
-            val descriptorReady = p0?.let(::strictAdjacentBodyDescriptor) != null
-            // A resident descriptor is already the authoritative body source used below. Do not
-            // re-open proof sidecars and parse the encoded file header merely to populate a debug
-            // field; that diagnostic disk path sat directly between p0 EOF and visible decode.
-            val publishedFallbackReady = !descriptorReady &&
-                p0?.let(::strictAdjacentPublishedBody) != null
-            Log.d(
-                TAG,
-                "append_adjacent_exact_p0_candidate path=$path ready=$readyRunwayCount " +
-                    "required=${runwayRefs.size} refs=${runwayRefs.size}/${refs.size} " +
-                    "descriptor=$descriptorReady publishedFallback=$publishedFallbackReady " +
-                    "claim=${claim != null} claimLive=${claim?.let { isAdjacentStrictSourceClaimLive(path, it) } == true}",
-            )
+            if (shouldLogRateLimitedDiagnostic("append_adjacent_exact_p0_candidate|$path")) {
+                val p0 = runwayRefs.getOrNull(1)
+                val claim = adjacentStrictSourceClaims[path]
+                val descriptorReady = p0?.let(::strictAdjacentBodyDescriptor) != null
+                // A resident descriptor is already the authoritative body source used below. Do
+                // not re-open proof sidecars and parse the encoded file header merely to populate
+                // a debug field; that diagnostic disk path sat directly between p0 EOF and visible
+                // decode.
+                val publishedFallbackReady = !descriptorReady &&
+                    p0?.let(::strictAdjacentPublishedBody) != null
+                Log.d(
+                    TAG,
+                    "append_adjacent_exact_p0_candidate path=$path ready=$readyRunwayCount " +
+                        "required=${runwayRefs.size} refs=${runwayRefs.size}/${refs.size} " +
+                        "descriptor=$descriptorReady publishedFallback=$publishedFallbackReady " +
+                        "claim=${claim != null} " +
+                        "claimLive=${claim?.let { isAdjacentStrictSourceClaimLive(path, it) } == true}",
+                )
+            }
         }
         // Never expose a partial publication unit. Direct Wi-Fi deliberately defines that unit as
         // transition+p0; its remaining three runway pages use the ordered remainder publisher.
@@ -18791,6 +19696,12 @@ class ReaderSession(
         }
         val cardOffset = initialRefs.indexOfFirst { it.transitionTitle != null }
         val transitionTitle = initialRefs.getOrNull(cardOffset)?.transitionTitle ?: ""
+        data class AdjacentPlacement(
+            val predictedStart: Int,
+            val predecessorIsLaunchEpisode: Boolean,
+            val predecessorHasPhysicalEntryProof: Boolean,
+            val physicalForwardEdge: Int,
+        )
         val adjacentPlacement = synchronized(pagesLock) {
             val predecessor = pages.asReversed().firstOrNull { page ->
                 page.transitionTitle == null
@@ -18809,21 +19720,41 @@ class ReaderSession(
                     fallbackLast = boundedAnchor,
                 ).last
             }
-            Triple(
-                pages.size,
-                predecessor?.manga?.let { episode ->
+            val physicalWindow = if (boundedAnchor < 0) {
+                IntRange.EMPTY
+            } else {
+                reportedPhysicalWindowLocked(
+                    fallbackAnchor = boundedAnchor,
+                    fallbackFirst = boundedAnchor,
+                    fallbackLast = boundedAnchor,
+                )
+            }
+            val predecessorHasPhysicalEntryProof = predecessor?.manga?.let { episode ->
+                physicalWindow.any { index ->
+                    val physicalPage = pages.getOrNull(index) ?: return@any false
+                    physicalPage.transitionTitle == null &&
+                        Manga.sameEpisodeIdentity(physicalPage.manga, episode) &&
+                        listener.isPageDrawableInstalled(index)
+                }
+            } == true
+            AdjacentPlacement(
+                predictedStart = pages.size,
+                predecessorIsLaunchEpisode = predecessor?.manga?.let { episode ->
                     Manga.sameEpisodeIdentity(episode, manga)
                 } == true,
-                maxOf(boundedAnchor, physicalForwardEdge),
+                predecessorHasPhysicalEntryProof = predecessorHasPhysicalEntryProof,
+                physicalForwardEdge = maxOf(boundedAnchor, physicalForwardEdge),
             )
         }
-        val predictedStart = adjacentPlacement.first
-        val predecessorIsLaunchEpisode = adjacentPlacement.second
-        val physicalForwardEdge = adjacentPlacement.third
+        val predictedStart = adjacentPlacement.predictedStart
+        val predecessorIsLaunchEpisode = adjacentPlacement.predecessorIsLaunchEpisode
+        val physicalForwardEdge = adjacentPlacement.physicalForwardEdge
         if (HostExactHardwareTilePoolPressurePolicy.shouldDeferOffscreenAdjacentRunwayDecode(
                 hostGpuRuntime = hostGpuEmulatorRuntime,
                 directWifiStrictAdjacent = isDirectWifiStrictAdjacentRunwayProfile(target),
                 predecessorIsLaunchEpisode = predecessorIsLaunchEpisode,
+                predecessorHasPhysicalEntryProof =
+                    adjacentPlacement.predecessorHasPhysicalEntryProof,
                 viewportAnchor = physicalForwardEdge,
                 adjacentStart = predictedStart,
                 nearBoundaryPages = NTK_APPEND_WARM_BOUNDARY_PAGES,
@@ -18849,7 +19780,8 @@ class ReaderSession(
                     "append_adjacent_runway_offscreen_decode_defer targetId=${target.id} " +
                         "path=${target.ntkEpisodePath} start=$predictedStart " +
                         "physicalForwardEdge=$physicalForwardEdge " +
-                        "predecessorLaunch=$predecessorIsLaunchEpisode",
+                        "predecessorLaunch=$predecessorIsLaunchEpisode " +
+                        "predecessorEntered=${adjacentPlacement.predecessorHasPhysicalEntryProof}",
                 )
             }
             return true
@@ -18857,11 +19789,17 @@ class ReaderSession(
         if (exactP0Shape) {
             val exactPath = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
             if (!adjacentExactP0PreparePaths.add(exactPath)) {
-                Log.d(
-                    TAG,
-                    "append_adjacent_exact_p0_prepare_join path=$exactPath",
-                )
-                scheduleInitialAdjacentRunwayAppendRetry(target, refs, publishKey, warm)
+                // The in-flight owner publishes on success and schedules the one delayed retry on
+                // failure. Registering another resident-body wake here observes an already-true
+                // descriptor immediately and recursively re-enters this branch; one p0 copy then
+                // generated hundreds of 1 ms join turns on the renderer's host cores. Joining is
+                // deliberately passive and identity-bound to the existing path owner.
+                if (shouldLogRateLimitedDiagnostic("adjacent_exact_p0_prepare_join|$exactPath")) {
+                    Log.d(
+                        TAG,
+                        "append_adjacent_exact_p0_prepare_join path=$exactPath",
+                    )
+                }
                 return true
             }
             try {
@@ -18877,7 +19815,17 @@ class ReaderSession(
                         ReaderSurfaceView.DIRECTION_NEXT,
                         asyncLaunch = true,
                     )
-                    scheduleInitialAdjacentRunwayAppendRetry(target, refs, publishKey, warm)
+                    // The descriptor event that brought us here may remain resident after a
+                    // transient lease/decode failure. Re-registering that already-true event
+                    // would synchronously wake the same append again and spin the runway
+                    // executor. Re-evaluate from one bounded timer edge instead.
+                    scheduleInitialAdjacentRunwayAppendRetry(
+                        target,
+                        refs,
+                        publishKey,
+                        warm,
+                        forceDelayedPolling = true,
+                    )
                     return true
                 }
                 return publishDirectWifiAdjacentExactP0Head(
@@ -18895,15 +19843,11 @@ class ReaderSession(
                 check(adjacentExactP0PreparePaths.remove(exactPath))
             }
         }
-        var preparedBatch = if (strictExactDescriptorOnly) {
-            // The legacy prepared-batch key omits manifest identity. Decode the bounded exact
-            // cohort from freshly opened descriptors instead of trusting that weaker handoff.
-            takePreparedInitialAdjacentRunwayBatch(target, predictedStart, initialRefs)
-                ?.also(::recycleAdjacentRunwayDrawableBatch)
-            null
-        } else {
-            takePreparedInitialAdjacentRunwayBatch(target, predictedStart, initialRefs)
-        }
+        var preparedBatch = takePreparedInitialAdjacentRunwayBatch(
+            target,
+            predictedStart,
+            initialRefs,
+        )
         val targetPath = target.ntkEpisodePath?.trim().orEmpty()
         var appendDecodePreparation: InitialAdjacentRunwayPreparation? = null
         while (preparedBatch == null && appendDecodePreparation == null) {
@@ -18911,7 +19855,18 @@ class ReaderSession(
             if (activePreparation != null) {
                 val nowMs = SystemClock.elapsedRealtime()
                 if (NtkAdjacentRunwayPreparationPolicy.shouldJoin(activePreparation.startedAtMs, nowMs)) {
-                    scheduleInitialAdjacentRunwayAppendRetry(target, refs, publishKey, warm)
+                    // p0 can already be resident while the metadata owner is still dropping its
+                    // preparation key. Registering the same resident-body event here wakes
+                    // immediately and can spin several runway workers until that key disappears.
+                    // The preparation is already in progress, so one bounded delayed recheck is
+                    // the only useful successor owner.
+                    scheduleInitialAdjacentRunwayAppendRetry(
+                        target,
+                        refs,
+                        publishKey,
+                        warm,
+                        waitForPreparation = activePreparation,
+                    )
                     Log.d(
                         TAG,
                         "append_adjacent_runway_join_prefetch targetId=${target.id} " +
@@ -18920,7 +19875,7 @@ class ReaderSession(
                     )
                     return true
                 }
-                if (preparingInitialAdjacentRunways.remove(targetPath, activePreparation)) {
+                if (finishInitialAdjacentRunwayPreparation(targetPath, activePreparation)) {
                     Log.d(
                         TAG,
                         "append_adjacent_runway_prefetch_join_expired targetId=${target.id} " +
@@ -19147,7 +20102,10 @@ class ReaderSession(
                     if (publishCompleteExactStructure) {
                         NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
                             .takeIf(String::isNotEmpty)
-                            ?.let(publishedExactOffscreenRunwayPaths::add)
+                            ?.let { path ->
+                                publishedExactOffscreenRunwayPaths.add(path)
+                                requestPublishedExactAdjacentInitialRunwayCompletion(path)
+                            }
                         warmPublishedLaunchSuccessorInitialTail(
                             target = target,
                             allRefs = refs,
@@ -19179,7 +20137,7 @@ class ReaderSession(
             return true
         } finally {
             appendDecodePreparation?.let { preparation ->
-                preparingInitialAdjacentRunways.remove(targetPath, preparation)
+                finishInitialAdjacentRunwayPreparation(targetPath, preparation)
             }
         }
     }
@@ -19190,6 +20148,7 @@ class ReaderSession(
         publishKey: String,
         warm: Boolean,
         forceDelayedPolling: Boolean = false,
+        waitForPreparation: InitialAdjacentRunwayPreparation? = null,
     ) {
         val retryKey = publishKey.ifEmpty { episodeAppendKey(target) }
         if (cancelled.get()) {
@@ -19212,6 +20171,13 @@ class ReaderSession(
         lateinit var retry: Runnable
         retry = Runnable {
             if (!retryStarted.compareAndSet(false, true)) return@Runnable
+            if (exactP0WakePath.isNotEmpty()) {
+                parkedInitialAdjacentRunwayRetries.remove(exactP0WakePath, retry)
+                if (retryKey.isNotEmpty()) {
+                    parkedInitialAdjacentRunwayPathsByRetryKey.remove(retryKey, exactP0WakePath)
+                }
+            }
+            main.removeCallbacks(retry)
             if (exactP0WakeKey.isNotEmpty()) {
                 exactWakeRegistry.unregister(exactP0WakeKey, retry)
             }
@@ -19263,7 +20229,7 @@ class ReaderSession(
         val strictAdjacentAuthority = exactViewerApiAdjacentAuthority(target)
         val strictAdjacentAuthorityReady = strictAdjacentAuthority != null
         val exactP0WakeAuthority = strictAdjacentAuthority?.takeIf {
-            exactP0WakePath.isNotEmpty() && !forceDelayedPolling
+            exactP0WakePath.isNotEmpty() && !forceDelayedPolling && waitForPreparation == null
         }
         if (exactP0WakeAuthority != null) {
             val authority = exactP0WakeAuthority
@@ -19324,11 +20290,55 @@ class ReaderSession(
         } else {
             false
         }
-        if (forceDelayedPolling) {
-            // A resident p0 event is already true while only pixel allocation is intentionally
-            // deferred. Registering that event would immediately recurse and spin the runway
-            // executor; a bounded poll waits for the next real viewport position instead.
-            main.postDelayed(retry, initialAdjacentRunwayAppendRetryDelayMs(target))
+        if (waitForPreparation != null) {
+            // Join the one generation-specific preparation edge. A single deadline callback is
+            // retained only to expire a genuinely wedged owner; normal completion removes it and
+            // retries immediately. This replaces the former 32 ms recursive poll that could run
+            // hundreds of append/actor turns while p0 was already resident.
+            val remainingJoinMs = (
+                waitForPreparation.startedAtMs + NtkAdjacentRunwayPreparationPolicy.MAX_JOIN_MS -
+                    SystemClock.elapsedRealtime()
+                ).coerceAtLeast(1L)
+            main.postDelayed(retry, remainingJoinMs)
+            waitForPreparation.completion.whenComplete { _, _ ->
+                main.removeCallbacks(retry)
+                retry.run()
+            }
+        } else if (forceDelayedPolling) {
+            // Direct exact p0 is already resident. Only physical quiet/viewport movement can make
+            // structure publication legal now, so park one owner on that event instead of polling
+            // the same descriptor from several executor lanes every 32-128 ms. A long watchdog is
+            // liveness insurance for a lost Android lifecycle edge, not the normal wake path.
+            if (exactP0WakePath.isNotEmpty() && strictAdjacentAuthorityReady) {
+                parkedInitialAdjacentRunwayRetries[exactP0WakePath] = retry
+                if (retryKey.isNotEmpty()) {
+                    parkedInitialAdjacentRunwayPathsByRetryKey[retryKey] = exactP0WakePath
+                }
+                val posted = main.postDelayed(
+                    retry,
+                    NTK_INITIAL_ADJACENT_EVENT_WAIT_WATCHDOG_MS,
+                )
+                if (!posted) {
+                    parkedInitialAdjacentRunwayRetries.remove(exactP0WakePath, retry)
+                    if (retryKey.isNotEmpty()) {
+                        parkedInitialAdjacentRunwayPathsByRetryKey.remove(
+                            retryKey,
+                            exactP0WakePath,
+                        )
+                    }
+                    retry.run()
+                } else if (!viewportBusy.get() &&
+                    physicalTouchQuietRemainingMs(
+                        NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS,
+                    ) > 0L
+                ) {
+                    // Close the worker-vs-UP race once. A fully quiet offscreen park deliberately
+                    // waits for the next gesture instead of turning this edge back into polling.
+                    scheduleParkedInitialAdjacentRunwayWakeAfterPhysicalIdle()
+                }
+            } else {
+                main.postDelayed(retry, initialAdjacentRunwayAppendRetryDelayMs(target))
+            }
         } else if (exactP0WakeAuthority != null) {
             // The wake registry owns both the strict event and its one delayed fail-safe.
         } else if (listenerRegistered) {
@@ -20021,6 +21031,203 @@ class ReaderSession(
     }
 
     /**
+     * Full exact structure is published before its offscreen pixels so indexes remain canonical.
+     * That intentionally bypasses the old structural tail appender; finish only the bounded
+     * p0..runway pixel cohort here as its descriptors arrive, even before the episode is entered.
+     */
+    private fun requestPublishedExactAdjacentInitialRunwayCompletion(path: String) {
+        val normalizedPath = NtkStripDigests.normalizeEpisodePath(path)
+        if (cancelled.get() || normalizedPath.isEmpty() ||
+            normalizedPath !in publishedExactOffscreenRunwayPaths ||
+            !normalizedPath.startsWith("/manhwa/")
+        ) {
+            return
+        }
+        if (!publishedExactAdjacentInitialRunwayCompletionPaths.add(normalizedPath)) return
+        try {
+            decode.execute {
+                drainPublishedExactAdjacentInitialRunwayCompletion(normalizedPath)
+            }
+        } catch (_: RejectedExecutionException) {
+            publishedExactAdjacentInitialRunwayCompletionPaths.remove(normalizedPath)
+        }
+    }
+
+    private fun drainPublishedExactAdjacentInitialRunwayCompletion(path: String) {
+        val claim = adjacentStrictSourceClaims[path]
+        if (cancelled.get() || claim == null || !claim.directWifiRunwayProfile ||
+            !isAdjacentStrictSourceClaimLive(path, claim)
+        ) {
+            publishedExactAdjacentInitialRunwayCompletionPaths.remove(path)
+            return
+        }
+        // The exact next chapter owns one bounded entry runway while the foreground is idle. p0
+        // alone is not enough for short images or a fast fling, and the ordinary offscreen policy
+        // intentionally rejects p1+. Complete only the product's fixed initial runway here; the
+        // rolling launch window has already returned distant slots and p4+ remains encoded until
+        // real entry advances the viewport.
+        val requiredSourceCount = minOf(
+            initialAdjacentRunwayPageLimit(path),
+            claim.pageCount,
+        )
+        val descriptorsReady = publishedInitialRunwayDescriptorsReady(
+            path,
+            claim,
+            requiredSourceCount,
+        )
+        if (!descriptorsReady) {
+            // Descriptor installation invokes the request again. Release first, then recheck the
+            // exact registry to close this race: the final descriptor callback can observe this
+            // owner and join just before the owner observes the old incomplete set. Without the
+            // post-release probe both sides return and the fixed runway loses its only wake edge.
+            publishedExactAdjacentInitialRunwayCompletionPaths.remove(path)
+            if (publishedInitialRunwayDescriptorsReady(path, claim, requiredSourceCount)) {
+                requestPublishedExactAdjacentInitialRunwayCompletion(path)
+            }
+            return
+        }
+        val missingCohort = synchronized(pagesLock) {
+            val candidates = pages.withIndex().filter { (index, page) ->
+                page.transitionTitle == null && page.sourceIndex in 0 until requiredSourceCount &&
+                    NtkStripDigests.normalizeEpisodePath(
+                        page.manga.ntkEpisodePath?.trim().orEmpty(),
+                    ) == path &&
+                    !hasCanonicalDrawableCompletion(page) &&
+                    !hasListenerDrawableDelivery(index, page) &&
+                    !hasDeliveredBitmap(index)
+            }
+            // Publish no partially prepared prefix. Once p0 has attached, exposing p1..p3 one at
+            // a time lets a real swipe observe four ready sources and then forces p4's
+            // HardwareBuffer write into that same motion interval. Decode the largest contiguous
+            // missing suffix of the fixed p0..p4 runway privately, then install it in one main
+            // turn. A non-contiguous candidate set can arise only from a concurrent delivery; stop
+            // before that gap and re-evaluate after the atomic commit.
+            val cohort = ArrayList<IndexedValue<PageRef>>(candidates.size)
+            var nextIndex = candidates.firstOrNull()?.index ?: -1
+            for (candidate in candidates) {
+                if (candidate.index != nextIndex) break
+                cohort.add(candidate)
+                nextIndex++
+            }
+            cohort
+        }
+        if (missingCohort.isEmpty()) {
+            publishedExactAdjacentInitialRunwayCompletionPaths.remove(path)
+            val target = synchronized(pagesLock) {
+                pages.firstOrNull { page ->
+                    page.transitionTitle == null && page.sourceIndex == 0 &&
+                        NtkStripDigests.normalizeEpisodePath(
+                            page.manga.ntkEpisodePath?.trim().orEmpty(),
+                        ) == path
+                }?.manga
+            }
+            if (target != null) markExactAdjacentRunwayTelemetryIfReady(target, claim.pageCount)
+            // p0 can become physically visible in the same structure-publish frame. Keep this
+            // bounded owner through that race and release it only after every required p0..pN
+            // drawable has crossed the canonical Session/Surface readiness boundary.
+            publishedExactOffscreenRunwayPaths.remove(path)
+            return
+        }
+        val missingIndex = missingCohort.first().index
+        val missingPages = missingCohort.map { it.value }
+        val failure = AtomicReference<Throwable?>(null)
+        val batch = prepareAdjacentRunwayDrawableBatch(
+            startIndex = missingIndex,
+            refs = missingPages,
+            reason = "published_exact_initial_runway_completion",
+            requireStrictDescriptor = true,
+            offscreenInitialRunwayCompletionIntent = true,
+            failureSink = failure,
+        )
+        if (batch == null) {
+            val retryDelay = if (failure.get() is NtkPhysicalMotionDecodeDeferredException) {
+                NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS
+            } else {
+                NTK_ENTERED_EXACT_PIXEL_COMPLETION_STEP_MS
+            }
+            // Keep the path owner while input is active. Releasing it before the delayed turn lets
+            // every descriptor/window callback start another decode immediately, producing an
+            // unbounded retry burst on the same offscreen page. The delayed turn atomically hands
+            // ownership back to request(); callbacks in the meantime only join this one waiter.
+            val posted = main.postDelayed(
+                {
+                    if (publishedExactAdjacentInitialRunwayCompletionPaths.remove(path)) {
+                        requestPublishedExactAdjacentInitialRunwayCompletion(path)
+                    }
+                },
+                retryDelay,
+            )
+            if (!posted) {
+                publishedExactAdjacentInitialRunwayCompletionPaths.remove(path)
+            }
+            return
+        }
+        val posted = main.post {
+            val currentIndex = currentPageIndex(missingPages.first(), missingIndex)
+            val currentPages = if (currentIndex >= 0) {
+                missingPages.indices.mapNotNull { offset -> pageRef(currentIndex + offset) }
+            } else {
+                emptyList()
+            }
+            val sameContiguousCohort = currentPages.size == missingPages.size &&
+                currentPages.indices.all { offset -> currentPages[offset] === missingPages[offset] }
+            if (!cancelled.get() && sameContiguousCohort && currentPages.all { currentPage ->
+                    NtkStripDigests.normalizeEpisodePath(
+                        currentPage.manga.ntkEpisodePath?.trim().orEmpty(),
+                    ) == path
+                }
+            ) {
+                commitAdjacentRunwayDrawableBatch(
+                    rebindAdjacentRunwayDrawableBatch(
+                        batch,
+                        currentIndex,
+                        currentPages,
+                    ),
+                )
+                markExactAdjacentRunwayTelemetryIfReady(currentPages.first().manga, claim.pageCount)
+                if (Log.isLoggable(TAG, Log.DEBUG) &&
+                    shouldLogRateLimitedDiagnostic(
+                        "published_exact_initial_runway_surface_audit|$path",
+                        5_000L,
+                    )
+                ) {
+                    main.postDelayed(
+                        {
+                            if (!cancelled.get()) {
+                                Log.d(
+                                    TAG,
+                                    "append_adjacent_initial_runway_surface_audit path=$path " +
+                                        pipelineLivenessDiagnosticForTest(),
+                                )
+                            }
+                        },
+                        250L,
+                    )
+                }
+            } else {
+                recycleAdjacentRunwayDrawableBatch(batch)
+            }
+            publishedExactAdjacentInitialRunwayCompletionPaths.remove(path)
+            requestPublishedExactAdjacentInitialRunwayCompletion(path)
+        }
+        if (!posted) {
+            recycleAdjacentRunwayDrawableBatch(batch)
+            publishedExactAdjacentInitialRunwayCompletionPaths.remove(path)
+        }
+    }
+
+    private fun publishedInitialRunwayDescriptorsReady(
+        path: String,
+        claim: AdjacentStrictSourceClaim,
+        requiredSourceCount: Int,
+    ): Boolean = requiredSourceCount > 0 &&
+        (0 until requiredSourceCount).all { sourceIndex ->
+            adjacentStrictBodyDescriptors.containsKey(
+                adjacentStrictBodyDescriptorKey(path, claim.manifestDigest, sourceIndex),
+            )
+        }
+
+    /**
      * Completes pixels for an already-published exact episode after real entry. The structural
      * append owner is intentionally not used here: every PageRef is already present. Work advances
      * one canonical page per turn, is motion-gated by the same exact decode admission as normal
@@ -20047,6 +21254,22 @@ class ReaderSession(
         if (!posted) enteredExactEpisodePixelCompletionPaths.remove(path)
     }
 
+    private fun scheduleEnteredExactEpisodePixelCompletionAudit(path: String) {
+        if (cancelled.get() || latestEnteredExactEpisodePath.get() != path ||
+            !enteredExactEpisodePixelCompletionAuditPaths.add(path)
+        ) return
+        val posted = main.postDelayed(
+            {
+                enteredExactEpisodePixelCompletionAuditPaths.remove(path)
+                if (!cancelled.get() && latestEnteredExactEpisodePath.get() == path) {
+                    requestEnteredExactEpisodePixelCompletion(path)
+                }
+            },
+            NTK_ENTERED_EXACT_PIXEL_COMPLETION_AUDIT_MS,
+        )
+        if (!posted) enteredExactEpisodePixelCompletionAuditPaths.remove(path)
+    }
+
     private fun drainEnteredExactEpisodePixelCompletion(path: String) {
         if (cancelled.get() || latestEnteredExactEpisodePath.get() != path) {
             enteredExactEpisodePixelCompletionPaths.remove(path)
@@ -20068,6 +21291,26 @@ class ReaderSession(
             },
         )
         if (quietMs > 0L) {
+            // A strict body can become resident through the physical published-body registry
+            // after its descriptor callback observed the previous compositor proof. In that
+            // ordering no further body event exists, while a blocked passive fling keeps this
+            // episode-completion owner behind motion grace forever. Re-probe only the already-
+            // resident, compositor-proven next source here. The helper never starts network work
+            // and the identity-bound flight admits at most that one forward page, so real touch
+            // still retains the broader offscreen decode fence.
+            requestLatestExactAdjacentCompositorForwardWarm()
+            latestPhysicalForwardIntentPage.get()?.takeIf { blockedPage ->
+                blockedPage.sourceIndex >= 0 &&
+                    NtkStripDigests.normalizeEpisodePath(
+                        blockedPage.manga.ntkEpisodePath.orEmpty(),
+                    ) == path &&
+                    strictAdjacentRehydrateIdentity(blockedPage) != null
+            }?.let { blockedPage ->
+                claim.transport.onPhysicalBlockedPageRequested(
+                    claim.episode,
+                    blockedPage.sourceIndex,
+                )
+            }
             postEnteredExactEpisodePixelCompletion(path, quietMs)
             return
         }
@@ -20077,6 +21320,11 @@ class ReaderSession(
         // compositor demand may never move far enough to admit that suffix. The physical-entry
         // and quiet-input proof above is the production completion edge: let the same exact source
         // actor finish its remaining table, then descriptor callbacks resume this pixel drain.
+        // A late committed callback for the predecessor can rewrite the process-wide transfer
+        // owner after this episode's first-actual edge. This drain is still guarded by the latest
+        // compositor-entered path above, so reassert that exact authority before asking the source
+        // actor to release its already-open optional suffix streams.
+        NtkReaderTransferPacer.notePhysicalForegroundEpisode(this, path)
         claim.transport.onForegroundIdleCompletionRequested(claim.episode)
 
         val indexedPages = synchronized(pagesLock) {
@@ -20098,16 +21346,63 @@ class ReaderSession(
         }
         if (missing == null) {
             enteredExactEpisodePixelCompletionPaths.remove(path)
-            maybeWarmCompletedForwardEpisode(indexedPages.last().index, indexedPages.last().value.manga)
+            val completedEpisode = indexedPages.last().value.manga
+            maybeWarmCompletedForwardEpisode(indexedPages.last().index, completedEpisode)
+            // Completion can become observable on the final registry write after its descriptor
+            // callback already tried (and relinquished) this owner. If an exact next pair exists
+            // but its structure is still absent, re-enter once per second until the ordinary
+            // completion path opens that gate. This is current-episode-only, single-posted and
+            // stops as soon as the runway is attached or the viewport changes.
+            if (currentForwardAdjacentCompletionTargetClaim(path) != null &&
+                !hasForwardNtkEpisodeAfterSource(completedEpisode)
+            ) {
+                scheduleEnteredExactEpisodePixelCompletionAudit(path)
+            }
             return
         }
         val missingIndex = missing.index
         val missingPage = missing.value
-        if ((pendingDeliveryWidths[missingIndex] ?: 0) > 0 ||
-            strictAdjacentRehydrateFlights.containsKey(
-                strictAdjacentRehydrateIdentity(missingPage).orEmpty(),
-            )
+        val missingRehydrateIdentity = strictAdjacentRehydrateIdentity(missingPage).orEmpty()
+        val missingRehydrateFlight = strictAdjacentRehydrateFlights[missingRehydrateIdentity]
+        val pendingDelivery = (pendingDeliveryWidths[missingIndex] ?: 0) > 0
+        if (pendingDelivery ||
+            missingRehydrateFlight != null
         ) {
+            // Descriptor publication and the bounded poll's final park can cross on different
+            // executors. The callback normally wakes the flight, but a descriptor that won just
+            // before the tombstone was installed has no future edge to repeat. This condition-
+            // based drain is already the single current-episode completion owner; if the exact
+            // body is now visible, idempotently reopen that same identity-bound decoder.
+            if (missingRehydrateFlight != null &&
+                (strictAdjacentBodyDescriptor(missingPage) != null ||
+                    strictAdjacentPublishedBody(missingPage) != null)
+            ) {
+                // Ordinary direct-adjacent admission deliberately keeps idle pixels within a
+                // short forward runway. This compositor-entered, input-quiet completion owner is
+                // different: it validates the rest of the immutable episode one source at a time
+                // so a later physical scroll never discovers a corrupt/undecodable tail. Promote
+                // the existing identity owner instead of racing it with a second decoder.
+                missingRehydrateFlight.enteredIdleCompletionIntent.set(true)
+                wakeStrictAdjacentExactRehydrate(
+                    path,
+                    missingPage.manifestDigest,
+                    missingPage.sourceIndex,
+                )
+            }
+            if (pendingDelivery && missingRehydrateIdentity.isNotEmpty()) {
+                // postDecodeResult owns the pending-width marker before its main publication.
+                // If lifecycle/motion invalidates that publication after the decode owner has
+                // retired, no rehydrate flight remains and the marker is only a tombstone. The
+                // physical blocker path already audits this ordering; idle entered-episode
+                // completion needs the same condition edge or one slow source can leave every
+                // later pixel parked forever despite all exact bytes being resident.
+                scheduleBlockedForwardPendingDeliveryAudit(
+                    missingIndex,
+                    missingPage,
+                    missingRehydrateIdentity,
+                    enteredCompletionPath = path,
+                )
+            }
             postEnteredExactEpisodePixelCompletion(
                 path,
                 NTK_ENTERED_EXACT_PIXEL_COMPLETION_STEP_MS,
@@ -20115,9 +21410,11 @@ class ReaderSession(
             return
         }
         if (strictAdjacentBodyDescriptor(missingPage) == null) {
-            // Descriptor callbacks after first-actual re-enter through
-            // requestEnteredExactEpisodePixelCompletion. Relinquish this turn instead of polling.
+            // Normally the descriptor callback re-enters this drain. Its callback can, however,
+            // run just before the final registry publication becomes visible, leaving no later
+            // event. Relinquish the fast owner and retain one slow, deduplicated audit edge.
             enteredExactEpisodePixelCompletionPaths.remove(path)
+            scheduleEnteredExactEpisodePixelCompletionAudit(path)
             return
         }
 
@@ -20129,6 +21426,7 @@ class ReaderSession(
                     refs = listOf(missingPage),
                     reason = "entered_exact_episode_pixel_completion",
                     requireStrictDescriptor = true,
+                    enteredIdleCompletionIntent = true,
                     failureSink = failure,
                 )
                 if (batch == null) {
@@ -20373,6 +21671,15 @@ class ReaderSession(
             boundary.manga.ntkEpisodePath.orEmpty(),
         )
         if (!boundaryPath.equals(predecessorPath, ignoreCase = true)) return false
+        val predecessorPageCount = strictExactLaunchSeal
+            ?.takeIf { seal -> seal.matchesEpisodePath(predecessorPath) }
+            ?.pageCount
+            ?: adjacentStrictSourceClaims[predecessorPath]?.pageCount
+            ?: return false
+        // A drawable-prefix clamp on any ordinary current page also records a physical forward
+        // intent. Only the exact canonical tail can authorize adjacent p0 to bypass pointer quiet;
+        // otherwise source 3 can accidentally promote the next chapter under active input.
+        if (boundary.sourceIndex != predecessorPageCount - 1) return false
         return publishedPageIndex.get().any { current -> current === boundary }
     }
 
@@ -21372,9 +22679,22 @@ class ReaderSession(
         }
     }
 
-    private fun currentViewportSourceIndexForEpisode(target: Manga): Int =
-        synchronized(pagesLock) {
-            if (pages.isEmpty()) return@synchronized -1
+    private fun currentViewportSourceIndexForEpisode(target: Manga): Int {
+        val targetPath = NtkStripDigests.normalizeEpisodePath(
+            target.ntkEpisodePath?.trim().orEmpty(),
+        )
+        val targetClaim = targetPath.takeIf(String::isNotEmpty)
+            ?.let(adjacentStrictSourceClaims::get)
+        val hasPresentedExactAnchorProof = targetClaim != null &&
+            targetClaim.firstActualFramePresented.get() &&
+            isAdjacentStrictSourceClaimLive(targetPath, targetClaim)
+        val snapshot = synchronized(pagesLock) {
+            if (pages.isEmpty()) {
+                return@synchronized Pair(
+                    Triple(emptyList(), emptyList(), null),
+                    -1,
+                )
+            }
             val anchor = currentViewportAnchor.get().coerceIn(0, pages.lastIndex)
             val physical = reportedPhysicalWindowLocked(
                 fallbackAnchor = anchor,
@@ -21382,44 +22702,87 @@ class ReaderSession(
                 fallbackLast = anchor,
             )
             val physicalPages = physical.asSequence()
-                .mapNotNull { index -> pages.getOrNull(index) }
+                .mapNotNull { index -> pages.getOrNull(index)?.let { page -> index to page } }
                 .toList()
-            val reportedSource = physicalPages.asSequence()
-                .filter { page ->
+            val transitionCards = physicalPages.filter { (_, page) ->
+                page.transitionTitle != null && looseSameEpisodeForAppend(page.manga, target)
+            }
+            val reportedPages = physicalPages.filter { (_, page) ->
                     page.transitionTitle == null && page.sourceIndex >= 0 &&
                         looseSameEpisodeForAppend(page.manga, target)
                 }
-                .maxOfOrNull(PageRef::sourceIndex)
-                // The forward transition card is owned by the incoming episode. Surface can
-                // report that card for one coalesced window after first-actual-frame activation;
-                // treat it as the source-zero boundary so p4 may fill the initial four-source
-                // lookahead and let the physical viewport advance into p0.
-                ?: 0.takeIf {
-                    physicalPages.any { page ->
-                        page.transitionTitle != null &&
-                            looseSameEpisodeForAppend(page.manga, target)
-                    }
-                }
-                ?: -1
-            val boundarySource = latestPhysicalForwardBoundaryPage.get()
+            val boundary = latestPhysicalForwardBoundaryPage.get()
                 ?.takeIf { page ->
                     page.transitionTitle == null && page.sourceIndex >= 0 &&
                         looseSameEpisodeForAppend(page.manga, target) &&
                         pages.any { current -> current === page }
                 }
+            val anchorPage = pages.getOrNull(anchor)
+            val previouslyPresentedPhysicalAnchorSource = anchorPage
                 ?.sourceIndex
+                ?.takeIf { sourceIndex ->
+                    hasPresentedExactAnchorProof &&
+                        sourceIndex >= 0 &&
+                        anchor in physical &&
+                        anchorPage.transitionTitle == null &&
+                        looseSameEpisodeForAppend(anchorPage.manga, target)
+                }
                 ?: -1
-            maxOf(reportedSource, boundarySource)
+            Pair(
+                Triple(reportedPages, transitionCards, boundary),
+                previouslyPresentedPhysicalAnchorSource,
+            )
         }
+        // Reported geometry may include several unresolved placeholders whose guessed heights fit
+        // in one viewport. They are not physical source progress. Consult Surface installation only
+        // after releasing pagesLock, then use the highest exact drawable actually present.
+        val reportedSource = snapshot.first.first.asSequence()
+            .filter { (index, page) ->
+                pageRef(index) === page &&
+                    listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)
+            }
+            .maxOfOrNull { (_, page) -> page.sourceIndex }
+            ?: 0.takeIf { snapshot.first.second.isNotEmpty() }
+            ?: -1
+        val boundarySource = snapshot.first.third
+            ?.let { page ->
+                val index = currentPageIndex(page, -1)
+                page.sourceIndex.takeIf {
+                    index >= 0 && listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)
+                }
+            }
+            ?: -1
+        return NtkDirectAdjacentViewportSourcePolicy.resolve(
+            installedPhysicalSource = reportedSource,
+            installedBoundarySource = boundarySource,
+            previouslyPresentedPhysicalAnchorSource = snapshot.second,
+        )
+    }
 
     /**
-     * Accepts only Surface's real clamped boundary callback. This is stronger than a speculative
-     * retained/decode window and lets a parked exact suffix advance from p4 to p8 even when the
-     * numeric WindowEvent stops changing at the old list maximum. The PageRef identity survives
-     * prefix compaction; stale evidence from another episode cannot match a later target.
+     * Accepts the first exact compositor acknowledgement of an episode's physical tail. This is
+     * earlier than a subsequent overscroll boundary callback, but stronger than speculative
+     * retained/decode state: Surface has verified the immutable final-source identity, real bottom
+     * pixels and defect-free native presentation. It may release only the already-bounded adjacent
+     * gate; it never changes scroll or chooses a target.
+     */
+    fun onCleanPhysicalEpisodeTailAcknowledged(displayPageIndex: Int) {
+        recordPhysicalForwardBoundaryEvidence(displayPageIndex)
+    }
+
+    /**
+     * Accepts Surface's real clamped boundary callback. This lets a parked exact suffix advance
+     * even when the numeric WindowEvent stops changing at the old list maximum. The PageRef
+     * identity survives prefix compaction; stale evidence from another episode cannot match a
+     * later target.
      */
     fun onPhysicalBoundaryReached(anchorPage: Int, direction: Int) {
-        if (cancelled.get() || direction != ReaderSurfaceView.DIRECTION_NEXT) return
+        if (direction != ReaderSurfaceView.DIRECTION_NEXT) return
+        recordPhysicalForwardBoundaryEvidence(anchorPage)
+    }
+
+    private fun recordPhysicalForwardBoundaryEvidence(anchorPage: Int) {
+        if (cancelled.get()) return
         val evidence = publishedPageIndex.get().getOrNull(anchorPage)?.takeIf { page ->
             page.transitionTitle == null && page.sourceIndex >= 0
         } ?: return
@@ -21436,6 +22799,29 @@ class ReaderSession(
                 strictExactForegroundViewerGenerationAtCreation,
                 strictExactViewerOwnerEpisodePathAtCreation,
             )
+            // Continuous input deliberately keeps the entered-episode completion drain behind
+            // the physical-motion fence.  The real Surface tail acknowledgement can therefore
+            // be the first observer after every immutable source has already become drawable.
+            // Boundary demand alone remains unable to open target network work; combine it with
+            // the same all-source drawable proof used by the ordinary completion owner and the
+            // already-reconciled exact target before releasing that one identity-bound flight.
+            // This closes the HOME/resume lost-edge without relaxing the completion contract or
+            // starting a numeric/list fallback during motion.
+            if (selectedTarget != null && isEpisodeFullyDrawableForAdjacent(evidence.manga)) {
+                val released = NtkStrictEpisodeDiscoveryCoordinator
+                    .releaseAdjacentBodiesAfterPredecessorComplete(
+                        path,
+                        selectedTarget,
+                        strictExactForegroundViewerGenerationAtCreation,
+                        strictExactViewerOwnerEpisodePathAtCreation,
+                    )
+                releaseAdjacentStrictClaimsAfterPredecessorComplete(path)
+                Log.d(
+                    TAG,
+                    "ntk_physical_tail_completed_body_gate_release predecessor=$path," +
+                        "target=$selectedTarget,released=$released",
+                )
+            }
             wakeStrictRemainingAdjacentAppend(path)
         }
     }
@@ -21448,9 +22834,12 @@ class ReaderSession(
     fun onBlockedForwardPageRequested(index: Int) {
         if (cancelled.get() || index < 0) return
         val page = publishedPageIndex.get().getOrNull(index)?.takeIf { candidate ->
-            candidate.transitionTitle == null &&
-                strictAdjacentRehydrateIdentity(candidate) != null
+            candidate.transitionTitle == null && (
+                strictAdjacentRehydrateIdentity(candidate) != null ||
+                    isStrictExactLaunchPage(candidate)
+                )
         } ?: return
+        val currentLaunchBlocker = isStrictExactLaunchPage(page)
         val normalizedPath = NtkStripDigests.normalizeEpisodePath(
             page.manga.ntkEpisodePath.orEmpty(),
         )
@@ -21462,7 +22851,14 @@ class ReaderSession(
             // source window used by committed frames. Otherwise the compositor cannot display N
             // until the source actor admits N, while the actor waits for a frame containing N --
             // a closed loop that strands a chapter tail during continuous input. This admits only
-            // the blocker plus the unchanged four-source runway; background pages stay closed.
+            // the blocker plus the same bounded directional runway; background pages stay closed.
+            //
+            // A late predecessor presentation can rewrite the process-wide byte owner after this
+            // episode's first-actual frame. Idle completion repairs that ordering, but continuous
+            // swipes deliberately keep the idle owner fenced. Reassert the exact PageRef path at
+            // this stronger physical blocker edge before the source actor checks it; otherwise the
+            // actor silently rejects the one-source redrive and the pixel flight parks forever.
+            NtkReaderTransferPacer.notePhysicalForegroundEpisode(this, normalizedPath)
             applyAdjacentStrictViewportSourceDemand(
                 normalizedPath = normalizedPath,
                 claim = claim,
@@ -21470,8 +22866,30 @@ class ReaderSession(
                 lastVisibleSourceIndex = page.sourceIndex,
                 direction = ReaderSurfaceView.DIRECTION_NEXT,
             )
+            claim.transport.onPhysicalBlockedPageRequested(
+                claim.episode,
+                page.sourceIndex,
+            )
         }
-        latestPhysicalForwardIntentPage.set(page)
+        if (currentLaunchBlocker) {
+            latestCurrentLaunchBlockedForwardPage.set(page)
+        } else {
+            latestPhysicalForwardIntentPage.set(page)
+            // This callback already runs on the Activity's main turn and the rehydrate router is
+            // an identity-bound single-flight scheduler. Do not enqueue this urgent blocker behind
+            // ReaderControl's rolling-window/retirement backlog: under continuous input that queue
+            // delayed each appended-episode source by 3-6 seconds even though its exact descriptor
+            // was resident. The router performs no decode here; it only promotes/enqueues one
+            // immutable PageRef on the urgent decode lane.
+            val currentIndex = currentPageIndex(page, index)
+            if (currentIndex >= 0) {
+                routeStrictAdjacentExactRehydrate(
+                    currentIndex,
+                    page,
+                    visibleIntent = true,
+                )
+            }
+        }
         val now = SystemClock.elapsedRealtime()
         val previousPage = lastBlockedForwardRedrivePage.get()
         val previousAt = lastBlockedForwardRedriveAtMs.get()
@@ -21486,12 +22904,19 @@ class ReaderSession(
             control.execute {
                 if (cancelled.get()) return@execute
                 val currentIndex = currentPageIndex(page, index)
-                if (currentIndex >= 0) {
-                    routeStrictAdjacentExactRehydrate(
-                        currentIndex,
-                        page,
-                        visibleIntent = true,
-                    )
+                if (currentIndex >= 0 && currentLaunchBlocker) {
+                    val admission = strictRollingAdmission.get()
+                    if (admission != null && admission.admitsSource(page.sourceIndex)) {
+                        // The same exact decode may already be waiting behind the background
+                        // post-scroll gate. Its timed acquisition observes
+                        // latestCurrentLaunchBlockedForwardPage and promotes itself; this request
+                        // is the idempotent fallback when no worker exists yet.
+                        requestStrictExactSourcePage(
+                            currentIndex,
+                            anchor = false,
+                            generation = admission.epoch.toInt(),
+                        )
+                    }
                 }
             }
         } catch (_: RejectedExecutionException) {
@@ -23246,9 +24671,15 @@ class ReaderSession(
             isNtkSource(ref.manga, title) &&
             isNtkManhwaOrWebtoonEpisodePath(ref.manga.ntkEpisodePath)
         ) {
-            // The transport URL can be refreshed while the immutable source slot stays the same.
-            // Including that URL in identity lets one physical page be appended twice.
-            return "image:${ref.sourceIndex}:${ref.side}"
+            // The transport URL can be refreshed while one immutable source slot stays the same,
+            // so URL is deliberately excluded. Path plus exact manifest identity prevents a
+            // privately staged boundary head from crossing an adjacent-target refresh or source
+            // generation while retaining idempotence for replica/URL updates of the same body.
+            val path = NtkStripDigests.normalizeEpisodePath(
+                ref.manga.ntkEpisodePath.orEmpty(),
+            )
+            return "image:$path:${ref.manifestDigest.orEmpty()}:" +
+                "${ref.manifestPageCount}:${ref.sourceIndex}:${ref.side}"
         }
         return "image:${ref.sourceIndex}:${ref.side}:${ref.image.orEmpty()}"
     }
@@ -23411,8 +24842,12 @@ class ReaderSession(
             flight.wakeVersion.incrementAndGet()
             flight.retryCount.set(0)
             flight.parked.set(false)
-            scheduleStrictAdjacentExactRehydrate(flight, flight.visibleIntent)
+            scheduleStrictAdjacentExactRehydrate(
+                flight,
+                flight.visibleIntent || flight.compositorForwardWarmIntent.get(),
+            )
         }
+        requestLatestExactAdjacentCompositorForwardWarm()
     }
 
     /**
@@ -23496,23 +24931,37 @@ class ReaderSession(
         index: Int,
         page: PageRef,
         visibleIntent: Boolean,
+        compositorForwardWarmIntent: Boolean = false,
     ): Boolean {
         val identity = strictAdjacentRehydrateIdentity(page) ?: return false
+        val compositorForwardWarmEligible = compositorForwardWarmIntent &&
+            isLatestExactAdjacentCompositorForwardWarm(index, page)
+        if (compositorForwardWarmIntent && !compositorForwardWarmEligible) return true
         if (shouldKeepHostPressureRetiredExactPageParked(index, page)) return true
         if ((pendingDeliveryWidths[index] ?: 0) > 0) {
-            if (visibleIntent &&
+            val physicalPendingIntent = visibleIntent &&
                 (latestPhysicalForwardIntentPage.get() === page ||
                     isStrictAdjacentPageInReportedPhysicalIntent(index, page))
-            ) {
-                scheduleBlockedForwardPendingDeliveryAudit(index, page, identity)
+            if (physicalPendingIntent || compositorForwardWarmEligible) {
+                scheduleBlockedForwardPendingDeliveryAudit(
+                    index,
+                    page,
+                    identity,
+                    compositorForwardWarmIntent =
+                        compositorForwardWarmEligible && !physicalPendingIntent,
+                )
             }
             return true
         }
         if (listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)) {
             adoptAuthoritativeListenerDrawable(index, page, "strict_adjacent_rehydrate_route")
+            retireSettledStrictAdjacentRehydrateFlight(index, page)
             return true
         }
-        if (hasDeliveredBitmap(index) && listener.isPageDrawableInstalled(index)) return true
+        if (hasDeliveredBitmap(index) && listener.isPageDrawableInstalled(index)) {
+            retireSettledStrictAdjacentRehydrateFlight(index, page)
+            return true
+        }
         // deliveredBitmaps/deliveredTiles are Session-side lifetime ledgers, not proof that the
         // Surface still owns pixels. A pending install can be retired or structurally invalidated
         // after Session tracking succeeds. If the current Surface disagrees, continue through the
@@ -23540,8 +24989,17 @@ class ReaderSession(
         // non-pressure request must still satisfy the ordinary protected snapshot below.
         if (pressureClaim == HostPressureRehydrateClaim.NOT_RETIRED &&
             !exactAdjacentPhysicalIntent &&
+            !compositorForwardWarmEligible &&
             !isInsideProtectedNumericBitmapWindow(index, page)
         ) {
+            return true
+        }
+        if (compositorForwardWarmEligible &&
+            strictAdjacentBodyDescriptor(page) == null &&
+            strictAdjacentPublishedBody(page) == null
+        ) {
+            // Byte acquisition remains solely owned by compositor source demand. A descriptor
+            // publication edge re-enters requestLatestExactAdjacentCompositorForwardWarm().
             return true
         }
         val flight = StrictAdjacentRehydrateFlight(
@@ -23554,6 +25012,7 @@ class ReaderSession(
                 pressureClaim == HostPressureRehydrateClaim.CLAIMED,
             ),
             exactAdjacentPhysicalIntent = AtomicBoolean(exactAdjacentPhysicalIntent),
+            compositorForwardWarmIntent = AtomicBoolean(compositorForwardWarmEligible),
         )
         while (true) {
             val owner = strictAdjacentRehydrateFlights.putIfAbsent(identity, flight)
@@ -23578,19 +25037,44 @@ class ReaderSession(
                     owner.hostPressurePhysicalReentry.compareAndSet(false, true)
             val promotedPhysicalIntent = exactAdjacentPhysicalIntent &&
                 owner.exactAdjacentPhysicalIntent.compareAndSet(false, true)
-            if (promotedPressureIntent || promotedPhysicalIntent) {
+            val promotedCompositorForwardWarm = compositorForwardWarmEligible &&
+                owner.compositorForwardWarmIntent.compareAndSet(false, true)
+            val repeatedPhysicalWake = visibleIntent && exactAdjacentPhysicalIntent &&
+                owner.parked.compareAndSet(true, false)
+            val repeatedCompositorForwardWarmWake = compositorForwardWarmEligible &&
+                owner.parked.compareAndSet(true, false)
+            val idlePhysicalOwnerWake =
+                NtkAdjacentExactRehydrateLivenessPolicy.shouldRedriveIdleOwner(
+                    exactPhysicalIntent = exactAdjacentPhysicalIntent,
+                    parked = owner.parked.get(),
+                    scheduledOrRunning = owner.ownerScheduledOrRunning.get(),
+                )
+            if (promotedPressureIntent || promotedPhysicalIntent || repeatedPhysicalWake ||
+                promotedCompositorForwardWarm || repeatedCompositorForwardWarmWake ||
+                idlePhysicalOwnerWake
+            ) {
                 // A speculative flight can be registered before its PageRef reaches the real
                 // drawable-prefix fence. Physical intent belongs to the immutable PageRef, not
                 // to the moment the worker was created, so promote that existing owner instead of
                 // leaving it parked behind an idle-only decode gate. The identity map still keeps
                 // exactly one decoder and the next page cannot be promoted until Surface reports
                 // its own blocker.
+                //
+                // A promoted owner keeps its physical bit after a bounded body-unavailable wave.
+                // Therefore compareAndSet(false, true) is not a later wake edge. A new real
+                // drawable-prefix callback for the same still-parked identity must reopen exactly
+                // one bounded wave; otherwise a source body published after the first twenty
+                // probes can leave the pipeline IDLE behind a permanent forward cap.
+                // Surface physical intersection is the authoritative visibility proof here. Its
+                // window can contain two partial pages while the priority heuristic chooses only
+                // one anchor, so requiring visibleIntent would strand the other on-screen page.
                 owner.wakeVersion.incrementAndGet()
                 owner.retryCount.set(0)
+                owner.motionDeferred.set(false)
                 owner.parked.set(false)
                 scheduleStrictAdjacentExactRehydrate(owner, true)
             }
-            if (owner.parked.get() &&
+            if (owner.parked.get() && !owner.motionDeferred.get() &&
                 (strictAdjacentBodyDescriptor(owner.page) != null ||
                     strictAdjacentPublishedBody(owner.page) != null)
             ) {
@@ -23609,6 +25093,24 @@ class ReaderSession(
     }
 
     /**
+     * An atomic adjacent batch or another retained delivery can satisfy a pending exact flight
+     * before its own worker runs. Once Surface proves this immutable page is installed, keeping
+     * the old coordination owner serves no lifetime purpose and can suppress a later rehydrate.
+     */
+    private fun retireSettledStrictAdjacentRehydrateFlight(index: Int, page: PageRef) {
+        val identity = strictAdjacentRehydrateIdentity(page) ?: return
+        val settled = strictAdjacentRehydrateFlights[identity] ?: return
+        // Surface can be satisfied by another exact publisher while this owner is genuinely
+        // decoding. Leave that worker registered until its normal completion path observes the
+        // installed identity; only a parked/idle coordination tombstone is redundant here.
+        if (settled.ownerScheduledOrRunning.get() ||
+            !strictAdjacentRehydrateFlights.remove(identity, settled)
+        ) return
+        initialInteractiveRunwayByteFetches.remove(settled.initialIndex)
+        initialInteractiveRunwayByteFetches.remove(index)
+    }
+
+    /**
      * A pending-width entry is only an ownership claim; it is not proof that Surface received the
      * pixels. The physical drawable-prefix blocker is stronger evidence. Promote a real queued
      * owner immediately. If the claim has no queue/backlog owner after an ordered main-loop grace
@@ -23620,6 +25122,8 @@ class ReaderSession(
         fallbackIndex: Int,
         page: PageRef,
         identity: String,
+        compositorForwardWarmIntent: Boolean = false,
+        enteredCompletionPath: String? = null,
     ) {
         if (blockedForwardPendingAudits.containsKey(identity)) return
         val audit = object : Runnable {
@@ -23644,7 +25148,12 @@ class ReaderSession(
                             index = currentIndex,
                             retainWhenBusy = true,
                             authoritativeAdjacentRehydrate = true,
-                            exactAdjacentPhysicalIntent = true,
+                            exactAdjacentPhysicalIntent =
+                                queued.exactAdjacentPhysicalIntent ||
+                                    !compositorForwardWarmIntent,
+                            compositorForwardWarmIntent =
+                                queued.compositorForwardWarmIntent ||
+                                    compositorForwardWarmIntent,
                         ),
                         busy = true,
                     )
@@ -23655,8 +25164,17 @@ class ReaderSession(
                 Log.d(
                     TAG,
                     "reader_blocked_forward_stale_pending_released page=$currentIndex " +
-                        "source=${page.sourceIndex} width=$pending",
+                        "source=${page.sourceIndex} width=$pending " +
+                        "enteredCompletion=${enteredCompletionPath != null}",
                 )
+                if (enteredCompletionPath != null) {
+                    // We are already on main. Relinquish the currently looping completion owner
+                    // before re-entering it so the now-unclaimed exact descriptor is decoded by
+                    // the ordinary one-page idle-completion path, not a new generic image owner.
+                    enteredExactEpisodePixelCompletionPaths.remove(enteredCompletionPath)
+                    requestEnteredExactEpisodePixelCompletion(enteredCompletionPath)
+                    return
+                }
                 try {
                     control.execute {
                         if (cancelled.get()) return@execute
@@ -23666,6 +25184,8 @@ class ReaderSession(
                                 remapped,
                                 page,
                                 visibleIntent = true,
+                                compositorForwardWarmIntent =
+                                    compositorForwardWarmIntent,
                             )
                         }
                     }
@@ -23690,7 +25210,12 @@ class ReaderSession(
                         index = currentIndex,
                         retainWhenBusy = true,
                         authoritativeAdjacentRehydrate = true,
-                        exactAdjacentPhysicalIntent = true,
+                        exactAdjacentPhysicalIntent =
+                            queued.exactAdjacentPhysicalIntent ||
+                                !compositorForwardWarmIntent,
+                        compositorForwardWarmIntent =
+                            queued.compositorForwardWarmIntent ||
+                                compositorForwardWarmIntent,
                     ),
                     busy = true,
                 )
@@ -23793,12 +25318,30 @@ class ReaderSession(
         if (flight.parked.get() ||
             !flight.ownerScheduledOrRunning.compareAndSet(false, true)
         ) return
-        val executor = if (visibleIntent) urgentDecode else decode
+        val effectiveVisibleIntent = visibleIntent ||
+            flight.hostPressurePhysicalReentry.get() ||
+            flight.exactAdjacentPhysicalIntent.get() ||
+            flight.compositorForwardWarmIntent.get()
+        val executor = if (effectiveVisibleIntent) urgentDecode else decode
+        val ownerAttemptVersion = flight.ownerAttemptVersion.incrementAndGet()
         try {
             executor.execute {
-                runStrictAdjacentExactRehydrate(flight, visibleIntent)
+                try {
+                    runStrictAdjacentExactRehydrate(flight, effectiveVisibleIntent)
+                } finally {
+                    // Every executor exit, including an unchecked native/JVM failure or a stale
+                    // early return, must retire its running claim. A retry can already have
+                    // scheduled a newer attempt from inside this worker, so only the generation
+                    // which acquired this claim may clear it.
+                    if (flight.ownerAttemptVersion.get() == ownerAttemptVersion) {
+                        flight.ownerScheduledOrRunning.compareAndSet(true, false)
+                    }
+                }
             }
         } catch (_: RejectedExecutionException) {
+            if (flight.ownerAttemptVersion.get() == ownerAttemptVersion) {
+                flight.ownerScheduledOrRunning.compareAndSet(true, false)
+            }
             postStrictAdjacentExactRehydrateRetry(flight, visibleIntent)
         }
     }
@@ -23810,14 +25353,31 @@ class ReaderSession(
         if (cancelled.get() || strictAdjacentRehydrateFlights[flight.identity] !== flight) return
         val currentIndex = currentPageIndex(flight.page, flight.initialIndex)
         val currentPage = pageRef(currentIndex)
+        val compositorForwardWarmEligible = currentPage != null &&
+            flight.compositorForwardWarmIntent.get() &&
+            isLatestExactAdjacentCompositorForwardWarm(currentIndex, currentPage)
+        // Physical intent is an admission captured for one worker/post/main hand-off, not a
+        // lifetime pin on this PageRef. If the queued worker has not begun decoding before the
+        // real Surface window moves elsewhere, no hand-off exists to preserve. Downgrade that
+        // stale bit before the normal protected-window check below. Keeping it forever made old
+        // pages repeatedly decode, attach, lose a host-pool slot, and decode again while the
+        // reader was completely idle.
+        if (currentPage != null && flight.exactAdjacentPhysicalIntent.get() &&
+            !isStrictAdjacentPageInReportedPhysicalIntent(currentIndex, currentPage)
+        ) {
+            flight.exactAdjacentPhysicalIntent.compareAndSet(true, false)
+        }
         if (currentIndex < 0 || currentPage == null ||
             strictAdjacentRehydrateIdentity(currentPage) != flight.identity ||
             (!flight.hostPressurePhysicalReentry.get() &&
                 !flight.exactAdjacentPhysicalIntent.get() &&
+                !compositorForwardWarmEligible &&
+                !flight.enteredIdleCompletionIntent.get() &&
                 !isInsideProtectedNumericBitmapWindow(currentIndex, currentPage))
         ) {
             strictAdjacentRehydrateFlights.remove(flight.identity, flight)
             initialInteractiveRunwayByteFetches.remove(flight.initialIndex)
+            requestLatestExactAdjacentCompositorForwardWarm()
             return
         }
         if (listener.isPageAuthoritativeDrawableCurrentlyInstalled(currentIndex)) {
@@ -23839,6 +25399,20 @@ class ReaderSession(
             null
         }
         if (descriptor == null && publishedBody == null) {
+            if (compositorForwardWarmEligible &&
+                !flight.hostPressurePhysicalReentry.get() &&
+                !flight.exactAdjacentPhysicalIntent.get()
+            ) {
+                // A compositor warm never reopens network/recovery. Park the single identity until
+                // the already-demanded strict source publishes a new resident body edge.
+                parkStrictAdjacentExactRehydrate(
+                    flight,
+                    visibleIntent,
+                    wakeVersionAtBodyProbe,
+                    resumeIfBodyReady = true,
+                )
+                return
+            }
             handleStrictAdjacentRehydrateBodyUnavailable(
                 flight,
                 currentIndex,
@@ -23849,6 +25423,19 @@ class ReaderSession(
             return
         }
         try {
+            if (compositorForwardWarmEligible && shouldLogRateLimitedDiagnostic(
+                    "compositor_forward_warm_decode|${currentPage.manga.ntkEpisodePath}|" +
+                        currentPage.sourceIndex,
+                    60_000L,
+                )
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_compositor_forward_warm_decode path=" +
+                        "${currentPage.manga.ntkEpisodePath} source=${currentPage.sourceIndex} " +
+                        "index=$currentIndex",
+                )
+            }
             val delivery = prepareAdjacentRunwayDelivery(
                 startIndex = currentIndex,
                 offset = 0,
@@ -23864,7 +25451,10 @@ class ReaderSession(
                 // decode wave underneath scrolling.
                 deferDecodeWhilePhysicalMotion = hostExactNativeSurfaceStorageEnabled &&
                     !flight.exactAdjacentPhysicalIntent.get() &&
-                    !flight.hostPressurePhysicalReentry.get(),
+                    !flight.hostPressurePhysicalReentry.get() &&
+                    !compositorForwardWarmEligible,
+                enteredIdleCompletionIntent = flight.enteredIdleCompletionIntent.get(),
+                compositorForwardWarmIntent = compositorForwardWarmEligible,
             ).copy(
                 // A request may have started as speculative runway work and then become the
                 // Surface's exact blocked-forward page before its decode finishes.  The
@@ -23873,10 +25463,12 @@ class ReaderSession(
                 // leaves the forward cap waiting for the very page the drain just recycled.
                 retainWhenBusy = visibleIntent ||
                     flight.hostPressurePhysicalReentry.get() ||
-                    flight.exactAdjacentPhysicalIntent.get(),
+                    flight.exactAdjacentPhysicalIntent.get() ||
+                    compositorForwardWarmEligible,
                 authoritativeAdjacentRehydrate = true,
                 hostPressurePhysicalReentry = flight.hostPressurePhysicalReentry.get(),
                 exactAdjacentPhysicalIntent = flight.exactAdjacentPhysicalIntent.get(),
+                compositorForwardWarmIntent = compositorForwardWarmEligible,
             )
             // postDecodeResult claims pendingDeliveryWidths synchronously. Only then release this
             // owner, so a frame arriving before the main delivery cannot start a duplicate decode.
@@ -23906,13 +25498,25 @@ class ReaderSession(
                 strictAdjacentBodyDescriptor(currentPage) == null &&
                 strictAdjacentPublishedBody(currentPage) == null
             ) {
-                handleStrictAdjacentRehydrateBodyUnavailable(
-                    flight,
-                    currentIndex,
-                    currentPage,
-                    visibleIntent,
-                    wakeVersionAtCatchProbe,
-                )
+                if (compositorForwardWarmEligible &&
+                    !flight.hostPressurePhysicalReentry.get() &&
+                    !flight.exactAdjacentPhysicalIntent.get()
+                ) {
+                    parkStrictAdjacentExactRehydrate(
+                        flight,
+                        visibleIntent,
+                        wakeVersionAtCatchProbe,
+                        resumeIfBodyReady = true,
+                    )
+                } else {
+                    handleStrictAdjacentRehydrateBodyUnavailable(
+                        flight,
+                        currentIndex,
+                        currentPage,
+                        visibleIntent,
+                        wakeVersionAtCatchProbe,
+                    )
+                }
                 return
             }
             val replacementDescriptor = strictAdjacentBodyDescriptor(currentPage)
@@ -23967,18 +25571,40 @@ class ReaderSession(
         visibleIntent: Boolean,
     ) {
         if (cancelled.get() || strictAdjacentRehydrateFlights[flight.identity] !== flight) return
+        // Optional/offscreen exact decode waits for a lifecycle edge, not one timer per page.
+        // Polling every 48 ms made a long reader run thousands of no-op executor tasks while the
+        // finger was moving and kept the native pipeline from ever remaining idle for one second.
         flight.ownerScheduledOrRunning.set(false)
+        flight.motionDeferred.set(true)
+        flight.parked.set(true)
+        scheduleStrictAdjacentMotionDeferredWake()
+    }
+
+    private fun scheduleStrictAdjacentMotionDeferredWake() {
+        if (cancelled.get() ||
+            strictAdjacentRehydrateFlights.values.none { it.motionDeferred.get() } ||
+            !strictAdjacentMotionDeferredWakePosted.compareAndSet(false, true)
+        ) return
         val posted = main.postDelayed(
-            {
-                if (!cancelled.get() &&
-                    strictAdjacentRehydrateFlights[flight.identity] === flight
-                ) {
-                    scheduleStrictAdjacentExactRehydrate(flight, visibleIntent)
-                }
-            },
-            NTK_STRICT_ADJACENT_REHYDRATE_MOTION_RECHECK_MS,
+            strictAdjacentMotionDeferredWakeRunnable,
+            NTK_STRICT_ADJACENT_REHYDRATE_IDLE_WAKE_MS,
         )
-        if (!posted) strictAdjacentRehydrateFlights.remove(flight.identity, flight)
+        if (!posted) strictAdjacentMotionDeferredWakePosted.set(false)
+    }
+
+    private fun wakeStrictAdjacentMotionDeferredFlights() {
+        if (cancelled.get() || viewportBusy.get() ||
+            NtkReaderTransferPacer.isPhysicalMotionActive()
+        ) return
+        strictAdjacentRehydrateFlights.values.toList().forEach { flight ->
+            if (strictAdjacentRehydrateFlights[flight.identity] === flight &&
+                flight.motionDeferred.compareAndSet(true, false)
+            ) {
+                flight.retryCount.set(0)
+                flight.parked.set(false)
+                scheduleStrictAdjacentExactRehydrate(flight, flight.visibleIntent)
+            }
+        }
     }
 
     private fun handleStrictAdjacentRehydrateBodyUnavailable(
@@ -24036,6 +25662,7 @@ class ReaderSession(
         observedWakeVersion: Long,
         resumeIfBodyReady: Boolean,
     ) {
+        flight.motionDeferred.set(false)
         flight.parked.set(true)
         flight.ownerScheduledOrRunning.set(false)
         val currentIndex = currentPageIndex(flight.page, flight.initialIndex)
@@ -24062,6 +25689,7 @@ class ReaderSession(
             strictAdjacentRehydrateFlights.remove(flight.identity, flight)
             initialInteractiveRunwayByteFetches.remove(flight.initialIndex)
             initialInteractiveRunwayByteFetches.remove(currentIndex)
+            requestLatestExactAdjacentCompositorForwardWarm()
             return
         }
         // deliverAutoSplitSiblingFromDecoded() enqueued its main turn before this one. Waiting for
@@ -24088,8 +25716,11 @@ class ReaderSession(
                     siblingIndex,
                     siblingPage,
                     visibleIntent = flight.visibleIntent,
+                    compositorForwardWarmIntent =
+                        flight.compositorForwardWarmIntent.get(),
                 )
             }
+            requestLatestExactAdjacentCompositorForwardWarm()
         }
     }
 
@@ -24114,12 +25745,17 @@ class ReaderSession(
             )
             return
         }
+        // Relinquish this attempt before publishing its delayed retry. A physical viewport wake
+        // may legitimately schedule a newer attempt during the delay. Clearing the flag inside
+        // the delayed callback used to clobber that newer attempt's running claim, leaving the
+        // identity registered with neither a worker nor a parked wake edge after it completed.
+        // ownerAttemptVersion makes this worker's finally block generation-safe as well.
+        flight.ownerScheduledOrRunning.set(false)
         val delayMs = (
             NTK_STRICT_ADJACENT_REHYDRATE_RETRY_BASE_MS * attempt.coerceAtMost(4)
             ).coerceAtMost(NTK_STRICT_ADJACENT_REHYDRATE_RETRY_MAX_MS)
         main.postDelayed({
             if (!cancelled.get() && strictAdjacentRehydrateFlights[flight.identity] === flight) {
-                flight.ownerScheduledOrRunning.set(false)
                 scheduleStrictAdjacentExactRehydrate(flight, visibleIntent)
             }
         }, delayMs)
@@ -24130,6 +25766,8 @@ class ReaderSession(
         refs: List<PageRef>,
         reason: String,
         requireStrictDescriptor: Boolean = false,
+        enteredIdleCompletionIntent: Boolean = false,
+        offscreenInitialRunwayCompletionIntent: Boolean = false,
         failureSink: AtomicReference<Throwable?>? = null,
     ): AdjacentRunwayDrawableBatch? {
         if (!isImmediateNtkGeneratedUx()) return AdjacentRunwayDrawableBatch(emptyList())
@@ -24155,14 +25793,23 @@ class ReaderSession(
                     indexedPages.map { it.second.sourceIndex } ==
                         (1..indexedPages.size).toList()
             val directWifiAtomicInitialManhwaRunway =
-                reason == "append_initial_runway_prepare_before_publish" &&
-                    directWifiRunwayProfile &&
+                directWifiRunwayProfile &&
                     indexedPages.all {
                         it.second.manga.ntkEpisodePath?.startsWith("/manhwa/") == true
                     } &&
                     indexedPages.size in 2..atomicRunwayPageLimit &&
-                    indexedPages.map { it.second.sourceIndex } ==
-                        (0 until indexedPages.size).toList()
+                    when (reason) {
+                        "append_initial_runway_prepare_before_publish" ->
+                            indexedPages.map { it.second.sourceIndex } ==
+                                (0 until indexedPages.size).toList()
+                        "published_exact_initial_runway_completion" -> {
+                            val firstSource = indexedPages.first().second.sourceIndex
+                            firstSource in 1 until atomicRunwayPageLimit &&
+                                indexedPages.map { it.second.sourceIndex } ==
+                                    (firstSource until firstSource + indexedPages.size).toList()
+                        }
+                        else -> false
+                    }
             val adjacentManhwaPages = indexedPages.isNotEmpty() && indexedPages.all {
                 it.second.manga.ntkEpisodePath?.startsWith("/manhwa/") == true
             }
@@ -24187,11 +25834,11 @@ class ReaderSession(
             ) {
                 // Non-progressive initial cohorts decode independent pages on the bounded overlap
                 // pool. The direct-Wi-Fi p1..p3 tail is also one atomic UI publication and its
-                // measured pages are ordinary 690px strips; decoding those three independent
-                // bodies together removes the serial final-EOF tail. A fully resident adjacent
-                // manhwa p0..p3 cohort also uses this one atomic decode/publication turn so a
-                // two-page predecessor tail cannot reach the boundary between p0 and p1. Larger
-                // suffix batches and every mobile/SNI path retain the sequential branch below.
+                // measured pages are ordinary short strips; decoding the fixed p1..p4 completion
+                // together removes the serial final-EOF tail and prevents p4 from entering a real
+                // swipe after p0..p3 have already become observable. A fully resident adjacent
+                // manhwa p0..p4 cohort uses the same atomic decode/publication turn. Larger suffix
+                // batches and every mobile/SNI path retain the sequential branch below.
                 val tasks = indexedPages.map { (offset, page) ->
                     FutureTask {
                         prepareAdjacentRunwayDelivery(
@@ -24201,6 +25848,9 @@ class ReaderSession(
                             startedAt,
                             requireStrictDescriptor,
                             deferDecodeWhilePhysicalMotion = deferDecodeWhilePhysicalMotion,
+                            enteredIdleCompletionIntent = enteredIdleCompletionIntent,
+                            offscreenInitialRunwayCompletionIntent =
+                                offscreenInitialRunwayCompletionIntent,
                         )
                     }
                 }
@@ -24226,6 +25876,9 @@ class ReaderSession(
                         startedAt,
                         requireStrictDescriptor,
                         deferDecodeWhilePhysicalMotion = deferDecodeWhilePhysicalMotion,
+                        enteredIdleCompletionIntent = enteredIdleCompletionIntent,
+                        offscreenInitialRunwayCompletionIntent =
+                            offscreenInitialRunwayCompletionIntent,
                     )
                 }
             }
@@ -24263,6 +25916,9 @@ class ReaderSession(
         requireStrictDescriptor: Boolean = false,
         allowCurrentPublishedStrictBodyForRehydrate: Boolean = false,
         deferDecodeWhilePhysicalMotion: Boolean = false,
+        enteredIdleCompletionIntent: Boolean = false,
+        offscreenInitialRunwayCompletionIntent: Boolean = false,
+        compositorForwardWarmIntent: Boolean = false,
     ): Delivery {
         val image = page.image.orEmpty()
         if (image.isBlank()) throw java.io.IOException("Adjacent runway page has no image")
@@ -24272,6 +25928,63 @@ class ReaderSession(
         val strictExactBodyRequired =
             requireStrictDescriptor || allowCurrentPublishedStrictBodyForRehydrate ||
                 requiresStrictAdjacentExactBody(page)
+        val boundedDirectNativePool = hostExactNativeSurfaceStorageEnabled &&
+            isDirectWifiStrictAdjacentRunwayProfile(page.manga)
+        if (boundedDirectNativePool) {
+            val viewportInside = isViewportInsideEpisode(page.manga)
+            val physicalIntent = isStrictAdjacentPageInReportedPhysicalIntent(index, page)
+            val foregroundMotion = NtkReaderTransferPacer.isPhysicalMotionActive() ||
+                viewportBusy.get() ||
+                physicalTouchQuietRemainingMs(
+                    NTK_DIRECT_ADJACENT_PIXEL_INPUT_QUIET_MS,
+                ) > 0L
+            val normalizedPath = NtkStripDigests.normalizeEpisodePath(
+                page.manga.ntkEpisodePath.orEmpty(),
+            )
+            val claim = adjacentStrictSourceClaims[normalizedPath]
+            val compositorForwardWarmEligible = compositorForwardWarmIntent &&
+                isLatestExactAdjacentCompositorForwardWarm(index, page)
+            val enteredIdleCompletionEligible = enteredIdleCompletionIntent &&
+                !foregroundMotion &&
+                normalizedPath.isNotEmpty() &&
+                latestEnteredExactEpisodePath.get() == normalizedPath &&
+                claim?.firstActualFramePresented?.get() == true &&
+                isAdjacentStrictSourceClaimLive(normalizedPath, claim)
+            val offscreenInitialRunwayCompletionEligible =
+                offscreenInitialRunwayCompletionIntent &&
+                    !foregroundMotion &&
+                    normalizedPath.isNotEmpty() &&
+                    normalizedPath in publishedExactOffscreenRunwayPaths &&
+                    claim != null &&
+                    NtkPublishedInitialRunwayCompletionPolicy.stillOwnsPixelCompletion(
+                        firstActualFramePresented = claim.firstActualFramePresented.get(),
+                        latestEnteredEpisodeMatches =
+                            latestEnteredExactEpisodePath.get() == normalizedPath,
+                    ) &&
+                    page.sourceIndex in 0 until minOf(
+                        initialAdjacentRunwayPageLimit(normalizedPath),
+                        claim.pageCount,
+                    ) &&
+                    isAdjacentStrictSourceClaimLive(normalizedPath, claim)
+            if ((enteredIdleCompletionIntent && !enteredIdleCompletionEligible) ||
+                (offscreenInitialRunwayCompletionIntent &&
+                    !offscreenInitialRunwayCompletionEligible) ||
+                (compositorForwardWarmIntent && !compositorForwardWarmEligible) ||
+                (!enteredIdleCompletionEligible &&
+                    !offscreenInitialRunwayCompletionEligible &&
+                    !compositorForwardWarmEligible &&
+                    NtkDirectAdjacentPixelAdmissionPolicy.shouldDefer(
+                    viewportInsideEpisode = viewportInside,
+                    sourceIndex = page.sourceIndex,
+                    currentSourceIndex = currentViewportSourceIndexForEpisode(page.manga),
+                    physicalIntent = physicalIntent,
+                    foregroundMotionActive = foregroundMotion,
+                    idleForwardRunway = NTK_STRICT_ACTIVE_FORWARD_SOURCE_RUNWAY,
+                    ))
+            ) {
+                throw NtkPhysicalMotionDecodeDeferredException()
+            }
+        }
         val prepared = pageKey?.let { key ->
             preparedAdjacentRemainderDrawables.remove(key)
         }
@@ -24324,9 +26037,14 @@ class ReaderSession(
                                 lease.metadata.canonicalAsset,
                                 proofDrawable = true,
                                 deferWhilePhysicalMotion = deferDecodeWhilePhysicalMotion,
+                                allowTransientHostExactPoolOvercommit = !boundedDirectNativePool,
+                                settledHostExactPoolOnly = false,
+                                exactLaunchCompositorForwardWarmIntent =
+                                    compositorForwardWarmIntent,
                             )
                         } else {
                             lease.predecodedOriginal
+                                ?.takeIf { !boundedDirectNativePool }
                                 ?.takeIfReadyOrAbandon(
                                     lease.sourceWidth,
                                     lease.sourceHeight,
@@ -24351,6 +26069,10 @@ class ReaderSession(
                                     parallelOversizedResidentTiles =
                                         shouldParallelDecodeDirectWifiAdjacentResidentTiles(page),
                                     deferWhilePhysicalMotion = deferDecodeWhilePhysicalMotion,
+                                    allowTransientHostExactPoolOvercommit = !boundedDirectNativePool,
+                                    settledHostExactPoolOnly = false,
+                                    exactLaunchCompositorForwardWarmIntent =
+                                        compositorForwardWarmIntent,
                                 )
                                 lease.file.isFile -> decodeStrictExactPageFile(
                                     index,
@@ -24362,6 +26084,10 @@ class ReaderSession(
                                     lease.metadata.canonicalAsset,
                                     proofDrawable = true,
                                     deferWhilePhysicalMotion = deferDecodeWhilePhysicalMotion,
+                                    allowTransientHostExactPoolOvercommit = !boundedDirectNativePool,
+                                    settledHostExactPoolOnly = false,
+                                    exactLaunchCompositorForwardWarmIntent =
+                                        compositorForwardWarmIntent,
                                 )
                                 else -> throw java.io.IOException(
                                     "Adjacent strict body lease has no encoded original"
@@ -24386,6 +26112,9 @@ class ReaderSession(
                     strictBody.metadata.canonicalAsset,
                     proofDrawable = true,
                     deferWhilePhysicalMotion = deferDecodeWhilePhysicalMotion,
+                    allowTransientHostExactPoolOvercommit = !boundedDirectNativePool,
+                    settledHostExactPoolOnly = false,
+                    exactLaunchCompositorForwardWarmIntent = compositorForwardWarmIntent,
                 )
                 strictBody?.encodedBytes != null -> decodeStrictExactPageBytes(
                     index,
@@ -24397,6 +26126,9 @@ class ReaderSession(
                     parallelOversizedResidentTiles =
                         shouldParallelDecodeDirectWifiAdjacentResidentTiles(page),
                     deferWhilePhysicalMotion = deferDecodeWhilePhysicalMotion,
+                    allowTransientHostExactPoolOvercommit = !boundedDirectNativePool,
+                    settledHostExactPoolOnly = false,
+                    exactLaunchCompositorForwardWarmIntent = compositorForwardWarmIntent,
                 )
                 strictBody?.file?.isFile == true -> decodeStrictExactPageFile(
                     index,
@@ -24408,6 +26140,9 @@ class ReaderSession(
                     strictBody.metadata.canonicalAsset,
                     proofDrawable = true,
                     deferWhilePhysicalMotion = deferDecodeWhilePhysicalMotion,
+                    allowTransientHostExactPoolOvercommit = !boundedDirectNativePool,
+                    settledHostExactPoolOnly = false,
+                    exactLaunchCompositorForwardWarmIntent = compositorForwardWarmIntent,
                 )
                 else -> {
                     if (!mayConsumeUnprovenCache) {
@@ -24458,6 +26193,7 @@ class ReaderSession(
             requestedWidth,
             retainWhenBusy = false,
             proofDrawable = true,
+            compositorForwardWarmIntent = compositorForwardWarmIntent,
         )
     }
 
@@ -24536,7 +26272,9 @@ class ReaderSession(
     ): Boolean {
         if (!isDirectWifiStrictAdjacentRunwayProfile(target)) return false
         val path = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
-        if (!path.startsWith("/webtoon/")) return false
+        if (!path.startsWith("/webtoon/") &&
+            !(hostGpuEmulatorRuntime && path.startsWith("/manhwa/"))
+        ) return false
         if (initialRefs.size != 2 || initialRefs[0].transitionTitle == null) return false
         val p0 = initialRefs[1]
         return p0.transitionTitle == null && p0.sourceIndex == 0 &&
@@ -24628,11 +26366,16 @@ class ReaderSession(
                 postDecodeResized = false,
             )
             val headSlots = (0 until minOf(2, plan.tiles.size)).toList()
+            awaitDirectWifiAdjacentP0PromotionInputQuiet(p0.manga)
             // The predecessor-complete/body gates have already admitted this exact adjacent p0.
             // Decode its two visible head rows concurrently so renderer ownership is not delayed
-            // by two independent region decodes. This branch is direct-Wi-Fi webtoon p0 only;
-            // cellular/SNI and current-episode decode scheduling are unchanged.
-            val headTiles = decodeAdjacentExactP0Slots(lease, plan, headSlots, parallel = true)
+            // by two independent region decodes. This branch covers direct-Wi-Fi webtoon p0 and
+            // the host-emulator manhwa p0; cellular/SNI, real-device manhwa and current-episode
+            // decode scheduling are unchanged.
+            val headTiles = promoteAdjacentExactTilesForDirectPresenter(
+                decodeAdjacentExactSoftwareSlots(lease, plan, headSlots, parallel = true),
+                p0.manga,
+            )
             val head = NtkAdjacentExactP0Delta(
                 owner = owner,
                 plan = plan,
@@ -24839,9 +26582,16 @@ class ReaderSession(
                         asyncLaunch = true,
                     )
                 }
-                NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
-                    .takeIf(String::isNotEmpty)
-                    ?.let(publishedExactOffscreenRunwayPaths::add)
+                val publishedPath = NtkStripDigests.normalizeEpisodePath(
+                    target.ntkEpisodePath.orEmpty(),
+                )
+                if (publishedPath.isNotEmpty()) {
+                    publishedExactOffscreenRunwayPaths.add(publishedPath)
+                    // All p0..p4 descriptors can precede structural publication. Re-drive the
+                    // initial pixel owner from the new structure edge itself; waiting for another
+                    // descriptor callback starts p1 only after the user has already hit its cap.
+                    requestPublishedExactAdjacentInitialRunwayCompletion(publishedPath)
+                }
                 warmPublishedLaunchSuccessorInitialTail(
                     target = target,
                     allRefs = allRefs,
@@ -25026,11 +26776,14 @@ class ReaderSession(
                     if (cancelled.get() || adjacentExactP0Flights[flight.owner.ownerToken] !== flight) {
                         return@execute
                     }
-                    val tiles = decodeAdjacentExactP0Slots(
-                        flight.lease,
-                        flight.plan,
-                        tailSlots,
-                        parallel = true,
+                    val tiles = promoteAdjacentExactTilesForDirectPresenter(
+                        decodeAdjacentExactSoftwareSlots(
+                            flight.lease,
+                            flight.plan,
+                            tailSlots,
+                            parallel = true,
+                        ),
+                        target,
                     )
                     tail = NtkAdjacentExactP0Delta(
                         owner = flight.owner,
@@ -25152,7 +26905,7 @@ class ReaderSession(
         }
 
     @Suppress("DEPRECATION")
-    private fun decodeAdjacentExactP0Slots(
+    private fun decodeAdjacentExactSoftwareSlots(
         lease: NtkStrictBodyLease,
         plan: NtkPreGeometryPagePlan,
         slots: List<Int>,
@@ -25272,6 +27025,70 @@ class ReaderSession(
             }
             throw failure
         }
+    }
+
+    /**
+     * The sparse p0 decoder intentionally works from an already-open exact lease, but the active
+     * direct presenter cannot consume its ordinary ARGB_8888 Bitmaps. Promote every private tile
+     * before it can enter Surface ownership. Pointer-quiet admission surrounds each non-preemptible
+     * write; the pool remains reuse-first and uses only its bounded rolling envelope when every
+     * settled slot still belongs to the predecessor.
+     */
+    private fun promoteAdjacentExactTilesForDirectPresenter(
+        softwareTiles: Map<Int, ReaderTile>,
+        target: Manga,
+    ): Map<Int, ReaderTile> {
+        if (!hostExactNativeSurfaceStorageEnabled) return softwareTiles
+        val promoted = LinkedHashMap<Int, ReaderTile>(softwareTiles.size)
+        try {
+            for ((slot, tile) in softwareTiles.entries.sortedBy { it.key }) {
+                val software = tile.bitmap
+                // The initial admission above protects software decode. Recheck at the exact
+                // non-preemptible HardwareBuffer write and between tiles: another DOWN can arrive
+                // while the region decoders are running.
+                awaitDirectWifiAdjacentP0PromotionInputQuiet(target)
+                val token = HostExactHardwareTilePool.copyExactTileBitmap(software)
+                    ?: throw java.io.IOException(
+                        "Adjacent exact tile has no reusable direct-presenter storage",
+                    )
+                if (!HostExactHardwareTilePool.hasExactStorage(
+                        token,
+                        tile.sourceWidth,
+                        tile.sourceSpan,
+                    )
+                ) {
+                    HostExactHardwareTilePool.retire(token)
+                    throw java.io.IOException("Adjacent exact tile promotion changed geometry")
+                }
+                promoted[slot] = tile.copy(bitmap = token)
+                if (!software.isRecycled) software.recycle()
+            }
+            return promoted
+        } catch (failure: Exception) {
+            HostExactHardwareTilePool.retireAll(promoted.values.map { it.bitmap })
+            softwareTiles.values.forEach { tile ->
+                if (!tile.bitmap.isRecycled) tile.bitmap.recycle()
+            }
+            throw failure
+        }
+    }
+
+    /**
+     * HostExact promotion writes an AHardwareBuffer and can hold the emulator's process-wide
+     * gfxstream lock for more than one display frame. Keep verified p0 bytes and their lease open,
+     * but begin that non-preemptible write only after a real pointer-quiet interval. A Surface-
+     * proven boundary demand bypasses the wait so continuous tail input can never deadlock.
+     */
+    private fun awaitDirectWifiAdjacentP0PromotionInputQuiet(target: Manga) {
+        while (!cancelled.get() && !Thread.currentThread().isInterrupted) {
+            if (isPhysicalBoundaryDemandingAdjacentTarget(target)) return
+            val remaining = physicalTouchQuietRemainingMs(
+                NTK_DIRECT_ADJACENT_PIXEL_INPUT_QUIET_MS,
+            )
+            if (!physicalTouchActive.get() && remaining <= 0L) return
+            Thread.sleep(minOf(16L, maxOf(1L, remaining)))
+        }
+        throw InterruptedException("Adjacent p0 promotion admission cancelled")
     }
 
     private fun commitAdjacentRunwayDrawableBatch(batch: AdjacentRunwayDrawableBatch) {
@@ -25811,6 +27628,9 @@ class ReaderSession(
         pendingAdjacentAppendPublishes.remove(publishKey)
         pendingAdjacentAppendPublishKeys.remove(publishKey)
         scheduledInitialAdjacentRunwayRetryKeys.remove(publishKey)
+        parkedInitialAdjacentRunwayPathsByRetryKey.remove(publishKey)?.let { path ->
+            parkedInitialAdjacentRunwayRetries.remove(path)?.let(main::removeCallbacks)
+        }
     }
 
     private fun shouldPublishPendingAdjacentAppend(
@@ -26001,11 +27821,26 @@ class ReaderSession(
         if (!isNtkSource(manga, title)) return true
         val anchor = currentViewportAnchor.get()
         if (anchor < 0) return false
-        val near = anchor >= cardIndex - NTK_APPEND_WARM_BOUNDARY_PAGES
+        val physicalForwardEdge = synchronized(pagesLock) {
+            reportedPhysicalWindowLocked(
+                fallbackAnchor = anchor,
+                fallbackFirst = anchor,
+                fallbackLast = anchor,
+            ).last
+        }
+        val forwardEdge = maxOf(anchor, physicalForwardEdge)
+        // cardIndex is the boundary itself. If four current pages (not five index
+        // positions) sit between the physical edge and that card, this is already the
+        // four-page warm zone.
+        val near = HostExactHardwareTilePoolPressurePolicy
+            .pagesStrictlyBeforeAdjacentBoundary(forwardEdge, cardIndex) <=
+            NTK_APPEND_WARM_BOUNDARY_PAGES
         if (!near) {
             Log.d(
                 TAG,
-                "append_adjacent_warm_deferred_offscreen cardIndex=$cardIndex,anchor=$anchor,path=${manga.ntkEpisodePath}"
+                "append_adjacent_warm_deferred_offscreen cardIndex=$cardIndex," +
+                    "anchor=$anchor,physicalForwardEdge=$physicalForwardEdge," +
+                    "path=${manga.ntkEpisodePath}"
             )
         }
         return near
@@ -27084,7 +28919,6 @@ class ReaderSession(
             shiftConcurrentMap(achievableWidths, delta)
             shiftConcurrentMap(transientGeneratedRetries, delta)
             shiftConcurrentMap(transientGeneratedVisibleRetries, delta)
-            shiftConcurrentMap(initialContinuousPostedWidths, delta)
             shiftConcurrentMap(bytePrefetchCompletedAtMs, delta)
             shiftConcurrentMap(earlyPreparedBitmaps, delta)
             shiftConcurrentMap(deliveredDrawableProofWidths, delta)
@@ -27534,11 +29368,147 @@ class ReaderSession(
             synchronized(pagesLock) { pages.getOrNull(index) === page }
     }
 
+    /**
+     * Returns whether [sourceIndex] is still needed to fill the initial viewport, or null while an
+     * earlier source's exact bounds have not arrived. This is geometry, not a guessed page count:
+     * a tall webtoon p0 can publish alone, while landscape/short pages admit exactly as many
+     * ordered sources as the physical viewport needs.
+     */
+    private fun strictInitialViewportRequiresSource(sourceIndex: Int): Boolean? {
+        val anchorPage = pageRef(currentStartPage()) ?: return null
+        val anchorSource = anchorPage.sourceIndex
+        if (anchorSource < 0 || sourceIndex < anchorSource) return null
+        if (sourceIndex == anchorSource) return true
+        val requiredHeight = max(1, viewerHeight).toLong()
+        val targetWidth = max(1, viewerWidth).toLong()
+        var coveredHeight = 0L
+        for (source in anchorSource until sourceIndex) {
+            val metadata = strictExactBodyDescriptors[source]?.metadata ?: return null
+            if (metadata.sourceWidth <= 0 || metadata.sourceHeight <= 0) return null
+            val drawHeight = targetWidth * metadata.sourceHeight.toLong() /
+                metadata.sourceWidth.toLong()
+            coveredHeight = (coveredHeight + max(1L, drawHeight)).coerceAtMost(Long.MAX_VALUE)
+            if (coveredHeight >= requiredHeight) return false
+        }
+        return true
+    }
+
+    /** Only the finite pages a real pre-content swipe can reach may decode before first latch. */
+    private fun strictInitialScrollRunwayContainsSource(sourceIndex: Int): Boolean {
+        val anchorSource = pageRef(currentStartPage())?.sourceIndex ?: return false
+        if (anchorSource < 0 || sourceIndex < anchorSource) return false
+        return sourceIndex < anchorSource +
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_SCROLL_RUNWAY_BODIES
+    }
+
+    /**
+     * Returns true only for the immutable current-launch PageRef that Surface reported as the
+     * first missing body in a real forward gesture. Once its authoritative drawable is installed,
+     * consume the grant so a later reverse pressure rehydrate cannot inherit stale urgency.
+     */
+    private fun isCurrentLaunchBlockedForwardPage(
+        index: Int,
+        page: PageRef,
+    ): Boolean {
+        if (latestCurrentLaunchBlockedForwardPage.get() !== page) return false
+        val currentIndex = currentPageIndex(page, index)
+        if (currentIndex < 0 || pageRef(currentIndex) !== page || !isStrictExactLaunchPage(page)) {
+            latestCurrentLaunchBlockedForwardPage.compareAndSet(page, null)
+            return false
+        }
+        if (listener.isPageAuthoritativeDrawableCurrentlyInstalled(currentIndex)) {
+            latestCurrentLaunchBlockedForwardPage.compareAndSet(page, null)
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Keeps the finite launch runway urgent and also admits the one immutable page identity that
+     * the Surface has proved is blocking a real forward gesture. The latter is essential after
+     * the launch runway: treating that page as ordinary mirror work makes it wait for physical
+     * motion to stop, while the clamped Surface keeps reporting motion because those exact pixels
+     * are not yet drawable. Far-offscreen publications remain parked on the ordinary lane.
+     */
+    private fun shouldPrioritizeStrictExactMirrorPublication(
+        index: Int,
+        page: PageRef,
+    ): Boolean =
+        strictInitialScrollRunwayContainsSource(page.sourceIndex) ||
+            isCurrentLaunchBlockedForwardPage(index, page) ||
+            latestPhysicalForwardIntentPage.get() === page ||
+            isStrictAdjacentPageInReportedPhysicalIntent(index, page)
+
+    /**
+     * Re-evaluates urgency on the single mirror-publication lane. A page can be decoded just
+     * before a HOME restore or viewport rebase makes it physically visible; capturing only the
+     * decode-time priority leaves its compositor mirror behind the 500 ms input-idle fence. At an
+     * exact episode tail that creates a closed loop: the Surface waits for a clean tail frame while
+     * repeated forward input keeps the visible page's ordinary mirror deferred forever.
+     */
+    private fun isStrictExactMirrorPublicationRequiredNow(
+        index: Int,
+        page: PageRef,
+    ): Boolean {
+        if (cancelled.get()) return false
+        if (isCurrentLaunchBlockedForwardPage(index, page) ||
+            latestPhysicalForwardIntentPage.get() === page ||
+            isStrictAdjacentPageInReportedPhysicalIntent(index, page)
+        ) return true
+        val currentIndex = currentPageIndex(page, index)
+        if (currentIndex < 0 || pageRef(currentIndex) !== page) return false
+        // Once Session has handed this exact token to the Surface, the mirror is no longer
+        // speculative offscreen work. Surface's drawable ledger cannot observe the asynchronous
+        // native flag and would otherwise call the page complete while the direct presenter is
+        // still waiting for its HardwareBuffer. Continuous real input then keeps the ordinary
+        // 500 ms mirror-idle fence closed forever. Promote only this identity-bound pending or
+        // delivered page; decoded bodies that have not entered UI ownership remain deferrable.
+        return (pendingDeliveryWidths[currentIndex] ?: 0) > 0 ||
+            hasDeliveredBitmap(currentIndex)
+    }
+
+    /**
+     * Waits for the preceding canonical source rather than semaphore-arrival order. Network EOF
+     * is intentionally out of order; letting whichever body finished first own the serial gate
+     * decoded p4 before p1 and left the physical scroll cap at the first gap.
+     */
+    private fun awaitStrictInitialDecodeRunwayTurn(sourceIndex: Int): Boolean {
+        val anchorSource = pageRef(currentStartPage())?.sourceIndex ?: return false
+        if (anchorSource < 0 || sourceIndex <= anchorSource) return false
+        strictExactInitialDecodeRunwayNextSource.compareAndSet(-1, anchorSource + 1)
+        while (!cancelled.get()) {
+            val next = strictExactInitialDecodeRunwayNextSource.get()
+            if (next == sourceIndex) return true
+            if (next > sourceIndex) return false
+            Thread.sleep(8L)
+        }
+        return false
+    }
+
+    /**
+     * Keeps at most the next two canonical followers eligible for private native preparation.
+     * Network EOF is out of order, so a plain two-permit semaphore can otherwise admit p3 before
+     * p2 and leave the second drawable blocked behind pixels that cannot yet be exposed.
+     */
+    private fun awaitStrictInitialDecodePreparationWindow(sourceIndex: Int): Boolean {
+        val anchorSource = pageRef(currentStartPage())?.sourceIndex ?: return false
+        if (anchorSource < 0 || sourceIndex <= anchorSource) return false
+        strictExactInitialDecodeRunwayNextSource.compareAndSet(-1, anchorSource + 1)
+        while (!cancelled.get()) {
+            val next = strictExactInitialDecodeRunwayNextSource.get()
+            if (sourceIndex < next) return false
+            if (sourceIndex <= next + 1) return true
+            Thread.sleep(8L)
+        }
+        return false
+    }
+
     private fun requestStrictExactSourcePage(
         index: Int,
         anchor: Boolean,
         generation: Int,
-        overlap: Boolean = false
+        overlap: Boolean = false,
+        compositorForwardWarmIntent: Boolean = false,
     ) {
         if (cancelled.get()) return
         val page = pageRef(index) ?: return
@@ -27554,6 +29524,19 @@ class ReaderSession(
         }
         val descriptor = strictExactBodyDescriptors[page.sourceIndex]
         if (descriptor == null) {
+            if (shouldLogRateLimitedDiagnostic(
+                    "strict_request_body_absent|$index",
+                    1_000L,
+                )
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_strict_request_body_absent page=$index," +
+                        "source=${page.sourceIndex},anchor=${currentViewportAnchor.get()}," +
+                        "descriptorCount=${strictExactBodyDescriptors.size}," +
+                        "publishedFallback=${strictAdjacentPublishedBody(page) != null}",
+                )
+            }
             if (loading.add(index)) {
                 loadingPages[index] = page
                 main.post {
@@ -27568,25 +29551,66 @@ class ReaderSession(
         loadingPages.remove(index, page)
         if (strictExactRollingPixelResidency.get() &&
             strictExactAuthoritativeHandoffPages.contains(index) &&
-            !isInsideStrictExactRollingPixelWindow(index)
+            !isInsideStrictExactRollingPixelWindow(index) &&
+            !isCurrentLaunchBlockedForwardPage(index, page)
         ) {
+            if (shouldLogRateLimitedDiagnostic("strict_request_outside_pixels|$index", 1_000L)) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_strict_request_outside_pixels page=$index," +
+                        "source=${page.sourceIndex},anchor=${currentViewportAnchor.get()}",
+                )
+            }
             return
         }
         var requiresRollingReinstall = false
         if (strictExactAuthoritativeHandoffPages.contains(index)) {
-            if (listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)) return
+            if (listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)) {
+                if (shouldLogRateLimitedDiagnostic(
+                        "strict_request_installed|$index",
+                        1_000L,
+                    )
+                ) {
+                    Log.d(
+                        TAG,
+                        "reader_ntk_strict_request_installed page=$index," +
+                            "source=${page.sourceIndex}",
+                    )
+                }
+                return
+            }
             // The Surface is the current-state authority. A historic handoff bit must not make a
             // recycled or superseded page permanently undecodable during a long forward fling.
             strictExactAuthoritativeHandoffPages.remove(index)
             requiresRollingReinstall = true
         }
-        if ((!requiresRollingReinstall && hasDeliveredOrPendingDrawable(index)) ||
+        if (!requiresRollingReinstall && hasDeliveredOrPendingDrawable(index)) {
+            if (shouldLogRateLimitedDiagnostic("strict_request_delivered|$index", 1_000L)) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_strict_request_delivered page=$index," +
+                        "source=${page.sourceIndex}",
+                )
+            }
+            return
+        }
+        if (!isCurrentLaunchBlockedForwardPage(index, page) &&
             shouldSkipDecodeOutsideProtectedNumericWindow(
                 index,
                 page,
                 "strict_exact_request"
             )
-        ) return
+        ) {
+            if (shouldLogRateLimitedDiagnostic("strict_request_protected_skip|$index", 1_000L)) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_strict_request_protected_skip page=$index," +
+                        "source=${page.sourceIndex},anchor=${currentViewportAnchor.get()}," +
+                        "window=${protectedNumericBitmapWindow()}",
+                )
+            }
+            return
+        }
         val splitSourceSingleFlight = shouldSplitPreparedBitmapForPage(
             autoCut,
             page.allowAutoSplit,
@@ -27598,43 +29622,86 @@ class ReaderSession(
         } else {
             strictExactDecodeInFlight.add(index)
         }
-        if (!decodeClaimed) return
+        if (!decodeClaimed) {
+            if (shouldLogRateLimitedDiagnostic("strict_request_claimed|$index", 1_000L)) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_strict_request_claimed page=$index," +
+                        "source=${page.sourceIndex}",
+                )
+            }
+            promoteQueuedStrictExactViewportBlocker(index, page)
+            return
+        }
+        val exactCompositorForwardWarm = compositorForwardWarmIntent &&
+            isLatestExactLaunchCompositorForwardWarm(index, page)
         strictExactDecodeAdmissions.incrementAndGet()
         val admittedEpoch = admission.epoch
         val targetWidth = max(1, viewerWidth)
-        val oversizedDirectWifiCurrentWebtoon =
+        val hostExactDirectWifiCurrentWebtoon = hostGpuEmulatorRuntime &&
             strictExactLaunchSeal?.normalizedEpisodePath
                 ?.startsWith("/webtoon/", ignoreCase = true) == true &&
             NtkSourceSpoolRegistry.isCurrentDirectWifiRendererProfile(
                 strictExactLaunchSeal?.normalizedEpisodePath,
                 strictExactForegroundViewerGenerationAtCreation,
             ) &&
-            isStrictExactCurrentForegroundEpisode() &&
+            isStrictExactCurrentForegroundEpisode()
+        val initialHostExactScrollRunwayDecode = hostExactDirectWifiCurrentWebtoon &&
+            strictInitialScrollRunwayContainsSource(page.sourceIndex)
+        val launchAnchorSource = pageRef(currentStartPage())?.sourceIndex ?: -1
+        val effectiveDecodeAnchor = NtkStrictLaunchDecodeAnchorPolicy.resolve(
+            initialRunwayDecode = initialHostExactScrollRunwayDecode,
+            sourceIndex = page.sourceIndex,
+            launchSourceIndex = launchAnchorSource,
+            requestedAnchor = anchor,
+        )
+        val initialHostExactScrollRunwayFollowerDecode =
+            initialHostExactScrollRunwayDecode &&
+                page.sourceIndex > launchAnchorSource
+        val oversizedDirectWifiCurrentWebtoon = hostExactDirectWifiCurrentWebtoon &&
             !ReaderExactDecodeStoragePolicy.useSharedFullPageBitmap(
                 forceOriginal = true,
                 sourceWidth = descriptor.metadata.sourceWidth,
                 sourceHeight = descriptor.metadata.sourceHeight,
             )
-        val waitForOversizedDirectWifiAnchor = !anchor &&
+        val waitForOversizedDirectWifiAnchor = !effectiveDecodeAnchor &&
             oversizedDirectWifiCurrentWebtoon
-        val parallelOversizedDirectWifiAnchor = anchor &&
+        val parallelOversizedDirectWifiAnchor = effectiveDecodeAnchor &&
             oversizedDirectWifiCurrentWebtoon
         val executor = when {
-            anchor -> anchorDecode
+            effectiveDecodeAnchor -> anchorDecode
+            initialHostExactScrollRunwayFollowerDecode -> strictExactInitialRunwayDecode
             overlap -> strictExactOverlapDecode
             strictExactRollingPixelResidency.get() -> strictExactRollingDecode
             else -> strictExactBulkDecode
         }
-        try {
-            executor.execute {
+        if (initialHostExactScrollRunwayDecode) {
+            Log.d(
+                TAG,
+                "reader_ntk_initial_runway_decode_admitted page=$index," +
+                    "source=${page.sourceIndex},requestedAnchor=$anchor," +
+                    "effectiveAnchor=$effectiveDecodeAnchor,overlap=$overlap,activeInput=" +
+                    physicalScrollEverStarted.get(),
+            )
+        }
+        lateinit var decodeTask: Runnable
+        decodeTask = Runnable execute@ {
+                strictExactRollingQueuedDecodes.remove(index, decodeTask)
+                val promotedViewportBlocker =
+                    strictExactRollingPromotedDecodes.remove(index)
                 var decodeClaimActive = true
+                var motionDeferred = false
+                var terminalStage = "task-entered"
                 // Source EOF/hash work and JPEG decode share the six host cores. Stay background
                 // while any canonical body is missing, then restore normal priority per task so
                 // the finite decode tail does not remain artificially throttled after the network
                 // wave is complete.
                 runCatching {
                     Process.setThreadPriority(
-                        if (parallelOversizedDirectWifiAnchor) {
+                        if (promotedViewportBlocker ||
+                            parallelOversizedDirectWifiAnchor ||
+                            initialHostExactScrollRunwayDecode
+                        ) {
                             // Resume can request only the one visible oversized source, so the
                             // descriptor count never reaches the full manifest page count. Do not
                             // demote that sole post-EOF anchor partition to background while the
@@ -27656,20 +29723,30 @@ class ReaderSession(
                 // arriving. Once the manifest is fully resident, queued (not yet executing)
                 // overlap work must join the full bulk stage; otherwise a 40-page FIFO tail
                 // would remain pinned to the smaller pool and dominate all-images-ready time.
-                if (overlap && strictExactBulkDecodeReleased.get()) {
+                if (overlap && strictExactBulkDecodeReleased.get() &&
+                    !initialHostExactScrollRunwayDecode
+                ) {
+                    // Bulk release is a throughput transition, not permission to demote pixels
+                    // already demanded by a physical gesture. Re-enqueuing p3/p4 behind the
+                    // complete-scene FIFO left their verified bodies idle while p69/p8 decoded
+                    // first and held the real viewport at p2.
                     releaseStrictExactDecodeClaim(index, page, splitSourceSingleFlight)
                     decodeClaimActive = false
                     requestStrictExactSourcePage(
                         index,
                         anchor = anchor,
                         generation = generation,
-                        overlap = false
+                        overlap = false,
+                        compositorForwardWarmIntent = exactCompositorForwardWarm,
                     )
                     return@execute
                 }
                 var lease: NtkStrictBodyLease? = null
-                var activeScrollDecodeGateAcquired = false
+                var activeScrollDecodeGate: Semaphore? = null
+                var initialViewportDecodeGateAcquired = false
+                var initialRunwayNativeDecodePermitAcquired = false
                 try {
+                    terminalStage = "anchor-wait"
                     while (waitForOversizedDirectWifiAnchor &&
                         !cancelled.get() &&
                         !strictExactInitialAnchorPixelsInstalled.await(50L, TimeUnit.MILLISECONDS)
@@ -27678,6 +29755,7 @@ class ReaderSession(
                         // compete with the only immediately visible decode.
                     }
                     if (cancelled.get()) return@execute
+                    terminalStage = "admission-recheck"
                     val currentAdmission = strictRollingAdmission.get() ?: return@execute
                     if (!currentAdmission.admitsSource(page.sourceIndex) ||
                         !isStrictExactIdentityValid(index, page)
@@ -27688,34 +29766,257 @@ class ReaderSession(
                             "strict_exact_worker"
                         )
                         ) return@execute
-                    if (NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                    if (hostExactDirectWifiCurrentWebtoon && !viewerActivated.get() &&
+                        (!effectiveDecodeAnchor || initialHostExactScrollRunwayFollowerDecode)
+                    ) {
+                        while (!cancelled.get() && !viewerActivated.get()) {
+                            if (initialHostExactScrollRunwayFollowerDecode) {
+                                // Bodies p1..p4 may finish before viewer activation. Let their
+                                // dedicated waiters reach the canonical gate below; only its winner
+                                // may enter native decode, so out-of-order EOF cannot create a
+                                // four-wide gfxstream upload storm behind the visible anchor.
+                                break
+                            }
+                            when (strictInitialViewportRequiresSource(page.sourceIndex)) {
+                                null -> Thread.sleep(16L)
+                                false -> {
+                                    if (physicalScrollEverStarted.get() &&
+                                        strictInitialScrollRunwayContainsSource(page.sourceIndex)
+                                    ) {
+                                        // Non-follower compatibility path: retain its original
+                                        // p0 ownership fence. Current launch followers take the
+                                        // private predecode path above.
+                                        if (!strictExactInitialAnchorPixelsInstalled.await(
+                                                50L,
+                                                TimeUnit.MILLISECONDS,
+                                            )
+                                        ) continue
+                                        if (!awaitStrictInitialDecodeRunwayTurn(
+                                                page.sourceIndex,
+                                            )
+                                        ) {
+                                            // A pre-rendered anchor can be rediscovered after the
+                                            // follower counter has already advanced to p1. That
+                                            // duplicate p0 is stale, not a reason to poll forever
+                                            // while occupying the bounded overlap decoder.
+                                            return@execute
+                                        }
+                                        initialHostExactViewportDecodeGate.acquire()
+                                        initialViewportDecodeGateAcquired = true
+                                        break
+                                    }
+                                    strictExactInitialPhysicalFramePresented.await(
+                                        50L,
+                                        TimeUnit.MILLISECONDS,
+                                    )
+                                }
+                                true -> {
+                                    if (!strictExactInitialAnchorPixelsInstalled.await(
+                                            50L,
+                                            TimeUnit.MILLISECONDS,
+                                        )
+                                    ) continue
+                                    if (!awaitStrictInitialDecodeRunwayTurn(page.sourceIndex)) {
+                                        // The ordered source has already crossed this slot (or the
+                                        // slot is the launch anchor). Drop the duplicate worker so
+                                        // the next canonical follower can enter the small pool.
+                                        return@execute
+                                    }
+                                    initialHostExactViewportDecodeGate.acquire()
+                                    initialViewportDecodeGateAcquired = true
+                                    break
+                                }
+                            }
+                        }
+                        if (cancelled.get() || !isStrictExactIdentityValid(index, page)) {
+                            return@execute
+                        }
+                    }
+                    if (hostExactDirectWifiCurrentWebtoon &&
+                        strictInitialScrollRunwayContainsSource(page.sourceIndex) &&
+                        !initialHostExactScrollRunwayFollowerDecode &&
+                        !effectiveDecodeAnchor &&
+                        !initialViewportDecodeGateAcquired
+                    ) {
+                        // Use one canonical p1->p5 state machine regardless of whether physical
+                        // DOWN races just before or after p1/p2 EOF. Mixing unordered idle decode
+                        // with ordered active decode left the counter at p1 after those sources
+                        // had already completed, permanently parking p3/p4.
+                        if (!strictExactInitialAnchorPixelsInstalled.await(
+                                50L,
+                                TimeUnit.MILLISECONDS,
+                            )
+                        ) return@execute
+                        if (!awaitStrictInitialDecodeRunwayTurn(page.sourceIndex)) return@execute
+                        initialHostExactViewportDecodeGate.acquire()
+                        initialViewportDecodeGateAcquired = true
+                    }
+                    if (initialHostExactScrollRunwayFollowerDecode &&
+                        !initialViewportDecodeGateAcquired
+                    ) {
+                        // Bodies p1..p4 keep downloading beside p0, but p0 is the only page that
+                        // can remove the initial blank. Let its native decode finish first; the
+                        // previous three-way overlap stretched it from ~0.25 s to ~0.85 s. Then
+                        // prepare pN and pN+1 together without letting out-of-order EOF spend the
+                        // second native lane on pN+2. Public ownership remains canonical below.
+                        while (!cancelled.get() &&
+                            !strictExactInitialAnchorPixelsInstalled.await(
+                                50L,
+                                TimeUnit.MILLISECONDS,
+                            )
+                        ) {
+                            // Keep the verified encoded body resident without native allocation.
+                        }
+                        if (cancelled.get() ||
+                            !isStrictExactIdentityValid(index, page) ||
+                            !awaitStrictInitialDecodePreparationWindow(page.sourceIndex)
+                        ) return@execute
+                        initialHostExactRunwayNativeDecodePermits.acquire()
+                        initialRunwayNativeDecodePermitAcquired = true
+                        if (cancelled.get() || !isStrictExactIdentityValid(index, page)) {
+                            return@execute
+                        }
+                    }
+                    while (!cancelled.get() &&
+                        !isCurrentLaunchBlockedForwardPage(index, page) &&
+                        NtkStrictActiveScrollDecodePolicy
+                            .shouldHoldHostOffscreenBeforeFirstInteraction(
+                                hostSurfaceRuntime = hostGpuEmulatorRuntime,
+                                currentForegroundEpisode =
+                                    isStrictExactCurrentForegroundEpisode(),
+                                anchor = effectiveDecodeAnchor,
+                                initialScrollRunway = initialHostExactScrollRunwayDecode,
+                                initialViewportRequired =
+                                    strictInitialViewportRequiresSource(page.sourceIndex) == true,
+                                physicalScrollEverStarted = physicalScrollEverStarted.get(),
+                                firstPhysicalFrameAtMs =
+                                    strictExactInitialPhysicalFramePresentedAtMs.get(),
+                                firstAnchorPixelsAtMs =
+                                    strictExactInitialAnchorPixelsInstalledAtMs.get(),
+                                nowMs = SystemClock.elapsedRealtime(),
+                            )
+                    ) {
+                        Thread.sleep(16L)
+                    }
+                    if (cancelled.get() || !isStrictExactIdentityValid(index, page)) {
+                        return@execute
+                    }
+                    val deferHostOffscreenUntilQuiet =
+                        !initialHostExactScrollRunwayFollowerDecode &&
+                            !initialViewportDecodeGateAcquired && !exactCompositorForwardWarm &&
+                            NtkStrictActiveScrollDecodePolicy
+                                .shouldDeferHostOffscreenUntilQuiet(
+                                    hostSurfaceRuntime = hostGpuEmulatorRuntime,
+                                    physicalScrollEverStarted = physicalScrollEverStarted.get(),
+                                    currentForegroundEpisode =
+                                        isStrictExactCurrentForegroundEpisode(),
+                                    anchor = effectiveDecodeAnchor,
+                                )
+                    if (deferHostOffscreenUntilQuiet) {
+                        terminalStage = "input-quiet-wait"
+                        // Protect real pointer input and its short quiet edge completely. A fling
+                        // can remain busy for many seconds (and some Surface backends retain the
+                        // final busy bit until the next lifecycle edge), so it must not become an
+                        // unbounded all-scene decode lock. After pointer quiet, drain one exact
+                        // original at a time while motion remains active; genuine idle restores
+                        // the fixed rolling executor's parallelism. A physical blocker bypasses
+                        // both waits and gates.
+                        while (!cancelled.get() &&
+                            !isCurrentLaunchBlockedForwardPage(index, page)
+                        ) {
+                            if (isHostExactOffscreenDecodeInputProtected()) {
+                                Thread.sleep(16L)
+                                continue
+                            }
+                            if (NtkReaderTransferPacer.isPhysicalMotionActive() ||
+                                viewportBusy.get()
+                            ) {
+                                val decodeGate = if (
+                                    NtkReaderTransferPacer.isPhysicalInputPriorityActive()
+                                ) {
+                                    activeVisibleDecodeGate
+                                } else if (NtkReaderTransferPacer.isPhysicalMotionActive()) {
+                                    passiveMotionDecodeGate
+                                } else {
+                                    blockedMotionDecodeGate
+                                }
+                                if (decodeGate.tryAcquire(
+                                        16L,
+                                        TimeUnit.MILLISECONDS,
+                                    )
+                                ) {
+                                    if (isHostExactOffscreenDecodeInputProtected()) {
+                                        decodeGate.release()
+                                        continue
+                                    }
+                                    activeScrollDecodeGate = decodeGate
+                                    break
+                                }
+                                continue
+                            }
+                            break
+                        }
+                        if (cancelled.get() || !isStrictExactIdentityValid(index, page)) {
+                            return@execute
+                        }
+                    } else if (!initialViewportDecodeGateAcquired &&
+                        NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
                             hostSurfaceRuntime = hostGpuEmulatorRuntime,
                             physicalScrollEverStarted = physicalScrollEverStarted.get(),
                             directWifi = isDirectWifiStrictAdjacentTransportActive(),
                             currentForegroundEpisode = isStrictExactCurrentForegroundEpisode(),
                             activeInput = isActiveGeneratedInputOrQuietForDelivery(),
-                            anchor = anchor,
+                            anchor = effectiveDecodeAnchor,
                             manhwa = strictExactLaunchSeal?.normalizedEpisodePath
                                 ?.startsWith("/manhwa/", ignoreCase = true) == true,
                         )
                     ) {
-                        activeVisibleDecodeGate.acquire()
-                        activeScrollDecodeGateAcquired = true
+                        terminalStage = "visible-gate-wait"
+                        // Background pages stay one-at-a-time after physical scrolling starts.
+                        // The exact page currently holding the real drawable-prefix fence gets
+                        // one independent visible lane; otherwise continuous input can keep that
+                        // page behind unrelated work forever. Timed acquisition lets an already
+                        // waiting worker observe the later Surface blocker signal.
+                        while (!cancelled.get()) {
+                            if (isCurrentLaunchBlockedForwardPage(index, page)) break
+                            if (activeVisibleDecodeGate.tryAcquire(16L, TimeUnit.MILLISECONDS)) {
+                                activeScrollDecodeGate = activeVisibleDecodeGate
+                                break
+                            }
+                            // Recheck the immutable PageRef blocker without polling main state.
+                        }
                         if (cancelled.get() || !isStrictExactIdentityValid(index, page)) {
                             return@execute
                         }
                     }
+                    terminalStage = "lease-open"
                     lease = descriptor.openLease()
                     val opened = checkNotNull(lease)
+                    terminalStage = "lease-opened"
                     if (opened.sourceKey != descriptor.sourceKey ||
                         opened.sourceKey.pageIndex != page.sourceIndex ||
                         opened.sourceKey.manifestDigest != strictExactLaunchSeal?.manifestDigest
                     ) throw NtkSourceIdentityException("Strict rolling body lease identity changed")
                     val startedAt = SystemClock.elapsedRealtime()
+                    if (initialHostExactScrollRunwayDecode) {
+                        Log.d(
+                            TAG,
+                            "reader_ntk_initial_runway_decode_started page=$index," +
+                                "source=${page.sourceIndex}",
+                        )
+                    }
                     val canonicalAsset = strictExactLaunchSeal
                         ?.canonicalAssets
                         ?.getOrNull(page.sourceIndex)
                         .orEmpty()
+                    // The admission loop above is a queue-level fence. Recheck at the actual pool
+                    // allocation and native JPEG edge as well: a new ACTION_DOWN can arrive after
+                    // the loop observed idle but before this worker reaches either expensive call.
+                    // The exact physical blocker and the ordered p0..p5 runway remain admissible.
+                    val fenceNativeExactDecodeForPhysicalInput =
+                        deferHostOffscreenUntilQuiet &&
+                            !isCurrentLaunchBlockedForwardPage(index, page) &&
+                            !exactCompositorForwardWarm
                     val result = if (
                         hasHostExactSealedSource(opened.file, opened.proof.encodedLength)
                     ) {
@@ -27727,6 +30028,11 @@ class ReaderSession(
                             opened.sourceWidth,
                             opened.sourceHeight,
                             canonicalAsset,
+                            deferWhilePhysicalInput =
+                                fenceNativeExactDecodeForPhysicalInput,
+                            allowTransientHostExactPoolOvercommit = false,
+                            exactLaunchCompositorForwardWarmIntent =
+                                exactCompositorForwardWarm,
                         )
                     } else {
                         opened.predecodedOriginal
@@ -27749,6 +30055,11 @@ class ReaderSession(
                                 opened.sourceHeight,
                                 canonicalAsset,
                                 parallelOversizedDirectWifiAnchor,
+                                deferWhilePhysicalInput =
+                                    fenceNativeExactDecodeForPhysicalInput,
+                                allowTransientHostExactPoolOvercommit = false,
+                                exactLaunchCompositorForwardWarmIntent =
+                                    exactCompositorForwardWarm,
                             )
                         } ?: decodeStrictExactPageFile(
                             index,
@@ -27758,9 +30069,27 @@ class ReaderSession(
                             opened.sourceWidth,
                             opened.sourceHeight,
                             canonicalAsset,
+                            deferWhilePhysicalInput =
+                                fenceNativeExactDecodeForPhysicalInput,
+                            allowTransientHostExactPoolOvercommit = false,
+                            exactLaunchCompositorForwardWarmIntent =
+                                exactCompositorForwardWarm,
                         )
                     }
+                    terminalStage = "decoded"
+                    if (initialRunwayNativeDecodePermitAcquired) {
+                        initialHostExactRunwayNativeDecodePermits.release()
+                        initialRunwayNativeDecodePermitAcquired = false
+                    }
                     val latest = strictRollingAdmission.get()
+                    if (initialHostExactScrollRunwayDecode) {
+                        Log.d(
+                            TAG,
+                            "reader_ntk_initial_runway_decode_completed page=$index," +
+                                "source=${page.sourceIndex},ms=" +
+                                (SystemClock.elapsedRealtime() - startedAt),
+                        )
+                    }
                     if (cancelled.get() || latest == null ||
                         !latest.admitsSource(page.sourceIndex) ||
                         !isStrictExactIdentityValid(index, page)
@@ -27774,12 +30103,35 @@ class ReaderSession(
                         )
                         return@execute
                     }
+                    if (initialHostExactScrollRunwayFollowerDecode) {
+                        terminalStage = "initial-runway-handoff-wait"
+                        while (!cancelled.get() &&
+                            !strictExactInitialAnchorPixelsInstalled.await(
+                                50L,
+                                TimeUnit.MILLISECONDS,
+                            )
+                        ) {
+                            // Keep the completed private pixels off Surface until p0's exact ACK.
+                        }
+                        if (cancelled.get() ||
+                            !isStrictExactIdentityValid(index, page) ||
+                            !awaitStrictInitialDecodeRunwayTurn(page.sourceIndex)
+                        ) {
+                            recycleDecodeResult(result)
+                            return@execute
+                        }
+                        initialHostExactViewportDecodeGate.acquire()
+                        initialViewportDecodeGateAcquired = true
+                    }
                     val decodedTiles = result as? PageDecodeResult.Tiles
                     val canonicalOriginal = decodedTiles != null &&
                         isCanonicalOriginalTileResult(result, page.image)
                     var handedOff = false
                     if (decodedTiles != null && canonicalOriginal) {
-                        handedOff = listener.isStrictAuthoritativeWorkerHandoffActive() &&
+                        handedOff = (
+                            initialHostExactScrollRunwayDecode ||
+                                listener.isStrictAuthoritativeWorkerHandoffActive()
+                            ) &&
                             handOffStrictExactAuthoritativeTiles(index, page, decodedTiles, result)
                         if (handedOff && index == currentStartPage()) {
                             // The anchor used to bypass the authoritative worker handoff and was
@@ -27788,6 +30140,13 @@ class ReaderSession(
                             // permanently one page short of the full-scene GPU handoff. The exact
                             // Surface install above already schedules the physical frame; retain
                             // the normal first-draw state transition without a second pixel bind.
+                            // The native authoritative API consumed the exact pixels directly, so
+                            // this branch never reaches postDecodeResult(), where ordinary paths
+                            // advance firstBitmapLogged. Leaving the two state machines split keeps
+                            // every later p1+ result in the pre-first private backlog even though p0
+                            // is already on screen. Publish the matching preparation fact only after
+                            // the Surface ACK above has succeeded.
+                            markFirstPreparedBitmapDelivered(resultDrawHeightPx(result))
                             markFirstDrawableCommitted(index, "strict_authoritative_handoff")
                             postReleaseInitialFanoutIfPending(index)
                         }
@@ -27817,23 +30176,134 @@ class ReaderSession(
                             )
                         )
                     }
+                    terminalStage = if (handedOff) {
+                        "authoritative-handoff"
+                    } else {
+                        "legacy-delivery-posted"
+                    }
+                    if (initialViewportDecodeGateAcquired) {
+                        // Queue acceptance above is the ownership boundary. Advance only after
+                        // pN has been decoded and handed off (or its ordered legacy delivery was
+                        // posted), so pN+1 can neither contend for native pixels nor overtake it.
+                        strictExactInitialDecodeRunwayNextSource.compareAndSet(
+                            page.sourceIndex,
+                            page.sourceIndex + 1,
+                        )
+                        initialHostExactViewportDecodeGate.release()
+                        initialViewportDecodeGateAcquired = false
+                    }
                 } catch (failure: Exception) {
-                    recordIfUnexpected(failure)
-                    postPageError(index, page, failure)
+                    if (failure is NtkPhysicalMotionDecodeDeferredException) {
+                        terminalStage = "motion-deferred"
+                        motionDeferred = true
+                        if (shouldLogRateLimitedDiagnostic(
+                                "strict_decode_motion_deferred|$index",
+                                1_000L,
+                            )
+                        ) {
+                            Log.d(
+                                TAG,
+                                "reader_ntk_strict_decode_motion_deferred page=$index," +
+                                    "source=${page.sourceIndex},touchActive=" +
+                                    physicalTouchActive.get() + ",touchQuietMs=" +
+                                    physicalTouchQuietRemainingMs(
+                                        HOST_EXACT_OFFSCREEN_DECODE_INPUT_QUIET_MS,
+                                    ) + ",transferMotion=" +
+                                    NtkReaderTransferPacer.isPhysicalMotionActive() +
+                                    ",transferInput=" +
+                                    NtkReaderTransferPacer.isPhysicalInputPriorityActive() +
+                                    ",viewportBusy=${viewportBusy.get()}",
+                            )
+                        }
+                    } else {
+                        terminalStage = "failure-${failure.javaClass.simpleName}"
+                        recordIfUnexpected(failure)
+                        postPageError(index, page, failure)
+                    }
                 } finally {
                     lease?.release?.invoke()
-                    if (activeScrollDecodeGateAcquired) {
-                        releaseActiveGeneratedProofDecodeGate()
+                    activeScrollDecodeGate?.release()
+                    if (initialRunwayNativeDecodePermitAcquired) {
+                        initialHostExactRunwayNativeDecodePermits.release()
+                    }
+                    if (initialViewportDecodeGateAcquired) {
+                        // A failed or stale pN must remain the next canonical source so its retry
+                        // can repair the drawable prefix. Advancing here would permanently strand
+                        // that hole while allowing pN+1 to consume native memory offscreen.
+                        initialHostExactViewportDecodeGate.release()
                     }
                     if (decodeClaimActive) {
                         releaseStrictExactDecodeClaim(index, page, splitSourceSingleFlight)
                     }
                     strictExactDecodeTerminals.incrementAndGet()
+                    if (shouldLogRateLimitedDiagnostic(
+                            "strict_decode_terminal|$index|$terminalStage",
+                            1_000L,
+                        )
+                    ) {
+                        Log.d(
+                            TAG,
+                            "reader_ntk_strict_decode_terminal page=$index," +
+                                "source=${page.sourceIndex},stage=$terminalStage," +
+                                "cancelled=${cancelled.get()},identity=" +
+                                isStrictExactIdentityValid(index, page) +
+                                ",generation=$generation,admittedEpoch=$admittedEpoch," +
+                                "currentEpoch=${strictRollingAdmission.get()?.epoch ?: -1L}",
+                        )
+                    }
+                    if (motionDeferred) {
+                        parkStrictExactMotionDeferredPage(index, page)
+                    }
                 }
             }
+        if (executor === strictExactRollingDecode) {
+            strictExactRollingQueuedDecodes[index] = decodeTask
+        }
+        try {
+            executor.execute(decodeTask)
         } catch (_: RejectedExecutionException) {
+            strictExactRollingQueuedDecodes.remove(index, decodeTask)
+            strictExactRollingPromotedDecodes.remove(index)
             releaseStrictExactDecodeClaim(index, page, splitSourceSingleFlight)
             strictExactDecodeTerminals.incrementAndGet()
+        }
+    }
+
+    /**
+     * A rolling webtoon can publish p69 before p9. Once p9 becomes the exact physical prefix
+     * blocker, leaving its already-verified decode behind that offscreen FIFO produces a visible
+     * loading wall even though no network work remains. Transfer only the queued blocker to the
+     * existing single-thread anchor lane. Queue removal must succeed first, so a task which has
+     * already started is never duplicated and its original single-flight claim stays intact.
+     */
+    private fun promoteQueuedStrictExactViewportBlocker(index: Int, page: PageRef): Boolean {
+        if (!isCurrentLaunchBlockedForwardPage(index, page)) return false
+        val task = strictExactRollingQueuedDecodes[index] ?: return false
+        if (!strictExactRollingDecode.removeQueued(task)) return false
+        if (!strictExactRollingQueuedDecodes.remove(index, task)) {
+            // The task cannot have started after a successful queue removal. Restore it rather
+            // than silently losing the single-flight owner if an unexpected map race occurs.
+            return runCatching {
+                strictExactRollingDecode.execute(task)
+                false
+            }.getOrDefault(false)
+        }
+        strictExactRollingPromotedDecodes.add(index)
+        return try {
+            anchorDecode.execute(task)
+            Log.d(
+                TAG,
+                "reader_ntk_strict_rolling_decode_promoted page=$index," +
+                    "source=${page.sourceIndex}",
+            )
+            true
+        } catch (_: RejectedExecutionException) {
+            strictExactRollingPromotedDecodes.remove(index)
+            if (!cancelled.get()) {
+                strictExactRollingQueuedDecodes[index] = task
+                runCatching { strictExactRollingDecode.execute(task) }
+            }
+            false
         }
     }
 
@@ -27856,8 +30326,36 @@ class ReaderSession(
     }
 
     private fun isInsideStrictExactRollingPixelWindow(index: Int): Boolean =
-        synchronized(deliveredBitmaps) {
-            index in retainedFirstPage..retainedLastPage
+        synchronized(pagesLock) {
+            if (index !in pages.indices) return@synchronized false
+            val anchor = currentViewportAnchor.get()
+                .takeIf { it in pages.indices }
+                ?: currentStartPage().coerceIn(0, pages.lastIndex)
+            // retainedFirstPage..retainedLastPage is a source/body lifetime window. During the
+            // sealed launch wave it can intentionally cover the complete episode so every body is
+            // verified once, even though the hardware tile pool holds only a small rolling pixel
+            // set. Treating that range as current pixel demand made a pressure-retired offscreen
+            // tail decode again immediately. A 13-page episode on a 12-slot pool then cycled p12
+            // forever, evicted the middle runway and left physical scroll capped before the tail.
+            //
+            // The compositor deliberately keeps its last complete frame while a reverse/forward
+            // page is being rehydrated.  Consequently its proven span can remain p8..p9 after the
+            // real logical viewport has already moved to p5.  Treating only that stale span as
+            // pixel demand returned here before the historic handoff bit could be invalidated,
+            // permanently suppressing the one decode capable of replacing the held frame.  Use
+            // the same continuous physical-to-logical bridge as finishStrictExactColdWindowDemand;
+            // it is still bounded by a real viewport anchor and never opens the full source/body
+            // admission range as decoded-pixel demand.
+            val compositorWindow = compositorProvenStrictExactPixelWindowLocked(
+                fallbackAnchor = anchor,
+                fallbackFirst = anchor,
+                fallbackLast = anchor,
+            )
+            index in NtkStrictRollingDecodeDemandPolicy.bridgePhysicalFrameToLogicalAnchor(
+                physicalVisibleRange = compositorWindow,
+                logicalAnchor = anchor,
+                pageCount = pages.size,
+            )
         }
 
     /**
@@ -27877,8 +30375,21 @@ class ReaderSession(
         // Protect this exact immutable resource before the listener queues/installs it. Delayed
         // replacement cleanup can otherwise recycle the Bitmap in the narrow interval between
         // Surface acceptance and the old post-ACK ownership mark below.
-        if (claimDecodeResultsExternallyOwned(listOf(result)) == null) return false
-        val accepted = try {
+        if (claimDecodeResultsExternallyOwned(listOf(result)) == null) {
+            val identities = decodeResultBitmapIdentities(listOf(result))
+            val transferred = synchronized(externallyOwnedBitmaps) {
+                identities.count(surfaceRetirementTransferredBitmaps::contains)
+            }
+            Log.e(
+                TAG,
+                "reader_authoritative_worker_handoff_reject page=$index,source=${page.sourceIndex}," +
+                    "reason=external_claim,recycled=${identities.count(Bitmap::isRecycled)}," +
+                    "transferred=$transferred,activeTokens=" +
+                    identities.count(HostExactHardwareTilePool::isActiveToken),
+            )
+            return false
+        }
+        val acceptedByInstallOwner = try {
             listener.onPageAuthoritativeTilesReady(
                 index,
                 page.sourceIndex,
@@ -27886,22 +30397,37 @@ class ReaderSession(
                 tiles.pageHeight,
                 tiles.tiles,
                 proof
-            ) && listener.isPageAuthoritativeDrawableInstalled(
-                index,
-                tiles.pageWidth,
-                tiles.pageHeight,
-                tiles.tiles
             )
         } catch (failure: Throwable) {
             throw failure
         }
-        if (!accepted) return false
+        if (!acceptedByInstallOwner) {
+            Log.e(
+                TAG,
+                "reader_authoritative_worker_handoff_reject page=$index,source=${page.sourceIndex}," +
+                    "reason=listener_rejected,activeTokens=" +
+                    tiles.tiles.count { HostExactHardwareTilePool.isActiveToken(it.bitmap) },
+            )
+            return false
+        }
 
-        // Exact downstream ACK means that the Surface or its immutable install queue owns these
-        // precise Bitmap identities. Protect them before consulting the historical page bit: a
+        // Queue acceptance is the ownership ACK for this worker path. Offscreen pages are
+        // intentionally installed by the Activity's next main-loop drain, so requiring an
+        // immediate Surface lookup here falsely rejects every valid queued page and sends the
+        // same immutable original through the legacy delivery path a second time. The Activity
+        // publishes render readiness only after the queued Surface install succeeds.
+        //
+        // The Surface or its immutable install queue now owns these precise Bitmap identities.
+        // Protect them before consulting the historical page bit: a
         // duplicate callback for the same winner must not fall through a pre-existing bit and
         // later let generic delivery cleanup recycle the Surface-owned pixels.
-        if (index == currentStartPage()) strictExactInitialAnchorPixelsInstalled.countDown()
+        if (index == currentStartPage()) {
+            strictExactInitialAnchorPixelsInstalledAtMs.compareAndSet(
+                0L,
+                SystemClock.elapsedRealtime(),
+            )
+            strictExactInitialAnchorPixelsInstalled.countDown()
+        }
         strictExactRollingRehydratePages.remove(index)
         // Do not clear the host-pressure marker here. A newer pressure trim can retire this page
         // after its physical claim but before this worker handoff. Clearing that newer marker is
@@ -27925,7 +30451,69 @@ class ReaderSession(
         pendingDeliveryWidths.remove(index)
         failedPages.remove(index)
         markDecodedDrawableReady(index, page, result.width)
+        scheduleDirectWifiIdleForwardWarmPump()
         return true
+    }
+
+    /**
+     * Uses a genuine reading pause to fill the already-bounded retained window one exact page at
+     * a time. Each publication finishes before the next turn is scheduled. A new gesture makes
+     * the next turn a no-op, and the mirror lane independently rechecks motion at its native edge.
+     */
+    private fun scheduleDirectWifiIdleForwardWarmPump() {
+        if (cancelled.get() || !strictExactDirectWifiRollingPixelResidency.get() ||
+            !directWifiIdleForwardWarmPumpScheduled.compareAndSet(false, true)
+        ) return
+        main.postDelayed({
+            directWifiIdleForwardWarmPumpScheduled.set(false)
+            if (cancelled.get() || viewportBusy.get() ||
+                NtkReaderTransferPacer.isPhysicalMotionActive() ||
+                isHostExactOffscreenDecodeInputProtected()
+            ) return@postDelayed
+            val direction = synchronized(windowLock) { lastWindowDirection }
+            if (direction < 0) return@postDelayed
+            val retained = synchronized(deliveredBitmaps) {
+                retainedFirstPage..retainedLastPage
+            }
+            if (retained.isEmpty()) return@postDelayed
+            val visibleLast = physicalDeliveryLastPage
+            val unavailable = HashSet<Int>()
+            for (candidate in maxOf(retained.first, visibleLast + 1)..retained.last) {
+                if (hasDeliveredOrPendingDrawable(candidate) ||
+                    listener.isPageAuthoritativeDrawableCurrentlyInstalled(candidate)
+                ) unavailable += candidate
+            }
+            val next = ReaderStrictBitmapResidencyPolicy.nextIdleForwardWarmPage(
+                directWifiRolling = true,
+                busy = false,
+                direction = direction,
+                visibleLast = visibleLast,
+                retainedLast = retained.last,
+                pageCount = synchronized(pagesLock) { pages.size },
+                residentPages = unavailable,
+            ) ?: return@postDelayed
+            val page = pageRef(next) ?: return@postDelayed
+            val admission = strictRollingAdmission.get() ?: return@postDelayed
+            if (strictExactDecodeInFlight.contains(next) ||
+                strictExactSplitSourceDecodeInFlight.contains(
+                    strictExactSplitSourceDecodeKey(page),
+                )
+            ) return@postDelayed
+            if (page.transitionTitle != null || !isStrictExactLaunchPage(page) ||
+                !admission.admitsSource(page.sourceIndex) ||
+                strictExactBodyDescriptors[page.sourceIndex] == null
+            ) return@postDelayed
+            Log.d(
+                TAG,
+                "reader_direct_wifi_idle_forward_pixel_pump page=$next," +
+                    "visibleLast=$visibleLast,retainedLast=${retained.last}",
+            )
+            requestStrictExactSourcePage(
+                index = next,
+                anchor = false,
+                generation = windowGeneration.get(),
+            )
+        }, DIRECT_WIFI_IDLE_FORWARD_WARM_PUMP_STEP_MS)
     }
 
     private fun requestPage(index: Int, busy: Boolean, anchor: Boolean, generation: Int = windowGeneration.get()) {
@@ -27937,7 +30525,6 @@ class ReaderSession(
         }
         val visibleIntent = busy || anchor
         var page = initialPage
-        if (shouldKeepPreparedRunwayDecodeColdUntilInput(index, page)) return
         if (
             isStructurePublishPending() &&
             !shouldAllowInitialRequestDuringStructurePublish(index, page, visibleIntent)
@@ -27947,6 +30534,12 @@ class ReaderSession(
             }
             return
         }
+        // An appended strict PageRef already has one manifest-bound source owner. It must reach
+        // that identity route before launch-runway cold holds, generated URL replacement, or
+        // remembered 404/tail policies can consume the physical request. Those generic policies
+        // are neither pixel-ownership evidence nor a valid wake edge for an idle rehydrate flight.
+        if (routeStrictAdjacentExactRehydrate(index, page, visibleIntent)) return
+        if (shouldKeepPreparedRunwayDecodeColdUntilInput(index, page)) return
         if (applyHintedNtkGeneratedImage(index, page, "request_page")) {
             page = pageRef(index) ?: return
         }
@@ -27954,7 +30547,6 @@ class ReaderSession(
         if (trimRecordedKnownMissingNtkGeneratedTail(page.manga, "request_page")) return
         if (skipKnownMissingNtkGeneratedPage(index, page, "request_page")) return
         if (adoptAuthoritativeListenerDrawable(index, page, "request_page")) return
-        if (routeStrictAdjacentExactRehydrate(index, page, visibleIntent)) return
         if (joinExistingPagePipelineOwner(index, page, visibleIntent)) return
         if (routeActiveGeneratedRequestToProofOrBytes(index, page, busy, anchor, generation)) return
         if (isNtkSource(page.manga, title) &&
@@ -30780,11 +33372,15 @@ class ReaderSession(
         // the historic identity and its present authoritative drawable agree.
         val authoritativeInstalled =
             listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)
-        if (hasListenerDrawableDelivery(index, page) && authoritativeInstalled) return true
+        if (hasListenerDrawableDelivery(index, page) && authoritativeInstalled) {
+            retireSettledStrictAdjacentRehydrateFlight(index, page)
+            return true
+        }
         if (!authoritativeInstalled) return false
         markListenerDrawableDelivery(index)
         markCanonicalDrawableCompletion(index, page)
         drawableReadyKey(page)?.let { key -> drawableReadyKeys.putIfAbsent(key, 1) }
+        retireSettledStrictAdjacentRehydrateFlight(index, page)
         logNtkPagePerf(index, "decode_skip_authoritative_surface", "reason=$reason")
         return true
     }
@@ -35149,13 +37745,7 @@ class ReaderSession(
             }
             return
         }
-        if (shouldLogRateLimitedDiagnostic("structure_window_re_request")) {
-            Log.d(
-                TAG,
-                "reader_structure_window_re_request first=${snapshot[0]},last=${snapshot[1]},anchor=${snapshot[2]}," +
-                    "busy=${snapshot[3] != 0},direction=${snapshot[4]}"
-            )
-        }
+        var offeredBusy = snapshot[3] != 0
         val offered = synchronized(retainedWindowRedriveStateLock) {
             if (!retainedWindowRedrivePending.get() ||
                 retainedWindowRedriveRevision != retainedRedriveRevisionAtStart
@@ -35164,18 +37754,27 @@ class ReaderSession(
             } else {
                 // Keep the pending-state check linear with the internal offer. A successful newer
                 // physical window can acknowledge this revision before this point and suppress the
-                // obsolete replay. The replay itself must not replace latestReportedWindow.
+                // obsolete replay. A structure retry is not physical input and must never restore
+                // a stale moving level after Surface already published idle.
+                offeredBusy = latestWindowIngressBusy.get()
                 offerWindowAsync(
                     snapshot[0],
                     snapshot[1],
                     snapshot[2],
-                    snapshot[3] != 0,
+                    offeredBusy,
                     snapshot[4],
                 )
                 true
             }
         }
         if (!offered) return
+        if (shouldLogRateLimitedDiagnostic("structure_window_re_request")) {
+            Log.d(
+                TAG,
+                "reader_structure_window_re_request first=${snapshot[0]},last=${snapshot[1]},anchor=${snapshot[2]}," +
+                    "busy=$offeredBusy,direction=${snapshot[4]}"
+            )
+        }
         val count = publishedPageIndex.get().size
         val edgeLast = minOf(count - 1, snapshot[1] + NTK_BUSY_VISIBLE_EDGE_EXTRA_PAGES)
         if (edgeLast > snapshot[1]) {
@@ -35688,7 +38287,6 @@ class ReaderSession(
         shiftConcurrentMapAfterRemoval(achievableWidths, rangeStart, removedCount)
         shiftConcurrentMapAfterRemoval(transientGeneratedRetries, rangeStart, removedCount)
         shiftConcurrentMapAfterRemoval(transientGeneratedVisibleRetries, rangeStart, removedCount)
-        shiftConcurrentMapAfterRemoval(initialContinuousPostedWidths, rangeStart, removedCount)
         shiftConcurrentMapAfterRemoval(earlyPreparedBitmaps, rangeStart, removedCount)
         shiftConcurrentMapAfterRemoval(deliveredDrawableProofWidths, rangeStart, removedCount)
         synchronized(indexedStateLock) {
@@ -35773,7 +38371,6 @@ class ReaderSession(
         clearConcurrentMapFromIndex(achievableWidths, startIndex)
         clearConcurrentMapFromIndex(transientGeneratedRetries, startIndex)
         clearConcurrentMapFromIndex(transientGeneratedVisibleRetries, startIndex)
-        clearConcurrentMapFromIndex(initialContinuousPostedWidths, startIndex)
         clearConcurrentMapFromIndex(earlyPreparedBitmaps, startIndex)
         clearConcurrentMapFromIndex(deliveredDrawableProofWidths, startIndex)
         synchronized(indexedStateLock) {
@@ -37417,8 +40014,13 @@ class ReaderSession(
         canonicalAsset: String,
         parallelOversizedResidentTiles: Boolean = false,
         deferWhilePhysicalMotion: Boolean = false,
+        deferWhilePhysicalInput: Boolean = false,
+        allowTransientHostExactPoolOvercommit: Boolean = true,
+        settledHostExactPoolOnly: Boolean = false,
+        exactLaunchCompositorForwardWarmIntent: Boolean = false,
     ): PageDecodeResult {
         if (deferWhilePhysicalMotion) awaitStrictExactDecodeMotionAdmission()
+        if (deferWhilePhysicalInput) awaitStrictExactDecodePhysicalInputAdmission()
         return withProtectedNumericDecodePermit(page) {
         withStrictDecodeTelemetry(index, page, canonicalAsset) {
             if (sourceWidth <= 0 || sourceHeight <= 0 || bytes.size < 32) {
@@ -37445,9 +40047,19 @@ class ReaderSession(
                     sourceWidth,
                     sourceHeight,
                     canonicalAsset,
-                    deferWhilePhysicalMotion,
-                    displaySourceLeft,
-                    displaySourceWidth,
+                    deferWhilePhysicalMotion = deferWhilePhysicalMotion,
+                    deferWhilePhysicalInput = deferWhilePhysicalInput,
+                    allowTransientOvercommit = allowTransientHostExactPoolOvercommit,
+                    settledPoolOnly = settledHostExactPoolOnly,
+                    prioritizeMirrorPublication =
+                        exactLaunchCompositorForwardWarmIntent ||
+                            shouldPrioritizeStrictExactMirrorPublication(index, page),
+                    mirrorPublicationRequiredNow = {
+                        exactLaunchCompositorForwardWarmIntent ||
+                            isStrictExactMirrorPublicationRequiredNow(index, page)
+                    },
+                    sourceLeft = displaySourceLeft,
+                    sourceRegionWidth = displaySourceWidth,
                 )?.let { hardwareTiles ->
                     return@withStrictDecodeTelemetry hardwareTiles
                 }
@@ -37546,8 +40158,13 @@ class ReaderSession(
         canonicalAsset: String,
         proofDrawable: Boolean = false,
         deferWhilePhysicalMotion: Boolean = false,
+        deferWhilePhysicalInput: Boolean = false,
+        allowTransientHostExactPoolOvercommit: Boolean = true,
+        settledHostExactPoolOnly: Boolean = false,
+        exactLaunchCompositorForwardWarmIntent: Boolean = false,
     ): PageDecodeResult {
         if (deferWhilePhysicalMotion) awaitStrictExactDecodeMotionAdmission()
+        if (deferWhilePhysicalInput) awaitStrictExactDecodePhysicalInputAdmission()
         return withProtectedNumericDecodePermit(page) {
         withStrictDecodeTelemetry(index, page, canonicalAsset) {
             if (!file.isFile || file.length() < 32L || sourceWidth <= 0 || sourceHeight <= 0) {
@@ -37574,9 +40191,19 @@ class ReaderSession(
                     sourceWidth,
                     sourceHeight,
                     canonicalAsset,
-                    deferWhilePhysicalMotion,
-                    displaySourceLeft,
-                    displaySourceWidth,
+                    deferWhilePhysicalMotion = deferWhilePhysicalMotion,
+                    deferWhilePhysicalInput = deferWhilePhysicalInput,
+                    allowTransientOvercommit = allowTransientHostExactPoolOvercommit,
+                    settledPoolOnly = settledHostExactPoolOnly,
+                    prioritizeMirrorPublication =
+                        exactLaunchCompositorForwardWarmIntent ||
+                            shouldPrioritizeStrictExactMirrorPublication(index, page),
+                    mirrorPublicationRequiredNow = {
+                        exactLaunchCompositorForwardWarmIntent ||
+                            isStrictExactMirrorPublicationRequiredNow(index, page)
+                    },
+                    sourceLeft = displaySourceLeft,
+                    sourceRegionWidth = displaySourceWidth,
                 )?.let { hardwareTiles ->
                     return@withStrictDecodeTelemetry hardwareTiles
                 }
@@ -37602,6 +40229,91 @@ class ReaderSession(
         }
     }
 
+    private fun awaitStrictExactDecodePhysicalInputAdmission() {
+        if (cancelled.get() || Thread.currentThread().isInterrupted) {
+            throw InterruptedException("Strict exact decode admission cancelled")
+        }
+        if (isHostExactOffscreenDecodeInputProtected()) {
+            throw NtkPhysicalMotionDecodeDeferredException()
+        }
+    }
+
+    /**
+     * Physical-input fence for the host exact decoder, independent of generated-URL routing.
+     * UiDevice and real touch flings have short gaps between gestures; treating each gap as idle
+     * wakes the complete six-worker suffix underneath the next DOWN. A 750 ms quiet proof is longer
+     * than those gaps but still leaves most of the existing all-ready runway for parallel drain.
+     */
+    private fun isHostExactOffscreenDecodeInputProtected(): Boolean =
+        physicalTouchActive.get() ||
+            physicalTouchQuietRemainingMs(HOST_EXACT_OFFSCREEN_DECODE_INPUT_QUIET_MS) > 0L
+
+    /**
+     * Redrives only exact identities whose native decode yielded to a newer physical gesture.
+     * One coalesced main-loop check is enough for the whole backlog. While a fling is alive the
+     * check remains cheap and infrequent; once pointer quiet is proven, the pages rejoin the
+     * existing single-lane passive-fling gate in canonical order. They do not wait for a long
+     * inertial fling to finish, and therefore cannot leave the complete-scene queue stranded.
+     */
+    private fun parkStrictExactMotionDeferredPage(index: Int, page: PageRef) {
+        if (cancelled.get() || !isStrictExactIdentityValid(index, page)) return
+        strictExactMotionDeferredPages[index] = page
+        scheduleStrictExactMotionDeferredRetry()
+    }
+
+    private fun scheduleStrictExactMotionDeferredRetry() {
+        if (cancelled.get() || strictExactMotionDeferredPages.isEmpty() ||
+            !strictExactMotionDeferredRetryPosted.compareAndSet(false, true)
+        ) return
+        val pointerQuietMs = physicalTouchQuietRemainingMs(
+            HOST_EXACT_OFFSCREEN_DECODE_INPUT_QUIET_MS,
+        )
+        val delayMs = if (pointerQuietMs > 0L) {
+            maxOf(pointerQuietMs, HOST_EXACT_MOTION_DEFERRED_RECHECK_MS)
+        } else {
+            HOST_EXACT_MOTION_DEFERRED_IDLE_RECHECK_MS
+        }
+        if (!main.postDelayed(strictExactMotionDeferredRetryRunnable, delayMs)) {
+            strictExactMotionDeferredRetryPosted.set(false)
+        }
+    }
+
+    private fun drainStrictExactMotionDeferredPages() {
+        strictExactMotionDeferredRetryPosted.set(false)
+        if (cancelled.get()) {
+            strictExactMotionDeferredPages.clear()
+            return
+        }
+        if (isHostExactOffscreenDecodeInputProtected()) {
+            scheduleStrictExactMotionDeferredRetry()
+            return
+        }
+        val admission = strictRollingAdmission.get()
+        if (admission == null) {
+            strictExactMotionDeferredPages.clear()
+            return
+        }
+        strictExactMotionDeferredPages.entries
+            .sortedBy { (_, page) -> page.sourceIndex }
+            .forEach { (fallbackIndex, page) ->
+                if (!strictExactMotionDeferredPages.remove(fallbackIndex, page)) return@forEach
+                val index = currentPageIndex(page, fallbackIndex)
+                if (index >= 0 && admission.admitsSource(page.sourceIndex) &&
+                    isStrictExactIdentityValid(index, page)
+                ) {
+                    requestStrictExactSourcePage(
+                        index,
+                        anchor = false,
+                        generation = admission.epoch.toInt(),
+                        overlap = false,
+                    )
+                }
+            }
+        if (strictExactMotionDeferredPages.isNotEmpty()) {
+            scheduleStrictExactMotionDeferredRetry()
+        }
+    }
+
     /**
      * Decodes exact source rows into reusable host-emulator HardwareBuffers. The Bitmap wrapper is
      * a fresh immutable identity for every decode; only the backing slot is reused, and only after
@@ -37613,6 +40325,11 @@ class ReaderSession(
         sourceHeight: Int,
         canonicalAsset: String,
         deferWhilePhysicalMotion: Boolean = false,
+        deferWhilePhysicalInput: Boolean = false,
+        allowTransientOvercommit: Boolean = true,
+        settledPoolOnly: Boolean = false,
+        prioritizeMirrorPublication: Boolean = false,
+        mirrorPublicationRequiredNow: (() -> Boolean)? = null,
         sourceLeft: Int = 0,
         sourceRegionWidth: Int = sourceWidth,
     ): PageDecodeResult.Tiles? {
@@ -37624,6 +40341,15 @@ class ReaderSession(
             sourceHeight = sourceHeight,
             tileCapacityHeight = sourceTileHeight,
             deferWhilePhysicalMotion = deferWhilePhysicalMotion,
+            decodeAdmission = if (deferWhilePhysicalInput) {
+                ::awaitStrictExactDecodePhysicalInputAdmission
+            } else {
+                null
+            },
+            allowTransientOvercommit = allowTransientOvercommit,
+            settledPoolOnly = settledPoolOnly,
+            prioritizeMirrorPublication = prioritizeMirrorPublication,
+            mirrorPublicationRequiredNow = mirrorPublicationRequiredNow,
             sourceLeft = sourceLeft,
             sourceRegionWidth = sourceRegionWidth,
         ) ?: return null
@@ -37646,6 +40372,11 @@ class ReaderSession(
         sourceHeight: Int,
         canonicalAsset: String,
         deferWhilePhysicalMotion: Boolean = false,
+        deferWhilePhysicalInput: Boolean = false,
+        allowTransientOvercommit: Boolean = true,
+        settledPoolOnly: Boolean = false,
+        prioritizeMirrorPublication: Boolean = false,
+        mirrorPublicationRequiredNow: (() -> Boolean)? = null,
         sourceLeft: Int = 0,
         sourceRegionWidth: Int = sourceWidth,
     ): PageDecodeResult.Tiles? {
@@ -37657,6 +40388,15 @@ class ReaderSession(
             sourceHeight = sourceHeight,
             tileCapacityHeight = sourceTileHeight,
             deferWhilePhysicalMotion = deferWhilePhysicalMotion,
+            decodeAdmission = if (deferWhilePhysicalInput) {
+                ::awaitStrictExactDecodePhysicalInputAdmission
+            } else {
+                null
+            },
+            allowTransientOvercommit = allowTransientOvercommit,
+            settledPoolOnly = settledPoolOnly,
+            prioritizeMirrorPublication = prioritizeMirrorPublication,
+            mirrorPublicationRequiredNow = mirrorPublicationRequiredNow,
             sourceLeft = sourceLeft,
             sourceRegionWidth = sourceRegionWidth,
         ) ?: return null
@@ -38110,7 +40850,7 @@ class ReaderSession(
         // turn that already owns the lock must then fail its final revision check instead of
         // deleting pages underneath this newer physical viewport callback.
         val observationRevision = forwardReadingObservationRevision.incrementAndGet()
-        if (strictExactShortWebtoonRollingPixelResidency.get()) {
+        if (strictExactDirectWifiRollingPixelResidency.get()) {
             // This callback arrives on main before its coalesced WindowEvent reaches the control
             // mailbox. Publish the Surface's native drag/fling state immediately so forward-only
             // history compaction cannot rebase page coordinates underneath a real fling. Keep an
@@ -38169,9 +40909,20 @@ class ReaderSession(
 
     /** Releases the native-motion level only after ReaderSurfaceView closes its real fling. */
     fun noteForwardSurfaceMotionEnded() {
-        if (!strictExactShortWebtoonRollingPixelResidency.get()) return
+        if (!strictExactDirectWifiRollingPixelResidency.get()) return
         directWifiForwardSurfaceMotionActive.set(false)
         directWifiForwardSurfaceMotionAtMs.set(SystemClock.uptimeMillis())
+        // This callback is emitted only after ReaderSurfaceView closes the real pointer/fling
+        // interval. The latest-value window mailbox can legitimately retain its preceding busy
+        // sample because no further pixel movement exists to publish another WindowEvent. Make
+        // that same identity-bound viewport idle, then replay it once so the rolling ring may
+        // restore one nearest missing forward page before the next gesture.
+        while (true) {
+            val reported = latestReportedWindow.get() ?: break
+            if (!reported.busy) break
+            if (latestReportedWindow.compareAndSet(reported, reported.copy(busy = false))) break
+        }
+        requestRetainedWindowAfterStructureChange()
     }
 
     /**
@@ -39535,6 +42286,16 @@ class ReaderSession(
             scheduleForwardReadingRetry()
             return currentPageIndex(activePage, anchor).takeIf { it >= 0 } ?: anchor
         }
+        val resumeQuietRemainingMs = forwardHistoryHostResumeQuietRemainingMs()
+        if (resumeQuietRemainingMs > 0L) {
+            logForwardHistoryTrimDeferralOnce(
+                "host_resume_quiet",
+                activePage,
+                "anchor=$anchor,remainingMs=$resumeQuietRemainingMs",
+            )
+            scheduleForwardReadingRetry(resumeQuietRemainingMs)
+            return currentPageIndex(activePage, anchor).takeIf { it >= 0 } ?: anchor
+        }
         val pixelCandidate = synchronized(pagesLock) {
             val verifiedAnchor = pageIndexLocked(activePage, anchor)
             if (verifiedAnchor !in pages.indices) return@synchronized null
@@ -39649,6 +42410,7 @@ class ReaderSession(
         if (
             viewportBusy.get() ||
             directWifiForwardHistoryMotionQuietRemainingMs() > 0L ||
+            forwardHistoryHostResumeQuietRemainingMs() > 0L ||
             readerQuietRemainingMs(NTK_FORWARD_HISTORY_TRIM_QUIET_MS) > 0L
         ) {
             logForwardHistoryTrimDeferralOnce(
@@ -39676,6 +42438,7 @@ class ReaderSession(
             if (
                 viewportBusy.get() ||
                 directWifiForwardHistoryMotionQuietRemainingMs() > 0L ||
+                forwardHistoryHostResumeQuietRemainingMs() > 0L ||
                 readerQuietRemainingMs(NTK_FORWARD_HISTORY_TRIM_QUIET_MS) > 0L
             ) {
                 scheduleForwardReadingRetry()
@@ -40138,7 +42901,7 @@ class ReaderSession(
         return true
     }
 
-    private fun scheduleForwardReadingRetry() {
+    private fun scheduleForwardReadingRetry(minimumDelayMs: Long = 0L) {
         if (!forwardReadingRetryPosted.compareAndSet(false, true)) return
         main.postDelayed(
             {
@@ -40148,8 +42911,14 @@ class ReaderSession(
                 forwardReadingPosition.set(anchor)
                 scheduleForwardReadingDrain()
             },
-            NTK_FORWARD_HISTORY_TRIM_RETRY_MS,
+            maxOf(NTK_FORWARD_HISTORY_TRIM_RETRY_MS, minimumDelayMs),
         )
+    }
+
+    private fun forwardHistoryHostResumeQuietRemainingMs(): Long {
+        val deadline = forwardHistoryHostResumeNotBeforeMs.get()
+        if (deadline <= 0L) return 0L
+        return (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0L)
     }
 
     private fun logForwardHistoryTrimDeferralOnce(
@@ -40348,6 +43117,116 @@ class ReaderSession(
         containsEpisodeForAppendLocked(target) || containsEpisodeFastLocked(target)
     }
 
+    /**
+     * Read-only liveness evidence for an instrumentation failure.  Numeric page state is copied
+     * under [pagesLock], then Surface ownership is queried after releasing it so this diagnostic
+     * can never participate in the page-table/renderer lock order it is intended to inspect.
+     */
+    fun pipelineLivenessDiagnosticForTest(): String {
+        data class DiagnosticPage(
+            val index: Int,
+            val page: PageRef,
+            val pressureRetired: Boolean,
+            val pendingSurfaceRetirement: Boolean,
+            val surfaceRetirementInFlight: Boolean,
+        )
+
+        val currentAnchor = currentViewportAnchor.get()
+        val reported = latestReportedWindow.get()
+        val snapshot = synchronized(pagesLock) {
+            val reportedAnchor = reported?.anchorPage?.let { page ->
+                pageIndexLocked(page, reported.fallbackAnchor)
+            } ?: -1
+            val requestedFirst = if (reported != null && reportedAnchor in pages.indices) {
+                (reportedAnchor + reported.firstOffset).coerceIn(0, pages.lastIndex)
+            } else {
+                -1
+            }
+            val requestedLast = if (reported != null && reportedAnchor in pages.indices) {
+                (reportedAnchor + reported.lastOffset).coerceIn(requestedFirst, pages.lastIndex)
+            } else {
+                -1
+            }
+            val physicalFirst = if (reported != null && reportedAnchor in pages.indices) {
+                (reportedAnchor + reported.physicalFirstOffset).coerceIn(0, pages.lastIndex)
+            } else {
+                -1
+            }
+            val physicalLast = if (reported != null && reportedAnchor in pages.indices) {
+                (reportedAnchor + reported.physicalLastOffset).coerceIn(physicalFirst, pages.lastIndex)
+            } else {
+                -1
+            }
+            val interesting = LinkedHashSet<Int>()
+            fun addRange(first: Int, last: Int) {
+                if (pages.isEmpty() || first < 0 || last < first) return
+                for (index in first.coerceAtLeast(0)..last.coerceAtMost(pages.lastIndex)) {
+                    interesting += index
+                }
+            }
+            addRange(requestedFirst, requestedLast)
+            addRange(physicalFirst, physicalLast)
+            addRange(currentAnchor - 3, currentAnchor + 5)
+            interesting += hostExactPoolPressureRetiredPages.filter { it in pages.indices }
+            interesting += pendingDeliveryWidths.keys.filter { it in pages.indices }
+            interesting += loading.filter { it in pages.indices }
+            val rows = interesting.sorted().map { index ->
+                val page = pages[index]
+                DiagnosticPage(
+                    index = index,
+                    page = page,
+                    pressureRetired = hostExactPoolPressureRetiredPages.contains(index),
+                    pendingSurfaceRetirement =
+                        hostPressurePendingSurfaceRetirements.containsKey(page),
+                    surfaceRetirementInFlight =
+                        hostPressureSurfaceRetirementsInFlight.contains(page),
+                )
+            }
+            Triple(
+                "anchor=$currentAnchor,reportedAnchor=$reportedAnchor," +
+                    "requested=$requestedFirst-$requestedLast,physical=$physicalFirst-$physicalLast," +
+                    "busy=${reported?.busy},direction=${reported?.directionHint}," +
+                    "delivery=$physicalDeliveryFirstPage-$physicalDeliveryLastPage",
+                rows,
+                pages.size,
+            )
+        }
+        val retained = synchronized(deliveredBitmaps) {
+            "$retainedFirstPage-$retainedLastPage@$retainedAnchorPage"
+        }
+        val rows = snapshot.second.joinToString(";") { row ->
+            val page = row.page
+            val identity = strictAdjacentRehydrateIdentity(page).orEmpty()
+            val flight = identity.takeIf(String::isNotEmpty)?.let(strictAdjacentRehydrateFlights::get)
+            val path = NtkStripDigests.normalizeEpisodePath(
+                page.manga.ntkEpisodePath?.trim().orEmpty(),
+            ).substringAfterLast('/')
+            "${row.index}:${page.sourceIndex}@$path{" +
+                "card=${page.transitionTitle != null},pressure=${row.pressureRetired}," +
+                "surfacePending=${row.pendingSurfaceRetirement}," +
+                "surfaceFlight=${row.surfaceRetirementInFlight}," +
+                "loading=${loading.contains(row.index)}/${loadingPages[row.index] === page}," +
+                "inFlight=${inFlightWidths[row.index] ?: 0}," +
+                "pending=${pendingDeliveryWidths[row.index] ?: 0}," +
+                "delivered=${hasDeliveredBitmap(row.index)}," +
+                "listener=${listener.isPageDrawableInstalled(row.index)}," +
+                "authoritative=${listener.isPageAuthoritativeDrawableCurrentlyInstalled(row.index)}," +
+                "batch=${isAdjacentDrawableBatchPublicationPending(page)}," +
+                "launch=${isStrictExactLaunchPage(page)}," +
+                "launchDescriptor=${strictExactBodyDescriptors.containsKey(page.sourceIndex)}," +
+                "handoff=${strictExactAuthoritativeHandoffPages.contains(row.index)}," +
+                "rollingRehydrate=${strictExactRollingRehydratePages.contains(row.index)}," +
+                "protected=${row.index in protectedNumericBitmapWindow(snapshot.third)}," +
+                "descriptor=${strictAdjacentBodyDescriptor(page) != null}," +
+                "published=${strictAdjacentPublishedBody(page) != null}," +
+                "flight=${flight != null}/${flight?.parked?.get()}/" +
+                "${flight?.ownerScheduledOrRunning?.get()}}"
+        }
+        return "pages=${snapshot.third},${snapshot.first},retained=$retained," +
+            "batchPublications=${adjacentDrawableBatchPublicationPending.get()}," +
+            "rehydrateFlights=${strictAdjacentRehydrateFlights.size},rows=$rows"
+    }
+
     fun hasReadyEpisodeRunwayForTest(target: Manga, minimumReadyImages: Int): Boolean {
         if (minimumReadyImages <= 0) return false
         val runway = synchronized(pagesLock) {
@@ -40414,19 +43293,55 @@ class ReaderSession(
             )
             Pair(refs, authoritativeCount)
         }
-        return NtkCompletedForwardEpisodePolicy.isComplete(
+        val drawableReady = snapshot.first.map { (index, page) ->
+            hasCanonicalDrawableCompletion(page) ||
+                hasListenerDrawableDelivery(index, page) ||
+                hasDeliveredBitmap(index)
+        }
+        val complete = NtkCompletedForwardEpisodePolicy.isComplete(
             authoritativeCount = snapshot.second,
             sourceIndexes = snapshot.first.map { it.value.sourceIndex },
-            drawableReady = snapshot.first.map { (index, page) ->
-                hasCanonicalDrawableCompletion(page) ||
-                    hasListenerDrawableDelivery(index, page) ||
-                    hasDeliveredBitmap(index)
-            },
+            drawableReady = drawableReady,
             requiredFirstSource = requiredForwardFirstSource(
                 snapshot.first.firstOrNull()?.value?.manga ?: target,
                 snapshot.second,
             ),
         )
+        if (!complete && shouldLogRateLimitedDiagnostic(
+                "test_fully_ready_episode|${target.ntkEpisodePath}",
+            )
+        ) {
+            val missing = snapshot.first.mapIndexedNotNull { ordinal, (index, page) ->
+                if (drawableReady.getOrNull(ordinal) == true) return@mapIndexedNotNull null
+                val identity = strictAdjacentRehydrateIdentity(page).orEmpty()
+                val flight = strictAdjacentRehydrateFlights[identity]
+                "${page.sourceIndex}@${index}{canonical=${hasCanonicalDrawableCompletion(page)}," +
+                    "listener=${hasListenerDrawableDelivery(index, page)}," +
+                    "delivered=${hasDeliveredBitmap(index)}," +
+                    "surface=${listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)}," +
+                    "pending=${pendingDeliveryWidths[index] ?: 0}," +
+                    "descriptor=${strictAdjacentBodyDescriptor(page) != null}," +
+                    "published=${strictAdjacentPublishedBody(page) != null}," +
+                    "flight=${flight != null},parked=${flight?.parked?.get()}," +
+                    "running=${flight?.ownerScheduledOrRunning?.get()}," +
+                    "idleCompletion=${flight?.enteredIdleCompletionIntent?.get()}," +
+                    "physical=${flight?.exactAdjacentPhysicalIntent?.get()}," +
+                    "compositor=${flight?.compositorForwardWarmIntent?.get()}}"
+            }
+            Log.d(
+                TAG,
+                "test_fully_ready_episode path=${target.ntkEpisodePath} " +
+                    "authoritative=${snapshot.second},refs=${snapshot.first.size}," +
+                    "entered=${latestEnteredExactEpisodePath.get()}," +
+                    "viewportBusy=${viewportBusy.get()}," +
+                    "motionActive=${NtkReaderTransferPacer.isPhysicalMotionActive()}," +
+                    "touchQuietMs=${physicalTouchQuietRemainingMs(NTK_ENTERED_EXACT_PIXEL_COMPLETION_IDLE_MS)}," +
+                    "completionOwner=${enteredExactEpisodePixelCompletionPaths.contains(
+                        NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty()),
+                    )},missing=${missing.joinToString(";")}",
+            )
+        }
+        return complete
     }
 
     fun canonicalEpisodeSourceCountForTest(target: Manga): Int = synchronized(pagesLock) {
@@ -40582,8 +43497,8 @@ class ReaderSession(
         terminalBitmapRedrivePosted.remove(currentIndex)
         publishDeliveredBitmapBytes()
         postBitmapReleases(cleared)
-        if (strictExactShortWebtoonRollingPixelResidency.get()) {
-            trimShortWebtoonLaunchPixelsOutsideWindow()
+        if (strictExactDirectWifiRollingPixelResidency.get()) {
+            trimDirectWifiLaunchPixelsOutsideWindow()
         }
         return currentIndex
     }
@@ -40688,8 +43603,8 @@ class ReaderSession(
         terminalBitmapRedrivePosted.remove(currentIndex)
         publishDeliveredBitmapBytes()
         postBitmapReleases(cleared)
-        if (strictExactShortWebtoonRollingPixelResidency.get()) {
-            trimShortWebtoonLaunchPixelsOutsideWindow()
+        if (strictExactDirectWifiRollingPixelResidency.get()) {
+            trimDirectWifiLaunchPixelsOutsideWindow()
         }
         return currentIndex
     }
@@ -40755,7 +43670,9 @@ class ReaderSession(
                     recycleDecodeResult(stale.result)
                     logNtkPagePerf(index, "replace_pending_initial_continuous_delivery", "pending=$pending,width=$width")
                 }
-                initialContinuousPostedWidths.remove(index)
+                initialContinuousPostedWidthsByIdentity.remove(
+                    initialContinuousPostedIdentity(delivery.page),
+                )
                 return true
             }
         }
@@ -41065,6 +43982,7 @@ class ReaderSession(
     private fun isDeliveryInsideProtectedNumericBitmapWindow(delivery: Delivery): Boolean {
         return delivery.hostPressurePhysicalReentry ||
             delivery.exactAdjacentPhysicalIntent ||
+            delivery.compositorForwardWarmIntent ||
             (delivery.startupAdjacentRunway && !physicalScrollEverStarted.get()) ||
             isInsideProtectedNumericBitmapWindow(delivery.index, delivery.page)
     }
@@ -41343,8 +44261,8 @@ class ReaderSession(
                 // every later exact rehydrate coalesce against a Runnable that does not exist.
                 // Remove only this delivery's observed value so a concurrently published wider
                 // owner cannot be retired by the handoff.
-                initialContinuousPostedWidths.remove(
-                    currentDelivery.index,
+                initialContinuousPostedWidthsByIdentity.remove(
+                    initialContinuousPostedIdentity(currentDelivery.page),
                     currentDelivery.result.width,
                 )
                 deliveryQueue.add(currentDelivery.copy(retainWhenBusy = true))
@@ -41369,7 +44287,9 @@ class ReaderSession(
             val deliverInitialContinuous = Runnable {
                 if (cancelled.get()) {
                     pendingDeliveryWidths.remove(currentDelivery.index)
-                    initialContinuousPostedWidths.remove(currentDelivery.index)
+                    initialContinuousPostedWidthsByIdentity.remove(
+                        initialContinuousPostedIdentity(currentDelivery.page),
+                    )
                     recycleDecodeResult(currentDelivery.result)
                     return@Runnable
                 }
@@ -41378,7 +44298,9 @@ class ReaderSession(
                         deliverDecodeResultOnMain(currentDelivery, false)
                     }
                 } finally {
-                    initialContinuousPostedWidths.remove(currentDelivery.index)
+                    initialContinuousPostedWidthsByIdentity.remove(
+                        initialContinuousPostedIdentity(currentDelivery.page),
+                    )
                 }
             }
             val delayMs = initialContinuousDeliveryDelayMs(currentDelivery)
@@ -41397,7 +44319,9 @@ class ReaderSession(
             }
             if (!posted) {
                 pendingDeliveryWidths.remove(currentDelivery.index)
-                initialContinuousPostedWidths.remove(currentDelivery.index)
+                initialContinuousPostedWidthsByIdentity.remove(
+                    initialContinuousPostedIdentity(currentDelivery.page),
+                )
                 recycleDecodeResult(currentDelivery.result)
             }
             return
@@ -41437,7 +44361,9 @@ class ReaderSession(
         failedPages.remove(delivery.index)
         transientGeneratedRetries.remove(delivery.index)
         transientGeneratedVisibleRetries.remove(delivery.index)
-        initialContinuousPostedWidths.remove(delivery.index)
+        initialContinuousPostedWidthsByIdentity.remove(
+            initialContinuousPostedIdentity(delivery.page),
+        )
         retryPendingWidthIfNeeded(delivery.index)
         deliverInitialPagesReadyForCurrentPagesIfNeeded()
         logNtkPagePerf(
@@ -41695,7 +44621,8 @@ class ReaderSession(
 
     private fun hasIdentityBoundAdjacentAuthoritativeInstall(delivery: Delivery): Boolean {
         return delivery.authoritativeAdjacentRehydrate &&
-            (delivery.hostPressurePhysicalReentry || delivery.exactAdjacentPhysicalIntent) &&
+            (delivery.hostPressurePhysicalReentry || delivery.exactAdjacentPhysicalIntent ||
+                delivery.compositorForwardWarmIntent) &&
             isFullQualityOriginalTileResult(delivery.result)
     }
 
@@ -41904,14 +44831,42 @@ class ReaderSession(
     }
 
     private fun markInitialContinuousDeliveryPosted(delivery: Delivery): Boolean {
+        val identity = initialContinuousPostedIdentity(delivery.page)
         while (true) {
-            val previous = initialContinuousPostedWidths[delivery.index]
+            val previous = initialContinuousPostedWidthsByIdentity[identity]
             if (previous == null) {
-                if (initialContinuousPostedWidths.putIfAbsent(delivery.index, delivery.result.width) == null) return true
+                if (initialContinuousPostedWidthsByIdentity.putIfAbsent(
+                        identity,
+                        delivery.result.width,
+                    ) == null
+                ) return true
                 continue
             }
             return previous < delivery.result.width &&
-                initialContinuousPostedWidths.replace(delivery.index, previous, delivery.result.width)
+                initialContinuousPostedWidthsByIdentity.replace(
+                    identity,
+                    previous,
+                    delivery.result.width,
+                )
+        }
+    }
+
+    private fun initialContinuousPostedIdentity(page: PageRef): String {
+        val path = NtkStripDigests.normalizeEpisodePath(
+            page.manga.ntkEpisodePath?.trim().orEmpty(),
+        )
+        return buildString {
+            append(path)
+            append('|')
+            append(page.manifestDigest)
+            append('|')
+            append(page.manifestPageCount)
+            append('|')
+            append(page.sourceIndex)
+            append('|')
+            append(page.side)
+            append('|')
+            append(NtkStripDigests.canonicalAssetDigestSha256(page.canonicalAsset))
         }
     }
 
@@ -42002,9 +44957,21 @@ class ReaderSession(
     }
 
     private fun shouldHoldInitialNtkDelivery(delivery: Delivery): Boolean {
-        if (strictExactColdRolling && delivery.index != currentStartPage() &&
-            SystemClock.uptimeMillis() < strictOffscreenPublishResumeAtMs.get()
-        ) return true
+        if (strictExactColdRolling && delivery.index != currentStartPage()) {
+            val nowMs = SystemClock.uptimeMillis()
+            var resumeAtMs = strictOffscreenPublishResumeAtMs.get()
+            if (firstDrawableDelivered.get() &&
+                resumeAtMs > nowMs + STRICT_EXACT_FIRST_FRAME_PUBLICATION_GRACE_MS
+            ) {
+                // firstDrawableDelivered can win through the direct native handoff before the
+                // ordinary bitmap callback initializes this deadline. Never let its constructor
+                // sentinel become an unbounded p1+ publication hold after exact p0 is on screen.
+                val boundedResumeAt = nowMs + STRICT_EXACT_FIRST_FRAME_PUBLICATION_GRACE_MS
+                strictOffscreenPublishResumeAtMs.compareAndSet(resumeAtMs, boundedResumeAt)
+                resumeAtMs = strictOffscreenPublishResumeAtMs.get()
+            }
+            if (nowMs < resumeAtMs) return true
+        }
         if (shouldDeliverPreFirstInitialContinuousNow(delivery)) return false
         return shouldHoldInitialNtkIndex(delivery.index)
     }
@@ -43120,8 +46087,9 @@ class ReaderSession(
             urgentLoadingPages.remove(currentIndex)
             pendingDeliveryWidths.remove(currentDelivery.index)
             pendingDeliveryWidths.remove(currentIndex)
-            initialContinuousPostedWidths.remove(currentDelivery.index)
-            initialContinuousPostedWidths.remove(currentIndex)
+            initialContinuousPostedWidthsByIdentity.remove(
+                initialContinuousPostedIdentity(currentDelivery.page),
+            )
             clearStrictInlineInstallRetryState(currentIndex)
             if (!sameOwnedResources) recycleDecodeResult(currentDelivery.result)
             logNtkPagePerf(
@@ -43205,6 +46173,19 @@ class ReaderSession(
                 throw failure
             }
             if (!authoritativeInstalled) {
+                Log.e(
+                    TAG,
+                    "reader_authoritative_inline_handoff_reject page=$currentIndex," +
+                        "dispatched=$authoritativeTilesDispatched," +
+                        "activeTokens=${tiles.tiles.count { HostExactHardwareTilePool.isActiveToken(it.bitmap) }}," +
+                        "surfaceCurrent=" +
+                        listener.isPageAuthoritativeDrawableCurrentlyInstalled(
+                            currentIndex,
+                            tiles.pageWidth,
+                            tiles.pageHeight,
+                            tiles.tiles,
+                        ),
+                )
                 preserveStrictInlineTileDeliveryForRetry(
                     currentDelivery.copy(index = currentIndex),
                     "authoritative_install_ack_false"
@@ -43219,6 +46200,10 @@ class ReaderSession(
             // A pressure callback can publish a newer retirement while this decode is in flight.
             // Delivery success must not erase that decision; physical re-entry owns the claim.
             if (currentIndex == currentStartPage()) {
+                strictExactInitialAnchorPixelsInstalledAtMs.compareAndSet(
+                    0L,
+                    SystemClock.elapsedRealtime(),
+                )
                 strictExactInitialAnchorPixelsInstalled.countDown()
             }
             clearStrictInlineInstallRetryState(currentIndex)
@@ -43288,8 +46273,9 @@ class ReaderSession(
         transientGeneratedRetries.remove(currentIndex)
         transientGeneratedVisibleRetries.remove(currentDelivery.index)
         transientGeneratedVisibleRetries.remove(currentIndex)
-        initialContinuousPostedWidths.remove(currentDelivery.index)
-        initialContinuousPostedWidths.remove(currentIndex)
+        initialContinuousPostedWidthsByIdentity.remove(
+            initialContinuousPostedIdentity(currentDelivery.page),
+        )
         val deliveryCleanupNs = SystemClock.elapsedRealtimeNanos() - deliveryTrackStartedNs - deliveryTrackNs
         if (pagesReadyBeforeDrawable) deliverInitialPagesReadyForCurrentPagesIfNeeded()
         logFirstBitmapIfNeeded(currentDelivery.startedAt, resultDrawHeightPx(currentDelivery.result))
@@ -43448,7 +46434,9 @@ class ReaderSession(
         loadingStartedAtMs.remove(index)
         urgentLoading.remove(index)
         urgentLoadingPages.remove(index)
-        initialContinuousPostedWidths.remove(index)
+        initialContinuousPostedWidthsByIdentity.remove(
+            initialContinuousPostedIdentity(delivery.page),
+        )
         visibleGeneratedDecodeHedges.remove(index)
         initialGeneratedCachedDecodeInFlight.remove(index)
         initialGeneratedDirectDecodeInFlight.remove(index)
@@ -43547,7 +46535,9 @@ class ReaderSession(
         loadingStartedAtMs.remove(fallbackIndex)
         urgentLoading.remove(fallbackIndex)
         urgentLoadingPages.remove(fallbackIndex)
-        initialContinuousPostedWidths.remove(fallbackIndex)
+        initialContinuousPostedWidthsByIdentity.remove(
+            initialContinuousPostedIdentity(page),
+        )
         if (!hasDeliveredBitmap(fallbackIndex)) {
             decodedWidths.remove(fallbackIndex, resultWidth)
             deliveredDrawableProofWidths.remove(fallbackIndex)
@@ -43631,12 +46621,25 @@ class ReaderSession(
         delivery: Delivery,
         index: Int,
     ): Boolean {
-        return requiresAuthoritativeInlineTileAck(delivery) &&
-            !listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)
+        if (requiresAuthoritativeInlineTileAck(delivery)) {
+            return !listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)
+        }
+        // The session's decoded-width ledger is not a Surface ownership proof. Two adjacent
+        // completion lanes can race: a wider result may be tracked before its listener handoff,
+        // while a slightly narrower canonical original is already ready to fill the visible
+        // successor viewport. Dropping the latter solely from the width ledger leaves the slot
+        // permanently blank. Keep the ordinary first-winner rule once any drawable is actually
+        // installed; only the missing strict appended Surface slot crosses this repair lane.
+        return isDirectWifiStrictAdjacentRunwayProfile(delivery.page.manga) &&
+            isCanonicalOriginalTileResult(delivery.result, delivery.page.image) &&
+            !listener.isPageDrawableInstalled(index)
     }
 
     private fun shouldDeliverMissingPhysicalForwardFrontier(delivery: Delivery, index: Int): Boolean {
         if (!delivery.retainWhenBusy || index < 0) return false
+        if (delivery.compositorForwardWarmIntent &&
+            hasIdentityBoundAdjacentAuthoritativeInstall(delivery)
+        ) return true
         // A normal proof is a disposable low-cost preview and must not jump the busy-delivery
         // window. A host-pressure adjacent rehydrate is different: it is the canonical original
         // whose one-shot admission was granted only after this exact PageRef entered the reported
@@ -43818,7 +46821,7 @@ class ReaderSession(
     }
 
     private fun directWifiForwardHistoryMotionQuietRemainingMs(): Long {
-        if (!strictExactShortWebtoonRollingPixelResidency.get()) return 0L
+        if (!strictExactDirectWifiRollingPixelResidency.get()) return 0L
         if (directWifiForwardPhysicalTouchActive.get() ||
             directWifiForwardSurfaceMotionActive.get()
         ) return NTK_DIRECT_WIFI_FORWARD_HISTORY_NATIVE_QUIET_MS
@@ -43829,6 +46832,7 @@ class ReaderSession(
     }
 
     private fun recycleQueuedDeliveries() {
+        initialContinuousPostedWidthsByIdentity.clear()
         while (true) {
             val delivery = deliveryQueue.poll() ?: break
             pendingDeliveryWidths.remove(delivery.index)
@@ -43995,10 +46999,17 @@ class ReaderSession(
         postSessionOwnedBitmapRetirement(toRetire)
     }
 
-    private fun trimPendingBitmapDeliveriesOutside(first: Int, last: Int) {
+    private fun trimPendingBitmapDeliveriesOutside(
+        first: Int,
+        last: Int,
+        protectedDisplayIndexes: Set<Int> = emptySet(),
+    ) {
+        fun isRetained(index: Int): Boolean =
+            index in first..last || index in protectedDisplayIndexes
+
         fun trimDeliveryMap(map: ConcurrentHashMap<Int, Delivery>) {
             for ((index, delivery) in map.entries) {
-                if (index in first..last) continue
+                if (isRetained(index)) continue
                 if (map.remove(index, delivery)) {
                     pendingDeliveryWidths.remove(index)
                     recycleDecodeResult(delivery.result)
@@ -44008,7 +47019,7 @@ class ReaderSession(
         trimDeliveryMap(primedDeliveryBacklog)
         trimDeliveryMap(initialDeliveryBacklog)
         for ((index, prepared) in initialPreparedBacklog.entries) {
-            if (index in first..last) continue
+            if (isRetained(index)) continue
             if (initialPreparedBacklog.remove(index, prepared) && prepared.owned && !prepared.bitmap.isRecycled) {
                 recycleBitmapAsync(prepared.bitmap)
             }
@@ -44016,7 +47027,7 @@ class ReaderSession(
         for (delivery in deliveryQueue) {
             val current = deliveryAtCurrentIndex(delivery)
             val index = current?.index ?: delivery.index
-            if (index in first..last) continue
+            if (isRetained(index)) continue
             if (deliveryQueue.remove(delivery)) {
                 pendingDeliveryWidths.remove(delivery.index)
                 recycleDecodeResult(delivery.result)
@@ -44088,6 +47099,14 @@ class ReaderSession(
                             )
                         val requiredRetirementBytes =
                             hostExactPoolMinimumRetirementBytes.getAndSet(0L)
+                        // Exact adjacent p0..p4 can already own decoded/mirrored storage while its
+                        // atomic Surface batch is still waiting in a pending-delivery container.
+                        // The delivered-pixel eviction below protects that bounded runway by
+                        // immutable episode identity; retain the same display indexes in every
+                        // pending container or pressure can recycle a successful decode directly
+                        // before the batch commit and expose a blank boundary.
+                        val protectedPendingRunwayIndexes =
+                            protectedExactOffscreenRunwayDisplayIndexesLocked()
                         // A Surface clear can temporarily reject an otherwise immutable prefix
                         // while its committed identity is crossing the append callback. Session
                         // has already removed that page from deliveredBitmaps, so a numeric-only
@@ -44141,7 +47160,11 @@ class ReaderSession(
                             hostPressureRetirement = true,
                             deferPublication = true,
                         )
-                        trimPendingBitmapDeliveriesOutside(keep[0], keep[1])
+                        trimPendingBitmapDeliveriesOutside(
+                            keep[0],
+                            keep[1],
+                            protectedPendingRunwayIndexes,
+                        )
                         val deliveredAfterWindowTrim = synchronized(deliveredBitmaps) {
                             deliveredBitmapBytesLocked()
                         }
@@ -44149,20 +47172,40 @@ class ReaderSession(
                             (deliveredBefore - deliveredAfterWindowTrim).coerceAtLeast(0L)
                         val remainingRetirementBytes =
                             (requiredRetirementBytes - selectedOutsideWindow).coerceAtLeast(0L)
-                        if (remainingRetirementBytes > 0L) {
-                            // The one-page decode frontier is a normal latency preference, not
-                            // physical visibility. If the fixed pool is full, let this second pass
-                            // retire a frontier page while continuing to protect every pixel in
-                            // the exact reported Surface viewport. Treating both frontiers as
-                            // visible stranded 308 MiB across four pages even though only the
-                            // middle two pages were on screen, so a 32 MiB next page waited for the
-                            // complete 30-second allocation timeout.
+                        val missingPhysicalSurfaceBlocker =
+                            hasMissingHostExactPhysicalSurfaceBlocker()
+                        if (remainingRetirementBytes > 0L &&
+                            HostExactHardwareTilePoolPressurePolicy
+                                .mayRetireInsideForwardRunway(
+                                    rollingPixelResidency =
+                                        strictExactRollingPixelResidency.get(),
+                                    missingPhysicalSurfaceBlocker =
+                                        missingPhysicalSurfaceBlocker,
+                                )
+                        ) {
+                            // Once an exact physical body is actually missing, the current
+                            // viewport outranks the speculative runway. Release only enough of
+                            // that runway to install the blocker. An idle offscreen decoder with
+                            // no blocker uses the rolling pool's bounded transient headroom and
+                            // cannot erase the next four HOME-return pages merely to converge to
+                            // the smaller settled target.
                             pressureReleases += evictDeliveredBitmapsWithinHostPressureWindow(
                                 anchor = anchor,
                                 physicalVisibleFirst = physicalVisibleRange.first,
                                 physicalVisibleLast = physicalVisibleRange.last,
                                 minimumRetirementBytes = remainingRetirementBytes,
                                 deferPublication = true,
+                            )
+                        } else if (remainingRetirementBytes > 0L &&
+                            shouldLogRateLimitedDiagnostic(
+                                "host_pressure_forward_runway_preserved",
+                            )
+                        ) {
+                            Log.d(
+                                TAG,
+                                "reader_host_exact_pool_pressure_forward_runway_preserved " +
+                                    "anchor=$anchor,keep=${keep[0]}-${keep[1]}," +
+                                    "remainingBytes=$remainingRetirementBytes",
                             )
                         }
                     }
@@ -44201,8 +47244,42 @@ class ReaderSession(
     }
 
     private fun isHostExactPoolPressureTrimBlockedByPhysicalMotion(): Boolean =
-        physicalTouchActive.get() || viewportBusy.get() ||
-            NtkReaderTransferPacer.isPhysicalMotionActive()
+        isHostExactOffscreenDecodeInputProtected() &&
+            !hasMissingHostExactPhysicalSurfaceBlocker()
+
+    /**
+     * Repeated real swipes can keep the ordinary input quiet fence continuously active. If the
+     * fixed pool is already full and the reported physical interval itself contains a missing
+     * exact page, deferring every retirement until idle is a closed wait: the page cannot draw
+     * until a slot is released, and the user cannot reach an idle clean viewport until it draws.
+     * This probe grants only the emergency cleanup pass; that pass still protects the complete
+     * reported physical range and can retire only replaceable pixels outside it.
+     */
+    private fun hasMissingHostExactPhysicalSurfaceBlocker(): Boolean {
+        if (!hostExactNativeSurfaceStorageEnabled) return false
+        val candidates = synchronized(pagesLock) {
+            if (pages.isEmpty()) return@synchronized emptyList()
+            val anchor = currentViewportAnchor.get()
+                .takeIf { it in pages.indices }
+                ?: currentStartPage().coerceIn(0, pages.lastIndex)
+            val physical = reportedPhysicalWindowLocked(
+                fallbackAnchor = anchor,
+                fallbackFirst = anchor,
+                fallbackLast = anchor,
+            )
+            physical.mapNotNull { index ->
+                pages.getOrNull(index)
+                    ?.takeIf { page ->
+                        page.transitionTitle == null && !page.image.isNullOrBlank()
+                    }
+                    ?.let { page -> index to page }
+            }
+        }
+        return candidates.any { (index, page) ->
+            currentPageIndex(page, index) >= 0 &&
+                !listener.isPageDrawableInstalled(index)
+        }
+    }
 
     /** Caller owns pagesLock; clear callbacks must follow this PageRef across index compaction. */
     private fun bitmapReleaseLocked(
@@ -44372,6 +47449,7 @@ class ReaderSession(
         synchronized(pagesLock) {
             if (pages.isEmpty()) return@synchronized
             val safeAnchor = anchor.coerceIn(0, pages.lastIndex)
+            val startupAnchor = currentStartPage().coerceIn(0, pages.lastIndex)
             visibleFirst = physicalVisibleFirst.coerceIn(0, pages.lastIndex)
             visibleLast = physicalVisibleLast.coerceIn(visibleFirst, pages.lastIndex)
             latestReportedWindow.get()?.let { reported ->
@@ -44392,7 +47470,8 @@ class ReaderSession(
             synchronized(deliveredBitmaps) {
                 val candidates = ArrayList<PressureCandidate>()
                 deliveredBitmaps.forEach { (index, bitmap) ->
-                    if (index in visibleFirst..visibleLast ||
+                    if (index == startupAnchor ||
+                        index in visibleFirst..visibleLast ||
                         shouldProtectDeliveredPixelFromClear(
                             index,
                             protectedLaunchIndexes,
@@ -44402,7 +47481,8 @@ class ReaderSession(
                     candidates += PressureCandidate(index, trackedBitmapBytes(bitmap), false)
                 }
                 deliveredTiles.forEach { (index, tiles) ->
-                    if (index in visibleFirst..visibleLast ||
+                    if (index == startupAnchor ||
+                        index in visibleFirst..visibleLast ||
                         shouldProtectDeliveredPixelFromClear(
                             index,
                             protectedLaunchIndexes,
@@ -44484,8 +47564,8 @@ class ReaderSession(
      * but decoded launch-episode pixels only for the exact physical forward window. Adjacent
      * runway pages use later display indexes and are intentionally excluded from this retirement.
      */
-    private fun trimShortWebtoonLaunchPixelsOutsideWindow() {
-        if (!strictExactShortWebtoonRollingPixelResidency.get()) return
+    private fun trimDirectWifiLaunchPixelsOutsideWindow() {
+        if (!strictExactDirectWifiRollingPixelResidency.get()) return
         val cleared = ArrayList<BitmapRelease>()
         synchronized(pagesLock) {
             val launchIndexes = pages.withIndex()
@@ -44565,9 +47645,20 @@ class ReaderSession(
         protectedPixelWindow: IntRange,
         protectedDeliveryIndex: Int = -1,
     ) {
+        check(Thread.holdsLock(pagesLock))
+        val protectedPhysicalWindow = if (pages.isEmpty()) {
+            IntRange.EMPTY
+        } else {
+            val fallbackAnchor = currentViewportAnchor.get().coerceIn(0, pages.lastIndex)
+            reportedPhysicalDecodeProtectionWindowLocked(
+                fallbackAnchor = fallbackAnchor,
+                fallbackFirst = fallbackAnchor,
+                fallbackLast = fallbackAnchor,
+            )
+        }
         val preserveStrictReady =
             strictExactColdRolling && strictExactRollingPixelResidency.get()
-        val shortWebtoon = strictExactShortWebtoonRollingPixelResidency.get()
+        val directWifiRolling = strictExactDirectWifiRollingPixelResidency.get()
         val budget = activeBitmapBudgetBytes()
         while (deliveredBitmapBytesLocked() > budget) {
             val iterator = deliveredBitmaps.entries.iterator()
@@ -44575,8 +47666,9 @@ class ReaderSession(
             while (iterator.hasNext()) {
                 val entry = iterator.next()
                 if (entry.key == protectedDeliveryIndex) continue
-                if (shortWebtoon && entry.key !in strictLaunchIndexes) continue
+                if (directWifiRolling && entry.key !in strictLaunchIndexes) continue
                 if (entry.key in protectedPixelWindow) continue
+                if (entry.key in protectedPhysicalWindow) continue
                 if (entry.key in retainedFirstPage..retainedLastPage) continue
                 if (shouldProtectDeliveredPixelFromClear(
                         entry.key,
@@ -44603,8 +47695,9 @@ class ReaderSession(
                 while (tileIterator.hasNext()) {
                     val entry = tileIterator.next()
                     if (entry.key == protectedDeliveryIndex) continue
-                    if (shortWebtoon && entry.key !in strictLaunchIndexes) continue
+                if (directWifiRolling && entry.key !in strictLaunchIndexes) continue
                     if (entry.key in protectedPixelWindow) continue
+                    if (entry.key in protectedPhysicalWindow) continue
                     if (entry.key in retainedFirstPage..retainedLastPage) continue
                     if (shouldProtectDeliveredPixelFromClear(
                             entry.key,
@@ -44646,6 +47739,7 @@ class ReaderSession(
                     protectedLaunchIndexes,
                     strictLaunchIndexes,
                     protectedPixelWindow,
+                    protectedPhysicalWindow,
                     protectedDeliveryIndex,
                 )
             }
@@ -44679,8 +47773,8 @@ class ReaderSession(
         }
         publishDeliveredBitmapBytes()
         postBitmapReleases(cleared)
-        if (strictExactShortWebtoonRollingPixelResidency.get()) {
-            trimShortWebtoonLaunchPixelsOutsideWindow()
+        if (strictExactDirectWifiRollingPixelResidency.get()) {
+            trimDirectWifiLaunchPixelsOutsideWindow()
         }
     }
 
@@ -44688,7 +47782,7 @@ class ReaderSession(
         if (ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
                 strictColdSession = strictExactColdRolling,
                 rollingPixelResidency = strictExactRollingPixelResidency.get(),
-                shortWebtoonRolling = strictExactShortWebtoonRollingPixelResidency.get(),
+                directWifiRolling = strictExactDirectWifiRollingPixelResidency.get(),
             )
         ) {
             evictDeliveredBitmaps(first, last)
@@ -44724,7 +47818,7 @@ class ReaderSession(
 
     private fun shouldTrimRetainedUnderNtkPressure(): Boolean {
         return ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
-            shortWebtoonRolling = strictExactShortWebtoonRollingPixelResidency.get(),
+            directWifiRolling = strictExactDirectWifiRollingPixelResidency.get(),
             immediateGeneratedUx = isImmediateNtkGeneratedUx(),
             strictColdSession = strictExactColdRolling,
             rollingPixelResidency = strictExactRollingPixelResidency.get(),
@@ -44739,12 +47833,13 @@ class ReaderSession(
         protectedLaunchIndexes: Set<Int>,
         strictLaunchIndexes: Set<Int>,
         protectedPixelWindow: IntRange,
+        protectedPhysicalWindow: IntRange,
         protectedDeliveryIndex: Int,
     ): Boolean {
         if (shouldProtectImmediateGeneratedSurfaceDrawablesFromClear() &&
             !strictExactColdRolling
         ) return false
-        val protectedRadius = if (strictExactShortWebtoonRollingPixelResidency.get()) {
+        val protectedRadius = if (strictExactDirectWifiRollingPixelResidency.get()) {
             0
         } else if (
             isImmediateNtkGeneratedUx() &&
@@ -44760,11 +47855,12 @@ class ReaderSession(
             .asSequence()
             .filter { it != protectedDeliveryIndex }
             .filter {
-                !strictExactShortWebtoonRollingPixelResidency.get() ||
+                !strictExactDirectWifiRollingPixelResidency.get() ||
                     it in strictLaunchIndexes
             }
             .filter { it !in protectedLaunchIndexes }
             .filter { it !in protectedPixelWindow }
+            .filter { it !in protectedPhysicalWindow }
             .filter { it in retainedFirstPage..retainedLastPage }
             .filter { abs(it - retainedAnchorPage) > protectedRadius }
             .maxByOrNull { abs(it - retainedAnchorPage) }
@@ -44774,6 +47870,7 @@ class ReaderSession(
                     "BitmapBudget",
                     "retained_trim kind=bitmap,index=$bitmapCandidate,anchor=$retainedAnchorPage," +
                         "protected=${protectedPixelWindow.first}-${protectedPixelWindow.last}," +
+                        "physical=${protectedPhysicalWindow.first}-${protectedPhysicalWindow.last}," +
                         "retained=$retainedFirstPage-$retainedLastPage,radius=$protectedRadius," +
                         "bytes=${deliveredBitmapBytesLocked()},budget=${activeBitmapBudgetBytes()}," +
                         "busy=${viewportBusy.get()}"
@@ -44795,11 +47892,12 @@ class ReaderSession(
             .asSequence()
             .filter { it != protectedDeliveryIndex }
             .filter {
-                !strictExactShortWebtoonRollingPixelResidency.get() ||
+                !strictExactDirectWifiRollingPixelResidency.get() ||
                     it in strictLaunchIndexes
             }
             .filter { it !in protectedLaunchIndexes }
             .filter { it !in protectedPixelWindow }
+            .filter { it !in protectedPhysicalWindow }
             .filter { it in retainedFirstPage..retainedLastPage }
             .filter { abs(it - retainedAnchorPage) > protectedRadius }
             .maxByOrNull { abs(it - retainedAnchorPage) }
@@ -44809,6 +47907,7 @@ class ReaderSession(
                     "BitmapBudget",
                     "retained_trim kind=tiles,index=$tileCandidate,anchor=$retainedAnchorPage," +
                         "protected=${protectedPixelWindow.first}-${protectedPixelWindow.last}," +
+                        "physical=${protectedPhysicalWindow.first}-${protectedPhysicalWindow.last}," +
                         "retained=$retainedFirstPage-$retainedLastPage,radius=$protectedRadius," +
                         "bytes=${deliveredBitmapBytesLocked()},budget=${activeBitmapBudgetBytes()}," +
                         "busy=${viewportBusy.get()}"
@@ -44879,33 +47978,56 @@ class ReaderSession(
         ) {
             protected.addAll(strictLaunchIndexes)
         }
-        if (strictExactColdRolling && !strictExactRollingPixelResidency.get()) {
-            // The active adjacent owner publishes only its canonical p0-p3 runway while the
-            // predecessor is still on screen. Those four pixels are part of the bounded boundary
-            // contract, not an arbitrary offscreen suffix. Normal viewport trimming used to clear
-            // p0 immediately after its listener ACK, so the continuation mistook the real delivery
-            // for an uninstalled page and parked p1-p3 forever. Keep only this active target's
-            // bounded runway; once its remaining owner retires, ordinary budget eviction applies.
-            for ((index, page) in pages.withIndex()) {
-                if (page.transitionTitle != null || page.sourceIndex < 0) continue
-                val path = activeRemainingAdjacentRunwayTargetPath(page.manga)
-                if (path.isEmpty() ||
-                    (path !in activeRemainingAdjacentRunwayTargetPaths &&
-                        path !in publishedExactOffscreenRunwayPaths)
-                ) continue
-                if (!isDirectWifiStrictAdjacentRunwayProfile(page.manga, path)) continue
-                // This special fence exists only while the predecessor is still visible. Once
-                // the viewport enters the target, reportedPhysicalWindowLocked() protects every
-                // actually visible pixel and the already-read p0-p3 pages must become pressure
-                // candidates. Keeping them protected after p6 consumed 128 MiB in the wide-page
-                // case and left all 384 MiB of pool slots owned, so p10 could never decode.
-                if (isViewportInsideEpisode(page.manga)) continue
-                if (page.sourceIndex < requiredInitialAdjacentRunwayPages(page.manga)) {
-                    protected.add(index)
-                }
+        protected.addAll(protectedExactOffscreenRunwayDisplayIndexesLocked())
+        return protected
+    }
+
+    /**
+     * Caller owns [pagesLock]. The result is bounded to the canonical initial sources of the one
+     * exact successor that is still offscreen. It deliberately stops protecting the runway as
+     * soon as that episode becomes the viewport owner, so normal rolling pressure can retire
+     * already-read pixels without retaining chapter history.
+     */
+    private fun protectedExactOffscreenRunwayDisplayIndexesLocked(): Set<Int> {
+        if (!strictExactColdRolling) return emptySet()
+        val protected = HashSet<Int>()
+        for ((index, page) in pages.withIndex()) {
+            if (page.transitionTitle != null || page.sourceIndex < 0) continue
+            val path = activeRemainingAdjacentRunwayTargetPath(page.manga)
+            if (path.isEmpty() ||
+                (path !in activeRemainingAdjacentRunwayTargetPaths &&
+                    path !in publishedExactOffscreenRunwayPaths)
+            ) continue
+            if (!isDirectWifiStrictAdjacentRunwayProfile(page.manga, path)) continue
+            // A transition card or a rebased numeric anchor can belong to the target before even
+            // one target body is physically installed. Releasing here on isViewportInsideEpisode
+            // recycled p1..p4 behind a clean card, so HOME restored p0 at an 8 px maximum and the
+            // next real swipe appeared motion-locked. Hand ownership to the rolling viewport only
+            // after an installed target body actually intersects its reported physical window.
+            if (physicalViewportHasInstalledEpisodeBodyLocked(page.manga)) continue
+            if (page.sourceIndex < requiredInitialAdjacentRunwayPages(page.manga)) {
+                protected.add(index)
             }
         }
         return protected
+    }
+
+    /** Caller owns [pagesLock]. Structural cards and missing body slots never prove pixel entry. */
+    private fun physicalViewportHasInstalledEpisodeBodyLocked(target: Manga): Boolean {
+        if (pages.isEmpty()) return false
+        val anchor = currentViewportAnchor.get().coerceIn(0, pages.lastIndex)
+        val physical = reportedPhysicalWindowLocked(
+            fallbackAnchor = anchor,
+            fallbackFirst = anchor,
+            fallbackLast = anchor,
+        )
+        return physical.any { index ->
+            val candidate = pages.getOrNull(index) ?: return@any false
+            candidate.transitionTitle == null &&
+                candidate.sourceIndex >= 0 &&
+                looseSameEpisodeForAppend(candidate.manga, target) &&
+                listener.isPageDrawableInstalled(index)
+        }
     }
 
     private fun shouldProtectDeliveredPixelFromClear(
@@ -44913,8 +48035,11 @@ class ReaderSession(
         protectedLaunchIndexes: Set<Int>,
         forcePressure: Boolean,
     ): Boolean {
+        // The set includes both any still-protected launch pixels and the active adjacent p0-p3
+        // boundary contract. Rolling launch residency disables the former, not the latter.
+        if (index in protectedLaunchIndexes) return true
         if (strictExactColdRolling && !strictExactRollingPixelResidency.get()) {
-            return index in protectedLaunchIndexes
+            return false
         }
         return !forcePressure && shouldProtectImmediateGeneratedSurfaceDrawablesFromClear()
     }
@@ -45477,13 +48602,17 @@ class ReaderSession(
     }
 
     private fun requestedStartPage(): Int {
-        if (startAtFirstPage) return 0
-        val page = if (manga.useBookmark() && ml.melun.mangaview.MainApplication.p != null) {
+        val storedPage = if (manga.useBookmark() && ml.melun.mangaview.MainApplication.p != null) {
             ml.melun.mangaview.MainApplication.p.getViewerBookmark(manga)
         } else {
             0
         }
-        return max(0, page)
+        return NtkStrictResumeAnchorPolicy.resolve(
+            strictExact = strictExactColdRolling,
+            startAtFirstPage = startAtFirstPage,
+            strictSourceFloor = strictForwardSourceFloor,
+            storedPage = storedPage,
+        )
     }
 
     private fun currentStartPage(): Int {
@@ -45650,18 +48779,21 @@ class ReaderSession(
     }
 
     private companion object {
-        // The adjacent boundary already owns immutable p0..p4 pixels. A committed p0/p1 frame
-        // therefore needs no new HTTP body: three directional sources still leave the complete
-        // resident runway ahead. p5 enters demand when p2 becomes visible, giving it roughly
-        // three physical pages of transfer time without starting TLS/hash/file work inside the
-        // predecessor-to-successor transition. This is source-count based and applies equally to
-        // short manga pages and tall webtoon pages.
-        // Five exact boundary bodies are already resident. A four-source lead plus the one-shot
-        // p5 replenishment in NtkStrictSourceSession keeps p5/p6 ahead of a physical fling without
-        // reopening the old whole-episode suffix wave during motion.
-        private const val NTK_ADJACENT_VIEWPORT_SOURCE_LOOKAHEAD = 4
+        // The adjacent boundary already owns immutable p0..p4 bodies and the source actor admits
+        // p5 once that finite runway is released. Four sources of viewport lookahead still made
+        // p6 begin only after p2 became visible. On a healthy but variable CDN, a 1.5-2.3 MiB PNG
+        // then reached EOF beside the drawable fence and produced measured 229-383 ms physical
+        // stalls even though native decode itself stayed below 100 ms.
+        //
+        // Keep this bounded and source-count based, but admit eight directional sources from the
+        // first exact p0 compositor frame. At the boundary that adds only p6-p8 beyond the already
+        // owned p0-p5 cohort; it neither opens a whole chapter nor changes logical body ownership.
+        // As the viewport advances the same fixed window applies to short manga and tall webtoon
+        // sources, while background identities fall out of admission normally.
+        private const val NTK_ADJACENT_VIEWPORT_SOURCE_LOOKAHEAD = 8
         private const val NTK_ADJACENT_VIEWPORT_OPPOSITE_LOOKAHEAD = 1
         private const val NTK_HOST_EXACT_PRESSURE_MOTION_RECHECK_MS = 48L
+        private const val HOST_EXACT_OFFSCREEN_DECODE_INPUT_QUIET_MS = 750L
         private const val TAG = "ViewerPerf"
         private val FOREGROUND_BYTE_FLIGHT_EPOCH = AtomicLong()
         private val GSON = Gson()
@@ -45685,9 +48817,12 @@ class ReaderSession(
         // when no network body remains to compete with; every result still enters the same bounded
         // native install queue.
         private const val STRICT_EXACT_BULK_DECODE_PARALLELISM = 3
-        private const val STRICT_EXACT_ROLLING_DECODE_PARALLELISM = 6
+        private const val STRICT_EXACT_ROLLING_DECODE_PARALLELISM = 3
         private const val STRICT_EXACT_OVERLAP_DECODE_PARALLELISM = 3
         private const val STRICT_EXACT_OVERLAP_DECODE_LIMIT = 40
+        private const val HOST_EXACT_MOTION_DEFERRED_RECHECK_MS = 250L
+        private const val HOST_EXACT_MOTION_DEFERRED_IDLE_RECHECK_MS = 16L
+        private const val DIRECT_WIFI_IDLE_FORWARD_WARM_PUMP_STEP_MS = 16L
         private const val HOST_GPU_ADJACENT_P0_PREDECODE_WAIT_MS = 4L
         private const val STRICT_OVERSIZED_INITIAL_FORWARD_RUNWAY_PAGES = 32
         private const val STRICT_OVERSIZED_FORWARD_RUNWAY_PAGES = 32
@@ -45876,6 +49011,7 @@ class ReaderSession(
         // PageRefs are lightweight and decoded pixels have an independent bounded LRU: retain the
         // structure until a genuine reading pause, then compact before the idle checkpoint ends.
         private const val NTK_FORWARD_HISTORY_TRIM_QUIET_MS = 5_000L
+        private const val NTK_FORWARD_HISTORY_RESUME_QUIET_MS = 5_000L
         private const val NTK_DIRECT_WIFI_FORWARD_HISTORY_NATIVE_QUIET_MS = 5_000L
         private const val NTK_FORWARD_HISTORY_TRIM_RETRY_MS = 120L
         private const val NTK_COMPLETED_EPISODE_WARMUP_RETRY_MS = 3600L
@@ -45905,9 +49041,12 @@ class ReaderSession(
         // deliberately excluded so a completed current episode can use the user's actual idle
         // time, while rapid chained swipes and their flings keep all CPU/GPU priority.
         private const val NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS = 48L
+        private const val NTK_INITIAL_ADJACENT_EVENT_WAIT_WATCHDOG_MS = 5_000L
+        private const val NTK_DIRECT_ADJACENT_PIXEL_INPUT_QUIET_MS = 500L
         private const val NTK_ENTERED_EXACT_PIXEL_COMPLETION_IDLE_MS = 5_000L
         private const val NTK_ENTERED_EXACT_PIXEL_COMPLETION_STEP_MS = 16L
-        private const val NTK_STRICT_ADJACENT_REHYDRATE_MOTION_RECHECK_MS = 48L
+        private const val NTK_ENTERED_EXACT_PIXEL_COMPLETION_AUDIT_MS = 1_000L
+        private const val NTK_STRICT_ADJACENT_REHYDRATE_IDLE_WAKE_MS = 300L
         private const val NTK_APPEND_REMAINING_ACTIVE_PREFETCH_BOUNDARY_PAGES = 12
         private const val NTK_APPEND_REMAINING_ACTIVE_CATCHUP_BOUNDARY_PAGES = 10
         private const val NTK_APPEND_REMAINING_ACTIVE_PROOF_AHEAD_PAGES = 3
@@ -45922,7 +49061,11 @@ class ReaderSession(
         private const val NTK_ADJACENT_APPEND_FOREGROUND_PATH_TTL_MS = 15000L
         private const val NTK_INITIAL_ADJACENT_PREFETCH_PATH_TTL_MS = 45000L
         private const val NTK_FORWARD_ADJACENT_BOUNDARY_DEMAND_TTL_MS = 45000L
-        private const val NTK_APPEND_WARM_BOUNDARY_PAGES = 4
+        // Begin the fixed p0..p4 decode while five current pages remain. Waiting until four made
+        // the same physical source-6 stop alternate between immediate runway and an unbounded
+        // five-second retry after history reindexing, while the pool still retains exactly the
+        // same bounded number of HardwareBuffers.
+        private const val NTK_APPEND_WARM_BOUNDARY_PAGES = 5
         private const val NTK_APPEND_READY_VIEWPORT_PAGES = 3
         private const val NTK_ADJACENT_APPEND_STRUCTURE_INSERT_QUIET_MS = 120L
         private const val NTK_ADJACENT_APPEND_STRUCTURE_INSERT_RECHECK_MS = 32L
@@ -46333,12 +49476,14 @@ class ReaderSession(
             previousDirection: Int,
             directionHint: Int,
             busy: Boolean = true,
+            blockedForwardIndex: Int = -1,
         ): Int = resolveWindowDirection(
             previousAnchor,
             currentAnchor,
             previousDirection,
             directionHint,
             busy,
+            blockedForwardIndex,
         )
 
         private fun strictExactProtectedNumericBitmapWindow(pageCount: Int): IntRange =
@@ -46382,11 +49527,17 @@ class ReaderSession(
             previousDirection: Int,
             directionHint: Int,
             busy: Boolean,
+            blockedForwardIndex: Int = -1,
         ): Int = when {
             directionHint < 0 -> -1
             directionHint > 0 -> 1
             previousAnchor < 0 -> previousDirection
             currentAnchor > previousAnchor -> 1
+            // A missing NEXT body can force the clean drawable viewport from that synthetic
+            // blocker anchor back to its predecessor. That is a coordinate repair, not reverse
+            // input. Surface's explicit reverse evidence above remains authoritative and clears
+            // the blocker before this fallback is evaluated.
+            busy && previousDirection > 0 && blockedForwardIndex > currentAnchor -> 1
             // Reverse evidence is sticky in the Surface mailbox, whereas a forward MOVE can be
             // coalesced into its following idle callback. Preserve that asymmetric contract:
             // accept an idle forward delta, but do not turn the synthetic blocked-forward

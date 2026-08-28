@@ -1,6 +1,7 @@
 package ml.melun.mangaview.ntkack
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class NtkAckBrowserEngineClockTest {
@@ -67,5 +68,19 @@ class NtkAckBrowserEngineClockTest {
                 nowElapsedRealtimeNanos = 10_000_000_000L,
             ),
         )
+    }
+
+    @Test
+    fun requestKeyRateLimitUsesOnlyTheServerRetryDelay() {
+        assertEquals(
+            1_932L,
+            ntkAckRequestKeyRetryAfterMs(
+                429,
+                """{"ok":false,"error":"rate-limit","retryAfter":1932}""",
+            ),
+        )
+        assertEquals(50L, ntkAckRequestKeyRetryAfterMs(429, """{"retryAfter":0}"""))
+        assertNull(ntkAckRequestKeyRetryAfterMs(500, """{"retryAfter":1932}"""))
+        assertNull(ntkAckRequestKeyRetryAfterMs(429, """{"error":"rate-limit"}"""))
     }
 }

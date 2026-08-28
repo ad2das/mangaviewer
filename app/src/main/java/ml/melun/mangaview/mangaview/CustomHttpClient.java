@@ -667,6 +667,14 @@ public class CustomHttpClient {
     private static final long WFWF_DOMAIN_CANCELED_LOG_INTERVAL_MS = 2 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long NTK_DOMAIN_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
+    private static final long NTK_DOMAIN_PROBE_WALL_MS = 4_000L;
+    private static final int NTK_DOMAIN_PROBE_MAX_CANDIDATES = 3;
+    private static final java.util.concurrent.ExecutorService NTK_DOMAIN_PROBE_EXECUTOR =
+            java.util.concurrent.Executors.newFixedThreadPool(2, runnable -> {
+                Thread thread = new Thread(runnable, "ntk-domain-probe");
+                thread.setDaemon(true);
+                return thread;
+            });
     private static final long NTK_PAGE_DIRECT_TIMEOUT_MS = 3_500L;
     private static final long NTK_API_DIRECT_TIMEOUT_MS = 2_500L;
     private static final long EXTERNAL_VIEWER_PAGE_FAST_TIMEOUT_MS = 2_200L;
@@ -821,6 +829,18 @@ public class CustomHttpClient {
     private static final ConnectionPool SHARED_CONNECTION_POOL = new ConnectionPool(12, 5, TimeUnit.MINUTES);
     private static final javax.net.SocketFactory SNI_FRAGMENTING_SOCKET_FACTORY =
             new SniFragmentingSocketFactory(javax.net.SocketFactory.getDefault());
+
+    /**
+     * Applies the same byte-preserving ClientHello fragmentation to a caller-owned network
+     * SocketFactory. This keeps Android's captured Network routing intact without inserting a
+     * loopback CONNECT proxy in every image body.
+     */
+    public static javax.net.SocketFactory sniFragmentingSocketFactory(
+            javax.net.SocketFactory delegate) {
+        if(delegate == null)
+            throw new IllegalArgumentException("delegate == null");
+        return new SniFragmentingSocketFactory(delegate);
+    }
     private static final Object NTK_DNS_CACHE_LOCK = new Object();
     private static final Map<String, CachedDns> NTK_DNS_CACHE = new HashMap<>();
     private static final Set<String> NTK_DNS_WARMING = new java.util.HashSet<>();
@@ -836,6 +856,13 @@ public class CustomHttpClient {
         thread.setDaemon(true);
         return thread;
     });
+    private static final ExecutorService NTK_IMAGE_DNS_WARM_EXECUTOR =
+            Executors.newFixedThreadPool(3, runnable -> {
+                Thread thread = new Thread(runnable, "ntk-image-dns-warm");
+                thread.setDaemon(true);
+                thread.setPriority(Thread.NORM_PRIORITY);
+                return thread;
+            });
     private static final Dns DOH_BOOTSTRAP_DNS = hostname -> {
         ArrayList<InetAddress> addresses = new ArrayList<>();
         try {
@@ -1842,8 +1869,12 @@ public class CustomHttpClient {
     /** ViewerTelemetry generation paired atomically with {@link #ntkStrictForegroundNetworkPath}. */
     private volatile long ntkStrictForegroundNetworkGeneration = 0L;
     private final Object ntkStrictForegroundNetworkLock = new Object();
+    /** Guarded by this client. A search result must not invalidate an active strict proof. */
+    private String deferredResolvedNtkRootFromSearch = "";
     /** Monotonic provenance fence for legacy speculative work that spans a strict cutover. */
     private final AtomicLong ntkStrictLegacySpeculationCutoverEpoch = new AtomicLong(1L);
+    /** Last committed viewer generation that started DNS-only image-origin preparation. */
+    private final AtomicLong ntkStrictImageDnsWarmGeneration = new AtomicLong(0L);
     public static final int NTK_IMAGE_HEADER_REACHABILITY_SUPERSEDED = -2;
     /** Dynamic domain-probe clients inherit uneven dispatchers; own their physical calls directly. */
     private final Set<Call> activeNtkDomainProbeCalls =
@@ -2052,7 +2083,9 @@ public class CustomHttpClient {
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
         this.externalViewerPageFastClient = fastExternalViewerPageClient(new OkHttpClient.Builder()).build();
-        this.externalViewerImageFastClient = fastExternalViewerImageClient(new OkHttpClient.Builder())
+        this.externalViewerImageFastClient = fastExternalViewerImageClient(
+                new OkHttpClient.Builder()
+                        .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
                 .dns(activeNetworkDns)
                 .build();
         this.externalViewerCellularImageFastClient = fastExternalViewerImageClient(
@@ -2242,6 +2275,58 @@ public class CustomHttpClient {
     public Network getNtkDirectWifiNetwork() {
         NtkNetworkTransportState observed = ntkNetworkTransportState;
         return observed.directWifi ? observed.network : null;
+    }
+
+    /**
+     * Resolves only the finite, built-in image-origin hostnames after a committed viewer click.
+     * No socket or HTTP request is created. The signed image manifest remains the sole authority
+     * that can select an asset URL; this merely overlaps Android DNS with the mandatory ACK.
+     */
+    public void warmNtkStrictImageDnsAfterViewerClick(String episodePath,
+                                                       long viewerGeneration) {
+        String normalized = normalizeComparableNtkPath(episodePath);
+        if(viewerGeneration <= 0L || normalized.length() == 0
+                || (!normalized.startsWith("/webtoon/")
+                && !normalized.startsWith("/manhwa/"))
+                || !ownsNtkStrictForegroundNetwork(normalized, viewerGeneration))
+            return;
+        while(true) {
+            long previous = ntkStrictImageDnsWarmGeneration.get();
+            if(previous >= viewerGeneration)
+                return;
+            if(ntkStrictImageDnsWarmGeneration.compareAndSet(previous, viewerGeneration))
+                break;
+        }
+        String[] origins = normalized.startsWith("/webtoon/")
+                ? NTK_WEBTOON_IMAGE_ORIGINS
+                : NTK_MANHWA_IMAGE_ORIGINS;
+        for(String origin : origins) {
+            final String host;
+            try {
+                host = URI.create(origin).getHost();
+            } catch(Exception ignored) {
+                continue;
+            }
+            if(host == null || host.length() == 0)
+                continue;
+            NTK_IMAGE_DNS_WARM_EXECUTOR.execute(() -> {
+                long startedAt = SystemClock.elapsedRealtime();
+                try {
+                    if(!ownsNtkStrictForegroundNetwork(normalized, viewerGeneration))
+                        return;
+                    List<InetAddress> addresses = lookupNtkActiveNetworkDns(host);
+                    Log.d(TAG, "ntk_strict_image_dns_ready path=" + normalized
+                            + ",host=" + host
+                            + ",addresses=" + addresses.size()
+                            + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+                } catch(Exception failure) {
+                    Log.d(TAG, "ntk_strict_image_dns_failed path=" + normalized
+                            + ",host=" + host
+                            + ",error=" + failure.getClass().getSimpleName()
+                            + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+                }
+            });
+        }
     }
 
     /** Captures one immutable strict-flight route from one active network observation. */
@@ -3210,6 +3295,7 @@ public class CustomHttpClient {
         if(released) {
             Log.d(TAG, "ntk_strict_foreground_network_leave path=" + normalized
                     + ",viewerGeneration=" + viewerGeneration);
+            applyDeferredResolvedNtkRootFromSearch();
         }
     }
 
@@ -3223,6 +3309,16 @@ public class CustomHttpClient {
         synchronized(ntkStrictForegroundNetworkLock) {
             return episodePath.equals(ntkStrictForegroundNetworkPath)
                     && viewerGeneration == ntkStrictForegroundNetworkGeneration;
+        }
+    }
+
+    /** Read-only identity check used by a same-generation adjacent control flight. */
+    public boolean hasNtkStrictForegroundNetworkOwner(long viewerGeneration) {
+        synchronized(ntkStrictForegroundNetworkLock) {
+            return viewerGeneration > 0L
+                    && viewerGeneration == ntkStrictForegroundNetworkGeneration
+                    && ntkStrictForegroundNetworkPath != null
+                    && ntkStrictForegroundNetworkPath.length() > 0;
         }
     }
 
@@ -4746,21 +4842,64 @@ public class CustomHttpClient {
         }
     }
 
-    public void applyResolvedNtkRootFromSearch(String rootUrl) {
+    public synchronized void applyResolvedNtkRootFromSearch(String rootUrl) {
         String root = NtkDomainResolver.normalizeRoot(rootUrl);
         if(root == null || root.length() == 0 || !isNtkUrlForTest(root))
             return;
         String current = NtkDomainResolver.normalizeRoot(getWebtoonUrl());
-        if(root.equals(current))
+        if(root.equals(current)) {
+            if(root.equals(deferredResolvedNtkRootFromSearch))
+                deferredResolvedNtkRootFromSearch = "";
             return;
-        try {
-            p.setResolvedNtkSitePreset(root);
-            resetCookie();
-            clearPageCache();
-            Log.d(TAG, "ntk_search_resolved_root_applied old=" + current + ",new=" + root);
-        } catch (Exception e) {
-            Log.d(TAG, "ntk_search_resolved_root_apply_failed root=" + root + "," + e);
         }
+        // Root mutation clears the cookie jar, including the nv capability established by the
+        // immutable strict-flight route snapshot. Linearize against strict network entry so a
+        // parallel episode/search response cannot erase that capability between ACK proof and the
+        // signed image API request. MainApplication's foreground lease closes the smaller gap
+        // before strict network ownership is published.
+        synchronized(ntkStrictForegroundNetworkLock) {
+            if(shouldDeferResolvedNtkRootMutation(
+                    hasNtkStrictForegroundNetworkOwner(),
+                    MainApplication.isNtkForegroundViewerPathActive())) {
+                deferredResolvedNtkRootFromSearch = root;
+                Log.d(TAG, "ntk_search_resolved_root_deferred current=" + current
+                        + ",pending=" + root
+                        + ",strictOwner=" + hasNtkStrictForegroundNetworkOwner()
+                        + ",foregroundViewer="
+                        + MainApplication.isNtkForegroundViewerPathActive());
+                return;
+            }
+            try {
+                p.setResolvedNtkSitePreset(root);
+                resetCookie();
+                clearPageCache();
+                deferredResolvedNtkRootFromSearch = "";
+                Log.d(TAG, "ntk_search_resolved_root_applied old=" + current + ",new=" + root);
+            } catch (Exception e) {
+                deferredResolvedNtkRootFromSearch = root;
+                Log.d(TAG, "ntk_search_resolved_root_apply_failed root=" + root + "," + e);
+            }
+        }
+    }
+
+    public synchronized void applyDeferredResolvedNtkRootFromSearch() {
+        String pending = deferredResolvedNtkRootFromSearch;
+        if(pending == null || pending.length() == 0)
+            return;
+        applyResolvedNtkRootFromSearch(pending);
+    }
+
+    private static boolean shouldDeferResolvedNtkRootMutation(
+            boolean strictForegroundNetworkOwner,
+            boolean foregroundViewerPathActive) {
+        return strictForegroundNetworkOwner || foregroundViewerPathActive;
+    }
+
+    static boolean shouldDeferResolvedNtkRootMutationForTest(
+            boolean strictForegroundNetworkOwner,
+            boolean foregroundViewerPathActive) {
+        return shouldDeferResolvedNtkRootMutation(
+                strictForegroundNetworkOwner, foregroundViewerPathActive);
     }
 
     public boolean isDirectOnlyFetchMode() {
@@ -5504,6 +5643,14 @@ public class CustomHttpClient {
         }
         long now = System.currentTimeMillis();
         String currentRoot = WfwfDomainResolver.toRoot(getWebtoonUrl());
+        // A document probe can be rejected or DNS-blocked even while the real RSC/page route is
+        // healthy. Do not put the entire numbered-domain sweep in front of every cold catalog
+        // request. The normal request already invokes the forced resolver after a concrete
+        // DNS/connect/certificate failure, so initial navigation remains demand-driven.
+        if(shouldDeferNtkDomainResolveUntilDemandFailure(force, currentRoot)) {
+            Log.d(TAG, "ntk_domain_resolve_deferred_until_demand root=" + currentRoot);
+            return false;
+        }
         if(!force && isCurrentDefaultNtkRoot(currentRoot)
                 && hasRecentNtkAccessVerification()
                 && !hasRecentCloudflareChallenge()
@@ -5523,6 +5670,20 @@ public class CustomHttpClient {
             ntkDomainLastCheckedRoot = currentRoot;
         }
         return ensureNtkDomain();
+    }
+
+    private static boolean shouldDeferNtkDomainResolveUntilDemandFailure(
+            boolean force,
+            String currentRoot
+    ) {
+        return !force && isNtkUrlForTest(currentRoot);
+    }
+
+    static boolean shouldDeferNtkDomainResolveUntilDemandFailureForTest(
+            boolean force,
+            String currentRoot
+    ) {
+        return shouldDeferNtkDomainResolveUntilDemandFailure(force, currentRoot);
     }
 
     private static boolean isCurrentDefaultNtkRoot(String root) {
@@ -5591,7 +5752,7 @@ public class CustomHttpClient {
                 String reachable = null;
                 if(shouldTryTrustedNtkAliasFirst(
                         currentRoot, trustedAlias, preferTrustedAlias)) {
-                    boolean aliasProbePassed = canReachNtkRoot(trustedAlias, headers);
+                    boolean aliasProbePassed = canReachNtkRootWithinWall(trustedAlias, headers);
                     if(shouldDiscardNtkDomainProbeResult(
                             resolverRequestGroup != null && resolverRequestGroup.isCancelled(),
                             hasNtkStrictForegroundNetworkOwner())) {
@@ -5720,21 +5881,29 @@ public class CustomHttpClient {
         addNtkRootCandidate(candidates, "https://" + OLDER_NTK_HOST);
         addNtkRootCandidate(candidates, "https://" + OLDEST_NTK_HOST);
         addNtkRootCandidate(candidates, "https://" + LEGACY_NTK_HOST);
+        int attemptedCandidates = 0;
         for(int candidateIndex = 0; candidateIndex < candidates.size(); candidateIndex++) {
+            if(attemptedCandidates >= NTK_DOMAIN_PROBE_MAX_CANDIDATES) {
+                Log.d(TAG, "ntk_domain_candidate_wall_exhausted current=" + currentRoot
+                        + ",attempted=" + attemptedCandidates
+                        + ",remaining=" + (candidates.size() - candidateIndex));
+                break;
+            }
             if(hasNtkStrictForegroundNetworkOwner()) {
                 Log.d(TAG, "ntk_domain_candidate_loop_retired_strict_foreground path="
                         + ntkStrictForegroundNetworkPath);
                 return null;
             }
             String candidate = candidates.get(candidateIndex);
+            attemptedCandidates++;
             lastReachableNtkRedirectRoot = "";
-            if(canReachNtkRoot(candidate, headers)) {
+            if(canReachNtkRootWithinWall(candidate, headers)) {
                 String redirected = NtkDomainResolver.normalizeRoot(lastReachableNtkRedirectRoot);
                 if(redirected != null && redirected.length() > 0 && isNtkUrlForTest(redirected)) {
                     Log.d(TAG, "ntk_domain_reachable_redirect_root_probe from=" + candidate
                             + ",to=" + redirected);
                     lastReachableNtkRedirectRoot = "";
-                    if(canReachNtkRoot(redirected, headers)) {
+                    if(canReachNtkRootWithinWall(redirected, headers)) {
                         Log.d(TAG, "ntk_domain_reachable_redirect_root_accept from=" + candidate
                                 + ",to=" + redirected);
                         return redirected;
@@ -7852,6 +8021,39 @@ public class CustomHttpClient {
         if(result.code >= 500 && result.code <= 599)
             return new NtkDocumentRouteResponseException(result.code);
         return null;
+    }
+
+    /**
+     * Some platform DNS implementations do not return when OkHttp cancels its nominal call
+     * timeout. Keep that resolver thread isolated and stop awaiting it at a real UX wall; the
+     * daemon worker may finish cleanup later without blocking catalog navigation.
+     */
+    private boolean canReachNtkRootWithinWall(String root, Map<String, String> headers) {
+        java.util.concurrent.Future<Boolean> probe = NTK_DOMAIN_PROBE_EXECUTOR.submit(
+                () -> canReachNtkRoot(root, headers));
+        try {
+            return Boolean.TRUE.equals(probe.get(
+                    NTK_DOMAIN_PROBE_WALL_MS, TimeUnit.MILLISECONDS));
+        } catch(java.util.concurrent.TimeoutException e) {
+            Log.d(TAG, "ntk_domain_probe_wall_timeout root=" + root
+                    + ",wallMs=" + NTK_DOMAIN_PROBE_WALL_MS);
+            probe.cancel(true);
+            return false;
+        } catch(InterruptedException e) {
+            probe.cancel(true);
+            Thread.currentThread().interrupt();
+            return false;
+        } catch(java.util.concurrent.ExecutionException e) {
+            return false;
+        }
+    }
+
+    static long ntkDomainProbeWallMsForTest() {
+        return NTK_DOMAIN_PROBE_WALL_MS;
+    }
+
+    static int ntkDomainProbeMaxCandidatesForTest() {
+        return NTK_DOMAIN_PROBE_MAX_CANDIDATES;
     }
 
     static boolean isNtkRscRouteFailureForTest(int code, Throwable error) {
@@ -17252,6 +17454,41 @@ public class CustomHttpClient {
         } catch(Exception e) {
             Log.d(TAG, "ntk_viewer_request_key_warm_error path=" + cookiePath + "," + e);
             return false;
+        }
+    }
+
+    /**
+     * Creates only the stable browser identity seeds needed to register the isolated ACK public
+     * key while an NTK episode list is visible. No work, episode, challenge, or image endpoint is
+     * requested here; the committed click still owns all content-bearing authority.
+     */
+    public List<NtkAckCookie> prepareNtkAckControlWarmSeeds() {
+        final String origin = NTK_WEBTOON_URL;
+        final String scopePath = "/webtoon/control/warm";
+        ensureNtkViewerIdentityCookies(origin, scopePath);
+        synchronized (this) {
+            String evId = cookies.get("__ntk_ev_id");
+            if(!isNtkHexIdentity(evId, 24)) {
+                String generated = generatedNtkEvId();
+                if(isNtkHexIdentity(generated, 24)) {
+                    cookies.put("__ntk_ev_id", generated);
+                    invalidateCookieHeaderCache();
+                    persistCookies();
+                }
+            }
+            ArrayList<NtkAckCookie> seeds = new ArrayList<>();
+            String[] names = new String[]{
+                    "cf_clearance", "__cf_bm", "nv", "ntk_fp", "ntk_pid", "__vsid",
+                    "__ntk_ev_id"
+            };
+            for(String name : names) {
+                String value = cookies.get(name);
+                if(value == null || value.trim().length() == 0)
+                    continue;
+                seeds.add(new NtkAckCookie(
+                        name, value, "", "sbxh9.com", "/", true, 0L, ""));
+            }
+            return NtkAckCookieBoundary.INSTANCE.validateSeeds(origin, scopePath, seeds);
         }
     }
 

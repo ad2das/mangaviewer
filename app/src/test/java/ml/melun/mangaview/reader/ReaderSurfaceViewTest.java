@@ -63,6 +63,26 @@ public class ReaderSurfaceViewTest {
     }
 
     @Test
+    public void cleanDestinationCannotLeapAcrossAnEarlierDrawableGap() {
+        assertFalse(ReaderSurfaceView.isForwardDestinationWithinDrawableIntervalForTest(
+                18_000f, 12_400f));
+        assertTrue(ReaderSurfaceView.isForwardDestinationWithinDrawableIntervalForTest(
+                12_400f, 12_400f));
+        assertTrue(ReaderSurfaceView.isForwardDestinationWithinDrawableIntervalForTest(
+                11_900f, 12_400f));
+    }
+
+    @Test
+    public void forwardPrefixIgnoresOnlyPagesThatDoNotOccupyViewportPixels() {
+        assertTrue(ReaderSurfaceView.isPageBehindOrAtViewportTopForTest(
+                10_000f, 10_000f, 0.5f));
+        assertTrue(ReaderSurfaceView.isPageBehindOrAtViewportTopForTest(
+                9_999.75f, 10_000f, 0.5f));
+        assertFalse(ReaderSurfaceView.isPageBehindOrAtViewportTopForTest(
+                10_001f, 10_000f, 0.5f));
+    }
+
+    @Test
     public void movedScrollerFrameAdvancesOnlyWhenNoNewerVersionIsPending() {
         assertTrue(ReaderSurfaceView.shouldAdvanceDesiredVersionForScrollerFrameForTest(
                 true, 7L, 7L));
@@ -80,6 +100,14 @@ public class ReaderSurfaceViewTest {
         assertTrue(ReaderSurfaceView.isScrollBusyAfterSampleForTest(false, false, false));
         assertTrue(ReaderSurfaceView.isScrollBusyAfterSampleForTest(true, false, true));
         assertTrue(ReaderSurfaceView.isScrollBusyAfterSampleForTest(false, true, true));
+    }
+
+    @Test
+    public void drawableBlockedPhysicalDestinationBecomesIdleWhileKeepingItsQueuedTarget() {
+        assertFalse(ReaderSurfaceView.isScrollBusyAfterSampleForTest(
+                false, false, true, true));
+        assertFalse(ReaderSurfaceView.isScrollBusyAfterSampleForTest(
+                false, false, true, false));
     }
 
     @Test
@@ -206,10 +234,41 @@ public class ReaderSurfaceViewTest {
     }
 
     @Test
+    public void delayedBlockedForwardResumeCannotReplayPastItsPhysicalEpisodeTail() {
+        assertEquals(24_000f, ReaderSurfaceView.blockedForwardResumeTargetForTest(
+                58_071f, 24_000f), 0f);
+        assertEquals(20_000f, ReaderSurfaceView.blockedForwardResumeTargetForTest(
+                20_000f, 24_000f), 0f);
+        assertEquals(58_071f, ReaderSurfaceView.blockedForwardResumeTargetForTest(
+                58_071f, Float.NaN), 0f);
+    }
+
+    @Test
+    public void repeatedBlockedForwardGesturesAccumulateRelativeTravelWithinContentBounds() {
+        assertEquals(3_400f, ReaderSurfaceView.accumulateBlockedForwardTargetForTest(
+                2_200f, 2_200f, 400f, 1_600f, 20_000f), 0f);
+        assertEquals(20_000f, ReaderSurfaceView.accumulateBlockedForwardTargetForTest(
+                19_500f, 19_500f, 2_000f, 3_200f, 20_000f), 0f);
+        assertEquals(1_600f, ReaderSurfaceView.accumulateBlockedForwardTargetForTest(
+                Float.NaN, Float.NaN, 400f, 1_600f, 20_000f), 0f);
+    }
+
+    @Test
+    public void carriedBlockedForwardTravelIsConsumedByTheNextRealMove() {
+        assertEquals(4_400f, ReaderSurfaceView.carriedForwardDragTargetForTest(
+                1_400f, 1_000f, 4_000f), 0f);
+        assertEquals(900f, ReaderSurfaceView.carriedForwardDragTargetForTest(
+                900f, 1_000f, 4_000f), 0f);
+        assertEquals(1_400f, ReaderSurfaceView.carriedForwardDragTargetForTest(
+                1_400f, 1_000f, Float.NaN), 0f);
+    }
+
+    @Test
     public void blockedForwardResumeUsesBoundedVisibleAnimationDuration() {
-        assertEquals(180, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(1800f, 2400));
+        assertEquals(96, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(1800f, 2400));
         assertEquals(96, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(100f, 2400));
-        assertEquals(240, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(2400f, 2400));
+        assertEquals(120, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(2400f, 2400));
+        assertEquals(180, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(4800f, 2400));
     }
 
     @Test

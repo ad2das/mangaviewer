@@ -582,7 +582,9 @@ class NtkStripRenderEngineProtocolTest {
             "bool SurfaceControlPresentBackend::consumeCompositorLatch("
         )
         assertTrue(complete.contains("if (record.commitEventConsumed)"))
-        assertTrue(commit.contains("if (record.completeEventConsumed)"))
+        assertTrue(commit.contains("record.completeEventConsumed"))
+        assertTrue(commit.indexOf("record.completeEventConsumed") <
+            commit.indexOf("optionalRecord.reset()"))
     }
 
     @Test
@@ -794,21 +796,21 @@ class NtkStripRenderEngineProtocolTest {
         val rollingRenderer = readRepositoryFile(
             "app/src/main/cpp/ntk_rolling_surface_renderer.cpp"
         )
-        assertTrue(rollingRenderer.contains("constexpr int kUrgentDisplayNice = -8;"))
-        assertTrue(rollingRenderer.contains("constexpr int kDisplayNiceFallback = -4;"))
+        assertTrue(rollingRenderer.contains("constexpr int kRollingConsumerNice = -14;"))
+        assertTrue(rollingRenderer.contains("constexpr int kRollingConsumerNiceFallback = -10;"))
         val rollingPriority = functionBody(
             rollingRenderer,
-            "void requestUrgentDisplayPriority() noexcept"
+            "void requestRollingConsumerPriority() noexcept"
         )
         assertOrdered(
             rollingPriority,
             "getpriority(PRIO_PROCESS, 0)",
-            "setpriority(PRIO_PROCESS, 0, kUrgentDisplayNice)",
-            "setpriority(PRIO_PROCESS, 0, kDisplayNiceFallback)",
+            "setpriority(PRIO_PROCESS, 0, requestedNice)",
+            "setpriority(PRIO_PROCESS, 0, kRollingConsumerNiceFallback)",
             "getpriority(PRIO_PROCESS, 0)"
         )
         assertTrue(functionBody(rollingRenderer, "void run() noexcept").contains(
-            "requestUrgentDisplayPriority();"
+            "requestRollingConsumerPriority();"
         ))
         assertTrue(rollingRenderer.contains(
             "constexpr int kPausedForwardPrewarmPages = 16;"

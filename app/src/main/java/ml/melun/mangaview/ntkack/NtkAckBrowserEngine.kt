@@ -30,10 +30,12 @@ import java.security.MessageDigest
 import ml.melun.mangaview.util.NtkBase64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -59,6 +61,14 @@ internal fun ntkAckNetworkPrerequisiteWaitBudgetMs(
     // healthy flight after an unrelated fixed 2.5 seconds. Rotation, split-screen resize, or a
     // temporarily busy origin can legitimately make the already-running transport take longer.
     return (remainingMs - 750L).coerceAtLeast(250L)
+}
+
+internal fun ntkAckRequestKeyRetryAfterMs(status: Int, bodyText: String): Long? {
+    if (status != 429) return null
+    val retryAfter = runCatching {
+        JSONObject(bodyText).optLong("retryAfter", -1L)
+    }.getOrDefault(-1L)
+    return retryAfter.takeIf { it >= 0L }?.coerceAtLeast(50L)
 }
 
 /** Sole owner of the remote ACK WebView and its one proof-critical flight. */
@@ -101,6 +111,7 @@ class NtkAckBrowserEngine(
         val metricResponses = ConcurrentHashMap<String, NtkAckTransport.Result>()
         val prerequisitesStarted = AtomicBoolean(false)
         val prerequisitesReady = AtomicBoolean(false)
+        val prerequisitesReadySignal = CountDownLatch(1)
         val guardProgramReady = AtomicBoolean(false)
         val shellReady = AtomicBoolean(false)
         val guardStarted = AtomicBoolean(false)
@@ -129,6 +140,8 @@ class NtkAckBrowserEngine(
     private var bridge: FlightBridge? = null
     private var warmRequest: NtkAckWarmRequest? = null
     private val warmCallbacks = ArrayList<(Result<Unit>) -> Unit>()
+    private val controlWarmCallbacks = ArrayList<(Result<Unit>) -> Unit>()
+    private var controlWarmInFlight = false
     @Volatile private var flight: Flight? = null
     private var strictOrigin = ""
     private var shellFlightId = ""
@@ -167,6 +180,112 @@ class NtkAckBrowserEngine(
         warmRequest = request
         runCatching { createWebView(request) }
             .onFailure { completeWarm(Result.failure(it)) }
+    }
+
+    /**
+     * Registers only the reusable public request key while the user is already viewing an NTK
+     * episode list. The request contains no work, episode, or image identity and this method does
+     * not create a WebView. A real click still owns the fresh challenge, guard, ACK, and exact
+     * image request; warming merely removes an otherwise repeated control-plane RTT from it.
+     */
+    fun warmControlPlane(request: NtkAckWarmRequest, callback: (Result<Unit>) -> Unit) {
+        assertMainLooper()
+        validateWarmRequest(request)
+        val expectedCredentialIdentity =
+            "$CONTROL_ORIGIN|${NtkAckProofCodec.sha256Utf8(request.userAgent)}|${request.authEpoch}"
+        if (credentialIdentity.isNotEmpty() && credentialIdentity != expectedCredentialIdentity) {
+            requestKeyStore.clear()
+        }
+        credentialIdentity = expectedCredentialIdentity
+        if (requestKeyStore.isRegistered()) {
+            callback(Result.success(Unit))
+            return
+        }
+        controlWarmCallbacks += callback
+        if (controlWarmInFlight) return
+        controlWarmInFlight = true
+        val warmIdentity = NtkAckFlightIdentity(
+            NtkAckProtocol.VERSION,
+            UUID.randomUUID().toString(),
+            1L,
+            request.authEpoch,
+            CONTROL_ORIGIN,
+            CONTROL_EPISODE_SCOPE,
+        )
+        requestKeyStore.beginFlight(warmIdentity)
+        val deadline = SystemClock.elapsedRealtimeNanos() + CONTROL_WARM_DEADLINE_NANOS
+        workers.submit {
+            val result = runCatching {
+                val seeds = NtkAckCookieBoundary.validateSeeds(
+                    CONTROL_ORIGIN,
+                    CONTROL_EPISODE_SCOPE,
+                    request.identitySeeds,
+                )
+                val transport = NtkAckTransport(
+                    context,
+                    CONTROL_ORIGIN,
+                    CONTROL_EPISODE_SCOPE,
+                    request.userAgent,
+                    seeds,
+                    deadline,
+                )
+                val seedValues = seeds.associate { it.name to it.value }
+                val body = JSONObject().put("publicKey", JSONObject(requestKeyStore.publicJwk()))
+                seedValues["ntk_fp"]?.let {
+                    body.put("fp", it).put("ntkFp", it).put("fingerprint", it)
+                }
+                seedValues["ntk_pid"]?.let { body.put("pid", it).put("ntkPid", it) }
+                seedValues["__vsid"]?.let { body.put("vsid", it) }
+                seedValues["__ntk_ev_id"]?.let { body.put("eventId", it) }
+                val startedAt = System.currentTimeMillis()
+                val response = transport.registerKey(body.toString().toByteArray())
+                val receivedAt = System.currentTimeMillis()
+                require(response.status == 200) {
+                    "Control warm request-key registration HTTP ${response.status}"
+                }
+                val json = JSONObject(response.bodyText)
+                val keyId = json.optString("keyId", "")
+                require(json.optBoolean("ok", false) && keyId.isNotBlank()) {
+                    "Control warm request-key registration rejected"
+                }
+                val roundTripMs = (receivedAt - startedAt).coerceAtLeast(0L)
+                val localMidpoint = startedAt + roundTripMs / 2L
+                WarmRegisteredKey(
+                    keyId,
+                    ntkAckServerTimeOffsetAtRegistrationMidpoint(
+                        json.optLong("serverNow", localMidpoint),
+                        startedAt,
+                        receivedAt,
+                    ),
+                    json.optLong("expiresAt", localMidpoint + 3_600_000L),
+                    roundTripMs,
+                )
+            }
+            mainHandler.post {
+                val completed = result.mapCatching { registered ->
+                    // If a very fast click replaced the synthetic owner while registration was in
+                    // flight, bind the same reusable public key to that real owner. Its own
+                    // registration may also finish; both responses represent this exact key pair.
+                    val owner = flight?.identity ?: warmIdentity
+                    requestKeyStore.bindRegisteredKey(
+                        owner,
+                        registered.keyId,
+                        registered.serverTimeOffsetMs,
+                        registered.expiresAtEpochMs,
+                    )
+                    Log.d(
+                        TAG,
+                        "ack_control_plane_warm_ready rttMs=${registered.roundTripMs}," +
+                            "joinedClick=${flight != null}",
+                    )
+                    Unit
+                }
+                controlWarmInFlight = false
+                val callbacks = controlWarmCallbacks.toList()
+                controlWarmCallbacks.clear()
+                callbacks.forEach { it(completed) }
+            }
+        }
     }
 
     fun startAck(
@@ -373,8 +492,8 @@ class NtkAckBrowserEngine(
 
     private fun installWebViewClients(created: WebView) {
         created.webViewClient = object : WebViewClient() {
-            override fun onPageCommitVisible(view: WebView?, url: String?) = pageReady(created)
-            override fun onPageFinished(view: WebView?, url: String?) = pageReady(created)
+            override fun onPageCommitVisible(view: WebView?, url: String?) = pageReady(created, url)
+            override fun onPageFinished(view: WebView?, url: String?) = pageReady(created, url)
 
             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
                 val expected = state == State.QUIESCING
@@ -406,9 +525,12 @@ class NtkAckBrowserEngine(
         }
     }
 
-    private fun pageReady(created: WebView) {
+    private fun pageReady(created: WebView, callbackUrl: String?) {
         if (webView !== created) return
         if (state == State.WARMING) {
+            // stopLoading() can deliver a late callback for this inert document after a real
+            // flight has already started. Only this exact origin is allowed to complete warming.
+            if (!callbackUrl.orEmpty().startsWith(INERT_ORIGIN)) return
             state = State.READY
             // This renderer has finished the only work required for the next flight: committing
             // the inert shell. Leaving a measured WebView resumed makes Chromium keep scheduling
@@ -423,8 +545,25 @@ class NtkAckBrowserEngine(
         }
         val current = flight
         if (state == State.RUNNING && current != null) {
+            // A warmed WebView may report the previous inert document after prepareFlightShell
+            // has moved state to RUNNING. Treating that callback as the new shell commits the
+            // guard before its DOM exists. Bind the fallback callback to the exact episode
+            // document; the inline bridge remains the primary readiness signal.
+            if (!isExactFlightDocumentCallback(current, callbackUrl)) return
             markFlightShellReady(current.request.flightId, "page_callback")
         }
+    }
+
+    private fun isExactFlightDocumentCallback(current: Flight, callbackUrl: String?): Boolean {
+        val value = callbackUrl?.takeIf { it.isNotBlank() } ?: return false
+        return runCatching {
+            val actual = URI(value)
+            val expected = URI(current.request.origin)
+            actual.scheme.equals(expected.scheme, ignoreCase = true) &&
+                actual.host.equals(expected.host, ignoreCase = true) &&
+                actual.port == expected.port &&
+                actual.path == current.request.episodePath
+        }.getOrDefault(false)
     }
 
     private fun parkReadyWarmRenderer(view: WebView) {
@@ -784,6 +923,10 @@ class NtkAckBrowserEngine(
 
     private fun markNetworkPrerequisitesReady(current: Flight) {
         if (!current.prerequisitesReady.compareAndSet(false, true)) return
+        // Release the JavaScript bridge thread directly. This signal is durable even when the
+        // offscreen renderer is timer-throttled and cannot be lost between a JS waiter being
+        // installed and an evaluateJavascript wake-up being posted.
+        current.prerequisitesReadySignal.countDown()
         Log.d(
             TAG,
             "ack_network_prerequisites_ready path=${current.request.episodePath}," +
@@ -813,10 +956,43 @@ class NtkAckBrowserEngine(
         seeds["ntk_pid"]?.let { body.put("pid", it).put("ntkPid", it) }
         seeds["__vsid"]?.let { body.put("vsid", it) }
         seeds["__ntk_ev_id"]?.let { body.put("eventId", it) }
-        checkActive(current)
-        val registrationStartedAt = System.currentTimeMillis()
-        val response = transport.registerKey(body.toString().toByteArray())
-        val registrationReceivedAt = System.currentTimeMillis()
+        val registrationBody = body.toString().toByteArray()
+        var registrationStartedAt: Long
+        var registrationReceivedAt: Long
+        var response: NtkAckTransport.Result
+        while (true) {
+            checkActive(current)
+            registrationStartedAt = System.currentTimeMillis()
+            response = transport.registerKey(registrationBody)
+            registrationReceivedAt = System.currentTimeMillis()
+            val retryAfterMs = ntkAckRequestKeyRetryAfterMs(response.status, response.bodyText)
+                ?: break
+            val retryDelayMs = retryAfterMs + ACK_RATE_LIMIT_SETTLE_MARGIN_MS
+            val remainingMs = (
+                current.request.deadlineElapsedRealtimeNanos -
+                    SystemClock.elapsedRealtimeNanos()
+                ) / 1_000_000L
+            check(remainingMs > retryDelayMs + ACK_RETRY_COMPLETION_RESERVE_MS) {
+                "Request-key registration rate limit exceeds ACK deadline"
+            }
+            Log.i(
+                TAG,
+                "ack_request_key_rate_limited retryAfterMs=$retryAfterMs," +
+                    "retryDelayMs=$retryDelayMs," +
+                    "remainingMs=$remainingMs",
+            )
+            // retryAfter is an origin-side boundary. Add one measured scheduling/network margin
+            // so this background worker cannot arrive a few milliseconds before that boundary
+            // and reset the same rate-limit window indefinitely.
+            val retryAt = SystemClock.elapsedRealtime() + retryDelayMs
+            while (SystemClock.elapsedRealtime() < retryAt) {
+                checkActive(current)
+                Thread.sleep(
+                    minOf(ACK_RETRY_OWNERSHIP_RECHECK_MS, retryAt - SystemClock.elapsedRealtime())
+                        .coerceAtLeast(1L),
+                )
+            }
+        }
         require(response.status == 200) {
             "Request-key registration HTTP ${response.status}: ${response.bodyText.take(160)}"
         }
@@ -915,6 +1091,28 @@ class NtkAckBrowserEngine(
         fun prerequisitesReady(token: String): Boolean = withFlight(token) {
             it.prerequisitesReady.get()
         } ?: false
+
+        /**
+         * Waits on the native prerequisite event without a WebView timer or a best-effort JS
+         * callback. JavascriptInterface calls run on WebView's private bridge thread, so this does
+         * not block the app main thread or the network workers which release the latch.
+         */
+        @JavascriptInterface
+        fun awaitNetworkPrerequisites(token: String): Boolean {
+            val current = withFlight(token) { it } ?: return false
+            val remainingNanos =
+                current.request.deadlineElapsedRealtimeNanos - SystemClock.elapsedRealtimeNanos()
+            if (remainingNanos <= 0L) return false
+            val released = try {
+                current.prerequisitesReadySignal.await(remainingNanos, TimeUnit.NANOSECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                false
+            }
+            return released && withFlight(token) {
+                it === current && it.prerequisitesReady.get()
+            } == true
+        }
 
         @JavascriptInterface
         fun prerequisitesWaitBudgetMs(token: String): Long = withFlight(token) {
@@ -1223,6 +1421,7 @@ class NtkAckBrowserEngine(
     private fun cancelFlight(current: Flight, reasonCode: Int, stage: String) {
         if (!current.tasks.cancel()) return
         current.generationToken = UUID.randomUUID().toString()
+        current.prerequisitesReadySignal.countDown()
         mainHandler.removeCallbacks(deadlineRunnable)
         current.transport?.cancelAll()
         val code = if (current.ackPostStarted && current.proof == null) {
@@ -1244,6 +1443,7 @@ class NtkAckBrowserEngine(
     private fun failFlight(current: Flight, code: Int, stage: String, error: Throwable) {
         if (flight !== current || current.proof != null || !current.tasks.cancel()) return
         current.generationToken = UUID.randomUUID().toString()
+        current.prerequisitesReadySignal.countDown()
         mainHandler.removeCallbacks(deadlineRunnable)
         current.transport?.cancelAll()
         requestKeyStore.invalidateFlight(current.identity)
@@ -1442,6 +1642,11 @@ class NtkAckBrowserEngine(
         require(request.userAgent.isNotBlank())
         require(request.viewport.widthPx > 0 && request.viewport.heightPx > 0)
         require(request.clientPid > 0)
+        NtkAckCookieBoundary.validateSeeds(
+            CONTROL_ORIGIN,
+            CONTROL_EPISODE_SCOPE,
+            request.identitySeeds,
+        )
     }
 
     private fun validateAckRequest(request: NtkAckRequest) {
@@ -1458,7 +1663,7 @@ class NtkAckBrowserEngine(
     }
 
     private fun NtkAckRequest.toWarmRequest() = NtkAckWarmRequest(
-        protocolVersion, authEpoch, userAgent, viewport, clientPid,
+        protocolVersion, authEpoch, userAgent, viewport, clientPid, seedCookies,
     )
 
     private fun checkActive(current: Flight) {
@@ -1536,11 +1741,17 @@ class NtkAckBrowserEngine(
     }
 
     companion object {
+        private const val ACK_RETRY_OWNERSHIP_RECHECK_MS = 100L
+        private const val ACK_RETRY_COMPLETION_RESERVE_MS = 750L
+        private const val ACK_RATE_LIMIT_SETTLE_MARGIN_MS = 250L
         private const val TAG = "NtkAckBrowserEngine"
         private const val BRIDGE_NAME = "NtkAckBridge"
         private const val QUIESCENCE_RENDERER_TIMEOUT_MS = 5_000L
         private const val INERT_ORIGIN = "https://ntk-ack.invalid/"
         private const val INERT_HTML = "<!doctype html><meta name=viewport content='width=device-width'><title>ntk-ack-inert</title>"
+        private const val CONTROL_ORIGIN = "https://sbxh9.com"
+        private const val CONTROL_EPISODE_SCOPE = "/webtoon/control/warm"
+        private const val CONTROL_WARM_DEADLINE_NANOS = 10_000_000_000L
         private const val BUNDLED_GUARD_JAVASCRIPT = "ntk_guard/guard.js"
         private const val BUNDLED_GUARD_WASM = "ntk_guard/guard-wasm.bin"
 
@@ -1583,12 +1794,8 @@ class NtkAckBrowserEngine(
                 else if(mod.default)await mod.default({module_or_path:URL.createObjectURL(new Blob([wasm],{type:'application/wasm'}))});
                 if(!mod.__i4)throw new Error('guard __i4 missing');
                 note('module-ready');
-                const prerequisiteWaitStart=performance.now();
-                const prerequisiteWaitBudgetMs=Math.max(250,Number(bridge.prerequisitesWaitBudgetMs(token)||250));
-                while(!bridge.prerequisitesReady(token)){
-                  if(performance.now()-prerequisiteWaitStart>prerequisiteWaitBudgetMs)throw new Error('network prerequisites timeout');
-                  await new Promise(function(resolve){setTimeout(resolve,4);});
-                }
+                if(!bridge.prerequisitesReady(token))note('prerequisites-wait');
+                if(!bridge.awaitNetworkPrerequisites(token))throw new Error('network prerequisites deadline or stale flight');
                 note('prerequisites-ready');
                 window.__ntk_request_key_id=String(bridge.requestKeyId(token)||'');
                 if(!window.__ntk_request_key_id)throw new Error('request key missing');
@@ -1613,6 +1820,13 @@ class NtkAckBrowserEngine(
             })();
         """.trimIndent()
     }
+
+    private data class WarmRegisteredKey(
+        val keyId: String,
+        val serverTimeOffsetMs: Long,
+        val expiresAtEpochMs: Long,
+        val roundTripMs: Long,
+    )
 }
 
 class NtkAckException(val failure: NtkAckFailure) : IllegalStateException(failure.message)

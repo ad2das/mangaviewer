@@ -339,7 +339,7 @@ class NtkDirectWifiAdjacentRunwayTailHandoffTest {
         )
         val structureCommit = initial.indexOf("pages.addAll(structureRefs)")
         val release = initial.lastIndexOf(
-            "preparingInitialAdjacentRunways.remove(targetPath, preparation)"
+            "finishInitialAdjacentRunwayPreparation(targetPath, preparation)"
         )
 
         assertTrue(initial.contains(

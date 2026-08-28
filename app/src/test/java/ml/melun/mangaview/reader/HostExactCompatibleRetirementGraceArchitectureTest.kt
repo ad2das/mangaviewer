@@ -52,12 +52,18 @@ class HostExactCompatibleRetirementGraceArchitectureTest {
     fun idleCompactionSettlesBeforeWarmupAndStopsAtNewPhysicalMotion() {
         val drain = functionBody("private fun drainIdleCompactionAfterQuiet()")
         val compact = functionBody("private fun compactIdleSlotsToTarget()")
+        val allocation = functionBody("private fun fulfillSlotAllocationPlan(")
 
         assertTrue(source.contains("private const val IDLE_COMPACTION_QUIET_MS = 1_500L"))
         assertTrue(source.contains("private const val TOKEN_RESERVE_REFILL_QUIET_MS = 5_000L"))
         assertTrue(drain.contains("NtkReaderTransferPacer.isPhysicalMotionActive()"))
         assertTrue(compact.contains("NtkReaderTransferPacer.isPhysicalMotionActive()"))
         assertTrue(compact.contains("firstOrNull()"))
+        assertTrue(allocation.contains("scheduleIdleCompactionIfNeeded()"))
+        assertTrue(
+            allocation.indexOf("scheduleIdleCompactionIfNeeded()") <
+                allocation.indexOf("return plan.reusable + allocatedSlots"),
+        )
     }
 
     private fun functionBody(signature: String, text: String = source): String {

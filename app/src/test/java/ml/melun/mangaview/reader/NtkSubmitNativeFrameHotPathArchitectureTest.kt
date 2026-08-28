@@ -11,12 +11,18 @@ class NtkSubmitNativeFrameHotPathArchitectureTest {
     ).readText()
 
     @Test
-    fun geometryReuseRetainsTheBoundedNativeCommandHandoff() {
+    fun hostGeometryReuseEnqueuesDirectlyWhileDeviceRetainsBoundedHandoff() {
         val submit = functionBody("private fun submitNativeFrame(")
 
         assertTrue(submit.contains("val directActiveBandGeometry: FrameSyncedGeometryRequest? = null"))
         assertFalse(submit.contains("ViewerNativeGeometryEnqueue"))
+        assertTrue(submit.contains("val synchronousEmulatorNativeGeometry ="))
+        assertTrue(submit.contains("emulatorNativeSurfaceRuntime"))
+        assertTrue(submit.contains("!synchronousEmulatorNativeGeometry"))
         assertTrue(submit.contains("acquireDeferredNativeGeometrySubmission("))
+        assertTrue(submit.contains("} else if (synchronousEmulatorNativeGeometry) {"))
+        assertTrue(submit.contains("if (!nativeSubmitOrderLock.tryLock())"))
+        assertTrue(submit.contains("nativeSubmitOrderLock.unlock()"))
         assertTrue(source.contains("nativeSubmitProducerGeometry("))
     }
 

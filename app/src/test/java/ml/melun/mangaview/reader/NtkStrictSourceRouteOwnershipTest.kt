@@ -357,12 +357,12 @@ class NtkStrictSourceRouteOwnershipTest {
             "executeDirectWifiAdjacentWebtoonH1Recovery(",
             nextReplica,
         )
-        val logicalFailure = direct.lastIndexOf(
-            "throw lastFailure ?: IOException(\"Direct Wi-Fi H2 replica image Call exhausted\")"
-        )
+        val exhaustedFailure = direct.lastIndexOf("val exhaustedH2Failure = lastFailure")
+        val logicalFailure = direct.lastIndexOf("throw exhaustedH2Failure")
         assertTrue(physicalCatch >= 0)
         assertTrue(nextReplica > physicalCatch)
         assertTrue(h1Recovery > nextReplica)
+        assertTrue(exhaustedFailure > h1Recovery)
         assertTrue(logicalFailure > h1Recovery)
     }
 

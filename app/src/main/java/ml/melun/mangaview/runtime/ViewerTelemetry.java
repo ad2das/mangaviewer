@@ -440,7 +440,10 @@ public final class ViewerTelemetry {
                 firstVisibleGapPx,
                 velocityPxPerSecond,
                 0L,
-                0L);
+                0L,
+                0L,
+                0L,
+                false);
     }
 
     /** Same identity proof with the exact physical samples that changed this submitted viewport. */
@@ -469,7 +472,8 @@ public final class ViewerTelemetry {
                 inputOldestNanos,
                 inputNewestNanos,
                 0L,
-                0L);
+                0L,
+                false);
     }
 
     /** Same proof with both hardware event time and app dispatch-receipt time. */
@@ -486,7 +490,8 @@ public final class ViewerTelemetry {
             long inputOldestNanos,
             long inputNewestNanos,
             long inputReceivedOldestNanos,
-            long inputReceivedNewestNanos) {
+            long inputReceivedNewestNanos,
+            boolean cadenceOwnedBySurface) {
         recordQualifiedActualFrame(
                 renderView,
                 authority,
@@ -504,7 +509,8 @@ public final class ViewerTelemetry {
                 inputOldestNanos,
                 inputNewestNanos,
                 inputReceivedOldestNanos,
-                inputReceivedNewestNanos);
+                inputReceivedNewestNanos,
+                cadenceOwnedBySurface);
     }
 
     /** Called only when the native SurfaceControl path has a real compositor-latch proof. */
@@ -543,9 +549,14 @@ public final class ViewerTelemetry {
      * once this gesture has produced two moving commits, every later active interval is retained.
      */
     public static void physicalScrollGestureStarted() {
+        physicalScrollGestureStarted(false);
+    }
+
+    /** Preserves the prior real presentation only when DOWN interrupted live pixel motion. */
+    public static void physicalScrollGestureStarted(boolean continuingMotion) {
         Session session = SESSION.get();
         if(session != null)
-            session.startPhysicalScrollGesture();
+            session.startPhysicalScrollGesture(continuingMotion);
     }
 
     /** Ends cadence accounting when rotation/background tears down the interactive Surface. */
@@ -575,18 +586,32 @@ public final class ViewerTelemetry {
             long inputOldestNanos,
             long inputNewestNanos,
             long inputReceivedOldestNanos,
-            long inputReceivedNewestNanos) {
+            long inputReceivedNewestNanos,
+            long frameToken,
+            float scrollOffsetPx,
+            int firstVisiblePage,
+            int lastVisiblePage,
+            long producerCallbackStartedNanos,
+            long expectedPresentationTimeNanos,
+            int presentationKind) {
         Session session = SESSION.get();
         if(session == null || presentedAtNanos <= 0L)
             return;
-        session.recordQualifiedActualFrame(
+        session.recordQualifiedNativePresentationFrame(
                 presentedAtNanos,
                 velocityPxPerSecond,
                 refreshRate,
                 inputOldestNanos,
                 inputNewestNanos,
                 inputReceivedOldestNanos,
-                inputReceivedNewestNanos);
+                inputReceivedNewestNanos,
+                frameToken,
+                scrollOffsetPx,
+                firstVisiblePage,
+                lastVisiblePage,
+                producerCallbackStartedNanos,
+                expectedPresentationTimeNanos,
+                presentationKind);
     }
 
     private static void recordQualifiedActualFrame(
@@ -617,7 +642,10 @@ public final class ViewerTelemetry {
                 responseDurationField,
                 null,
                 0L,
-                0L);
+                0L,
+                0L,
+                0L,
+                false);
     }
 
     private static void recordQualifiedActualFrame(
@@ -649,7 +677,10 @@ public final class ViewerTelemetry {
                 responseDurationField,
                 physicalEpisodeId,
                 0L,
-                0L);
+                0L,
+                0L,
+                0L,
+                false);
     }
 
     private static void recordQualifiedActualFrame(
@@ -685,7 +716,8 @@ public final class ViewerTelemetry {
                 inputOldestNanos,
                 inputNewestNanos,
                 0L,
-                0L);
+                0L,
+                false);
     }
 
     private static void recordQualifiedActualFrame(
@@ -705,7 +737,8 @@ public final class ViewerTelemetry {
             long inputOldestNanos,
             long inputNewestNanos,
             long inputReceivedOldestNanos,
-            long inputReceivedNewestNanos) {
+            long inputReceivedNewestNanos,
+            boolean cadenceOwnedBySurface) {
         Session session = SESSION.get();
         if(session == null || !viewportOriginalComplete || firstVisibleGapPx >= 0L ||
                 firstVisiblePage < 0 || lastVisiblePage < firstVisiblePage)
@@ -714,14 +747,16 @@ public final class ViewerTelemetry {
         float refreshRate = renderView != null && renderView.getDisplay() != null
                 ? renderView.getDisplay().getRefreshRate()
                 : 60.0f;
-        session.recordQualifiedActualFrame(
-                evidenceAtNanos > 0L ? evidenceAtNanos : SystemClock.elapsedRealtimeNanos(),
-                velocityPxPerSecond,
-                refreshRate,
-                inputOldestNanos,
-                inputNewestNanos,
-                inputReceivedOldestNanos,
-                inputReceivedNewestNanos);
+        if(!cadenceOwnedBySurface) {
+            session.recordQualifiedSemanticFrame(
+                    evidenceAtNanos > 0L ? evidenceAtNanos : SystemClock.elapsedRealtimeNanos(),
+                    velocityPxPerSecond,
+                    refreshRate,
+                    inputOldestNanos,
+                    inputNewestNanos,
+                    inputReceivedOldestNanos,
+                    inputReceivedNewestNanos);
+        }
 
         boolean firstActualFrame;
         synchronized(session) {
@@ -1675,6 +1710,16 @@ public final class ViewerTelemetry {
         volatile String latestActualDescription;
         volatile ScheduledFuture<?> memorySampler;
         long lastNativeScrollPresentationNanos;
+        /**
+         * Newest physical proof already counted by the surface-owner cadence path.  The activity's
+         * semantic mailbox deliberately receives the same proof later so it can publish episode
+         * identity and accessibility state.  It must not count that physical frame a second time.
+         */
+        final PhysicalCadenceOwnership physicalCadenceOwnership =
+                new PhysicalCadenceOwnership();
+        long lastNativeScrollFrameToken;
+        float lastNativeScrollOffsetPx = Float.NaN;
+        int lastNativePresentationKind;
         long nativePhysicalGestureStartedNanos;
         long nativeScrollIntervalCount;
         long nativeScrollIntervalNanos;
@@ -1749,7 +1794,67 @@ public final class ViewerTelemetry {
                     inputOldestNanos,
                     inputNewestNanos,
                     0L,
-                    0L);
+                    0L,
+                    0L,
+                    Float.NaN,
+                    -1,
+                    -1,
+                    0L,
+                    0L,
+                    0);
+        }
+
+        synchronized void recordQualifiedNativePresentationFrame(
+                long actualFrameNanos,
+                float velocityPxPerSecond,
+                float refreshRate,
+                long inputOldestNanos,
+                long inputNewestNanos,
+                long inputReceivedOldestNanos,
+                long inputReceivedNewestNanos,
+                long frameToken,
+                float scrollOffsetPx,
+                int firstVisiblePage,
+                int lastVisiblePage,
+                long producerCallbackStartedNanos,
+                long expectedPresentationTimeNanos,
+                int presentationKind) {
+            physicalCadenceOwnership.recordProducer(actualFrameNanos);
+            recordQualifiedActualFrame(
+                    actualFrameNanos,
+                    velocityPxPerSecond,
+                    refreshRate,
+                    inputOldestNanos,
+                    inputNewestNanos,
+                    inputReceivedOldestNanos,
+                    inputReceivedNewestNanos,
+                    frameToken,
+                    scrollOffsetPx,
+                    firstVisiblePage,
+                    lastVisiblePage,
+                    producerCallbackStartedNanos,
+                    expectedPresentationTimeNanos,
+                    presentationKind);
+        }
+
+        synchronized void recordQualifiedSemanticFrame(
+                long actualFrameNanos,
+                float velocityPxPerSecond,
+                float refreshRate,
+                long inputOldestNanos,
+                long inputNewestNanos,
+                long inputReceivedOldestNanos,
+                long inputReceivedNewestNanos) {
+            if(!physicalCadenceOwnership.semanticOwns(actualFrameNanos))
+                return;
+            recordQualifiedActualFrame(
+                    actualFrameNanos,
+                    velocityPxPerSecond,
+                    refreshRate,
+                    inputOldestNanos,
+                    inputNewestNanos,
+                    inputReceivedOldestNanos,
+                    inputReceivedNewestNanos);
         }
 
         synchronized void recordQualifiedActualFrame(
@@ -1760,6 +1865,38 @@ public final class ViewerTelemetry {
                 long inputNewestNanos,
                 long inputReceivedOldestNanos,
                 long inputReceivedNewestNanos) {
+            recordQualifiedActualFrame(
+                    actualFrameNanos,
+                    velocityPxPerSecond,
+                    refreshRate,
+                    inputOldestNanos,
+                    inputNewestNanos,
+                    inputReceivedOldestNanos,
+                    inputReceivedNewestNanos,
+                    0L,
+                    Float.NaN,
+                    -1,
+                    -1,
+                    0L,
+                    0L,
+                    0);
+        }
+
+        synchronized void recordQualifiedActualFrame(
+                long actualFrameNanos,
+                float velocityPxPerSecond,
+                float refreshRate,
+                long inputOldestNanos,
+                long inputNewestNanos,
+                long inputReceivedOldestNanos,
+                long inputReceivedNewestNanos,
+                long frameToken,
+                float scrollOffsetPx,
+                int firstVisiblePage,
+                int lastVisiblePage,
+                long producerCallbackStartedNanos,
+                long expectedPresentationTimeNanos,
+                int presentationKind) {
             // Completed-draw delivery is intentionally bounded and can arrive after the next
             // ACTION_DOWN. Such a proof still describes real pixels, but it belongs to the
             // previous gesture and must not repopulate the cadence baseline that DOWN just reset.
@@ -1767,6 +1904,9 @@ public final class ViewerTelemetry {
                     actualFrameNanos < nativePhysicalGestureStartedNanos)
                 return;
             long previous = lastNativeScrollPresentationNanos;
+            long previousFrameToken = lastNativeScrollFrameToken;
+            float previousScrollOffsetPx = lastNativeScrollOffsetPx;
+            int previousPresentationKind = lastNativePresentationKind;
             // A delayed semantic/accessibility publication can carry an older presentation after
             // the producer-side cadence path has already recorded newer frames. Reject it before
             // the stationary-frame branch so an old coalesced proof cannot erase the live cadence
@@ -1775,6 +1915,9 @@ public final class ViewerTelemetry {
                 return;
             if(Math.abs(velocityPxPerSecond) <= 25.0f) {
                 lastNativeScrollPresentationNanos = 0L;
+                lastNativeScrollFrameToken = 0L;
+                lastNativeScrollOffsetPx = Float.NaN;
+                lastNativePresentationKind = 0;
                 nativeConsecutiveSlowIntervals = 0L;
                 return;
             }
@@ -1782,6 +1925,9 @@ public final class ViewerTelemetry {
                     Math.max(30.0d, Math.min(240.0d, refreshRate)));
             nativeRefreshPeriodNanos = refreshPeriod;
             lastNativeScrollPresentationNanos = actualFrameNanos;
+            lastNativeScrollFrameToken = frameToken;
+            lastNativeScrollOffsetPx = scrollOffsetPx;
+            lastNativePresentationKind = presentationKind;
             if(previous <= 0L)
                 return;
             long interval = actualFrameNanos - previous;
@@ -1800,9 +1946,7 @@ public final class ViewerTelemetry {
                     inputReceivedOldestNanos,
                     inputReceivedNewestNanos)) {
                 nativeSlowIntervals++;
-                if(interval >= 100_000_000L && Log.isLoggable(TAG, Log.DEBUG) &&
-                        (lastNativeSlowCauseLogNanos <= 0L ||
-                         actualFrameNanos - lastNativeSlowCauseLogNanos >= 500_000_000L)) {
+                if(interval >= 25_000_000L && Log.isLoggable(TAG, Log.DEBUG)) {
                     lastNativeSlowCauseLogNanos = actualFrameNanos;
                     long receiptSpan = inputReceivedOldestNanos > 0L &&
                             inputReceivedNewestNanos >= inputReceivedOldestNanos
@@ -1811,8 +1955,42 @@ public final class ViewerTelemetry {
                             ? actualFrameNanos - inputReceivedOldestNanos : -1L;
                     long receiptNewestAge = inputReceivedNewestNanos > 0L
                             ? actualFrameNanos - inputReceivedNewestNanos : -1L;
+                    long inputSpan = inputOldestNanos > 0L &&
+                            inputNewestNanos >= inputOldestNanos
+                            ? inputNewestNanos - inputOldestNanos : -1L;
+                    long inputOldestAge = inputOldestNanos > 0L
+                            ? actualFrameNanos - inputOldestNanos : -1L;
+                    long inputNewestAge = inputNewestNanos > 0L
+                            ? actualFrameNanos - inputNewestNanos : -1L;
                     Log.i(TAG, "native_slow_cause intervalMs=" + interval / 1_000_000.0
                             + ",velocity=" + velocityPxPerSecond
+                            + ",frameToken=" + frameToken
+                            + ",tokenDelta=" + (previousFrameToken > 0L && frameToken > 0L
+                                    ? frameToken - previousFrameToken : -1L)
+                            + ",scroll=" + previousScrollOffsetPx + "->" + scrollOffsetPx
+                            + ",scrollDelta=" + (Float.isFinite(previousScrollOffsetPx) &&
+                                    Float.isFinite(scrollOffsetPx)
+                                    ? scrollOffsetPx - previousScrollOffsetPx : Float.NaN)
+                            + ",visible=" + firstVisiblePage + ".." + lastVisiblePage
+                            + ",presentationKind=" + previousPresentationKind + "->" +
+                                    presentationKind
+                            + ",callbackToPresentMs=" +
+                                    (producerCallbackStartedNanos > 0L
+                                            ? (actualFrameNanos - producerCallbackStartedNanos) /
+                                                    1_000_000.0 : -1.0)
+                            + ",presentVsExpectedMs=" +
+                                    (expectedPresentationTimeNanos > 0L
+                                            ? (actualFrameNanos - expectedPresentationTimeNanos) /
+                                                    1_000_000.0 : -1.0)
+                            + ",callbackVsExpectedMs=" +
+                                    (producerCallbackStartedNanos > 0L &&
+                                            expectedPresentationTimeNanos > 0L
+                                            ? (producerCallbackStartedNanos -
+                                                    expectedPresentationTimeNanos) / 1_000_000.0
+                                            : -1.0)
+                            + ",inputSpanMs=" + inputSpan / 1_000_000.0
+                            + ",inputOldestAgeMs=" + inputOldestAge / 1_000_000.0
+                            + ",inputNewestAgeMs=" + inputNewestAge / 1_000_000.0
                             + ",receiptSpanMs=" + receiptSpan / 1_000_000.0
                             + ",receiptOldestAgeMs=" + receiptOldestAge / 1_000_000.0
                             + ",receiptNewestAgeMs=" + receiptNewestAge / 1_000_000.0);
@@ -1830,15 +2008,23 @@ public final class ViewerTelemetry {
             }
         }
 
-        synchronized void startPhysicalScrollGesture() {
+        synchronized void startPhysicalScrollGesture(boolean continuingMotion) {
             nativePhysicalGestureStartedNanos = SystemClock.elapsedRealtimeNanos();
-            lastNativeScrollPresentationNanos = 0L;
-            nativeConsecutiveSlowIntervals = 0L;
+            if(!continuingMotion) {
+                lastNativeScrollPresentationNanos = 0L;
+                lastNativeScrollFrameToken = 0L;
+                lastNativeScrollOffsetPx = Float.NaN;
+                lastNativePresentationKind = 0;
+                nativeConsecutiveSlowIntervals = 0L;
+            }
         }
 
         synchronized void endPhysicalScrollMotion() {
             nativePhysicalGestureStartedNanos = 0L;
             lastNativeScrollPresentationNanos = 0L;
+            lastNativeScrollFrameToken = 0L;
+            lastNativeScrollOffsetPx = Float.NaN;
+            lastNativePresentationKind = 0;
             nativeConsecutiveSlowIntervals = 0L;
         }
 
@@ -1939,6 +2125,19 @@ public final class ViewerTelemetry {
 
         private static long nextVersion(long current) {
             return current == Long.MAX_VALUE ? 1L : current + 1L;
+        }
+    }
+
+    /** Assigns each physical presentation to either the producer cadence path or semantic fallback. */
+    static final class PhysicalCadenceOwnership {
+        private long latestProducerEvidenceNanos;
+
+        synchronized void recordProducer(long evidenceNanos) {
+            latestProducerEvidenceNanos = Math.max(latestProducerEvidenceNanos, evidenceNanos);
+        }
+
+        synchronized boolean semanticOwns(long evidenceNanos) {
+            return evidenceNanos > latestProducerEvidenceNanos;
         }
     }
 

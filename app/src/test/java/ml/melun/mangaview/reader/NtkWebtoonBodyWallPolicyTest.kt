@@ -7,7 +7,138 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkWebtoonBodyWallPolicyTest {
+    @Test
+    fun realP0NeverWaitsBehindItsOpportunisticFragmentedTlsPreconnect() {
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldWaitForFragmentedTlsBootstrap(
+                pageIndex = 0,
+                shardIndex = 0,
+            ),
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.shouldWaitForFragmentedTlsBootstrap(
+                pageIndex = 1,
+                shardIndex = 1,
+            ),
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.shouldWaitForFragmentedTlsBootstrap(
+                pageIndex = 8,
+                shardIndex = 0,
+            ),
+        )
+    }
 
+    @Test
+    fun qualifiedCurrentQuicBalancesPriorityCohortsAcrossReplicaEngines() {
+        assertEquals(
+            6,
+            NtkWifiExactQuicSessionPool.HOST_EMULATOR_CURRENT_SESSION_STRIPES_PER_HOST,
+        )
+        assertEquals(
+            6,
+            NtkWifiExactQuicSessionPool
+                .HOST_EMULATOR_CURRENT_PROVEN_SESSION_STRIPES_PER_HOST,
+        )
+        assertEquals(
+            3,
+            NtkWifiExactQuicSessionPool.HOST_EMULATOR_CURRENT_MAX_LEASES_PER_STRIPE,
+        )
+        assertEquals(
+            2,
+            NtkWifiExactQuicSessionPool
+                .HOST_EMULATOR_CURRENT_CALLBACK_THREADS_PER_SESSION,
+        )
+        val previouslyCollidingPages = listOf(22, 30, 32, 75, 84)
+        val ordinaryStripes = previouslyCollidingPages.map { page ->
+            NtkWifiExactQuicSessionPool.stripeForPage(
+                page,
+                NtkWifiExactQuicSessionPool.WEBTOON_SESSION_STRIPES_PER_HOST,
+                replicaHostCount = 3,
+            )
+        }.toSet()
+        val active = IntArray(3)
+        previouslyCollidingPages.forEach { page ->
+            val host = NtkWifiExactQuicSessionPool.leastLoadedStripe(active, page)
+            active[host]++
+        }
+
+        assertEquals(1, ordinaryStripes.size)
+        assertTrue(active.maxOrNull()!! - active.minOrNull()!! <= 1)
+        assertEquals(previouslyCollidingPages.size, active.sum())
+    }
+
+
+    @Test
+    fun hostEmulatorCurrentQuicUsesOnePostRunwayProbeBeforeBulk() {
+        val probe = NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE
+        assertEquals(5, probe)
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldProbeHostEmulatorCurrentQuic(
+                currentHostEmulatorRecovery = true,
+                pageIndex = probe - 1,
+                episodePageCount = 86,
+            ),
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.shouldProbeHostEmulatorCurrentQuic(
+                currentHostEmulatorRecovery = true,
+                pageIndex = probe,
+                episodePageCount = 86,
+            ),
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldProbeHostEmulatorCurrentQuic(
+                currentHostEmulatorRecovery = false,
+                pageIndex = probe,
+                episodePageCount = 86,
+            ),
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldUseQualifiedHostEmulatorCurrentQuic(
+                currentHostEmulatorRecovery = true,
+                pageIndex = probe,
+                qualified = true,
+            ),
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.shouldUseQualifiedHostEmulatorCurrentQuic(
+                currentHostEmulatorRecovery = true,
+                pageIndex = probe + 1,
+                qualified = true,
+            ),
+        )
+        repeat(probe + 1) { openingPage ->
+            assertFalse(
+                NtkWebtoonReplicaHeaderPolicy.shouldUseQualifiedHostEmulatorCurrentQuic(
+                    currentHostEmulatorRecovery = true,
+                    pageIndex = openingPage,
+                    qualified = true,
+                ),
+            )
+        }
+        assertTrue(NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_BULK_ENABLED)
+        assertEquals(5, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_OPENING_PAGES)
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldUseQualifiedHostEmulatorCurrentQuic(
+                currentHostEmulatorRecovery = true,
+                pageIndex = probe + 1,
+                qualified = false,
+            ),
+        )
+    }
+
+    @Test
+    fun contentFreeQuicPreconnectStillRequiresThePageFiveExactBodyProbe() {
+        val health = ReaderImageCache.HostEmulatorWebtoonQuicHealth()
+
+        health.recordPreconnectSuccess()
+
+        assertTrue(health.tryBeginProbe())
+        assertFalse(health.tryBeginProbe())
+        health.finishProbe(succeeded = true)
+        assertTrue(health.isQualified())
+    }
 
     @Test
     fun directWifiTreatsOnlyCompleteTinyInvalidBodiesAsReplicaMisses() {
@@ -189,6 +320,27 @@ class NtkWebtoonBodyWallPolicyTest {
         assertEquals(3, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES)
         assertEquals(1_500L, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS)
         assertEquals(
+            5_000L,
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_TIMEOUT_MS,
+        )
+        assertEquals(
+            "shaomoi.org",
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST,
+        )
+        assertEquals(
+            5_000L,
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_TIMEOUT_MS,
+        )
+        assertEquals(
+            8,
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_MAX_CONCURRENT,
+        )
+        assertEquals(
+            8,
+            NtkWebtoonReplicaHeaderPolicy
+                .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_CONNECTION_SHARDS,
+        )
+        assertEquals(
             "xiaomichina.com",
             NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_HOST,
         )
@@ -216,7 +368,7 @@ class NtkWebtoonBodyWallPolicyTest {
         assertEquals(1_200L, NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(0))
         assertEquals(1_000L, NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(1))
         assertEquals(
-            1_200L,
+            2_500L,
             NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(
                 previousHostTimeouts = 0,
                 currentHostEmulatorResumeRecovery = true,
@@ -955,6 +1107,14 @@ class NtkWebtoonBodyWallPolicyTest {
         )
         assertEquals(
             NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = NtkWebtoonBodyWallPolicy.DIRECT_WIFI_CURRENT_SCROLL_RUNWAY_LAST_PAGE,
+                episodePageCount = 84,
+                currentForegroundEpisode = true,
+            ),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS,
             NtkWebtoonBodyWallPolicy.segmentWallMs(9),
         )
         assertEquals(
@@ -1059,6 +1219,14 @@ class NtkWebtoonBodyWallPolicyTest {
                 currentForegroundEpisode = true,
             ),
         )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = 4,
+                episodePageCount = 84,
+                currentForegroundEpisode = false,
+            ),
+        )
     }
 
     @Test
@@ -1072,6 +1240,14 @@ class NtkWebtoonBodyWallPolicyTest {
             )
         )
         assertTrue(
+            NtkWebtoonBodyWallPolicy.shouldResume(
+                elapsedMs = NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
+                deliveredBytes = 50_000L,
+                expectedLength = 300_000L,
+                segmentWallMs = NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
+            )
+        )
+        assertFalse(
             NtkWebtoonBodyWallPolicy.shouldResume(
                 elapsedMs = NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
                 deliveredBytes = 100_000L,

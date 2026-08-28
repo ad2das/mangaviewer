@@ -66,12 +66,14 @@ import ml.melun.mangaview.reader.NtkAdjacentExactP0Delta
 import ml.melun.mangaview.reader.NtkAdjacentExactP0HeadPublication
 import ml.melun.mangaview.reader.NtkAdjacentExactRunwayBatchPublication
 import ml.melun.mangaview.reader.NtkNativeSurfaceFrameRatePolicy
+import ml.melun.mangaview.reader.NtkHostGpuEmulatorCurrentWebtoonLanePolicy
 import ml.melun.mangaview.reader.NtkPhysicalAdjacentMetadataAdoptionPolicy
 import ml.melun.mangaview.reader.NtkSourceSpoolRegistry
 import ml.melun.mangaview.reader.NtkStrictEpisodeDiscoveryCoordinator
 import ml.melun.mangaview.reader.NtkStripDigests
 import ml.melun.mangaview.reader.NtkValidatedNetworkRedriveGate
 import ml.melun.mangaview.reader.NtkVisibleIdentityPolicy
+import ml.melun.mangaview.reader.HostExactHardwareTilePool
 import ml.melun.mangaview.reader.ReaderPreparedStore
 import ml.melun.mangaview.reader.ReaderPipelinePolicy
 import ml.melun.mangaview.reader.ReaderSessionListenerGate
@@ -109,6 +111,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val presentedUptimeNanos: Long,
         val physicalEpisodePath: String,
         val firstVisibleSourcePage: Int,
+        /** Scroll coordinate captured with the exact committed pixels described by this proof. */
+        val committedScrollOffsetPx: Float = Float.NaN,
+        /** Immutable source identity and viewport geometry captured with the same pixels. */
+        val firstVisibleIdentity: ReaderSurfaceView.CommittedPageIdentity? = null,
+        val firstVisiblePageTopPx: Float = Float.NaN,
+        /** All exact visible identities and their viewport tops from this immutable presentation. */
+        val visiblePageIdentities: List<ReaderSurfaceView.CommittedPageIdentity> = emptyList(),
+        val visiblePageTopPx: FloatArray = FloatArray(0),
         val physicalViewportPx: Int = -1,
         val drawablePx: Int = -1,
         val missingPx: Int = -1,
@@ -116,9 +126,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val visibleLoading: Int = -1,
         val visibleErrors: Int = -1,
         val visibleCards: Int = -1,
+        /** True only for the exact current-tail + one divider + exact next-body viewport proof. */
+        val qualifiedTransitionCard: Boolean = false,
         val widthFillFailures: Int = -1,
         val lowResolutionItems: Int = -1,
         val nativeSurfaceRevealPending: Boolean = true,
+        /** Monotonic ReaderSurfaceView submission identity; authoritative over callback time. */
+        val frameToken: Long = 0L,
     )
 
     data class FirstPhysicalDrawProof(
@@ -178,6 +192,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var strictNtkNetworkForcedReplacementEpoch = 0L
     private var strictNtkNetworkAdmissionAttempts = 0
     private var strictNtkNetworkPausedAtMs = 0L
+    private var strictNtkRecoverableTerminalPath = ""
+    private var strictNtkRecoverableTerminalSessionGeneration = -1
     private val strictNtkNetworkReconcileRunnable = Runnable {
         reconcileStrictNtkValidatedNetworkState()
     }
@@ -302,12 +318,30 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
      */
     private val strictTelemetryCleanPhysicalSourcesByEpisode =
         LinkedHashMap<String, CleanPhysicalSourceSnapshot>()
+    /** One bounded diagnostic per episode until its first full clean physical presentation. */
+    private val strictTelemetryCleanPhysicalRejectLoggedPaths = HashSet<String>()
     /**
      * Newest clean physical presentation by compositor timestamp, including reverse motion.
      * This is intentionally separate from the furthest-forward ledgers above: source index is
      * progress, while presentation time is what the user is actually seeing now.
      */
     private var strictTelemetryLatestCleanPhysicalPresentation: CleanPhysicalSourceSnapshot? = null
+    /**
+     * SurfaceControl completion callbacks can be delivered after callbacks for newer submitted
+     * scenes.  Callback/presentation timestamps do not establish viewport order on every Android
+     * implementation, but ReaderSurfaceView frame tokens do.  Keep a lifecycle-spanning state
+     * fence so a late predecessor frame may contribute cleanup/tail evidence without rolling the
+     * toolbar, progress, accessibility state or adjacent-episode ownership backwards.
+     */
+    private var strictTelemetryNewestStateFrameToken = 0L
+    private data class PausedPhysicalViewportAnchor(
+        val presentation: CleanPhysicalSourceSnapshot,
+        val restoreIdentity: ReaderSurfaceView.CommittedPageIdentity,
+        val restorePageTopPx: Float,
+    )
+
+    /** Exact identity-bound reading point visible when Activity yielded its display surface. */
+    private var pausedPhysicalViewportAnchor: PausedPhysicalViewportAnchor? = null
     /**
      * Presentation time paired with the public clean-source identity above.  This must not share
      * storage with [strictTelemetryLastCommitNanos]: that field is only the within-motion cadence
@@ -320,11 +354,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var strictTelemetryLastCommitNanos = 0L
     private var strictTelemetryLastFrameToken = 0L
     private var strictTelemetryVelocityPxPerSecond = 0f
+    /**
+     * A newly launched episode owns the toolbar/progress metadata until the reader receives one
+     * real MOVE from the user in that episode. Prepared-successor insertion may otherwise shift a
+     * restored terminal viewport and masquerade as an automatic forward read.
+     */
+    private var adjacentAdoptionPhysicalInputFloorNanos = 0L
     private var pagesReady = false
     private var toolbarVisible = false
     private var autoCut = false
     private var pageCount = 0
-    private var currentPage = 0
+    // Decode workers use this UI-owned logical anchor only to choose synchronous Surface
+    // publication. Volatile visibility avoids a blocking native progress read on every completed
+    // opening page while continuous input owns the renderer transaction.
+    @Volatile private var currentPage = 0
     private var currentManga: Manga? = null
     private var currentEpisodeAnchorPage = -1
     private var currentTitle: Title? = null
@@ -605,6 +648,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     predecessorEpisodePath,
                     episodePath,
                     claimRevision,
+                )
+            }
+
+            override fun onStrictExactSourceTerminal(
+                episodePath: String,
+                retryableTransport: Boolean,
+            ) {
+                postStrictNtkRecoverableSourceTerminal(
+                    generation,
+                    episodePath,
+                    retryableTransport,
                 )
             }
         }
@@ -1524,15 +1578,43 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
     }
 
+    /**
+     * Freezes the last compositor-proven viewport at the earliest lifecycle edge. Android may
+     * defer onPause until hundreds of milliseconds into the Launcher animation; a drawable that
+     * arrives in that gap can otherwise replay an old blocked fling and make HOME return one page
+     * ahead of what the user left. onUserLeaveHint is delivered for HOME/Recents before that
+     * transition, while onPause remains the fallback for non-user-driven backgrounding.
+     */
+    private fun freezePhysicalViewportForLifecycle() {
+        if (::renderView.isInitialized) {
+            capturePausedPhysicalViewportAnchor()
+            renderView.interruptPhysicalScrollForLifecycle()
+            restorePausedPhysicalViewportAnchor()
+        } else {
+            pausedPhysicalViewportAnchor = null
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        freezePhysicalViewportForLifecycle()
+        super.onUserLeaveHint()
+    }
+
     override fun onPause() {
         readerHostResumed = false
         readerHostResumeRedrawGeneration++
         pauseStrictNtkValidatedNetworkRedrive(hostPause = true)
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT)
+        freezePhysicalViewportForLifecycle()
+        if (::renderView.isInitialized) {
+            // Remove direct tile layers before Launcher waits on the window transition. The
+            // SurfaceView destruction callback arrives near onStop and is too late under a busy
+            // continuous-reader pipeline; resume uses the existing clean-HWUI reveal gate.
+            renderView.pauseNativePresentationForLifecycle()
+        }
         saveCurrentReadingProgress()
         p?.flushDeferredReaderProgress()
         hideInitialPhysicalLoadingWindow()
-        if (::renderView.isInitialized) renderView.interruptPhysicalScrollForLifecycle()
         resetStrictPhysicalPresentationCadence()
         strictTelemetryForegroundCommitArmed = false
         if (strictTelemetryOwned) {
@@ -1597,6 +1679,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
             showInitialPhysicalLoadingStatus()
         }
         if (::renderView.isInitialized) {
+            restorePausedPhysicalViewportAnchor()
             // A SurfaceView buffer is not guaranteed to survive Home even when Android keeps the
             // Activity and Java view hierarchy alive. Force a new dirty version; requestRender()
             // alone intentionally ignores a clean model and can otherwise leave a black Surface.
@@ -1604,6 +1687,93 @@ if (firstResumeArmedUptimeNanos == 0L) {
         }
         session?.onHostResumed()
         scheduleReaderHostResumeRedraw(resumeRedrawGeneration)
+    }
+
+    private fun capturePausedPhysicalViewportAnchor() {
+        pausedPhysicalViewportAnchor = null
+        if (!strictTelemetryOwned || !pagesReady) return
+        val candidate = strictTelemetryLatestCleanPhysicalPresentation ?: return
+        val identity = candidate.firstVisibleIdentity ?: return
+        if (!candidate.firstVisiblePageTopPx.isFinite() ||
+            !candidate.committedScrollOffsetPx.isFinite()
+        ) return
+        val currentPath = NtkStripDigests.normalizeEpisodePath(
+            currentManga?.ntkEpisodePath.orEmpty(),
+        )
+        if (identity.normalizedEpisodePath != currentPath) return
+        val liveAnchor = renderView.currentCommittedViewportAnchorSnapshot()
+        val liveIdentity = liveAnchor?.identity
+        val committedLiveIdentityIndex = if (liveIdentity != null) {
+            candidate.visiblePageIdentities.indexOfFirst { cleanIdentity ->
+                cleanIdentity.normalizedEpisodePath == liveIdentity.normalizedEpisodePath &&
+                    cleanIdentity.sourcePageIndex == liveIdentity.sourcePageIndex &&
+                    cleanIdentity.canonicalAsset == liveIdentity.canonicalAsset &&
+                    cleanIdentity.manifestDigest == liveIdentity.manifestDigest &&
+                    cleanIdentity.manifestPageCount == liveIdentity.manifestPageCount
+            }
+        } else {
+            -1
+        }
+        val committedLiveTop = candidate.visiblePageTopPx
+            .getOrNull(committedLiveIdentityIndex)
+            ?.takeIf { it.isFinite() }
+        val liveIdentityWasClean = liveAnchor != null && liveIdentity != null &&
+            liveIdentity.normalizedEpisodePath == currentPath && !liveAnchor.busy &&
+            committedLiveTop != null && abs(
+                committedLiveTop - liveAnchor.pageTopInViewportPx,
+            ) <= LIFECYCLE_COMMITTED_SCROLL_COHERENCE_PX
+        if (liveIdentityWasClean) {
+            val exactLiveAnchor = requireNotNull(liveAnchor)
+            val exactLiveIdentity = requireNotNull(liveIdentity)
+            pausedPhysicalViewportAnchor = PausedPhysicalViewportAnchor(
+                presentation = candidate,
+                restoreIdentity = exactLiveIdentity,
+                restorePageTopPx = exactLiveAnchor.pageTopInViewportPx,
+            )
+            Log.d(
+                "ViewerPerf",
+                "reader_lifecycle_physical_anchor_capture_live path=$currentPath," +
+                    "source=${exactLiveIdentity.sourcePageIndex},page=${exactLiveAnchor.page}," +
+                    "top=${exactLiveAnchor.pageTopInViewportPx}," +
+                    "scroll=${exactLiveAnchor.scrollOffsetPx},busy=${exactLiveAnchor.busy}",
+            )
+            return
+        }
+        val position = renderView.currentScrollPositionSnapshot() ?: return
+        val coherent = abs(
+            candidate.committedScrollOffsetPx - position.scrollOffset.toFloat(),
+        ) <= LIFECYCLE_COMMITTED_SCROLL_COHERENCE_PX
+        val ageNanos = SystemClock.elapsedRealtimeNanos() - candidate.presentedUptimeNanos
+        val movingAndFresh = position.busy && ageNanos in 0L..LIFECYCLE_MOVING_ANCHOR_MAX_AGE_NANOS
+        if (!coherent && !movingAndFresh) return
+        val preferredIdentityIndex = if (coherent) {
+            candidate.visiblePageIdentities.indexOfFirst { visibleIdentity ->
+                visibleIdentity.displayPageIndex == position.page &&
+                    visibleIdentity.normalizedEpisodePath == currentPath
+            }
+        } else {
+            -1
+        }
+        val preferredTop = candidate.visiblePageTopPx.getOrNull(preferredIdentityIndex)
+        val restoreIdentity = candidate.visiblePageIdentities.getOrNull(preferredIdentityIndex)
+            ?.takeIf { preferredTop?.isFinite() == true }
+            ?: identity
+        val restoreTop = preferredTop?.takeIf { it.isFinite() }
+            ?: candidate.firstVisiblePageTopPx
+        pausedPhysicalViewportAnchor = PausedPhysicalViewportAnchor(
+            presentation = candidate,
+            restoreIdentity = restoreIdentity,
+            restorePageTopPx = restoreTop,
+        )
+    }
+
+    private fun restorePausedPhysicalViewportAnchor(): Boolean {
+        val anchor = pausedPhysicalViewportAnchor ?: return false
+        return renderView.restoreCommittedViewportForLifecycle(
+            anchor.restoreIdentity,
+            anchor.restorePageTopPx,
+            publishWindowRequest = readerHostResumed,
+        )
     }
 
     private fun scheduleReaderHostResumeRedraw(generation: Long) {
@@ -1824,6 +1994,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
         publishStrictTelemetryBeforeClose()
         destroyed = true
         strictNtkPendingSessionPath = ""
+        strictNtkRecoverableTerminalPath = ""
+        strictNtkRecoverableTerminalSessionGeneration = -1
         strictNtkManifestSubscription?.close()
         strictNtkManifestSubscription = null
         currentManga?.ntkEpisodePath?.let { path ->
@@ -2440,6 +2612,12 @@ if (firstResumeArmedUptimeNanos == 0L) {
             "append_adjacent_exact_p0_activity_enter previous=${publication.previousPageCount} " +
                 "total=${publication.totalPageCount} card=${publication.cardIndex} activityCount=$oldCount",
         )
+        // Sparse p0 publication appends the successor's complete immutable page table before its
+        // remaining exact bodies are drawable. A launch-time partial adoption can have cleared the
+        // optional prefix guard after the direct-Wi-Fi profile was first bound. Re-establish the
+        // invariant before growing the table so the physical gesture that reached this boundary
+        // cannot continue through empty successor slots and strand p0 behind the viewport.
+        renderView.setLimitScrollToDrawablePrefix(true)
         renderView.setFrameSchedulingSuppressed(true)
         var accepted = false
         var catchupEligible = false
@@ -2938,7 +3116,21 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 "pages_removed start=$startIndex removed=$effectiveRemoved total=$effectiveTotal " +
                     "rawRemoved=$removedCount rawTotal=$totalCount previous=$previousCount currentPage=$currentPage"
             )
-            updateCurrentEpisode(currentPage.coerceAtMost((effectiveTotal - 1).coerceAtLeast(0)))
+            // ReaderSession keeps its pre-removal public page snapshot until this Surface
+            // mutation returns. Reading pageInfo() here with the already-remapped index can point
+            // at the predecessor episode for one main-loop turn. Keep the physically adopted
+            // episode intact and reconcile only after Session publishes the matching structure.
+            updatePageLabel()
+            val removalSession = session
+            removalSession?.runAfterStructureStable(
+                Runnable {
+                    if (session !== removalSession || !pagesReady || pageCount <= 0) {
+                        return@Runnable
+                    }
+                    val stablePage = currentPage.coerceIn(0, pageCount - 1)
+                    updateCurrentEpisode(stablePage)
+                },
+            )
             if (effectiveTotal > 0 && currentPage >= effectiveTotal - 1 && pendingPrependRevealRequests <= 0) {
                 startBoundaryAppend(ReaderSurfaceView.DIRECTION_NEXT, currentPage)
             }
@@ -3134,10 +3326,25 @@ if (firstResumeArmedUptimeNanos == 0L) {
     ): Boolean {
         val generation = activeReaderSessionGeneration.get()
         val seal = strictExactLaunchSeal ?: return false
+        val fullQuality = AdoptedDrawableIdentity.fullQualityTiles(
+            pageWidth,
+            pageHeight,
+            tiles,
+        )
         val valid = strictReaderSessionGeneration == generation &&
             index in 0 until seal.pageCount &&
-            AdoptedDrawableIdentity.fullQualityTiles(pageWidth, pageHeight, tiles) != null
-        if (!valid) return false
+            fullQuality != null
+        if (!valid) {
+            Log.e(
+                TAG,
+                "decoded_render_ready_reject index=$index,generation=$generation," +
+                    "strictGeneration=$strictReaderSessionGeneration,pageCount=${seal.pageCount}," +
+                    "size=${pageWidth}x$pageHeight,tiles=${tiles.size}," +
+                    "fullQuality=${fullQuality != null}," +
+                    "activeTokens=${tiles.count { HostExactHardwareTilePool.isActiveToken(it.bitmap) }}",
+            )
+            return false
+        }
         // Prepared launch pages can already be physically installed before this decode observer
         // runs. Count only an exact Surface identity match; a merely decoded/recyclable result is
         // intentionally not readiness.
@@ -3149,9 +3356,18 @@ if (firstResumeArmedUptimeNanos == 0L) {
 
     override fun isStrictAuthoritativeWorkerHandoffActive(): Boolean {
         val generation = activeReaderSessionGeneration.get()
-        return strictWorkerHandoffGeneration == generation &&
+        val active = strictWorkerHandoffGeneration == generation &&
             strictReaderSessionGeneration == generation &&
             strictExactLaunchSeal != null
+        if (!active) {
+            Log.i(
+                TAG,
+                "authoritative_worker_handoff_inactive active=$generation," +
+                    "worker=$strictWorkerHandoffGeneration," +
+                    "strict=$strictReaderSessionGeneration,seal=${strictExactLaunchSeal != null}",
+            )
+        }
+        return active
     }
 
     override fun onPageAuthoritativeTilesReady(
@@ -3239,12 +3455,26 @@ if (firstResumeArmedUptimeNanos == 0L) {
             return false
         }
 
-        // Keep the currently visible anchor synchronous so a cold open never waits for a batching
-        // window. Every offscreen immutable original transfers into one generation-qualified
-        // queue. This turns a 114-page response wave into one Surface lock/layout/frame operation
-        // instead of 114 complete layout rebuilds while preserving exact bitmap identity.
-        val currentAnchor = renderView.currentProgressPosition()?.page ?: currentPage
-        if (index == currentAnchor) {
+        // Keep the current anchor and its finite opening runway synchronous. Those p0..p4 workers
+        // are already canonically serialized, and each page can be the exact drawable-prefix
+        // blocker during the first gesture. Sending them through the main-loop bulk queue lets a
+        // busy compositor strand decoded pixels until after the physical-scroll deadline. The
+        // offscreen suffix still transfers into the generation-qualified batch queue, avoiding a
+        // full layout rebuild for every page of a 100+ image chapter.
+        // Never synchronously query native scroll state from a decode worker. During a fling that
+        // call waits behind the renderer transaction and can pin a completed opening-page worker
+        // for seconds. [currentPage] is updated from physical progress callbacks and is volatile;
+        // the fixed opening runway below independently covers p0..p5 before those callbacks move.
+        val currentAnchor = currentPage
+        val synchronousOpeningFirst = strictForwardReadyFirstPage.coerceAtLeast(0)
+        val synchronousOpeningLastExclusive = minOf(
+            seal.pageCount,
+            synchronousOpeningFirst +
+                NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_SCROLL_RUNWAY_BODIES,
+        )
+        val synchronousOpeningRunway =
+            index in synchronousOpeningFirst until synchronousOpeningLastExclusive
+        if (index == currentAnchor || synchronousOpeningRunway) {
             syncRenderPageIdentity(index)
             val installed = renderView.setPageAuthoritativeOriginalTiles(
                 index,
@@ -3343,9 +3573,6 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 pendingStrictAuthoritativeInstalls.values
                     .filter { it.generation == generation }
                     .sortedBy { it.pageIndex }
-                    .also { selected ->
-                        selected.forEach { pendingStrictAuthoritativeInstalls.remove(it.pageIndex) }
-                    }
             }
         }
         if (seal == null || batch.isEmpty()) return
@@ -3402,12 +3629,6 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     "authoritative_tiles_reject page=$index source=${install.sourceIndex} " +
                         "reason=batch_surface_ack"
                 )
-                synchronized(strictAuthoritativeInstallLock) {
-                    val acceptedIdentity = acceptedStrictAuthoritativeIdentities[index]
-                    if (acceptedIdentity?.sameAs(install.identity) == true) {
-                        acceptedStrictAuthoritativeIdentities.remove(index)
-                    }
-                }
                 if (!renderView.hasAuthoritativeOriginalTiles(
                         index,
                         install.pageWidth,
@@ -3416,6 +3637,19 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     )
                 ) {
                     renderView.retireSurfaceOwnedBitmaps(install.tiles.map(ReaderTile::bitmap))
+                }
+            }
+            synchronized(strictAuthoritativeInstallLock) {
+                // Both maps protect only worker -> main -> Surface handoff. Keeping an accepted
+                // identity after this exact command completed makes a later pressure rehydrate
+                // look like a duplicate even though Surface no longer owns any pixels. Keep the
+                // pending command visible during installation, then retire both facts together.
+                if (pendingStrictAuthoritativeInstalls[index] === install) {
+                    pendingStrictAuthoritativeInstalls.remove(index)
+                }
+                val acceptedIdentity = acceptedStrictAuthoritativeIdentities[index]
+                if (acceptedIdentity?.sameAs(install.identity) == true) {
+                    acceptedStrictAuthoritativeIdentities.remove(index)
                 }
             }
         }
@@ -3441,10 +3675,11 @@ if (firstResumeArmedUptimeNanos == 0L) {
         val generation = activeReaderSessionGeneration.get()
         return synchronized(strictAuthoritativeInstallLock) {
             val pending = pendingStrictAuthoritativeInstalls[index]
-            if (pending != null && pending.generation != generation) return@synchronized false
-            val accepted = acceptedStrictAuthoritativeIdentities[index]
-                ?: pending?.identity
                 ?: return@synchronized false
+            if (pending.generation != generation) return@synchronized false
+            val accepted = acceptedStrictAuthoritativeIdentities[index]
+                ?: return@synchronized false
+            if (!accepted.sameAs(pending.identity)) return@synchronized false
             if (pageWidth == null || pageHeight == null || tiles == null) return@synchronized true
             val candidate = AdoptedDrawableIdentity.fullQualityTiles(pageWidth, pageHeight, tiles)
                 ?: return@synchronized false
@@ -3945,15 +4180,29 @@ if (firstResumeArmedUptimeNanos == 0L) {
     override fun onPageCleared(index: Int) {
         retireAcceptedStrictAuthoritativeIdentity(index)
         synchronized(strictRenderReadyLock) {
-            strictRenderReadyPages.remove(index)
-            val seal = strictExactLaunchSeal
-            if (seal != null && index in strictForwardReadyFirstPage until seal.pageCount) {
-                strictAllImagesReadyQueueScheduled = false
-                strictAllImagesReadyPublished = false
-                strictForwardSuffixReadyProof = null
+            // A rolling scene's published completion is a monotonic proof that every canonical
+            // source crossed exact decode and Surface installation. Its encoded bodies remain the
+            // rehydration authority, so a later pixel-cache clear must not reopen completion and
+            // start adjacent preparation again. Before the first publication (and for ordinary
+            // fully-resident scenes), a clear still invalidates readiness exactly as before.
+            val preservePublishedRollingCompletion =
+                strictRollingHistoricalScene && strictAllImagesReadyPublished
+            if (!preservePublishedRollingCompletion) {
+                strictRenderReadyPages.remove(index)
+                val seal = strictExactLaunchSeal
+                if (seal != null && index in strictForwardReadyFirstPage until seal.pageCount) {
+                    strictAllImagesReadyQueueScheduled = false
+                    strictAllImagesReadyPublished = false
+                    strictForwardSuffixReadyProof = null
+                }
             }
         }
         if (pagesReady) renderView.clearPageBitmap(index)
+    }
+
+    override fun onPageCardPreparationRequested(title: String) {
+        if (!::renderView.isInitialized || isFinishing || isDestroyed) return
+        renderView.preparePageCard(title)
     }
 
     override fun onPageRollingEvicted(index: Int) {
@@ -3970,7 +4219,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
         if (pagesReady) {
             renderView.clearRollingAuthoritativePage(index)
             val activeSession = session
-            if (activeSession?.usesDirectWifiShortWebtoonRollingResidency() == true) {
+            if (activeSession?.usesDirectWifiRollingResidency() == true) {
                 // Identity retirement and Surface clearing are main-thread ordered. Reissue the
                 // exact forward window only after both complete, so a replacement cannot lose a
                 // race as a late duplicate and leave a permanent blank page.
@@ -6024,9 +6273,9 @@ if (firstResumeArmedUptimeNanos == 0L) {
             // latest-only window coalescing so an exposed predecessor cannot remain a permanent
             // loading band above the bookmarked page.
             activeSession?.recordStrictExactPhysicalVisibleFloor(physicalFirstPage)
-            val shortWebtoonRolling =
-                activeSession?.usesDirectWifiShortWebtoonRollingResidency() == true
-            val physicalScrollOffset = if (shortWebtoonRolling) {
+            val directWifiRolling =
+                activeSession?.usesDirectWifiRollingResidency() == true
+            val physicalScrollOffset = if (directWifiRolling) {
                 renderView.currentScrollPositionSnapshot()?.scrollOffset ?: Int.MIN_VALUE
             } else {
                 Int.MIN_VALUE
@@ -6049,7 +6298,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 activeSession?.recordStrictExactPhysicalReverseFloor(it)
             }
             val coalescedReverseFirstPage = exactReverseFirstPage.takeIf {
-                shortWebtoonRolling
+                directWifiRolling
             }
             val shortWebtoonDirectionHint = when {
                 coalescedReverseFirstPage != null || directionHint < 0 ->
@@ -6057,7 +6306,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 directionHint > 0 -> ReaderSurfaceView.DIRECTION_NEXT
                 else -> sampledShortWebtoonDirectionHint
             }
-            val physicalDirectionHint = if (shortWebtoonRolling) {
+            val physicalDirectionHint = if (directWifiRolling) {
                 shortWebtoonDirectionHint
             } else {
                 directionHint
@@ -6065,9 +6314,9 @@ if (firstResumeArmedUptimeNanos == 0L) {
             if (physicalDirectionHint != 0) {
                 lastReaderWindowDirectionHint = physicalDirectionHint
             }
-            if (shortWebtoonRolling && physicalScrollOffset != Int.MIN_VALUE) {
+            if (directWifiRolling && physicalScrollOffset != Int.MIN_VALUE) {
                 lastShortWebtoonPhysicalScrollOffset = physicalScrollOffset
-            } else if (!shortWebtoonRolling) {
+            } else if (!directWifiRolling) {
                 lastShortWebtoonPhysicalScrollOffset = Int.MIN_VALUE
             }
             val wasReaderWindowBusy = readerWindowBusy
@@ -6194,12 +6443,12 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 // Record the source-identity floor before asking the latest-only session mailbox
                 // for work. This side effect is monotonic and makes the reverse page admissible
                 // even if the accompanying UP snapshot is already idle.
-                activeSession?.directWifiShortWebtoonForwardRequestStartPage(
+                activeSession?.directWifiRollingForwardRequestStartPage(
                     coalescedReverseFirstPage,
                     ReaderSurfaceView.DIRECTION_PREVIOUS,
                 )
             }
-            val exactPhysicalFirstPage = if (shortWebtoonRolling) {
+            val exactPhysicalFirstPage = if (directWifiRolling) {
                 val latestVisible = renderView.forwardRequestStartPage()
                 if (coalescedReverseFirstPage != null && latestVisible >= 0) {
                     minOf(latestVisible, coalescedReverseFirstPage)
@@ -6209,15 +6458,15 @@ if (firstResumeArmedUptimeNanos == 0L) {
             } else {
                 -1
             }
-            val requestFirstPage = if (shortWebtoonRolling && exactPhysicalFirstPage >= 0) {
-                activeSession?.directWifiShortWebtoonForwardRequestStartPage(
+            val requestFirstPage = if (directWifiRolling && exactPhysicalFirstPage >= 0) {
+                activeSession?.directWifiRollingForwardRequestStartPage(
                     exactPhysicalFirstPage,
                     shortWebtoonDirectionHint,
                 ) ?: exactPhysicalFirstPage
             } else {
                 baseRequestFirstPage
             }
-            val requestLastPage = if (shortWebtoonRolling) {
+            val requestLastPage = if (directWifiRolling) {
                 renderView.setDirectWifiShortWebtoonPixelWindowPrewarmEnabled(true)
                 maxOf(
                     requestFirstPage,
@@ -6230,7 +6479,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 baseRequestLastPage
             }
             val baseRequestAnchorPage = if (adjustedWindow) adjustedProgressPage else anchorPage
-            val requestAnchorPage = if (shortWebtoonRolling) {
+            val requestAnchorPage = if (directWifiRolling) {
                 val physicalReverseAnchor = if (
                     shortWebtoonDirectionHint < 0 && exactPhysicalFirstPage >= 0
                 ) {
@@ -6375,6 +6624,9 @@ if (firstResumeArmedUptimeNanos == 0L) {
             session?.notePhysicalTouch(false)
         } else if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             progressMovedInGesture = false
+            // A lifecycle anchor protects only a stationary HOME return. Release it before the
+            // first physical input so later compositor callbacks can never pull against the user.
+            pausedPhysicalViewportAnchor = null
             // Mark product input before SurfaceView's coalesced window callback. This closes the
             // one-frame gap in which decoded runway delivery could still front-post ahead of the
             // physical DOWN event.
@@ -6482,6 +6734,15 @@ if (firstResumeArmedUptimeNanos == 0L) {
     override fun onBlockedForwardPageRequested(page: Int) {
         if (destroyed || isFinishing) return
         session?.onBlockedForwardPageRequested(page)
+    }
+
+    override fun onCleanPhysicalEpisodeTailAcknowledged(displayPageIndex: Int) {
+        if (destroyed || isFinishing) return
+        // This callback is emitted only after the Surface has accepted an immutable compositor
+        // proof for the exact final source and its real bottom pixels. Let the Session release the
+        // already-selected adjacent body/publication gate immediately; do not move scroll state,
+        // adopt metadata, discover an extra target, or synthesize a boundary transition here.
+        session?.onCleanPhysicalEpisodeTailAcknowledged(displayPageIndex)
     }
 
     override fun onBoundaryReached(direction: Int, anchorPage: Int) {
@@ -6746,8 +7007,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
         setToolbarVisible(!toolbarVisible)
     }
 
-    override fun onPhysicalScrollGestureStarted() {
-        ViewerTelemetry.physicalScrollGestureStarted()
+    override fun onPhysicalScrollGestureStarted(continuingMotion: Boolean) {
+        ViewerTelemetry.physicalScrollGestureStarted(continuingMotion)
     }
 
     override fun onPhysicalScrollMotionEnded() {
@@ -6772,6 +7033,26 @@ if (firstResumeArmedUptimeNanos == 0L) {
         if (!preparedSurfaceAdoptionActive && isNativeCoverageViewportReady(snapshot)) {
             logVisibleViewportReadyMetric()
         }
+    }
+
+    override fun onVisibleLoadingWindowRequested(
+        firstPage: Int,
+        lastPage: Int,
+        anchorPage: Int,
+        physicalFirstPage: Int,
+        physicalLastPage: Int,
+        busy: Boolean,
+        directionHint: Int,
+    ) {
+        session?.requestVisibleLoadingWindowAsync(
+            firstPage,
+            lastPage,
+            anchorPage,
+            physicalFirstPage,
+            physicalLastPage,
+            busy,
+            directionHint,
+        )
     }
 
     override fun onCompletedDraw(proof: ReaderSurfaceView.CompletedDrawProof) {
@@ -6934,11 +7215,18 @@ if (firstResumeArmedUptimeNanos == 0L) {
 
     private fun launchAdjacent(source: Manga, target: Manga, title: Title?, preparedKey: String? = null) {
         Log.d(TAG, "launch_adjacent sourceId=${source.id} targetId=${target.id} targetName=${target.name}")
+        adjacentAdoptionPhysicalInputFloorNanos = SystemClock.elapsedRealtimeNanos()
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         saveCurrentReadingProgress()
         target.mode = source.mode
         attachEpisodeList(title, target)
         val startAtFirstPage = shouldStartEpisodeAtFirstPage(target)
+        // Publish the target episode's resume contract before rotating strict discovery.  The
+        // previous episode can have been an explicit first-page launch while this target owns a
+        // non-zero bookmark.  Leaving the old value live until startReaderSession() made the
+        // source owner open p0 even though the renderer restored (for example) p11.  Every body
+        // then competed with the only page capable of drawing the requested viewport.
+        initialStartAtFirstPage = startAtFirstPage
         currentManga = target
         currentTitle = title ?: target.title ?: currentTitle
         val displayTitle = displayEpisodeTitle(target, currentTitle)
@@ -7333,7 +7621,10 @@ if (firstResumeArmedUptimeNanos == 0L) {
         strictTelemetryLastCleanPhysicalEpisodePath = ""
         strictTelemetryLastCleanFirstVisibleSourcePage = -1
         strictTelemetryCleanPhysicalSourcesByEpisode.clear()
+        strictTelemetryCleanPhysicalRejectLoggedPaths.clear()
         strictTelemetryLatestCleanPhysicalPresentation = null
+        strictTelemetryNewestStateFrameToken = 0L
+        pausedPhysicalViewportAnchor = null
         strictTelemetryLastCleanPresentedUptimeNanos = 0L
         strictTelemetryBottomCommitWaitLogs = 0
         strictTelemetryLastScrollOffset = Float.NaN
@@ -7668,15 +7959,33 @@ if (!renderView.isShown ||
         }
         val presentedUptimeNanos = proof.presentedUptimeNanos.takeIf { it > 0L }
             ?: proof.completedUptimeNanos
+        if (adjacentAdoptionPhysicalInputFloorNanos > 0L &&
+            proof.physicalInputNewestNanos > adjacentAdoptionPhysicalInputFloorNanos
+        ) {
+            adjacentAdoptionPhysicalInputFloorNanos = 0L
+        }
         val cleanSourcePage = identities.asSequence()
             .filter { identity -> identity.normalizedEpisodePath == physicalEpisodePath }
             .maxOf { identity -> identity.sourcePageIndex }
         val cleanFirstVisibleSourcePage = physicalIdentity?.sourcePageIndex ?: -1
+        if (reconcilePausedPhysicalViewportAnchor(
+                proof = proof,
+                physicalIdentity = physicalIdentity,
+                presentedUptimeNanos = presentedUptimeNanos,
+            )
+        ) {
+            return
+        }
         recordStrictCleanPhysicalSourceSnapshot(
             physicalEpisodePath = physicalEpisodePath,
             sourcePage = cleanSourcePage,
             firstVisibleSourcePage = cleanFirstVisibleSourcePage,
             presentedUptimeNanos = presentedUptimeNanos,
+            committedScrollOffsetPx = proof.scrollOffsetPx,
+            firstVisibleIdentity = physicalIdentity,
+            firstVisiblePageTopPx = proof.firstVisiblePageTopPx,
+            visiblePageIdentities = proof.visiblePageIdentities,
+            visiblePageTopPx = proof.visiblePageTopPx,
             coverage = coverage,
             frameToken = proof.frameToken,
             evidence = "accepted",
@@ -7709,12 +8018,27 @@ if (!renderView.isShown ||
                     sourcePage = acknowledgedTail!!.sourcePageIndex,
                     firstVisibleSourcePage = acknowledgedFirst!!.sourcePageIndex,
                     presentedUptimeNanos = presentedUptimeNanos,
+                    committedScrollOffsetPx = proof.scrollOffsetPx,
+                    firstVisibleIdentity = acknowledgedFirst,
+                    firstVisiblePageTopPx = proof.firstVisiblePageTopPx,
+                    visiblePageIdentities = proof.visiblePageIdentities,
+                    visiblePageTopPx = proof.visiblePageTopPx,
                     coverage = coverage,
                     frameToken = proof.frameToken,
                     evidence = "tail_ack",
                 )
             }
         }
+        // Tail acknowledgements and the per-episode clean ledger are monotonic facts, so an
+        // out-of-order callback above may still contribute to them.  Everything below describes
+        // what the user sees *now* and must be owned only by the newest submitted scene.  A late
+        // callback often carries a newer callback timestamp even though its viewport frame is
+        // older; frameToken is the only producer-ordered identity.
+        if (proof.frameToken <= strictTelemetryNewestStateFrameToken) {
+            strictTelemetryValidCommittedFrames++
+            return
+        }
+        strictTelemetryNewestStateFrameToken = proof.frameToken
         // SurfaceControl completion callbacks may reach the Activity after a newer physical
         // presentation. Such a proof remains valid for ownership/tail acknowledgement. If it is
         // the furthest clean source of the same episode, preserve that physically presented fact
@@ -7928,12 +8252,17 @@ if (!renderView.isShown ||
                         firstSource.takeIf { it != Int.MAX_VALUE } ?: 0,
                         lastSource.takeIf { it != Int.MIN_VALUE } ?: 0,
                         direction,
+                        viewportOwnsEpisode = identities.all { identity ->
+                            identity.normalizedEpisodePath == path
+                        },
                     )
                 }
             }
-            identities.firstOrNull { identity ->
-                identity.normalizedEpisodePath != launchSeal.normalizedEpisodePath
-            }?.let { adjacentIdentity ->
+            NtkVisibleIdentityPolicy.stateEpisodeIdentity(
+                identities,
+                launchSeal.normalizedEpisodePath,
+                direction,
+            )?.let { adjacentIdentity ->
                 val displayPage = adjacentIdentity.displayPageIndex
                 if (!renderView.isPhysicalAdjacentEpisodeAdoptionAllowed(
                         displayPage,
@@ -7975,14 +8304,32 @@ if (!renderView.isShown ||
                 // physical IPC, even when the viewport still contains launch-tail pixels. Using
                 // the launch episode plus a max source from a different episode would not be an
                 // exact semantic identity and could never satisfy the three-way timestamp bind.
-                if (!launchPixelsVisible) {
+                val currentOwnedPath = NtkStripDigests.normalizeEpisodePath(
+                    currentManga?.ntkEpisodePath.orEmpty(),
+                )
+                val outgoingPixelsFullyConsumed = currentOwnedPath.isNotEmpty() &&
+                    identities.none { identity ->
+                        identity.normalizedEpisodePath == currentOwnedPath
+                    }
+                if (outgoingPixelsFullyConsumed) {
                     actualStateEpisodePath = adjacentIdentity.normalizedEpisodePath
                     actualStateFirstSource = adjacentIdentity.sourcePageIndex
                     actualStateLastSource = adjacentIdentity.sourcePageIndex
+                }
+                // Current-episode UI changes only after the outgoing pixels have physically left
+                // the viewport. A prepared p0 glimpse remains runway evidence; reporting it as
+                // current would leave title/progress ahead of what the user is actually reading.
+                if (NtkPhysicalAdjacentMetadataAdoptionPolicy.shouldAdoptMixedBoundary(
+                        outgoingPixelsFullyConsumed = outgoingPixelsFullyConsumed,
+                        freshPhysicalInputAfterEpisodeLaunch =
+                            adjacentAdoptionPhysicalInputFloorNanos == 0L,
+                    )
+                ) {
                     adoptPhysicallyPresentedAdjacentEpisode(
                         activeSession,
                         displayPage,
                         adjacentIdentity.normalizedEpisodePath,
+                        advanceNativeTextureHistory = outgoingPixelsFullyConsumed,
                     )
                 }
             }
@@ -8004,6 +8351,7 @@ if (!renderView.isShown ||
             proof.physicalInputNewestNanos,
             proof.physicalInputReceivedOldestNanos,
             proof.physicalInputReceivedNewestNanos,
+            true,
         )
         strictTelemetryActualInLifecycle = true
         finishInitialPhysicalLoadingStatus()
@@ -8035,6 +8383,58 @@ if (!renderView.isShown ||
     }
 
     /**
+     * A lifecycle return must not publish a clean proof for different pixels before the viewport
+     * saved at pause has been reprojected into the current page geometry. This is a product guard,
+     * not test filtering: the mismatching buffer is already obsolete and a corrected dirty frame
+     * is scheduled immediately.
+     */
+    private fun reconcilePausedPhysicalViewportAnchor(
+        proof: ReaderSurfaceView.CompletedDrawProof,
+        physicalIdentity: ReaderSurfaceView.CommittedPageIdentity?,
+        presentedUptimeNanos: Long,
+    ): Boolean {
+        val anchor = pausedPhysicalViewportAnchor ?: return false
+        if (!readerHostResumed ||
+            presentedUptimeNanos <= anchor.presentation.presentedUptimeNanos
+        ) return false
+        val expectedIdentity = anchor.restoreIdentity
+        val expectedIndex = proof.visiblePageIdentities.indexOfFirst { identity ->
+            identity.normalizedEpisodePath == expectedIdentity.normalizedEpisodePath &&
+                identity.sourcePageIndex == expectedIdentity.sourcePageIndex &&
+                identity.canonicalAsset == expectedIdentity.canonicalAsset &&
+                identity.manifestDigest == expectedIdentity.manifestDigest &&
+                identity.manifestPageCount == expectedIdentity.manifestPageCount
+        }
+        val actualTop = proof.visiblePageTopPx.getOrNull(expectedIndex) ?: Float.NaN
+        val identityMatches = expectedIndex >= 0
+        val topMatches = actualTop.isFinite() &&
+            abs(actualTop - anchor.restorePageTopPx) <=
+            LIFECYCLE_COMMITTED_PAGE_TOP_COHERENCE_PX
+        if (identityMatches && topMatches) {
+            // Keep the physical anchor until the next real DOWN. A clean resume proof can arrive
+            // before an offscreen exact-size resolve or consumed-prefix compaction finishes; if
+            // the anchor is discarded at that first proof, the late structural reflow moves the
+            // stationary viewport a few pixels after HOME. Reconciliation is passive while the
+            // identity/top still match, and dispatchTouchEvent releases it before user motion.
+            return false
+        }
+        val restored = restorePausedPhysicalViewportAnchor()
+        if (!restored) {
+            pausedPhysicalViewportAnchor = null
+            return false
+        }
+        Log.w(
+            "ViewerPerf",
+            "reader_lifecycle_physical_anchor_retry expected=" +
+                "${expectedIdentity.normalizedEpisodePath}#${expectedIdentity.sourcePageIndex}," +
+                "actual=${physicalIdentity?.normalizedEpisodePath}#" +
+                "${physicalIdentity?.sourcePageIndex},expectedTop=${anchor.restorePageTopPx}," +
+                "actualTop=$actualTop,token=${proof.frameToken}",
+        )
+        return true
+    }
+
+    /**
      * Retains only a completely visible physical presentation.  An identity-valid terminal frame
      * may still be accepted for boundary bookkeeping when a short last image leaves natural
      * space below it, but that is deliberately not a clean full-viewport snapshot.  Keeping this
@@ -8046,26 +8446,68 @@ if (!renderView.isShown ||
         sourcePage: Int,
         firstVisibleSourcePage: Int,
         presentedUptimeNanos: Long,
+        committedScrollOffsetPx: Float,
+        firstVisibleIdentity: ReaderSurfaceView.CommittedPageIdentity?,
+        firstVisiblePageTopPx: Float,
+        visiblePageIdentities: List<ReaderSurfaceView.CommittedPageIdentity>,
+        visiblePageTopPx: FloatArray,
         coverage: ReaderSurfaceView.VisibleCoverageSnapshot,
         frameToken: Long,
         evidence: String,
     ) {
         if (physicalEpisodePath.isEmpty() || sourcePage < 0 ||
             firstVisibleSourcePage < 0 || presentedUptimeNanos <= 0L
-        ) return
+        ) {
+            if (strictTelemetryCleanPhysicalRejectLoggedPaths.add(
+                    "invalid:$physicalEpisodePath",
+                )
+            ) {
+                Log.d(
+                    "ViewerPerf",
+                    "reader_clean_physical_ledger_reject reason=identity_or_time," +
+                        "path=$physicalEpisodePath,source=$sourcePage,first=$firstVisibleSourcePage," +
+                        "presented=$presentedUptimeNanos,token=$frameToken",
+                )
+            }
+            return
+        }
         val revealPending = renderView.isNativeSurfaceRevealPendingForLoadingStatus()
+        val qualifiedTransitionCard = coverage.visibleCards == 1 &&
+            coverage.directWifiForwardOnlyInitialResume
         val cleanFullViewport = coverage.physicalViewportPx > 0 &&
             coverage.drawablePx >= coverage.physicalViewportPx &&
             coverage.missingPx == 0 && coverage.placeholderPx == 0 &&
             coverage.visibleLoading == 0 && coverage.visibleErrors == 0 &&
-            coverage.visibleCards == 0 && coverage.widthFillFailures == 0 &&
+            (coverage.visibleCards == 0 || qualifiedTransitionCard) &&
+            coverage.widthFillFailures == 0 &&
             coverage.lowResolutionItems == 0 && !revealPending
-        if (!cleanFullViewport) return
+        if (!cleanFullViewport) {
+            if (strictTelemetryCleanPhysicalRejectLoggedPaths.add(physicalEpisodePath)) {
+                Log.d(
+                    "ViewerPerf",
+                    "reader_clean_physical_ledger_reject reason=coverage,path=$physicalEpisodePath," +
+                        "source=$sourcePage,first=$firstVisibleSourcePage,token=$frameToken," +
+                        "physical=${coverage.physicalViewportPx},viewport=${coverage.viewportPx}," +
+                        "drawable=${coverage.drawablePx},missing=${coverage.missingPx}," +
+                        "placeholder=${coverage.placeholderPx},loading=${coverage.visibleLoading}," +
+                        "errors=${coverage.visibleErrors},cards=${coverage.visibleCards}," +
+                        "widthFill=${coverage.widthFillFailures},lowRes=${coverage.lowResolutionItems}," +
+                        "revealPending=$revealPending",
+                )
+            }
+            return
+        }
+        strictTelemetryCleanPhysicalRejectLoggedPaths.remove(physicalEpisodePath)
         val candidate = CleanPhysicalSourceSnapshot(
             sourcePage = sourcePage,
             presentedUptimeNanos = presentedUptimeNanos,
             physicalEpisodePath = physicalEpisodePath,
             firstVisibleSourcePage = firstVisibleSourcePage,
+            committedScrollOffsetPx = committedScrollOffsetPx,
+            firstVisibleIdentity = firstVisibleIdentity,
+            firstVisiblePageTopPx = firstVisiblePageTopPx,
+            visiblePageIdentities = visiblePageIdentities.toList(),
+            visiblePageTopPx = visiblePageTopPx.copyOf(),
             physicalViewportPx = coverage.physicalViewportPx,
             drawablePx = coverage.drawablePx,
             missingPx = coverage.missingPx,
@@ -8073,21 +8515,22 @@ if (!renderView.isShown ||
             visibleLoading = coverage.visibleLoading,
             visibleErrors = coverage.visibleErrors,
             visibleCards = coverage.visibleCards,
+            qualifiedTransitionCard = qualifiedTransitionCard,
             widthFillFailures = coverage.widthFillFailures,
             lowResolutionItems = coverage.lowResolutionItems,
             nativeSurfaceRevealPending = false,
+            frameToken = frameToken,
         )
         val latestPresentation = strictTelemetryLatestCleanPhysicalPresentation
         if (latestPresentation == null ||
-            presentedUptimeNanos > latestPresentation.presentedUptimeNanos
+            frameToken > latestPresentation.frameToken
         ) {
             strictTelemetryLatestCleanPhysicalPresentation = candidate
         }
         val prior = strictTelemetryCleanPhysicalSourcesByEpisode[physicalEpisodePath]
         if (prior != null &&
             (sourcePage < prior.sourcePage ||
-                (sourcePage == prior.sourcePage &&
-                    presentedUptimeNanos <= prior.presentedUptimeNanos))
+                (sourcePage == prior.sourcePage && frameToken <= prior.frameToken))
         ) return
         strictTelemetryCleanPhysicalSourcesByEpisode[physicalEpisodePath] = candidate
         if ((prior == null || sourcePage > prior.sourcePage) &&
@@ -8120,37 +8563,41 @@ if (!renderView.isShown ||
         activeSession: ReaderSession,
         displayPage: Int,
         physicalEpisodePath: String,
+        advanceNativeTextureHistory: Boolean = true,
     ) {
-        if (currentManga?.ntkEpisodePath?.trim()
-                ?.equals(physicalEpisodePath, ignoreCase = true) == true
-        ) return
         val info = activeSession.pageInfo(displayPage) ?: return
         if (info.transitionCard || !info.manga.ntkEpisodePath.orEmpty().trim()
                 .equals(physicalEpisodePath, ignoreCase = true)
         ) return
-        statusHandler.removeCallbacks(deferredEpisodeUpdateRunnable)
-        deferredEpisodeUpdatePage = -1
-        deferredEpisodeUpdateOffset = 0
-        deferredEpisodeUpdateSaveProgress = false
-        // This callback runs only after the ordinary completed-draw path has proved that an
-        // identity-valid pixel from this exact adjacent episode was physically presented. Do not
-        // send that stronger proof back through the earlier clean-tail admission gate: the gate is
-        // what requested this compositor proof, so doing so leaves currentManga permanently on the
-        // launch episode. A stale currentManga makes both automatic boundary append and the toolbar
-        // next button resolve from the wrong episode.
-        updateCurrentEpisode(
-            displayPage,
-            saveProgress = true,
-            physicallyPresentedAdjacentPath = physicalEpisodePath,
-        )
-        renderView.advanceCompletedForwardNativeTextureEpisode(
-            physicalEpisodePath,
-            displayPage,
-        )
-        Log.d(
-            TAG,
-            "current_episode_physical_adjacent page=$displayPage,path=$physicalEpisodePath",
-        )
+        val episodeChanged = currentManga?.ntkEpisodePath?.trim()
+            ?.equals(physicalEpisodePath, ignoreCase = true) != true
+        if (episodeChanged) {
+            statusHandler.removeCallbacks(deferredEpisodeUpdateRunnable)
+            deferredEpisodeUpdatePage = -1
+            deferredEpisodeUpdateOffset = 0
+            deferredEpisodeUpdateSaveProgress = false
+            // This callback runs only after the ordinary completed-draw path has proved that an
+            // identity-valid pixel from this exact adjacent episode was physically presented. Do
+            // not send that stronger proof back through the earlier clean-tail admission gate: the
+            // gate is what requested this compositor proof, so doing so leaves currentManga
+            // permanently on the launch episode. A stale currentManga makes both automatic
+            // boundary append and the toolbar next button resolve from the wrong episode.
+            updateCurrentEpisode(
+                displayPage,
+                saveProgress = true,
+                physicallyPresentedAdjacentPath = physicalEpisodePath,
+            )
+            Log.d(
+                TAG,
+                "current_episode_physical_adjacent page=$displayPage,path=$physicalEpisodePath",
+            )
+        }
+        if (advanceNativeTextureHistory) {
+            renderView.advanceCompletedForwardNativeTextureEpisode(
+                physicalEpisodePath,
+                displayPage,
+            )
+        }
     }
 
     private fun prepareDeferredNtkAckChallenge(manga: Manga) {
@@ -8503,6 +8950,45 @@ if (!renderView.isShown ||
         }
     }
 
+    private fun postStrictNtkRecoverableSourceTerminal(
+        sessionGeneration: Int,
+        episodePath: String,
+        retryableTransport: Boolean,
+    ) {
+        if (!retryableTransport) return
+        statusHandler.post {
+            val path = NtkStripDigests.normalizeEpisodePath(episodePath)
+            val currentPath = NtkStripDigests.normalizeEpisodePath(
+                currentManga?.ntkEpisodePath.orEmpty(),
+            )
+            val seal = strictExactLaunchSeal
+            if (destroyed || isFinishing || isDestroyed ||
+                sessionGeneration != activeReaderSessionGeneration.get() ||
+                sessionGeneration != strictReaderSessionGeneration ||
+                path.isBlank() || path != currentPath ||
+                seal?.matchesEpisodePath(path) != true
+            ) return@post
+            strictNtkRecoverableTerminalPath = path
+            strictNtkRecoverableTerminalSessionGeneration = sessionGeneration
+            Log.d(
+                "ViewerPerf",
+                "reader_ntk_recoverable_source_terminal path=$path," +
+                    "sessionGeneration=$sessionGeneration",
+            )
+            // This callback can race the ConnectivityManager edge. Reconcile any retained false
+            // evidence and also wake an already-qualified ticket; neither path invents an edge.
+            postStrictNtkNetworkReconcile()
+            scheduleStrictNtkValidatedNetworkRedrive()
+        }
+    }
+
+    private fun hasCurrentStrictNtkRecoverableSourceTerminal(
+        normalizedEpisodePath: String,
+    ): Boolean = normalizedEpisodePath.isNotBlank() &&
+        strictNtkRecoverableTerminalPath == normalizedEpisodePath &&
+        strictNtkRecoverableTerminalSessionGeneration == strictReaderSessionGeneration &&
+        strictReaderSessionGeneration == activeReaderSessionGeneration.get()
+
     private fun reconcileStrictNtkValidatedNetworkState() {
         strictNtkNetworkReconcilePosted.set(false)
         if (destroyed || strictNtkNetworkCallback == null) return
@@ -8693,13 +9179,39 @@ if (!renderView.isShown ||
             )
             return
         }
-        if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(launchPath) != null) {
+        val recoverableSourceTerminal =
+            hasCurrentStrictNtkRecoverableSourceTerminal(launchPath)
+        if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(launchPath) != null &&
+            !recoverableSourceTerminal
+        ) {
             completeStrictNtkValidatedNetworkRedrive(
                 ticket,
                 ticketPath,
                 ticketGeneration,
                 "manifest_won",
             )
+            return
+        }
+        if (recoverableSourceTerminal &&
+            (pendingPath.isBlank() || strictNtkManifestSubscription == null)
+        ) {
+            // The installed session deliberately closed its first-manifest listener. A transport
+            // terminal after a genuine network outage therefore needs a fresh listener before the
+            // validated-only coordinator can publish the replacement exact generation. Preserve
+            // the currently committed pixels until that immutable replacement is ready.
+            Log.d(
+                "ViewerPerf",
+                "reader_ntk_recoverable_source_rearm epoch=${ticket.epoch},path=$launchPath," +
+                    "sessionGeneration=$strictReaderSessionGeneration",
+            )
+            startStrictReaderSessionWhenExactReady(
+                current,
+                currentTitle ?: current.title,
+                preparedKey = null,
+                startAtFirstPage = false,
+                clearViewImmediately = false,
+            )
+            scheduleStrictNtkValidatedNetworkRedrive()
             return
         }
         val activeFlight =
@@ -9474,6 +9986,10 @@ if (!renderView.isShown ||
                     return@post
                 }
                 strictNtkPendingSessionPath = ""
+                if (strictNtkRecoverableTerminalPath == path) {
+                    strictNtkRecoverableTerminalPath = ""
+                    strictNtkRecoverableTerminalSessionGeneration = -1
+                }
                 completeCurrentStrictNtkValidatedNetworkRedrive(
                     path,
                     pendingViewerGeneration,
@@ -9554,6 +10070,14 @@ if (!renderView.isShown ||
             manga.setImgs(exactImages)
             manga.ntkImageCount = exactImages.size
             strictExactLaunchSeal = exactLaunchSeal
+            if (::renderView.isInitialized) {
+                // ReaderSurfaceView survives toolbar previous/next transitions. Its initial exact
+                // presentation gate is one-shot, so a newly selected episode must own a fresh
+                // producer lifecycle before its page table and bookmark are installed. Otherwise
+                // the prior episode's revealed state makes lockRestoredPageOffset treat this as an
+                // ordinary restore and drops the exact forward-tail presentation contract.
+                renderView.setSurfaceAttachmentDeferredUntilActualPixels(true)
+            }
             rememberStrictForwardReadyFloor(exactLaunchSeal)
             rememberStrictDirectManifestAckAuthority(exactLaunchSeal)
             strictTelemetryObservedSources = BooleanArray(exactLaunchSeal.pageCount)
@@ -12645,7 +13169,30 @@ if (!renderView.isShown ||
         val info = MainThreadStallMonitor.traceResult("reader_page_info") {
             session?.pageInfo(anchorPage)
         }
-            if (info != null) {
+        if (info != null) {
+            if (info.transitionCard) {
+                // A transition card describes the upcoming episode, but it is not evidence that
+                // any pixel from that episode has actually replaced the committed viewport.  In
+                // particular, toolbar previous/next navigation must remain owned by the outgoing
+                // episode until the strict completed-draw path adopts clean adjacent pixels.
+                Log.d(
+                    TAG,
+                    "transition_card_visible page=$anchorPage offset=$anchorOffset " +
+                        "targetId=${info.manga.id} title=${info.title}",
+                )
+                val displayKey = displayEpisodeKey(info.manga, currentTitle)
+                val displayTitle = info.title.takeIf { it.isNotBlank() }
+                    ?: displayEpisodeTitle(info.manga, currentTitle).takeIf { it.isNotBlank() }
+                    ?: "회차"
+                lastDisplayedEpisodeKey = displayKey
+                lastDisplayedEpisodeTitle = displayTitle
+                if (::titleView.isInitialized && titleView.text.toString() != displayTitle) {
+                    titleView.text = displayTitle
+                }
+                setPageText("회차 전환")
+                session?.noteForwardReadingPosition(anchorPage)
+                return
+            }
             val previousManga = currentManga
             val episodeChanged = previousManga == null || !Manga.sameEpisodeIdentity(previousManga, info.manga)
             val previousPath = previousManga?.ntkEpisodePath.orEmpty().trim()
@@ -12675,11 +13222,11 @@ if (!renderView.isShown ||
                 return
             }
             currentManga = info.manga
-            if (!info.transitionCard) currentEpisodeAnchorPage = anchorPage
-            if (episodeChanged || info.transitionCard) {
-                Log.d(TAG, "current_episode page=$anchorPage offset=$anchorOffset transition=${info.transitionCard} mangaId=${info.manga.id} title=${info.title}")
+            currentEpisodeAnchorPage = anchorPage
+            if (episodeChanged) {
+                Log.d(TAG, "current_episode page=$anchorPage offset=$anchorOffset mangaId=${info.manga.id} title=${info.title}")
             }
-            updateResultEpisode(info.manga, info.transitionCard)
+            updateResultEpisode(info.manga)
             val displayKey = displayEpisodeKey(info.manga, currentTitle)
             val displayTitle = if (!episodeChanged && lastDisplayedEpisodeKey == displayKey) {
                 lastDisplayedEpisodeTitle
@@ -12695,9 +13242,7 @@ if (!renderView.isShown ||
             if (::titleView.isInitialized && titleView.text.toString() != displayTitle) {
                 titleView.text = displayTitle
             }
-            setPageText(if (info.transitionCard) {
-                "회차 전환"
-            } else if (info.totalPages <= 0) {
+            setPageText(if (info.totalPages <= 0) {
                 "${info.localPage} / ?"
             } else {
                 "${info.localPage} / ${info.totalPages}"
@@ -13351,6 +13896,8 @@ if (!renderView.isShown ||
         unregisterStrictNtkValidatedNetworkRedriveObserver()
         destroyed = true
         strictNtkPendingSessionPath = ""
+        strictNtkRecoverableTerminalPath = ""
+        strictNtkRecoverableTerminalSessionGeneration = -1
         strictNtkManifestSubscription?.close()
         strictNtkManifestSubscription = null
         ntkAckPreflightGeneration.incrementAndGet()
@@ -13749,7 +14296,13 @@ if (!renderView.isShown ||
     }
 
     fun testRenderPipelineDiagnosticSnapshot(): String {
-        return renderView.renderPipelineDiagnosticSnapshot()
+        val pendingInstalls = synchronized(strictAuthoritativeInstallLock) {
+            "pendingAuthoritative=${pendingStrictAuthoritativeInstalls.keys.sorted()}," +
+                "acceptedAuthoritative=${acceptedStrictAuthoritativeIdentities.keys.sorted()}," +
+                "authoritativeFlushScheduled=$strictAuthoritativeInstallFlushScheduled"
+        }
+        return renderView.renderPipelineDiagnosticSnapshot() + "," + pendingInstalls +
+            ",session={${session?.pipelineLivenessDiagnosticForTest() ?: "none"}}"
     }
 
     fun testPageCount(): Int {
@@ -13848,6 +14401,9 @@ if (!renderView.isShown ||
 
     companion object {
         private const val MAX_STRICT_CLEAN_PHYSICAL_EPISODE_HISTORY = 32
+        private const val LIFECYCLE_COMMITTED_SCROLL_COHERENCE_PX = 1f
+        private const val LIFECYCLE_COMMITTED_PAGE_TOP_COHERENCE_PX = 1f
+        private const val LIFECYCLE_MOVING_ANCHOR_MAX_AGE_NANOS = 500_000_000L
 
         @JvmStatic
         fun directWifiShortWebtoonDirectionHintForTest(

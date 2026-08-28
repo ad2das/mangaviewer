@@ -257,6 +257,11 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
     // the measured winning split exactly while retaining the no-overlap invariant.
     private const val MAX_TAIL_LEAD_BYTES = 24L * 1024L
     private const val MIN_TAIL_BYTES = 32L * 1024L
+    // Page one blocks the first clean adjacent viewport. A multi-megabyte PNG should not put its
+    // entire untouched suffix behind one slow HTTP/2 stream when three immutable mirrors are
+    // available. Split only large entry-view suffixes into a bounded set of balanced, disjoint
+    // ranges. Small images and all offscreen pages keep the proven single-range path.
+    private const val ENTRY_VIEWPORT_PARALLEL_SEGMENT_BYTES = 512L * 1024L
     private const val LATE_ADMISSION_BEFORE_BODY_MS = 1_800L
     private const val MAX_PROJECTED_STARTS_PER_SESSION = 6
     private const val MAX_LATE_RESERVED_STARTS_PER_SESSION = 0
@@ -344,6 +349,16 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         return projection > ENTRY_VIEWPORT_PROJECTED_COMPLETION_MS.toDouble()
     }
 
+    fun shouldRearmEntryViewportTailAfterFailure(
+        pageIndex: Int,
+        continuationCount: Int,
+        maximumContinuations: Int,
+    ): Boolean {
+        if (continuationCount < 0 || maximumContinuations <= 0) return false
+        return pageIndex in 1..ENTRY_VIEWPORT_LAST_PAGE &&
+            continuationCount < maximumContinuations
+    }
+
     fun disjointTailStart(
         bodyElapsedMs: Long,
         deliveredBytes: Long,
@@ -365,6 +380,27 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
     fun disjointTailSegments(start: Long, expectedLength: Long): List<LongRange> {
         if (start < 0L || expectedLength <= start) return emptyList()
         return listOf(start until expectedLength)
+    }
+
+    fun disjointEntryViewportTailSegments(
+        start: Long,
+        expectedLength: Long,
+        maximumSegments: Int,
+    ): List<LongRange> {
+        if (start < 0L || expectedLength <= start || maximumSegments <= 0) return emptyList()
+        val remaining = expectedLength - start
+        val desiredSegments = ((remaining + ENTRY_VIEWPORT_PARALLEL_SEGMENT_BYTES - 1L) /
+            ENTRY_VIEWPORT_PARALLEL_SEGMENT_BYTES).toInt()
+        val segmentCount = desiredSegments.coerceIn(1, maximumSegments)
+        val baseLength = remaining / segmentCount
+        val extraBytes = remaining % segmentCount
+        var cursor = start
+        return List(segmentCount) { index ->
+            val length = baseLength + if (index.toLong() < extraBytes) 1L else 0L
+            val range = cursor..(cursor + length - 1L)
+            cursor = range.last + 1L
+            range
+        }
     }
 
     fun projectedFirstCandidateIndex(physicalAttempt: Int, candidateCount: Int): Int {
@@ -446,6 +482,17 @@ class NtkManhwaWaveRecoveryState(
             completedCount.get() == pageCount - 1
     }
 
+    fun isWithinLastCanonicalBodies(pageIndex: Int, maximumRemaining: Int): Boolean {
+        require(maximumRemaining > 0)
+        val pageCount = exactPageCount.get()
+        if (!exactArmed.get() || closed.get() || pageIndex !in 0 until pageCount ||
+            completed.get(pageIndex) != 0
+        ) {
+            return false
+        }
+        return pageCount - completedCount.get() in 1..maximumRemaining
+    }
+
     fun tryClaimFinalTail(pageIndex: Int): Boolean {
         if (!isOnlyCanonicalBodyRemaining(pageIndex)) return false
         if (!finalTailClaimed.compareAndSet(false, true)) return false
@@ -471,12 +518,35 @@ internal object NtkManhwaRangeResumePolicy {
     // valid H2 streams before their next data frame; three seconds remains a finite no-progress
     // bound while avoiding a reset loop.
     const val BODY_IDLE_MS = 3_000L
+    const val HEADER_MS = 3_000L
     // A projected suffix is opened only after the original body is already predicted to miss the
     // entry viewport. Letting that SLA-critical replacement itself sit at zero bytes for the full
     // bulk timeout held page one (and therefore the clean first reveal) for another three seconds.
     // Preserve the exact accepted prefix and move only the untouched suffix to the next immutable
     // replica after this shorter no-progress bound. Offscreen bulk ranges keep BODY_IDLE_MS.
     const val ENTRY_VIEWPORT_BODY_IDLE_MS = 900L
+    // A projected suffix is optional and the still-open primary remains authoritative until the
+    // complete suffix is proved. Do not let each immutable mirror consume the ordinary three
+    // second header wall while the user's next viewport is already waiting at the exact prefix.
+    // Matching the entry body's no-progress wall bounds failover without accepting partial bytes
+    // or weakening Content-Range/validator verification.
+    const val ENTRY_VIEWPORT_HEADER_MS = 900L
+    // An immutable Range can evade the idle limit forever by continuously dripping tiny frames.
+    // That is acceptable for an offscreen prefetch, but page one is needed to make the first
+    // adjacent viewport clean. Bound each physical mirror there by the same completion SLA that
+    // admitted the hedge. executeManhwaRangeSegment retains every accepted byte and asks the next
+    // mirror only for the untouched suffix, so this changes transport ownership without
+    // redownloading or weakening exact Content-Range/validator checks.
+    const val ENTRY_VIEWPORT_BODY_WALL_MS =
+        NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_PROJECTED_COMPLETION_MS
+    // A page-one suffix can make substantial progress and then lose its final data frame. On a
+    // congested three-replica route, two passes have been observed to leave each disjoint segment
+    // only 1.6-132 KiB short; abandoning those accepted bytes makes the slower primary download
+    // the entire 2 MiB image and misses the adjacent-viewport UX deadline. Permit four bounded
+    // progress rounds. Every request still starts at start + received, so no accepted byte is
+    // downloaded twice; a zero-progress pass terminates immediately and each physical attempt
+    // retains the unchanged header, idle and absolute body walls.
+    const val ENTRY_VIEWPORT_MAX_PROGRESS_ROUNDS = 4
     const val ENTRY_VIEWPORT_LAST_PAGE = 2
 
     fun projectedBodyIdleMs(pageIndex: Int): Long =
@@ -484,6 +554,25 @@ internal object NtkManhwaRangeResumePolicy {
             ENTRY_VIEWPORT_BODY_IDLE_MS
         } else {
             BODY_IDLE_MS
+        }
+
+    fun projectedHeaderDeadlineMs(pageIndex: Int): Long =
+        if (pageIndex in 0..ENTRY_VIEWPORT_LAST_PAGE) {
+            ENTRY_VIEWPORT_HEADER_MS
+        } else {
+            HEADER_MS
+        }
+
+    fun projectedBodyWallMs(pageIndex: Int): Long? =
+        ENTRY_VIEWPORT_BODY_WALL_MS.takeIf {
+            pageIndex in 1..NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_LAST_PAGE
+        }
+
+    fun maximumProgressRounds(pageIndex: Int): Int =
+        if (pageIndex in 1..NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_LAST_PAGE) {
+            ENTRY_VIEWPORT_MAX_PROGRESS_ROUNDS
+        } else {
+            1
         }
 
     fun nextStart(segmentStart: Long, receivedBytes: Long, segmentEnd: Long): Long? {
@@ -513,8 +602,37 @@ internal object NtkDirectWifiOrdinaryBodyRecoveryPolicy {
     // constrained emulator run and expanded them into 141 replica failovers, regressing the
     // complete wave from 7.56 s to 13.36 s. Three seconds keeps recovery passive and exceptional.
     const val NO_PROGRESS_MS = 3_000L
+    // A body that keeps dripping small chunks never reaches the no-progress deadline. Do not
+    // impose this wall on the complete cold wave: sample only after five seconds and admit a
+    // byte-exact suffix continuation only when at most two canonical bodies remain and the
+    // measured body rate projects beyond eight seconds. This bounds recovery to the episode
+    // stragglers instead of recreating the old 100-request continuation herd.
+    const val STRAGGLER_SAMPLE_MS = 5_000L
+    const val STRAGGLER_RECHECK_MS = 400L
+    const val STRAGGLER_PROJECTED_BODY_MS = 8_000L
+    const val MAX_REMAINING_STRAGGLERS = 2
+    const val MIN_STRAGGLER_SUFFIX_BYTES = 32L * 1024L
     const val MAX_CONTINUATIONS_PER_BODY = 1
     const val MAX_CONCURRENT_CONTINUATIONS = 12
+
+    fun shouldResumeDrippingStraggler(
+        wave: NtkManhwaWaveRecoveryState?,
+        pageIndex: Int,
+        bodyElapsedMs: Long,
+        deliveredBytes: Long,
+        expectedLength: Long,
+    ): Boolean {
+        if (wave == null || bodyElapsedMs < STRAGGLER_SAMPLE_MS ||
+            deliveredBytes <= 0L || deliveredBytes >= expectedLength ||
+            expectedLength - deliveredBytes < MIN_STRAGGLER_SUFFIX_BYTES ||
+            !wave.isWithinLastCanonicalBodies(pageIndex, MAX_REMAINING_STRAGGLERS)
+        ) {
+            return false
+        }
+        val projectedBodyMs = bodyElapsedMs.toDouble() * expectedLength.toDouble() /
+            deliveredBytes.toDouble()
+        return projectedBodyMs > STRAGGLER_PROJECTED_BODY_MS.toDouble()
+    }
 
     fun shouldEnable(
         hasQuarantineIdentity: Boolean,
@@ -562,6 +680,9 @@ internal object NtkWebtoonBodyWallPolicy {
     // Adjacent UX proves four drawable pages before the current tail. Preserve page three's
     // existing 1.8-second behavior so a near-tail resume cannot wait on the relaxed bulk wall.
     const val DIRECT_WIFI_ADJACENT_RUNWAY_LAST_PAGE = 3
+    // The current reader must physically cross beyond the five-page opening runway. Page four is
+    // therefore still latency-critical even though it is outside the entry viewport itself.
+    const val DIRECT_WIFI_CURRENT_SCROLL_RUNWAY_LAST_PAGE = 4
     // Short current episodes get an anchor-only first wave. Their page zero can therefore keep a
     // healthy stream without competing with any sibling body. Giant tail streams retain the real
     // 1.6-second no-progress deadline but do not get cut merely because their total body time
@@ -570,6 +691,11 @@ internal object NtkWebtoonBodyWallPolicy {
     const val DIRECT_WIFI_SHORT_CURRENT_MAX_PAGES = 8
     const val DIRECT_WIFI_GIANT_BODY_BYTES = 2L * 1024L * 1024L
     const val TAIL_GRACE_BYTES = 64L * 1024L
+    // A continuously advancing body that projects to finish inside the ordinary direct-Wi-Fi
+    // body wall is healthier than a new Range request whose TLS/headers can consume another full
+    // second. This is derived from accepted bytes, not elapsed time alone, so a real low-rate drip
+    // still moves its untouched suffix while a merely slower link keeps useful socket progress.
+    const val HEALTHY_PROJECTED_COMPLETION_MS = DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS
 
     fun segmentWallMs(pageIndex: Int): Long =
         if (pageIndex in 0..ENTRY_VIEWPORT_LAST_PAGE) {
@@ -595,7 +721,10 @@ internal object NtkWebtoonBodyWallPolicy {
             INITIAL_SEGMENT_WALL_MS
         } else if (pageIndex in 0..ENTRY_VIEWPORT_LAST_PAGE) {
             ENTRY_VIEWPORT_SEGMENT_WALL_MS
-        } else if (pageIndex <= DIRECT_WIFI_ADJACENT_RUNWAY_LAST_PAGE) {
+        } else if (pageIndex <= DIRECT_WIFI_ADJACENT_RUNWAY_LAST_PAGE ||
+            (currentForegroundEpisode &&
+                pageIndex <= DIRECT_WIFI_CURRENT_SCROLL_RUNWAY_LAST_PAGE)
+        ) {
             INITIAL_SEGMENT_WALL_MS
         } else {
             DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS
@@ -616,7 +745,19 @@ internal object NtkWebtoonBodyWallPolicy {
             deliveredBytes <= 0L ||
             deliveredBytes >= expectedLength
         ) return false
-        return expectedLength - deliveredBytes > TAIL_GRACE_BYTES
+        if (expectedLength - deliveredBytes <= TAIL_GRACE_BYTES) return false
+        val projectedCompletionMs = runCatching {
+            Math.multiplyExact(elapsedMs, expectedLength)
+        }.getOrElse { Long.MAX_VALUE }.let { weighted ->
+            if (weighted == Long.MAX_VALUE) weighted else {
+                weighted / deliveredBytes +
+                    if (weighted % deliveredBytes == 0L) 0L else 1L
+            }
+        }
+        return projectedCompletionMs > maxOf(
+            segmentWallMs,
+            HEALTHY_PROJECTED_COMPLETION_MS,
+        )
     }
 }
 
@@ -1253,15 +1394,60 @@ internal object NtkWebtoonReplicaHeaderPolicy {
     const val WIFI_PRIMARY_EXACT_QUIC_ENABLED = false
     const val WIFI_DIRECT_H2_COHORT_ENABLED = true
     const val WIFI_DIRECT_H2_HEADER_FAILOVER_MS = 1_200L
-    const val WIFI_DIRECT_H2_CURRENT_RESUME_HEADER_FAILOVER_MS = 1_200L
+    // The translated emulator Wi-Fi route can add 250-500 ms RTT to Cloudflare anycast. A 1.2 s
+    // cold TLS/header wall falsely rejected every exact replica despite a healthy Internet path.
+    // This longer bound is host-emulator current-only; physical Wi-Fi and adjacent work retain
+    // their measured deadlines.
+    const val WIFI_DIRECT_H2_CURRENT_RESUME_HEADER_FAILOVER_MS = 2_500L
     const val WIFI_DIRECT_H2_REFRESHED_HOST_HEADER_FAILOVER_MS = 1_000L
     const val WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES = 3
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS = 1_500L
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_HOST = "xiaomichina.com"
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_MAX_CONCURRENT = 1
+    // Current H3 bodies commonly reach 70-90% at the old three-second absolute wall. Cancelling
+    // there forces a new Range request whose headers alone exceed the remaining 0.7-1.2 seconds,
+    // discarding useful bytes and occupying the same lane longer than simply finishing the body.
+    // Five seconds remains inside the unchanged eight-second UX readiness wall while allowing a
+    // progressing exact request to reach EOF on its already-established session.
+    const val WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_TIMEOUT_MS = 5_000L
+    const val WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST = "shaomoi.org"
+    // A full proven H3 ring is real backpressure. Wait within the existing exact transport wall
+    // instead of opening competing H2 bodies; measured mixed waves reduced aggregate completion.
+    const val WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_LEASE_WAIT_MS = 3_000L
+    const val WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_BULK_ENABLED = true
+    // p0..p4 remain on the measured fragmented-H2 runway. Page five is the first body that is
+    // not needed to satisfy the immediate physical-scroll contract and is also the exact
+    // contiguous proof that precedes the bulk suffix, so it is the only safe H3 health probe.
+    const val WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE = 5
+    const val WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_TIMEOUT_MS = 5_000L
+    // Eight independent H2 connections match the reset-safe ordinary current-episode wave. Wider
+    // admission makes the translated edge divide each body into timeout-prone drips and completes
+    // fewer exact sources by the UX deadline. One stream per warmed shard keeps the link useful.
+    const val WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_MAX_CONCURRENT = 8
+    const val WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_CONNECTION_SHARDS = 8
+    // p0..p4 are the immediate physical-scroll runway and must not depend on unqualified QUIC.
+    // Give each one an independently warmed fragmented-H2 shard. Page five remains the sole H3
+    // health probe; only its exact EOF/SHA success can move the later suffix onto QUIC.
+    const val WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_OPENING_PAGES = 5
     const val WIFI_DIRECT_ADJACENT_H1_RECOVERY_RUNWAY_PAGES = 4
     const val WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT = 4
+    // Current host-emulator chapters can expose dozens of independent H2 resets at once. Keep
+    // their recovery isolated from the four-page adjacent boundary pool and wide enough to make
+    // forward progress without recreating the unbounded source-thread fan-out.
+    const val WIFI_DIRECT_CURRENT_H1_RECOVERY_MAX_CONCURRENT = 16
+    // Keep the proven reset-safe ordinary wave. The direct fragmenting socket restores SNI
+    // reachability; increasing this beyond eight made the CDN reset otherwise healthy H2 bodies.
+    const val WIFI_DIRECT_CURRENT_CALL_MAX_CONCURRENT = 8
     const val WIFI_DIRECT_ADJACENT_H1_RECOVERY_HEADER_MS = 1_500L
+    const val WIFI_DIRECT_CURRENT_H1_RECOVERY_HEADER_MS = 2_500L
+
+    /**
+     * p0 owns the first visible pixels. Its opportunistic click-time HEAD may warm shard zero, but
+     * a slow HEAD is never allowed to stand in front of the real signed image GET. Followers wait
+     * for their shard bootstrap so they do not recreate the multi-socket reset storm.
+     */
+    fun shouldWaitForFragmentedTlsBootstrap(pageIndex: Int, shardIndex: Int): Boolean =
+        pageIndex != 0 || shardIndex != 0
 
     /**
      * The first exact attempt preserves the measured three-ring fallback. A headerless host may
@@ -1313,6 +1499,82 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         require(hostTimeoutCount > 0)
         return hostTimeoutCount >= 2
     }
+
+    fun shouldSuppressHostEmulatorSessionAfterSocketFailures(
+        socketFailureCount: Int,
+    ): Boolean {
+        require(socketFailureCount > 0)
+        return socketFailureCount >= 2
+    }
+
+    fun areAllDirectWifiReplicaHostsSuppressed(
+        candidateHosts: Collection<String>,
+        suppressedHosts: Set<String>,
+    ): Boolean {
+        val normalizedCandidates = candidateHosts
+            .map { it.lowercase(Locale.ROOT) }
+            .toSet()
+        if (normalizedCandidates.isEmpty()) return false
+        val normalizedSuppressed = suppressedHosts
+            .mapTo(HashSet()) { it.lowercase(Locale.ROOT) }
+        return normalizedCandidates.all(normalizedSuppressed::contains)
+    }
+
+    fun shouldAttemptHostEmulatorSocketExhaustedQuic(
+        currentHostEmulatorRecovery: Boolean,
+        directWifiActive: Boolean,
+        allReplicaHostsSuppressed: Boolean,
+        sameNetwork: Boolean,
+        sameViewerGeneration: Boolean,
+        currentForegroundEpisode: Boolean,
+    ): Boolean = currentHostEmulatorRecovery &&
+        directWifiActive &&
+        allReplicaHostsSuppressed &&
+        sameNetwork &&
+        sameViewerGeneration &&
+        currentForegroundEpisode
+
+    fun shouldAttemptHostEmulatorFragmentedTlsRecovery(
+        currentHostEmulatorRecovery: Boolean,
+        directWifiActive: Boolean,
+        repeatedSocketFailureConfirmed: Boolean,
+        sameNetwork: Boolean,
+        sameViewerGeneration: Boolean,
+        currentForegroundEpisode: Boolean,
+    ): Boolean = currentHostEmulatorRecovery &&
+        directWifiActive &&
+        repeatedSocketFailureConfirmed &&
+        sameNetwork &&
+        sameViewerGeneration &&
+        currentForegroundEpisode
+
+    fun shouldAttemptHostEmulatorPrimaryFragmentedTls(
+        currentHostEmulatorRecovery: Boolean,
+        directWifiActive: Boolean,
+        sameNetwork: Boolean,
+        sameViewerGeneration: Boolean,
+        currentForegroundEpisode: Boolean,
+    ): Boolean = currentHostEmulatorRecovery &&
+        directWifiActive &&
+        sameNetwork &&
+        sameViewerGeneration &&
+        currentForegroundEpisode
+
+    fun shouldProbeHostEmulatorCurrentQuic(
+        currentHostEmulatorRecovery: Boolean,
+        pageIndex: Int,
+        episodePageCount: Int,
+    ): Boolean = currentHostEmulatorRecovery &&
+        episodePageCount > WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE &&
+        pageIndex == WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE
+
+    fun shouldUseQualifiedHostEmulatorCurrentQuic(
+        currentHostEmulatorRecovery: Boolean,
+        pageIndex: Int,
+        qualified: Boolean,
+    ): Boolean = WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_BULK_ENABLED &&
+        currentHostEmulatorRecovery && qualified &&
+        pageIndex > WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE
 
     fun hostEmulatorDirectWifiH2SourceSessionId(
         strictSessionId: Long?,
@@ -1734,13 +1996,81 @@ internal class NtkWifiExactQuicSessionPool(
          */
         const val WEBTOON_SESSION_STRIPES_PER_HOST = 3
         const val WEBTOON_CALLBACK_THREADS_PER_SESSION = 2
+        // The ordinary proven wave uses two streams per engine. A third lease exists only so the
+        // source actor can start its final four-body partial batch early after all six engines are
+        // well proven; the actor never sustains an eighteen-call wave.
+        const val HOST_EMULATOR_CURRENT_PROVEN_SESSION_STRIPES_PER_HOST = 6
+        const val HOST_EMULATOR_CURRENT_SESSION_STRIPES_PER_HOST = 6
+        const val HOST_EMULATOR_CURRENT_MAX_LEASES_PER_STRIPE = 3
+        const val HOST_EMULATOR_CURRENT_CALLBACK_THREADS_PER_SESSION = 2
         const val MANHWA_SESSION_STRIPES_PER_HOST = 6
         private const val REPLICA_HOST_COUNT = 3
+
+        fun stripeForPage(
+            pageIndex: Int,
+            sessionStripesPerHost: Int,
+            replicaHostCount: Int,
+        ): Int {
+            require(sessionStripesPerHost > 0)
+            require(replicaHostCount > 0)
+            return Math.floorMod(pageIndex / replicaHostCount, sessionStripesPerHost)
+        }
+
+        fun leastLoadedStripe(activeCounts: IntArray, preferredPageIndex: Int): Int {
+            require(activeCounts.isNotEmpty())
+            require(activeCounts.all { it >= 0 })
+            val minimum = activeCounts.minOrNull() ?: 0
+            val preferred = Math.floorMod(preferredPageIndex, activeCounts.size)
+            for (offset in activeCounts.indices) {
+                val stripe = (preferred + offset) % activeCounts.size
+                if (activeCounts[stripe] == minimum) return stripe
+            }
+            error("No QUIC session stripe available")
+        }
 
     }
 
     private val closed = AtomicBoolean(false)
     private val sessions = ConcurrentHashMap<String, NtkQuicFetcher.Session>()
+    private val activeSessionLeases = HashMap<String, Int>()
+    /** Hosts promoted only after one complete exact body on this viewer-owned pool. */
+    private val successfulBulkHosts = HashSet<String>()
+    /** A replica that failed its qualification is not retried by unrelated pages this generation. */
+    private val failedBulkHosts = HashSet<String>()
+    private val openingPreconnectStarted = AtomicBoolean(false)
+
+    class SessionLease internal constructor(
+        val host: String,
+        val session: NtkQuicFetcher.Session,
+        private val releaseLease: () -> Unit,
+    ) : Closeable {
+        private val closed = AtomicBoolean(false)
+
+        override fun close() {
+            if (closed.compareAndSet(false, true)) releaseLease()
+        }
+    }
+
+    private fun sessionKey(host: String, stripe: Int, callbackThreadCount: Int): String =
+        "$host#$stripe@$callbackThreadCount"
+
+    private fun getOrCreateSessionLocked(
+        normalizedHost: String,
+        stripe: Int,
+        callbackThreadCount: Int,
+    ): NtkQuicFetcher.Session? {
+        val key = sessionKey(normalizedHost, stripe, callbackThreadCount)
+        sessions[key]?.let { return it }
+        val created = NtkQuicFetcher.newDirectWifiQuicSession(
+            context,
+            userAgent,
+            normalizedHost,
+            callbackThreadCount,
+        ) ?: return null
+        val existing = sessions.putIfAbsent(key, created)
+        if (existing != null) created.close()
+        return existing ?: created
+    }
 
     @Synchronized
     fun session(
@@ -1755,19 +2085,271 @@ internal class NtkWifiExactQuicSessionPool(
         require(callbackThreadCount > 0)
         if (closed.get()) return null
         val normalizedHost = host.lowercase(Locale.ROOT)
-        val stripe = Math.floorMod(pageIndex / replicaHostCount, sessionStripesPerHost)
-        val sessionKey = "$normalizedHost#$stripe@$callbackThreadCount"
-        sessions[sessionKey]?.let { return it }
-        val created = NtkQuicFetcher.newDirectWifiQuicSession(
-            context,
-            userAgent,
+        val stripe = stripeForPage(pageIndex, sessionStripesPerHost, replicaHostCount)
+        return getOrCreateSessionLocked(normalizedHost, stripe, callbackThreadCount)
+    }
+
+    /**
+     * The qualified current-webtoon path has converged every canonical replica onto one proven
+     * authority. Borrow the least-loaded member of the bounded engine ring so scheduler cohort
+     * patterns cannot concentrate simultaneous streams on one engine. A lease spans the
+     * complete exact request (including its internal Range continuation) and is released once.
+     */
+    @Synchronized
+    fun leaseLeastLoaded(
+        host: String,
+        pageIndex: Int,
+        sessionStripesPerHost: Int = HOST_EMULATOR_CURRENT_SESSION_STRIPES_PER_HOST,
+        callbackThreadCount: Int = WEBTOON_CALLBACK_THREADS_PER_SESSION,
+    ): SessionLease? {
+        require(sessionStripesPerHost > 0)
+        require(callbackThreadCount > 0)
+        if (closed.get()) return null
+        val normalizedHost = host.lowercase(Locale.ROOT)
+        val counts = IntArray(sessionStripesPerHost) { stripe ->
+            activeSessionLeases[sessionKey(normalizedHost, stripe, callbackThreadCount)] ?: 0
+        }
+        val stripe = leastLoadedStripe(counts, pageIndex)
+        val key = sessionKey(normalizedHost, stripe, callbackThreadCount)
+        val leasedSession = getOrCreateSessionLocked(
             normalizedHost,
+            stripe,
             callbackThreadCount,
-        )
-            ?: return null
-        val existing = sessions.putIfAbsent(sessionKey, created)
-        if (existing != null) created.close()
-        return existing ?: created
+        ) ?: return null
+        activeSessionLeases[key] = (activeSessionLeases[key] ?: 0) + 1
+        return SessionLease(normalizedHost, leasedSession) { releaseSessionLease(key) }
+    }
+
+    /**
+     * Reuses the one H3 connection whose exact p0 EOF already proved the opening authority.
+     *
+     * The opening policy is bounded to p0..p5, and p0 remains wire-exclusive. Creating a new
+     * least-loaded engine for each successor paid four additional 1-2 second QUIC handshakes even
+     * though the warmed engine can multiplex those immutable requests. Steady-state bulk keeps the
+     * independently striped least-loaded policy below.
+     */
+    @Synchronized
+    fun leaseOpeningSession(
+        host: String,
+        callbackThreadCount: Int = HOST_EMULATOR_CURRENT_CALLBACK_THREADS_PER_SESSION,
+    ): SessionLease? {
+        require(callbackThreadCount > 0)
+        if (closed.get()) return null
+        val normalizedHost = host.lowercase(Locale.ROOT)
+        val key = sessionKey(normalizedHost, 0, callbackThreadCount)
+        val leasedSession = getOrCreateSessionLocked(
+            normalizedHost,
+            0,
+            callbackThreadCount,
+        ) ?: return null
+        activeSessionLeases[key] = (activeSessionLeases[key] ?: 0) + 1
+        return SessionLease(normalizedHost, leasedSession) { releaseSessionLease(key) }
+    }
+
+    /**
+     * Starts a content-free H3 handshake at the committed viewer click. The HEAD carries no
+     * episode, page, cookie, or image identity; the signed image API remains the only authority
+     * that can issue a GET. The later p0..p5 calls borrow this exact engine through
+     * [leaseOpeningSession], avoiding a user-visible cold QUIC handshake.
+     */
+    fun preconnectOpeningSession(
+        host: String,
+        executor: Executor,
+        admissionCheck: () -> Boolean,
+        onComplete: (Boolean, Long) -> Unit,
+    ) {
+        if (!openingPreconnectStarted.compareAndSet(false, true)) return
+        val startedAt = SystemClock.elapsedRealtime()
+        try {
+            executor.execute {
+                var reusable = false
+                try {
+                    if (!closed.get() && admissionCheck()) {
+                        val lease = leaseOpeningSession(host)
+                        if (lease != null) {
+                            try {
+                                val result = lease.session.fetch(
+                                    "https://$host/",
+                                    userAgent,
+                                    "",
+                                    mapOf("Accept" to "*/*"),
+                                    "HEAD",
+                                    null,
+                                    2_500L,
+                                )
+                                reusable = result.code > 0 &&
+                                    result.negotiatedProtocol.equals("h3", ignoreCase = true)
+                            } finally {
+                                lease.close()
+                            }
+                        }
+                    }
+                } finally {
+                    onComplete(reusable, SystemClock.elapsedRealtime() - startedAt)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            onComplete(false, SystemClock.elapsedRealtime() - startedAt)
+        }
+    }
+
+    /**
+     * Atomically chooses the least-loaded canonical replica and borrows one of its bounded
+     * sessions. Static page modulo assignment can send an entire scheduler-priority cohort (for
+     * example 6, 9, 12, 15...) to one engine even while the other two are idle. Live lease counts
+     * preserve deterministic tie-breaking but move later work away from an actually slow host.
+     */
+    @Synchronized
+    fun leaseLeastLoadedAcrossHosts(
+        hosts: List<String>,
+        pageIndex: Int,
+        provenHost: String,
+        provenHostStripes: Int = HOST_EMULATOR_CURRENT_PROVEN_SESSION_STRIPES_PER_HOST,
+        otherHostStripes: Int = HOST_EMULATOR_CURRENT_SESSION_STRIPES_PER_HOST,
+        maxLeasesPerStripe: Int = HOST_EMULATOR_CURRENT_MAX_LEASES_PER_STRIPE,
+        callbackThreadCount: Int = WEBTOON_CALLBACK_THREADS_PER_SESSION,
+    ): SessionLease? {
+        require(provenHostStripes > 0)
+        require(otherHostStripes > 0)
+        require(maxLeasesPerStripe > 0)
+        require(callbackThreadCount > 0)
+        if (closed.get()) return null
+        val normalizedHosts = hosts
+            .map { it.trim().lowercase(Locale.ROOT) }
+            .filter(String::isNotEmpty)
+            .distinct()
+        if (normalizedHosts.isEmpty()) return null
+        val normalizedProvenHost = provenHost.trim().lowercase(Locale.ROOT)
+        data class EngineCandidate(val host: String, val stripe: Int, val active: Int)
+        val provenCandidates = ArrayList<EngineCandidate>()
+        val unprovenCandidates = ArrayList<EngineCandidate>()
+        for (host in normalizedHosts) {
+            val isProven = host == normalizedProvenHost || host in successfulBulkHosts
+            val stripeCount = if (host == normalizedProvenHost) {
+                provenHostStripes
+            } else {
+                otherHostStripes
+            }
+            val hostActive = (0 until stripeCount).sumOf { stripe ->
+                activeSessionLeases[sessionKey(host, stripe, callbackThreadCount)] ?: 0
+            }
+            // A signed replica is byte-equivalent but its current transport health is unknown.
+            // Let one exact body qualify it before assigning a full stream cohort. The already-
+            // probed primary may use several four-stream engines immediately.
+            val hostLeaseLimit = if (isProven) {
+                stripeCount * maxLeasesPerStripe
+            } else {
+                1
+            }
+            if (hostActive >= hostLeaseLimit || (!isProven && host in failedBulkHosts)) continue
+            for (stripe in 0 until stripeCount) {
+                val active = activeSessionLeases[
+                    sessionKey(host, stripe, callbackThreadCount)
+                ] ?: 0
+                if (active < maxLeasesPerStripe) {
+                    val candidate = EngineCandidate(host, stripe, active)
+                    if (isProven) provenCandidates += candidate else unprovenCandidates += candidate
+                }
+            }
+        }
+        // Do not spend one of the bounded foreground lanes qualifying a replica while a host
+        // that already produced an exact EOF/SHA body still has stream capacity. Unknown
+        // replicas are failover capacity, not a mandatory opening fan-out.
+        val hasProvenReplica = normalizedHosts.any { host ->
+            host == normalizedProvenHost || host in successfulBulkHosts
+        }
+        val engineCandidates = if (provenCandidates.isNotEmpty()) {
+            provenCandidates
+        } else if (hasProvenReplica) {
+            // A full proven ring is backpressure, not evidence that another H3 authority is
+            // healthy. Let the bounded caller wait briefly and then use its fragmented-H2
+            // overflow rather than spending foreground time on an unqualified replica.
+            emptyList()
+        } else {
+            unprovenCandidates
+        }
+        if (engineCandidates.isEmpty()) return null
+        val minimumActive = engineCandidates.minOf(EngineCandidate::active)
+        val preferredEngine = Math.floorMod(pageIndex, engineCandidates.size)
+        val selected = engineCandidates.indices
+            .asSequence()
+            .map { offset -> (preferredEngine + offset) % engineCandidates.size }
+            .map(engineCandidates::get)
+            .first { candidate -> candidate.active == minimumActive }
+        val key = sessionKey(selected.host, selected.stripe, callbackThreadCount)
+        val leasedSession = getOrCreateSessionLocked(
+            selected.host,
+            selected.stripe,
+            callbackThreadCount,
+        ) ?: return null
+        activeSessionLeases[key] = (activeSessionLeases[key] ?: 0) + 1
+        return SessionLease(selected.host, leasedSession) { releaseSessionLease(key) }
+    }
+
+    /**
+     * Applies real backpressure when every bounded HTTP/3 stream is occupied. Returning a miss
+     * here makes the caller open a second, already-known-unhealthy TCP route while the useful
+     * sessions are merely busy; those failed sockets then delay the same body by a full retry
+     * generation. Waiting on the pool monitor keeps the fixed connection/stream bounds, wakes as
+     * soon as any body releases its lease, and remains cancellable by viewer/network ownership.
+     */
+    @Synchronized
+    fun awaitLeaseLeastLoadedAcrossHosts(
+        hosts: List<String>,
+        pageIndex: Int,
+        provenHost: String,
+        deadlineAtMs: Long,
+        admissionCheck: java.util.function.BooleanSupplier,
+        provenHostStripes: Int = HOST_EMULATOR_CURRENT_PROVEN_SESSION_STRIPES_PER_HOST,
+        otherHostStripes: Int = HOST_EMULATOR_CURRENT_SESSION_STRIPES_PER_HOST,
+        maxLeasesPerStripe: Int = HOST_EMULATOR_CURRENT_MAX_LEASES_PER_STRIPE,
+        callbackThreadCount: Int = WEBTOON_CALLBACK_THREADS_PER_SESSION,
+    ): SessionLease? {
+        while (!closed.get() && admissionCheck.asBoolean) {
+            leaseLeastLoadedAcrossHosts(
+                hosts = hosts,
+                pageIndex = pageIndex,
+                provenHost = provenHost,
+                provenHostStripes = provenHostStripes,
+                otherHostStripes = otherHostStripes,
+                maxLeasesPerStripe = maxLeasesPerStripe,
+                callbackThreadCount = callbackThreadCount,
+            )?.let { return it }
+            val remainingMs = deadlineAtMs - SystemClock.elapsedRealtime()
+            if (remainingMs <= 0L) return null
+            try {
+                @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
+                (this as java.lang.Object).wait(minOf(remainingMs, 100L))
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
+        }
+        return null
+    }
+
+    @Synchronized
+    fun recordBulkResult(host: String, completeExactBody: Boolean) {
+        if (closed.get()) return
+        val normalizedHost = host.trim().lowercase(Locale.ROOT)
+        if (normalizedHost.isNotEmpty()) {
+            if (completeExactBody) {
+                failedBulkHosts.remove(normalizedHost)
+                successfulBulkHosts.add(normalizedHost)
+            } else if (normalizedHost !in successfulBulkHosts) {
+                failedBulkHosts.add(normalizedHost)
+            }
+            @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
+            (this as java.lang.Object).notifyAll()
+        }
+    }
+
+    @Synchronized
+    private fun releaseSessionLease(key: String) {
+        val current = activeSessionLeases[key] ?: return
+        if (current <= 1) activeSessionLeases.remove(key) else activeSessionLeases[key] = current - 1
+        @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
+        (this as java.lang.Object).notifyAll()
     }
 
     @Synchronized
@@ -1783,8 +2365,8 @@ internal class NtkWifiExactQuicSessionPool(
         require(callbackThreadCount > 0)
         if (closed.get()) return null
         val normalizedHost = host.lowercase(Locale.ROOT)
-        val stripe = Math.floorMod(pageIndex / replicaHostCount, sessionStripesPerHost)
-        return sessions["$normalizedHost#$stripe@$callbackThreadCount"]
+        val stripe = stripeForPage(pageIndex, sessionStripesPerHost, replicaHostCount)
+        return sessions[sessionKey(normalizedHost, stripe, callbackThreadCount)]
     }
 
     @Synchronized
@@ -1792,6 +2374,8 @@ internal class NtkWifiExactQuicSessionPool(
         if (!closed.compareAndSet(false, true)) return
         sessions.values.forEach { session -> runCatching { session.close() } }
         sessions.clear()
+        activeSessionLeases.clear()
+        successfulBulkHosts.clear()
     }
 }
 
@@ -1820,7 +2404,7 @@ object ReaderImageCache {
         "shaomoi.org",
         "xiaomichina.com",
     )
-private val ntkWifiWebtoonReplicaPreferences =
+    private val ntkWifiWebtoonReplicaPreferences =
         ConcurrentHashMap<Long, NtkWebtoonReplicaPreference>()
     // A replica that times out twice or returns a definitive miss inside one viewer session is
     // suppressed for the REST of that session so later pages do not each re-try the same dead
@@ -1832,8 +2416,300 @@ private val ntkWifiWebtoonReplicaPreferences =
         val sourceSessionId: Long,
         val networkHandle: Long,
     )
+    private data class HostEmulatorWebtoonViewerTransportScopeKey(
+        val viewerGeneration: Long,
+        val networkHandle: Long,
+    )
+    private class HostEmulatorWebtoonFragmentedTransport private constructor(
+        private val clients: List<OkHttpClient>,
+    ) : Closeable {
+        class Admission internal constructor(
+            val client: OkHttpClient,
+            internal val shardIndex: Int,
+            internal var bootstrapHeld: Boolean,
+        )
+
+        private val bodyPermits = List(clients.size) {
+            Semaphore(
+                maxOf(
+                    1,
+                    (NtkWebtoonReplicaHeaderPolicy
+                        .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_MAX_CONCURRENT + clients.size - 1) /
+                        clients.size,
+                ),
+                true,
+            )
+        }
+        private val bootstrapPermits = List(clients.size) { Semaphore(1, true) }
+        private val headersEstablished = AtomicIntegerArray(clients.size)
+        private val openingPreconnectStarted = AtomicBoolean(false)
+
+        /**
+         * Opens only the TLS/H2 route used by the first physical runway after a committed click.
+         * A HEAD of the configured CDN origin carries no episode, page, cookie, or image identity;
+         * the signed image API remains the sole authority allowed to create an image GET. Holding
+         * each shard's normal bootstrap permit makes a very fast API response join this exact
+         * handshake instead of opening a duplicate cold connection beside it.
+         */
+        fun preconnectOpeningRunway(host: String) {
+            if (!openingPreconnectStarted.compareAndSet(false, true)) return
+            val shardCount = minOf(
+                clients.size,
+                NtkWebtoonReplicaHeaderPolicy
+                    .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_OPENING_PAGES,
+            )
+            // Only p0..p4 use the fragmented-TLS opening route. Page five probes the independently
+            // warmed QUIC route, while the remaining three H2 shards stay lazy until scrolling
+            // reaches them. This avoids unused control-plane contention without risking the
+            // immediate physical-scroll runway on an unqualified transport.
+            // Include p0's shard: discovery normally leaves enough lead for this content-free
+            // handshake to finish before the signed image manifest arrives. acquire() below uses
+            // a non-blocking bypass for the real p0 GET, preserving liveness when that lead
+            // vanishes.
+            val firstPreconnectShard = 0
+            val preconnectCount = (shardCount - firstPreconnectShard).coerceAtLeast(0)
+            if (preconnectCount == 0) return
+            val remaining = AtomicInteger(preconnectCount)
+            val succeeded = AtomicInteger(0)
+            val startedAt = SystemClock.elapsedRealtime()
+            for (shardIndex in firstPreconnectShard until shardCount) {
+                if (!bootstrapPermits[shardIndex].tryAcquire()) {
+                    if (remaining.decrementAndGet() == 0) {
+                        logOpeningPreconnectResult(host, succeeded.get(), preconnectCount, startedAt)
+                    }
+                    continue
+                }
+                val request = Request.Builder()
+                    .url("https://$host/")
+                    .head()
+                    .header("Accept", "*/*")
+                    .header("Accept-Encoding", "identity")
+                    .build()
+                val call = clients[shardIndex].newCall(request)
+                call.timeout().timeout(2_500L, TimeUnit.MILLISECONDS)
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, failure: IOException) {
+                        finish(false)
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        val reusable = response.use {
+                            it.protocol == Protocol.HTTP_2 &&
+                                it.request.url.host.equals(host, ignoreCase = true)
+                        }
+                        finish(reusable)
+                    }
+
+                    private fun finish(reusable: Boolean) {
+                        if (reusable) {
+                            headersEstablished.set(shardIndex, 1)
+                            succeeded.incrementAndGet()
+                        }
+                        bootstrapPermits[shardIndex].release()
+                        if (remaining.decrementAndGet() == 0) {
+                            logOpeningPreconnectResult(host, succeeded.get(), preconnectCount, startedAt)
+                        }
+                    }
+                })
+            }
+        }
+
+        private fun logOpeningPreconnectResult(
+            host: String,
+            succeeded: Int,
+            attempted: Int,
+            startedAt: Long,
+        ) {
+            Log.d(
+                TAG,
+                "reader_strict_fragmented_tls_preconnect host=$host," +
+                    "ready=$succeeded,attempted=$attempted," +
+                    "elapsedMs=${SystemClock.elapsedRealtime() - startedAt}",
+            )
+        }
+
+        /**
+         * A cold OkHttp client does not yet know that its fragmented route is usable. Starting
+         * three calls on that shard in one actor turn therefore opens three TCP/TLS sockets,
+         * recreating the translated-socket reset storm. Let one call establish response
+         * headers, then release its two bounded followers onto the proven route.
+         */
+        fun acquire(pageIndex: Int, cancelled: AtomicBoolean): Admission {
+            val shardIndex = Math.floorMod(pageIndex, clients.size)
+            acquireCancellable(bodyPermits[shardIndex], cancelled)
+            var bootstrapHeld = false
+            try {
+                if (headersEstablished.get(shardIndex) == 0) {
+                    val waitForBootstrap = NtkWebtoonReplicaHeaderPolicy
+                        .shouldWaitForFragmentedTlsBootstrap(pageIndex, shardIndex)
+                    val acquiredBootstrap = if (waitForBootstrap) {
+                        acquireCancellable(bootstrapPermits[shardIndex], cancelled)
+                        true
+                    } else {
+                        bootstrapPermits[shardIndex].tryAcquire()
+                    }
+                    if (acquiredBootstrap) {
+                        if (headersEstablished.get(shardIndex) == 0) {
+                            bootstrapHeld = true
+                        } else {
+                            bootstrapPermits[shardIndex].release()
+                        }
+                    }
+                }
+                return Admission(clients[shardIndex], shardIndex, bootstrapHeld)
+            } catch (failure: Throwable) {
+                bodyPermits[shardIndex].release()
+                throw failure
+            }
+        }
+
+        fun markHeadersEstablished(admission: Admission) {
+            headersEstablished.set(admission.shardIndex, 1)
+            if (admission.bootstrapHeld) {
+                admission.bootstrapHeld = false
+                bootstrapPermits[admission.shardIndex].release()
+            }
+        }
+
+        fun release(admission: Admission) {
+            if (admission.bootstrapHeld) {
+                admission.bootstrapHeld = false
+                bootstrapPermits[admission.shardIndex].release()
+            }
+            bodyPermits[admission.shardIndex].release()
+        }
+
+        private fun acquireCancellable(permit: Semaphore, cancelled: AtomicBoolean) {
+            try {
+                while (!permit.tryAcquire(100L, TimeUnit.MILLISECONDS)) {
+                    if (cancelled.get()) {
+                        throw InterruptedIOException("Replica image Call cancelled")
+                    }
+                }
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException(
+                    "Interrupted while waiting for fragmented TLS shard",
+                ).apply { initCause(interrupted) }
+            }
+            if (cancelled.get()) {
+                permit.release()
+                throw InterruptedIOException("Replica image Call cancelled")
+            }
+        }
+
+        companion object {
+            fun create(
+                baseClient: OkHttpClient,
+                directWifiNetwork: android.net.Network,
+            ): HostEmulatorWebtoonFragmentedTransport? {
+                return try {
+                    val clients = List(
+                        NtkWebtoonReplicaHeaderPolicy
+                            .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_CONNECTION_SHARDS,
+                    ) {
+                        val dispatcher = Dispatcher().apply {
+                            maxRequests = NtkWebtoonReplicaHeaderPolicy
+                                .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_MAX_CONCURRENT
+                            maxRequestsPerHost = NtkWebtoonReplicaHeaderPolicy
+                                .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_MAX_CONCURRENT
+                        }
+                        baseClient.newBuilder()
+                            .proxy(Proxy.NO_PROXY)
+                            .socketFactory(
+                                CustomHttpClient.sniFragmentingSocketFactory(
+                                    directWifiNetwork.socketFactory,
+                                )
+                            )
+                            .dns(object : Dns {
+                                override fun lookup(hostname: String) =
+                                    directWifiNetwork.getAllByName(hostname).toList()
+                            })
+                            .dispatcher(dispatcher)
+                            // A separate pool per shard prevents one stalled HTTP/2 socket from
+                            // head-of-line blocking every page while keeping the same total body
+                            // worker limit. Pages and their exact Range continuation stay on the
+                            // same shard, so no received prefix is repeated.
+                            .connectionPool(ConnectionPool(1, 5, TimeUnit.MINUTES))
+                            .followRedirects(false)
+                            .followSslRedirects(false)
+                            // The inherited fast-client Call wall is three seconds and includes
+                            // response-body consumption. It killed healthy large images exactly
+                            // at +3 s even though the per-read progress guard below was advancing.
+                            // Connect/read and exact no-progress deadlines remain bounded.
+                            .callTimeout(0L, TimeUnit.MILLISECONDS)
+                            .connectTimeout(
+                                NtkWebtoonReplicaHeaderPolicy
+                                    .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_TIMEOUT_MS,
+                                TimeUnit.MILLISECONDS,
+                            )
+                            .readTimeout(
+                                NtkWebtoonReplicaHeaderPolicy
+                                    .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_TIMEOUT_MS,
+                                TimeUnit.MILLISECONDS,
+                            )
+                            .build()
+                    }
+                    HostEmulatorWebtoonFragmentedTransport(clients)
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+        }
+
+        override fun close() {
+            clients.forEach { client ->
+                client.dispatcher.cancelAll()
+                client.connectionPool.evictAll()
+            }
+        }
+    }
     private val ntkHostEmulatorWebtoonSessionSuppressedHosts =
         ConcurrentHashMap<HostEmulatorWebtoonTransportScopeKey, MutableSet<String>>()
+    private val ntkHostEmulatorWebtoonSessionSocketFailures =
+        ConcurrentHashMap<
+            HostEmulatorWebtoonTransportScopeKey,
+            ConcurrentHashMap<String, AtomicInteger>
+        >()
+    private val ntkHostEmulatorWebtoonFragmentedTransports =
+        ConcurrentHashMap<
+            HostEmulatorWebtoonViewerTransportScopeKey,
+            HostEmulatorWebtoonFragmentedTransport
+        >()
+    internal class HostEmulatorWebtoonQuicHealth {
+        private companion object {
+            const val UNKNOWN = 0
+            const val PROBING = 1
+            const val QUALIFIED = 2
+            const val REJECTED = 3
+            const val PRECONNECTED = 4
+        }
+
+        private val state = AtomicInteger(UNKNOWN)
+        fun tryBeginProbe(): Boolean {
+            while (true) {
+                val observed = state.get()
+                if (observed != UNKNOWN && observed != PRECONNECTED) return false
+                if (state.compareAndSet(observed, PROBING)) return true
+            }
+        }
+
+        fun recordPreconnectSuccess() {
+            state.compareAndSet(UNKNOWN, PRECONNECTED)
+        }
+
+        fun finishProbe(succeeded: Boolean) {
+            state.compareAndSet(PROBING, if (succeeded) QUALIFIED else REJECTED)
+        }
+
+        fun isQualified(): Boolean = state.get() == QUALIFIED
+    }
+    private val ntkHostEmulatorWebtoonQuicHealth =
+        ConcurrentHashMap<
+            HostEmulatorWebtoonViewerTransportScopeKey,
+            HostEmulatorWebtoonQuicHealth
+        >()
+    private val ntkHostEmulatorWebtoonFragmentedTransportCreationLock = Any()
     private val ntkWifiExactQuicSessionPools =
         ConcurrentHashMap<Long, NtkWifiExactQuicSessionPool>()
     private val ntkWifiWebtoonExplicitMissQuicPermits = Semaphore(
@@ -1854,6 +2730,11 @@ private val ntkWifiWebtoonReplicaPreferences =
     // between chunks. The old 600ms guard converted ordinary progress into hundreds of Range
     // continuations. Keep a real no-progress bound without repeatedly discarding useful sockets.
     private const val NTK_WEBTOON_BODY_IDLE_RESUME_MS = 1_200L
+    // A proven fragmented H2 follower can legitimately wait behind two streams on the same
+    // connection. The generic 1.2 s first-byte/progress guard turned all followers into a Range
+    // herd; keep that fast guard for the shard bootstrap leader and give only multiplexed
+    // followers one full scheduler/network round before exact suffix recovery.
+    private const val NTK_FRAGMENTED_WEBTOON_FOLLOWER_BODY_IDLE_RESUME_MS = 3_000L
     // Numeric manhwa pages are immutable across the replica ring. A headerless stream owns no
     // useful bytes, so cancel it and advance the same logical Call instead of launching a
     // concurrent duplicate body wave from the viewer coordinator.
@@ -1867,8 +2748,19 @@ private val ntkWifiWebtoonReplicaPreferences =
         NtkClickOwnedManhwaWavePolicy.MAX_CONCURRENT_TAIL_HEADER_FAILOVERS
     private const val NTK_MANHWA_HEADER_FAILOVER_PERMIT_RECHECK_MS =
         NtkClickOwnedManhwaWavePolicy.HEADER_FAILOVER_PERMIT_RECHECK_MS
-    private val ntkManhwaHeaderFailoverPermits = Semaphore(
-        NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS,
+    // Keep the existing global maximum of two header recoveries, but reserve one lane for the
+    // current viewport/adjacent p0..p4 runway. A cold chapter can otherwise occupy both permits
+    // with offscreen calls; one headerless visible page then cannot cancel its empty socket and can
+    // hold both the current drawable gate and the next-episode gate until the OS socket timeout.
+    // Viewport work may borrow the bulk lane when it is free, while bulk work can never consume the
+    // reserved lane. This changes admission order only: every logical page still owns one strictly
+    // sequential physical attempt at a time and the total failover concurrency remains two.
+    private val ntkManhwaViewportHeaderFailoverPermits = Semaphore(
+        1,
+        true,
+    )
+    private val ntkManhwaBulkHeaderFailoverPermits = Semaphore(
+        (NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS - 1).coerceAtLeast(1),
         true,
     )
     // An origin can evade the idle limit by dripping small chunks while still taking >3s for one
@@ -2062,6 +2954,40 @@ private val ntkWifiWebtoonReplicaPreferences =
         NTK_EXACT_BODY_READ_BUFFER_POOL_CAPACITY,
     )
 
+    /**
+     * Marks a transport response whose terminal callback already owns the complete immutable
+     * body. The strict spool still performs its normal header, length and SHA checks; it merely
+     * avoids rebuilding the same bytes in an Okio buffer and pacing them as if they were a live
+     * socket a second time.
+     */
+    private interface NtkFullyBufferedExactBody {
+        val ntkFullyBufferedBytes: ByteArray?
+    }
+
+    private class NtkFullyBufferedExactResponseBody(
+        private val mediaType: MediaType?,
+        private val bytes: ByteArray,
+    ) : ResponseBody(), NtkFullyBufferedExactBody {
+        private val sourceLock = Any()
+        @Volatile private var fallbackSource: BufferedSource? = null
+
+        override val ntkFullyBufferedBytes: ByteArray get() = bytes
+
+        override fun contentType(): MediaType? = mediaType
+
+        override fun contentLength(): Long = bytes.size.toLong()
+
+        override fun source(): BufferedSource = fallbackSource ?: synchronized(sourceLock) {
+            fallbackSource ?: Buffer().write(bytes).also { fallbackSource = it }
+        }
+
+        override fun close() {
+            // Do not instantiate/copy the fallback Okio source merely to close a body consumed
+            // directly by the strict spool.
+            fallbackSource?.close()
+        }
+    }
+
     private inline fun <T> withNtkExactBodyReadBuffer(block: (ByteArray) -> T): T {
         val buffer = ntkExactBodyReadBuffers.poll()
             ?: ByteArray(NTK_EXACT_BODY_READ_BUFFER_BYTES)
@@ -2219,6 +3145,8 @@ private val ntkWifiWebtoonReplicaPreferences =
         ConcurrentHashMap<DirectWifiClientKey, OkHttpClient>()
     private val clickOwnedDirectWifiAdjacentWebtoonRecoveryClients =
         ConcurrentHashMap<DirectWifiClientKey, OkHttpClient>()
+    private val clickOwnedDirectWifiCurrentWebtoonRecoveryClients =
+        ConcurrentHashMap<DirectWifiClientKey, OkHttpClient>()
     private val clickOwnedDirectWifiOrdinaryBodyClients =
         ConcurrentHashMap<DirectWifiClientKey, OkHttpClient>()
     private val clickOwnedDirectWifiOrdinaryDns =
@@ -2261,10 +3189,107 @@ private val ntkWifiWebtoonReplicaPreferences =
             NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT,
             Process.THREAD_PRIORITY_BACKGROUND,
         )
+    private val clickOwnedDirectWifiCurrentWebtoonRecoveryDispatcher =
+        backgroundOkHttpDispatcher(
+            "ReaderCurrentWebtoonRecoveryHttp",
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_H1_RECOVERY_MAX_CONCURRENT,
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_H1_RECOVERY_MAX_CONCURRENT,
+            Process.THREAD_PRIORITY_BACKGROUND,
+        )
     private val clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits = Semaphore(
         NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT,
         true,
     )
+    private val clickOwnedDirectWifiCurrentWebtoonRecoveryPermits = Semaphore(
+        NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_H1_RECOVERY_MAX_CONCURRENT,
+        true,
+    )
+    private val hostEmulatorDirectWifiCurrentOrdinaryWebtoonCallPermits = Semaphore(
+        NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_CALL_MAX_CONCURRENT,
+        true,
+    )
+    private val hostEmulatorDirectWifiCurrentFragmentedTlsPermits = Semaphore(
+        NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_MAX_CONCURRENT,
+        true,
+    )
+
+    /**
+     * Prepares the content-free route for a current webtoon only after foreground click ownership
+     * has been installed. Every eligibility check is repeated here so a handoff or replaced viewer
+     * cannot leave a transport attached to the wrong Network/generation.
+     */
+    @JvmStatic
+    fun prepareHostEmulatorCurrentWebtoonTransportAfterViewerClick(
+        episodePath: String?,
+        viewerGeneration: Long,
+    ) {
+        val path = earlyNtkPathKey(episodePath)
+        if (!path.startsWith("/webtoon/") || viewerGeneration <= 0L ||
+            !NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                Build.FINGERPRINT,
+                Build.MODEL,
+                Build.HARDWARE,
+                Build.PRODUCT,
+            ) ||
+            ViewerTelemetry.activeGeneration() != viewerGeneration ||
+            !MainApplication.isNtkForegroundViewerPath(path)
+        ) return
+        val httpClient = getHttpClient()
+        if (httpClient.isNtkCellularResilientTransportActive() ||
+            !httpClient.isNtkWifiTransportActive()
+        ) return
+        val directWifiNetwork = httpClient.getNtkDirectWifiNetwork() ?: return
+        val key = HostEmulatorWebtoonViewerTransportScopeKey(
+            viewerGeneration,
+            directWifiNetwork.networkHandle,
+        )
+        val transport = ntkHostEmulatorWebtoonFragmentedTransports[key] ?: synchronized(
+            ntkHostEmulatorWebtoonFragmentedTransportCreationLock,
+        ) {
+            ntkHostEmulatorWebtoonFragmentedTransports[key]
+                ?: HostEmulatorWebtoonFragmentedTransport.create(
+                    httpClient.ntkExternalViewerImageFastClient(),
+                    directWifiNetwork,
+                )?.also { created ->
+                    ntkHostEmulatorWebtoonFragmentedTransports[key] = created
+                }
+        } ?: return
+        transport.preconnectOpeningRunway(
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_PREFERRED_HOST,
+        )
+        val quicPool = ntkWifiExactQuicSessionPools.computeIfAbsent(viewerGeneration) {
+            NtkWifiExactQuicSessionPool(
+                MainApplication.appContext,
+                httpClient.agent,
+            )
+        }
+        quicPool.preconnectOpeningSession(
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST,
+            clickOwnedExtensionScheduler,
+            admissionCheck = {
+                ViewerTelemetry.activeGeneration() == viewerGeneration &&
+                    MainApplication.isNtkForegroundViewerPath(path)
+            },
+            onComplete = { reusable, elapsedMs ->
+                if (reusable &&
+                    ViewerTelemetry.activeGeneration() == viewerGeneration &&
+                    MainApplication.isNtkForegroundViewerPath(path)
+                ) {
+                    ntkHostEmulatorWebtoonQuicHealth
+                        .computeIfAbsent(key) { HostEmulatorWebtoonQuicHealth() }
+                        .recordPreconnectSuccess()
+                }
+                Log.d(
+                    TAG,
+                    "reader_strict_opening_quic_preconnect host=" +
+                        NtkWebtoonReplicaHeaderPolicy
+                            .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST +
+                        ",reusable=$reusable,elapsedMs=$elapsedMs",
+                )
+            },
+        )
+    }
+
     private const val CLICK_OWNED_EXTENSION_HEDGE_MS = 650L
     private val clickOwnedExtensionScheduler = Executors.newScheduledThreadPool(8) { runnable ->
         Thread(runnable, "ntk-click-extension-hedge").apply {
@@ -2904,6 +3929,7 @@ data class NtkResolvedSourceRoute(
                     strictEpisodePageCount,
                     capturedDirectWifiNetworkHandle,
                     viewerGeneration,
+                    wifiExactQuicSessionPool,
                 )
             }
             // Quarantine discovery and the adopted strict source intentionally use different
@@ -2983,7 +4009,31 @@ data class NtkResolvedSourceRoute(
             val attemptState = AttemptState()
             val earlyExtensionRecoveryUrls = mutableSetOf<String>()
             val explicitReplicaMissHosts = mutableSetOf<String>()
-            val manhwaHeaderRecoveryPermitHeld = AtomicBoolean(false)
+            val viewportHeaderRecoveryPriority = originalRequest.tag(
+                NtkManhwaHeaderRecoveryPriority::class.java,
+            ) == NtkManhwaHeaderRecoveryPriority.VIEWPORT
+            val manhwaHeaderRecoveryPermit = AtomicReference<Semaphore?>(null)
+            fun tryAcquireManhwaHeaderRecoveryPermit(): Boolean {
+                if (manhwaHeaderRecoveryPermit.get() != null) return false
+                val candidates = if (viewportHeaderRecoveryPriority) {
+                    arrayOf(
+                        ntkManhwaViewportHeaderFailoverPermits,
+                        ntkManhwaBulkHeaderFailoverPermits,
+                    )
+                } else {
+                    arrayOf(ntkManhwaBulkHeaderFailoverPermits)
+                }
+                candidates.forEach { candidate ->
+                    if (!candidate.tryAcquire()) return@forEach
+                    if (manhwaHeaderRecoveryPermit.compareAndSet(null, candidate)) return true
+                    candidate.release()
+                    return false
+                }
+                return false
+            }
+            fun releaseManhwaHeaderRecoveryPermit() {
+                manhwaHeaderRecoveryPermit.getAndSet(null)?.release()
+            }
             fun appendWifiFocusedRecoveryIfEligible(): Boolean {
                 if (attemptState.wifiFocusedRecoveryAdded ||
                     !NtkWebtoonReplicaHeaderPolicy.shouldAppendFocusedRecovery(
@@ -3275,10 +4325,9 @@ data class NtkResolvedSourceRoute(
                         override fun run() {
                             if (headerResolved.get() || cancelled.get()) return
                             val permitAcquired = manhwaReplica &&
-                                !manhwaHeaderRecoveryPermitHeld.get() &&
-                                ntkManhwaHeaderFailoverPermits.tryAcquire()
+                                tryAcquireManhwaHeaderRecoveryPermit()
                             val admitted = !manhwaReplica ||
-                                manhwaHeaderRecoveryPermitHeld.get() || permitAcquired
+                                manhwaHeaderRecoveryPermit.get() != null || permitAcquired
                             if (!admitted) {
                                 // A one-shot tryAcquire let an unlucky headerless page wait for
                                 // the socket timeout whenever both bounded recovery slots happened
@@ -3292,7 +4341,6 @@ data class NtkResolvedSourceRoute(
                                 return
                             }
                             if (headerResolved.compareAndSet(false, true)) {
-                                if (permitAcquired) manhwaHeaderRecoveryPermitHeld.set(true)
                                 val identity = originalRequest.tag(
                                     NtkQuarantineSourceCallIdentity::class.java,
                                 )
@@ -3304,11 +4352,12 @@ data class NtkResolvedSourceRoute(
                                         "host=${candidate.url.host},attempt=${attemptState.index}," +
                                         "deadlineMs=$headerDeadlineMs," +
                                         "permitAcquired=$permitAcquired," +
-                                        "permitHeld=${manhwaHeaderRecoveryPermitHeld.get()}",
+                                        "permitHeld=${manhwaHeaderRecoveryPermit.get() != null}," +
+                                        "viewportPriority=$viewportHeaderRecoveryPriority",
                                 )
                                 call.cancel()
                             } else if (permitAcquired) {
-                                ntkManhwaHeaderFailoverPermits.release()
+                                releaseManhwaHeaderRecoveryPermit()
                             }
                         }
                     }
@@ -3328,9 +4377,7 @@ data class NtkResolvedSourceRoute(
                             "Replica response headers exceeded ${headerDeadlineMs}ms"
                         )
                     }
-                    if (manhwaHeaderRecoveryPermitHeld.compareAndSet(true, false)) {
-                        ntkManhwaHeaderFailoverPermits.release()
-                    }
+                    releaseManhwaHeaderRecoveryPermit()
                     // Some interchangeable webtoon origins answer an otherwise valid immutable
                     // path with HTTP 200 and Content-Length: 0. No body byte exists to preserve,
                     // so treat that header-level empty success like a replica miss before the
@@ -3567,9 +4614,7 @@ data class NtkResolvedSourceRoute(
                 throw attemptState.lastFailure
                     ?: IOException("Webtoon replica image Call exhausted")
               } finally {
-                if (manhwaHeaderRecoveryPermitHeld.compareAndSet(true, false)) {
-                    ntkManhwaHeaderFailoverPermits.release()
-                }
+                releaseManhwaHeaderRecoveryPermit()
               }
             }
             return executeReplicaAttemptLoop()
@@ -3801,6 +4846,7 @@ data class NtkResolvedSourceRoute(
             timeoutMs: Long,
             logScope: String,
             sharedSession: NtkQuicFetcher.Session? = null,
+            sharedSessionPool: NtkWifiExactQuicSessionPool? = null,
             onExplicitMiss: (() -> Unit)? = null,
             episodePageCount: Int = 0,
             recheckCancellationAfterRegistration: Boolean = false,
@@ -3918,6 +4964,9 @@ data class NtkResolvedSourceRoute(
                             exactPageIndex,
                             logScope,
                             startedAtMs,
+                            recovery,
+                            continuationCheck,
+                            sharedSessionPool,
                         )?.let { return it }
                     }
                 }
@@ -4000,8 +5049,12 @@ data class NtkResolvedSourceRoute(
                         .headers(headers.build())
                         .removeHeader("Content-Encoding")
                         .header("Content-Length", result.bodyBytes.size.toString())
+                        .header(
+                            "x-mangaviewer-negotiated-protocol",
+                            result.negotiatedProtocol,
+                        )
                         .header("x-mangaviewer-transport", "exact-quic-recovery")
-                        .body(ResponseBody.create(contentType, result.bodyBytes))
+                        .body(NtkFullyBufferedExactResponseBody(contentType, result.bodyBytes))
                         .build()
                 }
             } finally {
@@ -4024,6 +5077,9 @@ data class NtkResolvedSourceRoute(
             exactPageIndex: Int,
             logScope: String,
             startedAtMs: Long,
+            quicRecovery: NtkQuicFetcher.CancelableExactRequest?,
+            continuationCheck: java.util.function.BooleanSupplier?,
+            sharedSessionPool: NtkWifiExactQuicSessionPool?,
         ): Response? {
             if (cancelled.get() ||
                 !getHttpClient().isNtkWifiTransportActive() ||
@@ -4063,6 +5119,7 @@ data class NtkResolvedSourceRoute(
                     NtkWebtoonReplicaHeaderPolicy.provisionalRangeTotalMs(
                         episodePageCount,
                     )
+                var verifiedPrefix = prefix
 
                 fun completeResponse(
                     response: Response,
@@ -4093,8 +5150,226 @@ data class NtkResolvedSourceRoute(
                         .code(200)
                         .message("Combined exact HTTP/3 prefix and identity range")
                         .headers(headers)
-                        .body(ResponseBody.create(contentType, combined))
+                        .body(NtkFullyBufferedExactResponseBody(contentType, combined))
                         .build()
+                }
+
+                fun completeQuicRangeResponse(
+                    result: NtkQuicFetcher.Result,
+                    combined: ByteArray,
+                    suffixBytes: Int,
+                ): Response {
+                    val headers = Headers.Builder()
+                    result.headers.forEach { (name, values) ->
+                        if (name.equals("content-length", ignoreCase = true) ||
+                            name.equals("content-range", ignoreCase = true) ||
+                            name.equals("content-encoding", ignoreCase = true) ||
+                            name.equals("transfer-encoding", ignoreCase = true) ||
+                            name.startsWith(":")
+                        ) return@forEach
+                        values.forEach { value -> runCatching { headers.add(name, value) } }
+                    }
+                    headers
+                        .set("Content-Length", combined.size.toString())
+                        .set("Accept-Ranges", "bytes")
+                        .set("x-mangaviewer-negotiated-protocol", result.negotiatedProtocol)
+                        .set("x-mangaviewer-transport", "exact-quic-provisional-range")
+                    Log.w(
+                        TAG,
+                        "reader_strict_exact_quic_provisional_range_accepted " +
+                            "scope=$logScope,page=$exactPageIndex,host=${request.url.host}," +
+                            "prefix=${prefix.size},suffix=$suffixBytes,total=${combined.size}," +
+                            "validator=${validatorProof.headerName},transport=h3," +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                    )
+                    return Response.Builder()
+                        .request(request)
+                        .protocol(Protocol.HTTP_2)
+                        .code(200)
+                        .message("Combined exact HTTP/3 prefix and identity HTTP/3 range")
+                        .headers(headers.build())
+                        .body(NtkFullyBufferedExactResponseBody(prefixContentType, combined))
+                        .build()
+                }
+
+                // A partial H3 body has already crossed its terminal callback fence. Retry the
+                // exact suffix on that same pooled H3 engine before falling back to a new TCP/TLS
+                // route. On networks where legacy TLS is reset before headers, the former H2
+                // Range could never use an otherwise healthy QUIC connection and discarded a
+                // verified 30-150 KiB prefix. Content-Range, total length, strong validator,
+                // overlap-free offset and the complete image trailer are all revalidated here;
+                // the downstream strict SHA check remains unchanged.
+                if (logScope == NtkExactQuicPartialResumePolicy.WIFI_WEBTOON_PRIMARY_SCOPE &&
+                    quicRecovery != null
+                ) {
+                    var h3AttemptOrdinal = 0
+                    var expectedTotal = -1L
+                    while (h3AttemptOrdinal < 2) {
+                        val continuationAdmission = java.util.function.BooleanSupplier {
+                            !cancelled.get() &&
+                                (continuationCheck?.asBoolean ?: true)
+                        }
+                        // The primary UrlRequest is terminal before this function is entered, so
+                        // its exact Range continuation can safely reuse that same engine without
+                        // increasing the physical stream count. Only a second attempt borrows a
+                        // sibling, and it uses the pool's bounded wait instead of oversubscribing
+                        // an already-full engine.
+                        val siblingLease = if (h3AttemptOrdinal == 0) {
+                            null
+                        } else {
+                            sharedSessionPool?.awaitLeaseLeastLoadedAcrossHosts(
+                                hosts = listOf(request.url.host),
+                                pageIndex = exactPageIndex + h3AttemptOrdinal,
+                                provenHost = request.url.host,
+                                deadlineAtMs = rangeDeadlineAtMs,
+                                admissionCheck = continuationAdmission,
+                                callbackThreadCount =
+                                    NtkWifiExactQuicSessionPool
+                                        .HOST_EMULATOR_CURRENT_CALLBACK_THREADS_PER_SESSION,
+                            )
+                        }
+                        val rangeRecovery = siblingLease?.session?.let { session ->
+                            NtkQuicFetcher.CancelableExactRequest(session)
+                        } ?: quicRecovery
+                        val remainingMs = rangeDeadlineAtMs - SystemClock.elapsedRealtime()
+                        if (remainingMs <= 0L) {
+                            siblingLease?.close()
+                            break
+                        }
+                        val rangeStart = verifiedPrefix.size
+                        val forwardedHeaders = LinkedHashMap<String, String>()
+                        request.headers.names().forEach { name ->
+                            request.header(name)?.takeIf(String::isNotBlank)?.let { value ->
+                                forwardedHeaders[name] = value
+                            }
+                        }
+                        forwardedHeaders["Accept-Encoding"] = "identity"
+                        forwardedHeaders["Range"] = "bytes=$rangeStart-"
+                        forwardedHeaders["If-Range"] = validatorProof.value
+                        forwardedHeaders[NtkExactQuicPartialResumePolicy.IDENTITY_REQUEST_MARKER] = "1"
+                        val preferredAttemptMs =
+                            NtkWebtoonReplicaHeaderPolicy.provisionalRangeAttemptMs(
+                                episodePageCount = episodePageCount,
+                                preferredReplica = true,
+                            )
+                        val h3AttemptMs = if (h3AttemptOrdinal == 0) {
+                            minOf(remainingMs, preferredAttemptMs, 700L)
+                        } else {
+                            remainingMs
+                        }
+                        Log.w(
+                            TAG,
+                            "reader_strict_exact_quic_provisional_range_start " +
+                                "scope=$logScope,page=$exactPageIndex,host=${request.url.host}," +
+                                "offset=$rangeStart,prefix=${verifiedPrefix.size},overlap=0," +
+                                "attempt=h3.${h3AttemptOrdinal + 1}," +
+                                "validator=${validatorProof.headerName},attemptTimeoutMs=$h3AttemptMs," +
+                                "remainingMs=$remainingMs",
+                        )
+                        val rangeResult = try {
+                            rangeRecovery.fetch(
+                                MainApplication.appContext,
+                                request.url.toString(),
+                                request.header("User-Agent") ?: getHttpClient().agent,
+                                request.header("Cookie").orEmpty(),
+                                forwardedHeaders,
+                                h3AttemptMs,
+                                continuationAdmission,
+                            )
+                        } finally {
+                            siblingLease?.close()
+                        }
+                        fun resultHeader(name: String): String = rangeResult.headers.entries
+                            .firstOrNull { (headerName, _) ->
+                                headerName.equals(name, ignoreCase = true)
+                            }
+                            ?.value
+                            ?.map(String::trim)
+                            ?.singleOrNull()
+                            .orEmpty()
+                        val responseValidator = resultHeader(validatorProof.headerName)
+                        val contentEncodings = rangeResult.headers.entries
+                            .firstOrNull { (headerName, _) ->
+                                headerName.equals("Content-Encoding", ignoreCase = true)
+                            }
+                            ?.value
+                            ?.map(String::trim)
+                            .orEmpty()
+                        val identityEncoding = contentEncodings.isEmpty() ||
+                            (contentEncodings.size == 1 &&
+                                (contentEncodings.single().isEmpty() ||
+                                    contentEncodings.single().equals("identity", ignoreCase = true)))
+                        val fullBody = rangeResult.bodyBytes
+                        if (rangeResult.code in 200..299 &&
+                            rangeResult.code != 206 &&
+                            responseValidator == validatorProof.value && identityEncoding &&
+                            looksLikeImage(fullBody) &&
+                            isCompleteImageBytes(request.url.toString(), fullBody)
+                        ) {
+                            return completeQuicRangeResponse(
+                                rangeResult,
+                                fullBody,
+                                suffixBytes = fullBody.size,
+                            )
+                        }
+                        val range = parseStrictContentRange(resultHeader("Content-Range"))
+                        val total = range?.third ?: -1L
+                        val remainingLength = total - verifiedPrefix.size.toLong()
+                        val identityAccepted = rangeResult.code == 206 && range != null &&
+                            range.first == rangeStart.toLong() &&
+                            range.second == total - 1L && total > verifiedPrefix.size.toLong() &&
+                            total <= NtkExactQuicPartialResumePolicy.MAX_DECLARED_IMAGE_BYTES &&
+                            remainingLength >= rangeResult.bodyBytes.size.toLong() &&
+                            rangeResult.bodyBytes.isNotEmpty() &&
+                            responseValidator == validatorProof.value && identityEncoding &&
+                            (expectedTotal < 0L || expectedTotal == total)
+                        if (identityAccepted) {
+                            val combined = ByteArray(
+                                verifiedPrefix.size + rangeResult.bodyBytes.size,
+                            )
+                            verifiedPrefix.copyInto(combined)
+                            rangeResult.bodyBytes.copyInto(combined, verifiedPrefix.size)
+                            verifiedPrefix = combined
+                            expectedTotal = total
+                            if (verifiedPrefix.size.toLong() == total &&
+                                isCompleteImageBytes(request.url.toString(), verifiedPrefix)
+                            ) {
+                                return completeQuicRangeResponse(
+                                    rangeResult,
+                                    verifiedPrefix,
+                                    suffixBytes = verifiedPrefix.size - prefix.size,
+                                )
+                            }
+                            Log.w(
+                                TAG,
+                                "reader_strict_exact_quic_provisional_range_progress " +
+                                    "scope=$logScope,page=$exactPageIndex," +
+                                    "host=${request.url.host},prefix=${verifiedPrefix.size}," +
+                                    "total=$total,accepted=${rangeResult.bodyBytes.size}," +
+                                    "attempt=h3.${h3AttemptOrdinal + 1}",
+                            )
+                            h3AttemptOrdinal++
+                            continue
+                        }
+                        Log.w(
+                            TAG,
+                            "reader_strict_exact_quic_provisional_range_rejected " +
+                                "scope=$logScope,page=$exactPageIndex,host=${request.url.host}," +
+                                "attempt=h3.${h3AttemptOrdinal + 1}," +
+                                "reason=identity_or_body,code=${rangeResult.code}," +
+                                "offset=$rangeStart,prefix=${verifiedPrefix.size},total=$total," +
+                                "suffix=${rangeResult.bodyBytes.size}," +
+                                "validatorMatch=${responseValidator == validatorProof.value}," +
+                                "error=${rangeResult.error?.javaClass?.simpleName ?: "none"}",
+                        )
+                        h3AttemptOrdinal++
+                        if (h3AttemptOrdinal < 2 &&
+                            rangeDeadlineAtMs - SystemClock.elapsedRealtime() > 100L
+                        ) {
+                            continue
+                        }
+                        break
+                    }
                 }
 
                 for ((attemptIndex, candidate) in rangeCandidates.withIndex()) {
@@ -4106,9 +5381,10 @@ data class NtkResolvedSourceRoute(
                 if (remainingMs <= 0L) break
                 val sameReplica = candidate.url == request.url
                 val rangeStart = if (sameReplica) {
-                    prefix.size
+                    verifiedPrefix.size
                 } else {
-                    (prefix.size - NtkExactQuicPartialResumePolicy.CROSS_REPLICA_OVERLAP_BYTES)
+                    (verifiedPrefix.size -
+                        NtkExactQuicPartialResumePolicy.CROSS_REPLICA_OVERLAP_BYTES)
                         .coerceAtLeast(0)
                 }
                     val attemptTimeoutMs = minOf(
@@ -4145,8 +5421,9 @@ data class NtkResolvedSourceRoute(
                     TAG,
                     "reader_strict_exact_quic_provisional_range_start " +
                         "scope=$logScope,page=$exactPageIndex,host=${candidate.url.host}," +
-                        "offset=$rangeStart,prefix=${prefix.size}," +
-                        "overlap=${prefix.size - rangeStart},attempt=${attemptIndex + 1}," +
+                        "offset=$rangeStart,prefix=${verifiedPrefix.size}," +
+                        "overlap=${verifiedPrefix.size - rangeStart}," +
+                        "attempt=${attemptIndex + 1}," +
                         "validator=${validatorProof.headerName}," +
                         "attemptTimeoutMs=$attemptTimeoutMs,remainingMs=$remainingMs",
                 )
@@ -4204,27 +5481,26 @@ data class NtkResolvedSourceRoute(
                             ?.groupValues?.get(1)?.toLongOrNull()
                         if (response.code == 416 &&
                             sameReplica &&
-                            unsatisfiedTotal == prefix.size.toLong() &&
+                            unsatisfiedTotal == verifiedPrefix.size.toLong() &&
                             responseValidator == validatorProof.value &&
                             identityEncoding &&
-                            isCompleteImageBytes(request.url.toString(), prefix)
+                            isCompleteImageBytes(request.url.toString(), verifiedPrefix)
                         ) {
                             return completeResponse(
                                 response,
-                                prefix,
+                                verifiedPrefix,
                                 prefixContentType,
-                                suffixBytes = 0,
+                                suffixBytes = verifiedPrefix.size - prefix.size,
                             )
                         }
                         val total = range?.third ?: -1L
-                        val suffixLength = total - prefix.size.toLong()
                         val expectedRangeLength = total - rangeStart.toLong()
                         val responseLength = response.body?.contentLength() ?: -1L
                         val accepted = response.code == 206 &&
                             range != null &&
                             range.first == rangeStart.toLong() &&
                             range.second == total - 1L &&
-                            total > prefix.size.toLong() &&
+                            total > verifiedPrefix.size.toLong() &&
                             total <= NtkExactQuicPartialResumePolicy.MAX_DECLARED_IMAGE_BYTES &&
                             expectedRangeLength == responseLength &&
                             responseValidator == validatorProof.value &&
@@ -4234,9 +5510,9 @@ data class NtkResolvedSourceRoute(
                                 TAG,
                                 "reader_strict_exact_quic_provisional_range_rejected " +
                                     "scope=$logScope,page=$exactPageIndex," +
-                                    "host=${candidate.url.host},attempt=${attemptIndex + 1}," +
-                                    "reason=identity,code=${response.code}," +
-                                    "offset=$rangeStart,prefix=${prefix.size},total=$total," +
+                                "host=${candidate.url.host},attempt=${attemptIndex + 1}," +
+                                "reason=identity,code=${response.code}," +
+                                "offset=$rangeStart,prefix=${verifiedPrefix.size},total=$total," +
                                     "responseLength=$responseLength," +
                                     "validator=${validatorProof.headerName}," +
                                     "validatorMatch=${responseValidator == validatorProof.value}",
@@ -4244,7 +5520,7 @@ data class NtkResolvedSourceRoute(
                             return@use
                         }
                         val combined = ByteArray(total.toInt())
-                        prefix.copyInto(combined)
+                        verifiedPrefix.copyInto(combined)
                         val suffixRead = try {
                             val source = response.body?.source() ?: return@use
                             val remainingAttemptMs = attemptTimeoutMs -
@@ -4261,13 +5537,13 @@ data class NtkResolvedSourceRoute(
                             val overlapScratch = ByteArray(
                                 minOf(
                                     16 * 1024,
-                                    prefix.size - rangeStart,
+                                    verifiedPrefix.size - rangeStart,
                                 ).coerceAtLeast(1),
                             )
-                            while (overlapOffset < prefix.size) {
+                            while (overlapOffset < verifiedPrefix.size) {
                                 val expected = minOf(
                                     overlapScratch.size,
-                                    prefix.size - overlapOffset,
+                                    verifiedPrefix.size - overlapOffset,
                                 )
                                 var scratchOffset = 0
                                 while (scratchOffset < expected) {
@@ -4283,14 +5559,14 @@ data class NtkResolvedSourceRoute(
                                 }
                                 for (byteIndex in 0 until expected) {
                                     if (overlapScratch[byteIndex] !=
-                                        prefix[overlapOffset + byteIndex]
+                                        verifiedPrefix[overlapOffset + byteIndex]
                                     ) {
                                         throw IOException("Replica overlap mismatch")
                                     }
                                 }
                                 overlapOffset += expected
                             }
-                            var offset = prefix.size
+                            var offset = verifiedPrefix.size
                             while (offset < combined.size) {
                                 val read = source.read(
                                     combined,
@@ -4329,7 +5605,7 @@ data class NtkResolvedSourceRoute(
                             response,
                             combined,
                             prefixContentType,
-                            suffixBytes = suffixLength.toInt(),
+                            suffixBytes = combined.size - prefix.size,
                         )
                         }
                     } finally {
@@ -4535,6 +5811,7 @@ data class NtkResolvedSourceRoute(
             episodePageCount: Int,
             capturedDirectWifiNetworkHandle: Long?,
             viewerGeneration: Long,
+            wifiExactQuicSessionPool: NtkWifiExactQuicSessionPool?,
         ): Response {
             // The signed manifest makes these origins interchangeable and the exact response
             // validator still owns publication. In the fixed wired-emulator cohort both legacy
@@ -4569,8 +5846,10 @@ data class NtkResolvedSourceRoute(
             val requestPageIndex = strictTag?.pageIndex ?: quarantineTag?.pageIndex ?: -1
             val currentHostEmulatorResumeRecovery =
                 hostGpuEmulatorRuntime &&
-                    currentResumeRecoveryTag?.sessionId == strictTag?.sessionId &&
-                    strictTag?.isProductionStrict == true &&
+                    (currentResumeRecoveryTag == null ||
+                        currentResumeRecoveryTag.sessionId == strictTag?.sessionId) &&
+                    (strictTag?.isProductionStrict == true ||
+                        quarantineTag?.isValid == true) &&
                     originalRequest.tag(NtkExactApiReplicaRouteTag::class.java) == null &&
                     capturedDirectWifiNetworkHandle != null &&
                     viewerGeneration > 0L &&
@@ -4597,6 +5876,41 @@ data class NtkResolvedSourceRoute(
                             pageIndex = requestPageIndex,
                             episodePageCount = episodePageCount,
                         )
+            var currentCallPermitHeld = false
+            var currentCallPermitHandedOff = false
+            fun acquireCurrentOrdinaryCallPermitIfNeeded() {
+                if (!currentHostEmulatorResumeRecovery || currentCallPermitHeld) return
+                try {
+                    hostEmulatorDirectWifiCurrentOrdinaryWebtoonCallPermits.acquire()
+                    currentCallPermitHeld = true
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw InterruptedIOException(
+                        "Interrupted while waiting for current webtoon transport permit",
+                    ).apply { initCause(interrupted) }
+                }
+                if (cancelled.get()) {
+                    hostEmulatorDirectWifiCurrentOrdinaryWebtoonCallPermits.release()
+                    currentCallPermitHeld = false
+                    throw InterruptedIOException("Replica image Call cancelled")
+                }
+            }
+            fun handOffCurrentCallPermit(response: Response): Response {
+                if (!currentCallPermitHeld) return response
+                val body = response.body
+                if (body == null) {
+                    hostEmulatorDirectWifiCurrentOrdinaryWebtoonCallPermits.release()
+                    currentCallPermitHeld = false
+                    return response
+                }
+                currentCallPermitHandedOff = true
+                return response.newBuilder()
+                    .body(NtkH1RecoveryPermitResponseBody(body) {
+                        hostEmulatorDirectWifiCurrentOrdinaryWebtoonCallPermits.release()
+                    })
+                    .build()
+            }
+            try {
             val attempts = List(
                 NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
                     logicalAttemptOrdinal,
@@ -4604,45 +5918,6 @@ data class NtkResolvedSourceRoute(
                     adjacentHostEmulatorRunwayRecovery,
                 ),
             ) { orderedCandidates }.flatten()
-            // Once one current-resume H2 Call trips the exact-session fence, every Call that was
-            // already active drains through the catch below. A page that actually failed uses the
-            // captured-Network H1 pool directly on its next attempt; other pages may still use H2
-            // under the source actor's four-lane recovery cap. This avoids both repeated header
-            // deadlines for the bad page and forcing the whole bulk episode through four H1
-            // connections.
-            val currentRecoveryCallStartedAfterFence =
-                currentHostEmulatorResumeRecovery &&
-                    currentResumeRecoveryFence?.isTripped() == true
-            val currentRecoveryPageRequiresDirectH1 =
-                currentRecoveryCallStartedAfterFence &&
-                    currentResumeRecoveryFence?.requiresDirectH1(requestPageIndex) == true
-            if (currentRecoveryPageRequiresDirectH1) {
-                val fenceFailure = java.net.SocketException(
-                    "Direct Wi-Fi current H2 session recovery fence is tripped",
-                )
-                if (currentResumeRecoveryFence?.markDirectH1RecoveryLogged() == true) {
-                    Log.w(
-                        TAG,
-                        "reader_strict_direct_wifi_current_recovery_probe " +
-                            "page=$requestPageIndex,attempt=$logicalAttemptOrdinal," +
-                            "transport=h1_direct",
-                    )
-                }
-                executeDirectWifiAdjacentWebtoonH1Recovery(
-                    candidates = orderedCandidates,
-                    episodePageCount = episodePageCount,
-                    capturedDirectWifiNetworkHandle = capturedDirectWifiNetworkHandle,
-                    viewerGeneration = viewerGeneration,
-                    h2Failure = fenceFailure,
-                )?.let { return it }
-                Log.w(
-                    TAG,
-                    "reader_strict_direct_wifi_h2_socket_fanout_stopped " +
-                        "page=$requestPageIndex,attempt=$logicalAttemptOrdinal," +
-                        "error=${fenceFailure.javaClass.simpleName}",
-                )
-                throw fenceFailure
-            }
             // One header timeout may be a dead connection rather than a dead immutable origin.
             // Preserve one shorter-deadline fresh-pool retry in the next ring. A second header
             // timeout, or a definitive HTTP miss below, suppresses that host for the remainder of
@@ -4654,25 +5929,26 @@ data class NtkResolvedSourceRoute(
             // Physical Wi-Fi retains its existing viewer-generation behavior.
             val hostEmulatorSourceSessionId =
                 NtkWebtoonReplicaHeaderPolicy.hostEmulatorDirectWifiH2SourceSessionId(
-                strictSessionId = strictTag?.sessionId,
-                quarantineSessionId = quarantineTag?.sessionId,
-            )
+                    strictSessionId = strictTag?.sessionId,
+                    quarantineSessionId = quarantineTag?.sessionId,
+                )
+            val hostEmulatorScopeKey = if (hostGpuEmulatorRuntime &&
+                hostEmulatorSourceSessionId != null &&
+                capturedDirectWifiNetworkHandle != null
+            ) {
+                HostEmulatorWebtoonTransportScopeKey(
+                    hostEmulatorSourceSessionId,
+                    capturedDirectWifiNetworkHandle,
+                )
+            } else {
+                null
+            }
             val sessionTransportSuppressedHosts = if (hostGpuEmulatorRuntime) {
-                val scopeKey = if (hostEmulatorSourceSessionId != null &&
-                    capturedDirectWifiNetworkHandle != null
-                ) {
-                    HostEmulatorWebtoonTransportScopeKey(
-                        hostEmulatorSourceSessionId,
-                        capturedDirectWifiNetworkHandle,
-                    )
-                } else {
-                    null
-                }
-                if (scopeKey == null) {
+                if (hostEmulatorScopeKey == null) {
                     Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
                 } else {
                     ReaderImageCache.ntkHostEmulatorWebtoonSessionSuppressedHosts
-                        .computeIfAbsent(scopeKey) {
+                        .computeIfAbsent(hostEmulatorScopeKey) {
                             Collections.newSetFromMap(
                                 ConcurrentHashMap<String, Boolean>(),
                             )
@@ -4695,8 +5971,527 @@ data class NtkResolvedSourceRoute(
             }
             val headerTimeoutsByHost = ConcurrentHashMap<String, AtomicInteger>()
             var explicitMissExactQuicAttempted = false
+            var fragmentedTlsRecoveryAttempted = false
+            var socketExhaustedExactQuicAttempted = false
             var preferredHostExplicitMiss = false
             var lastFailure: IOException? = null
+            fun currentH1Candidates(): List<Request> {
+                if (!currentHostEmulatorResumeRecovery) return orderedCandidates
+                return orderedCandidates.filterNot {
+                    it.url.host.lowercase(Locale.ROOT) in sessionTransportSuppressedHosts
+                }.ifEmpty { orderedCandidates }
+            }
+            fun attemptHostEmulatorFragmentedTlsRecovery(
+                tcpFailure: IOException,
+                primaryAttempt: Boolean = false,
+            ): Response? {
+                if (fragmentedTlsRecoveryAttempted || cancelled.get() ||
+                    capturedDirectWifiNetworkHandle == null || viewerGeneration <= 0L
+                ) return null
+                val viewerTransportKey = HostEmulatorWebtoonViewerTransportScopeKey(
+                    viewerGeneration,
+                    capturedDirectWifiNetworkHandle,
+                )
+                val existingTransport = ReaderImageCache
+                    .ntkHostEmulatorWebtoonFragmentedTransports[viewerTransportKey]
+                val repeatedSocketFailureConfirmed = existingTransport != null ||
+                    hostEmulatorScopeKey?.let { scopeKey ->
+                        ReaderImageCache.ntkHostEmulatorWebtoonSessionSocketFailures[scopeKey]
+                            ?.values
+                            ?.any { failures ->
+                                NtkWebtoonReplicaHeaderPolicy
+                                    .shouldSuppressHostEmulatorSessionAfterSocketFailures(
+                                        failures.get(),
+                                    )
+                            }
+                    } == true
+                val liveClient = getHttpClient()
+                val liveDirectWifi = runCatching {
+                    !liveClient.isNtkCellularResilientTransportActive() &&
+                        liveClient.isNtkWifiTransportActive()
+                }.getOrDefault(false)
+                val sameNetwork = runCatching {
+                    liveClient.getNtkDirectWifiNetwork()?.networkHandle ==
+                        capturedDirectWifiNetworkHandle
+                }.getOrDefault(false)
+                val sameViewerGeneration = ViewerTelemetry.activeGeneration() == viewerGeneration
+                val currentForegroundEpisode = episodePath.isNotEmpty() &&
+                    MainApplication.isNtkForegroundViewerPath(episodePath)
+                val adjacentExactEpisode = adjacentHostEmulatorRunwayRecovery &&
+                    hasActiveAdjacentNtkForegroundViewerGrant(adjacentReplicaProof.path)
+                val eligible = if (primaryAttempt) {
+                    NtkWebtoonReplicaHeaderPolicy
+                        .shouldAttemptHostEmulatorPrimaryFragmentedTls(
+                            currentHostEmulatorRecovery = currentHostEmulatorResumeRecovery,
+                            directWifiActive = liveDirectWifi,
+                            sameNetwork = sameNetwork,
+                            sameViewerGeneration = sameViewerGeneration,
+                            currentForegroundEpisode = currentForegroundEpisode,
+                        )
+                } else {
+                    NtkWebtoonReplicaHeaderPolicy
+                        .shouldAttemptHostEmulatorFragmentedTlsRecovery(
+                            currentHostEmulatorRecovery = currentHostEmulatorResumeRecovery ||
+                                adjacentHostEmulatorRunwayRecovery,
+                            directWifiActive = liveDirectWifi,
+                            repeatedSocketFailureConfirmed = repeatedSocketFailureConfirmed,
+                            sameNetwork = sameNetwork,
+                            sameViewerGeneration = sameViewerGeneration,
+                            currentForegroundEpisode = currentForegroundEpisode ||
+                                adjacentExactEpisode,
+                        )
+                }
+                if (!eligible) return null
+                fragmentedTlsRecoveryAttempted = true
+                try {
+                    while (!ReaderImageCache
+                            .hostEmulatorDirectWifiCurrentFragmentedTlsPermits
+                            .tryAcquire(100L, TimeUnit.MILLISECONDS)
+                    ) {
+                        if (cancelled.get()) {
+                            throw InterruptedIOException("Replica image Call cancelled")
+                        }
+                    }
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw InterruptedIOException(
+                        "Interrupted while waiting for fragmented TLS permit",
+                    ).apply { initCause(interrupted) }
+                }
+                var releaseFragmentedPermitDirectly = true
+                var fragmentedTransportForRelease:
+                    HostEmulatorWebtoonFragmentedTransport? = null
+                var fragmentedAdmission:
+                    HostEmulatorWebtoonFragmentedTransport.Admission? = null
+                try {
+                    val selectedTransport = existingTransport ?: synchronized(
+                        ReaderImageCache.ntkHostEmulatorWebtoonFragmentedTransportCreationLock,
+                    ) {
+                        ReaderImageCache.ntkHostEmulatorWebtoonFragmentedTransports[
+                            viewerTransportKey
+                        ] ?: HostEmulatorWebtoonFragmentedTransport.create(
+                            liveClient.ntkExternalViewerImageFastClient(),
+                            liveClient.getNtkDirectWifiNetwork() ?: return null,
+                        )?.also { created ->
+                            ReaderImageCache.ntkHostEmulatorWebtoonFragmentedTransports[
+                                viewerTransportKey
+                            ] = created
+                        }
+                    } ?: return null
+                    val admission = selectedTransport.acquire(requestPageIndex, cancelled)
+                    fragmentedTransportForRelease = selectedTransport
+                    fragmentedAdmission = admission
+                    val selectedClient = admission.client
+                    val fragmentedCandidates = if (primaryAttempt) {
+                        // The exact manifest already balances its canonical compatibility host.
+                        // Preserve that order on the primary path; forcing the emergency QUIC
+                        // host first made the initial JPEG body consistently slower.
+                        orderedCandidates
+                    } else {
+                        orderedCandidates.sortedBy { candidate ->
+                            if (candidate.url.host.equals(
+                                    NtkWebtoonReplicaHeaderPolicy
+                                        .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST,
+                                    ignoreCase = true,
+                                )
+                            ) 0 else 1
+                        }
+                    }
+                    Log.w(
+                        TAG,
+                            "reader_strict_direct_wifi_fragmented_tls_start path=$episodePath," +
+                            "page=$requestPageIndex,candidates=${fragmentedCandidates.size}," +
+                            "primary=$primaryAttempt,tcpError=${tcpFailure.javaClass.simpleName}",
+                    )
+                    var lastFragmentedFailure: IOException? = null
+                    for (candidate in fragmentedCandidates) {
+                        if (cancelled.get()) {
+                            throw InterruptedIOException("Replica image Call cancelled")
+                        }
+                        val call = selectedClient.newCall(candidate)
+                        active.set(call)
+                        try {
+                            val response = call.execute()
+                            val body = response.body
+                            val accepted = response.code in 200..299 &&
+                                body != null && body.contentLength() != 0L
+                            if (accepted) {
+                                val bootstrapLeader = admission.bootstrapHeld
+                                selectedTransport.markHeadersEstablished(admission)
+                                val canonicalIndex = candidates.indexOfFirst {
+                                    it.url == candidate.url
+                                }.coerceAtLeast(0)
+                                Log.d(
+                                    TAG,
+                                    "reader_strict_direct_wifi_fragmented_tls_headers " +
+                                        "path=$episodePath,page=$requestPageIndex," +
+                                        "host=${candidate.url.host},protocol=${response.protocol}",
+                                )
+                                val fragmentedResponse = response.newBuilder()
+                                    .header(
+                                        "x-mangaviewer-transport",
+                                        "exact-fragmented-tls-recovery",
+                                    )
+                                    .header(
+                                        "x-mangaviewer-fragmented-tls-bootstrap",
+                                        bootstrapLeader.toString(),
+                                    )
+                                    .build()
+                                val recoveredResponse = maybeWrapStalledReplicaBody(
+                                    fragmentedResponse,
+                                    candidates,
+                                    canonicalIndex,
+                                    null,
+                                    null,
+                                    null,
+                                    directWifiWebtoonBody = true,
+                                    directWifiNetworkHandleAtCallStart =
+                                        capturedDirectWifiNetworkHandle,
+                                    viewerGenerationAtCallStart = viewerGeneration,
+                                    continuationFactoryOverride = selectedClient,
+                                )
+                                val recoveredBody = recoveredResponse.body
+                                    ?: return recoveredResponse
+                                releaseFragmentedPermitDirectly = false
+                                fragmentedAdmission = null
+                                return recoveredResponse.newBuilder()
+                                    .body(NtkH1RecoveryPermitResponseBody(recoveredBody) {
+                                        selectedTransport.release(admission)
+                                        ReaderImageCache
+                                            .hostEmulatorDirectWifiCurrentFragmentedTlsPermits
+                                            .release()
+                                    })
+                                    .build()
+                            }
+                            response.close()
+                            lastFragmentedFailure = IOException(
+                                "Fragmented TLS replica rejected ${candidate.url.host} " +
+                                    "code=${response.code}",
+                            )
+                        } catch (failure: IOException) {
+                            if (cancelled.get()) throw failure
+                            lastFragmentedFailure = failure
+                            Log.w(
+                                TAG,
+                                "reader_strict_direct_wifi_fragmented_tls_failover " +
+                                    "path=$episodePath,page=$requestPageIndex," +
+                                    "host=${candidate.url.host}," +
+                                    "error=${failure.javaClass.simpleName}",
+                            )
+                        }
+                    }
+                    Log.w(
+                        TAG,
+                        "reader_strict_direct_wifi_fragmented_tls_exhausted path=$episodePath," +
+                            "page=$requestPageIndex,error=" +
+                            (lastFragmentedFailure?.javaClass?.simpleName ?: "none"),
+                    )
+                    return null
+                } finally {
+                    fragmentedAdmission?.let { admission ->
+                        fragmentedTransportForRelease?.release(admission)
+                    }
+                    if (releaseFragmentedPermitDirectly) {
+                        ReaderImageCache.hostEmulatorDirectWifiCurrentFragmentedTlsPermits
+                            .release()
+                    }
+                }
+            }
+            fun attemptCurrentSocketExhaustedExactQuicRecovery(
+                tcpFailure: IOException,
+            ): Response? {
+                if (socketExhaustedExactQuicAttempted || cancelled.get()) return null
+                val liveClient = getHttpClient()
+                val liveDirectWifi = runCatching {
+                    !liveClient.isNtkCellularResilientTransportActive() &&
+                        liveClient.isNtkWifiTransportActive()
+                }.getOrDefault(false)
+                val sameNetwork = capturedDirectWifiNetworkHandle != null && runCatching {
+                    liveClient.getNtkDirectWifiNetwork()?.networkHandle ==
+                        capturedDirectWifiNetworkHandle
+                }.getOrDefault(false)
+                val sameViewerGeneration = viewerGeneration > 0L &&
+                    ViewerTelemetry.activeGeneration() == viewerGeneration
+                val currentForegroundEpisode = episodePath.isNotEmpty() &&
+                    MainApplication.isNtkForegroundViewerPath(episodePath)
+                val allReplicaHostsSuppressed = NtkWebtoonReplicaHeaderPolicy
+                    .areAllDirectWifiReplicaHostsSuppressed(
+                        candidateHosts = orderedCandidates.map { it.url.host },
+                        suppressedHosts = sessionTransportSuppressedHosts,
+                    )
+                if (!NtkWebtoonReplicaHeaderPolicy
+                        .shouldAttemptHostEmulatorSocketExhaustedQuic(
+                            currentHostEmulatorRecovery = currentHostEmulatorResumeRecovery,
+                            directWifiActive = liveDirectWifi,
+                            allReplicaHostsSuppressed = allReplicaHostsSuppressed,
+                            sameNetwork = sameNetwork,
+                            sameViewerGeneration = sameViewerGeneration,
+                            currentForegroundEpisode = currentForegroundEpisode,
+                        )
+                ) return null
+                val quicCandidate = orderedCandidates.firstOrNull {
+                    it.url.host.equals(
+                        NtkWebtoonReplicaHeaderPolicy
+                            .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST,
+                        ignoreCase = true,
+                    )
+                } ?: return null
+                val quicSession = wifiExactQuicSessionPool?.session(
+                    quicCandidate.url.host,
+                    requestPageIndex,
+                    callbackThreadCount =
+                        NtkWifiExactQuicSessionPool.WEBTOON_CALLBACK_THREADS_PER_SESSION,
+                ) ?: return null
+                socketExhaustedExactQuicAttempted = true
+                Log.w(
+                    TAG,
+                    "reader_strict_direct_wifi_current_socket_exhausted_quic_start " +
+                        "path=$episodePath,page=$requestPageIndex," +
+                        "host=${quicCandidate.url.host},tcpError=${tcpFailure.javaClass.simpleName}",
+                )
+                return executeExactQuicImageRecovery(
+                    quicCandidate,
+                    tcpFailure,
+                    NtkWebtoonReplicaHeaderPolicy
+                        .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_TIMEOUT_MS,
+                    "wifi_webtoon_current_socket_exhausted",
+                    quicSession,
+                    episodePageCount = episodePageCount,
+                    recheckCancellationAfterRegistration = true,
+                    admissionCheck = {
+                        val currentClient = getHttpClient()
+                        val sameDirectWifiNetwork = runCatching {
+                            currentClient.getNtkDirectWifiNetwork()?.networkHandle ==
+                                capturedDirectWifiNetworkHandle
+                        }.getOrDefault(false)
+                        !currentClient.isNtkCellularResilientTransportActive() &&
+                            currentClient.isNtkWifiTransportActive() &&
+                            sameDirectWifiNetwork &&
+                            ViewerTelemetry.activeGeneration() == viewerGeneration &&
+                            MainApplication.isNtkForegroundViewerPath(episodePath)
+                    },
+                )
+            }
+            fun attemptQualifiedCurrentExactQuic(): Response? {
+                if (!currentHostEmulatorResumeRecovery ||
+                    viewerGeneration <= 0L || requestPageIndex < 0 || cancelled.get()
+                ) return null
+                val healthKey = HostEmulatorWebtoonViewerTransportScopeKey(
+                    viewerGeneration,
+                    capturedDirectWifiNetworkHandle,
+                )
+                val health = ReaderImageCache.ntkHostEmulatorWebtoonQuicHealth
+                    .computeIfAbsent(healthKey) { HostEmulatorWebtoonQuicHealth() }
+                // A content-free preconnect proves only route availability. It cannot move any
+                // p0..p4 runway body onto H3; the prepared session is consumed by the sole p5
+                // exact-body probe below.
+                val probe = NtkWebtoonReplicaHeaderPolicy
+                    .shouldProbeHostEmulatorCurrentQuic(
+                        currentHostEmulatorRecovery = true,
+                        pageIndex = requestPageIndex,
+                        episodePageCount = episodePageCount,
+                    ) && health.tryBeginProbe()
+                val qualifiedBulk = NtkWebtoonReplicaHeaderPolicy
+                    .shouldUseQualifiedHostEmulatorCurrentQuic(
+                        currentHostEmulatorRecovery = true,
+                        pageIndex = requestPageIndex,
+                        qualified = health.isQualified(),
+                    )
+                if (!probe && !qualifiedBulk) return null
+                val canonicalQuicCandidates = NTK_WEBTOON_IMAGE_REPLICA_HOSTS.mapNotNull { host ->
+                    orderedCandidates.firstOrNull {
+                        it.url.host.equals(host, ignoreCase = true)
+                    }
+                }
+                val probeCandidate = if (probe) {
+                    canonicalQuicCandidates.firstOrNull {
+                        it.url.host.equals(
+                            NtkWebtoonReplicaHeaderPolicy
+                                .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST,
+                            ignoreCase = true,
+                        )
+                    }
+                } else null
+                val candidateByHost = canonicalQuicCandidates.associateBy {
+                    it.url.host.lowercase(Locale.ROOT)
+                }
+                fun qualifiedQuicAdmissionValid(): Boolean {
+                    if (cancelled.get()) return false
+                    val liveClient = getHttpClient()
+                    val sameDirectWifiNetwork = runCatching {
+                        liveClient.getNtkDirectWifiNetwork()?.networkHandle ==
+                            capturedDirectWifiNetworkHandle
+                    }.getOrDefault(false)
+                    return !liveClient.isNtkCellularResilientTransportActive() &&
+                        liveClient.isNtkWifiTransportActive() &&
+                        sameDirectWifiNetwork &&
+                        ViewerTelemetry.activeGeneration() == viewerGeneration &&
+                        MainApplication.isNtkForegroundViewerPath(episodePath)
+                }
+                val leaseWaitStartedAtMs = SystemClock.elapsedRealtime()
+                val quicLease = if (probe) {
+                    probeCandidate?.let { candidate ->
+                        wifiExactQuicSessionPool?.leaseOpeningSession(
+                            candidate.url.host,
+                            callbackThreadCount =
+                                NtkWifiExactQuicSessionPool
+                                    .HOST_EMULATOR_CURRENT_CALLBACK_THREADS_PER_SESSION,
+                        )
+                    }
+                } else {
+                    wifiExactQuicSessionPool?.awaitLeaseLeastLoadedAcrossHosts(
+                        canonicalQuicCandidates.map { candidate -> candidate.url.host },
+                        requestPageIndex,
+                        provenHost = NtkWebtoonReplicaHeaderPolicy
+                            .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST,
+                        deadlineAtMs = leaseWaitStartedAtMs +
+                            NtkWebtoonReplicaHeaderPolicy
+                                .WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_LEASE_WAIT_MS,
+                        admissionCheck = java.util.function.BooleanSupplier {
+                            qualifiedQuicAdmissionValid()
+                        },
+                        callbackThreadCount =
+                            NtkWifiExactQuicSessionPool
+                                .HOST_EMULATOR_CURRENT_CALLBACK_THREADS_PER_SESSION,
+                    )
+                }
+                val quicCandidate = if (probe) {
+                    probeCandidate
+                } else {
+                    quicLease?.host?.let(candidateByHost::get)
+                }
+                val quicSession = quicLease?.session
+                if (quicCandidate == null || quicSession == null) {
+                    quicLease?.close()
+                    if (probe) health.finishProbe(false)
+                    return null
+                }
+                val leaseWaitMs = SystemClock.elapsedRealtime() - leaseWaitStartedAtMs
+                if (!probe && leaseWaitMs > 10L) {
+                    Log.d(
+                        TAG,
+                        "reader_strict_direct_wifi_current_quic_lease_wait " +
+                            "path=$episodePath,page=$requestPageIndex,waitMs=$leaseWaitMs," +
+                            "host=${quicCandidate.url.host}",
+                    )
+                }
+                Log.d(
+                    TAG,
+                    "reader_strict_direct_wifi_current_quic_${when {
+                        probe -> "probe"
+                        else -> "bulk"
+                    }}_start " +
+                        "path=$episodePath,page=$requestPageIndex,host=${quicCandidate.url.host}",
+                )
+                val response = try {
+                    executeExactQuicImageRecovery(
+                        quicCandidate,
+                        java.net.SocketException(
+                            "Host-emulator direct Wi-Fi qualified QUIC transport",
+                        ),
+                        NtkWebtoonReplicaHeaderPolicy
+                            .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_TIMEOUT_MS,
+                        NtkExactQuicPartialResumePolicy.WIFI_WEBTOON_PRIMARY_SCOPE,
+                        quicSession,
+                        sharedSessionPool = wifiExactQuicSessionPool,
+                        episodePageCount = episodePageCount,
+                        recheckCancellationAfterRegistration = true,
+                        admissionCheck = {
+                            qualifiedQuicAdmissionValid()
+                        },
+                    )
+                } finally {
+                    quicLease.close()
+                }
+                wifiExactQuicSessionPool?.recordBulkResult(
+                    quicLease.host,
+                    response != null,
+                )
+                if (probe) {
+                    health.finishProbe(response != null)
+                    Log.d(
+                        TAG,
+                        "reader_strict_direct_wifi_current_quic_probe_result " +
+                            "path=$episodePath,page=$requestPageIndex," +
+                            "qualified=${response != null}",
+                    )
+                }
+                return response
+            }
+            // Keep the physical p0..p4 runway on independently preconnected fragmented-H2 shards.
+            // p5 alone probes H3; only a complete exact result qualifies QUIC for p6+. An
+            // unavailable probe falls through to H2 sequentially, never racing or downloading a
+            // body twice.
+            val primaryFragmentedFailure = java.net.SocketException(
+                "Host-emulator direct Wi-Fi fragmented primary",
+            )
+            attemptQualifiedCurrentExactQuic()?.let { return it }
+            // Host-emulator direct Wi-Fi needs the fragmented socket for TCP reachability. It stays
+            // the primary fallback and the sole path for an unqualified suffix.
+            attemptHostEmulatorFragmentedTlsRecovery(
+                primaryFragmentedFailure,
+                primaryAttempt = true,
+            )?.let { return it }
+            acquireCurrentOrdinaryCallPermitIfNeeded()
+            // Once one current-resume H2 Call trips the exact-session fence, every Call that was
+            // already active drains through the catch below. A page that actually failed uses the
+            // captured-Network H1 pool directly on its next attempt. If every immutable TCP origin
+            // has independently failed twice, the exact URL moves to the already-bounded shared
+            // QUIC pool instead of repeating the same dead sockets page by page.
+            val currentRecoveryCallStartedAfterFence =
+                currentHostEmulatorResumeRecovery &&
+                    currentResumeRecoveryFence?.isTripped() == true
+            val currentRecoveryPageRequiresDirectH1 =
+                currentRecoveryCallStartedAfterFence &&
+                    currentResumeRecoveryFence?.requiresDirectH1(requestPageIndex) == true
+            if (currentRecoveryPageRequiresDirectH1) {
+                val fenceFailure = java.net.SocketException(
+                    "Direct Wi-Fi current H2 session recovery fence is tripped",
+                )
+                attemptHostEmulatorFragmentedTlsRecovery(fenceFailure)?.let {
+                    return handOffCurrentCallPermit(it)
+                }
+                attemptCurrentSocketExhaustedExactQuicRecovery(fenceFailure)?.let {
+                    return handOffCurrentCallPermit(it)
+                }
+                if (currentResumeRecoveryFence?.markDirectH1RecoveryLogged() == true) {
+                    Log.w(
+                        TAG,
+                        "reader_strict_direct_wifi_current_recovery_probe " +
+                            "page=$requestPageIndex,attempt=$logicalAttemptOrdinal," +
+                            "transport=h1_direct",
+                    )
+                }
+                executeDirectWifiAdjacentWebtoonH1Recovery(
+                    candidates = currentH1Candidates(),
+                    episodePageCount = episodePageCount,
+                    capturedDirectWifiNetworkHandle = capturedDirectWifiNetworkHandle,
+                    viewerGeneration = viewerGeneration,
+                    h2Failure = fenceFailure,
+                )?.let { return handOffCurrentCallPermit(it) }
+                attemptHostEmulatorFragmentedTlsRecovery(fenceFailure)?.let {
+                    return handOffCurrentCallPermit(it)
+                }
+                attemptCurrentSocketExhaustedExactQuicRecovery(fenceFailure)?.let {
+                    return handOffCurrentCallPermit(it)
+                }
+                Log.w(
+                    TAG,
+                    "reader_strict_direct_wifi_h2_socket_fanout_stopped " +
+                        "page=$requestPageIndex,attempt=$logicalAttemptOrdinal," +
+                        "error=${fenceFailure.javaClass.simpleName}",
+                )
+                throw fenceFailure
+            }
+            val existingCircuitFailure = java.net.SocketException(
+                "Direct Wi-Fi current TCP replica circuit is open",
+            )
+            attemptHostEmulatorFragmentedTlsRecovery(existingCircuitFailure)?.let {
+                return handOffCurrentCallPermit(it)
+            }
+            attemptCurrentSocketExhaustedExactQuicRecovery(existingCircuitFailure)?.let {
+                return handOffCurrentCallPermit(it)
+            }
             fun attemptExplicitMissExactQuicRecovery(tcpFailure: IOException): Response? {
                 if (explicitMissExactQuicAttempted) return null
                 val strictTag = originalRequest.tag(NtkStrictSourceCallTag::class.java)
@@ -4815,7 +6610,11 @@ data class NtkResolvedSourceRoute(
             }
             attempts.forEachIndexed { index, candidate ->
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
-                if (candidate.url.host.lowercase(Locale.ROOT) in suppressedHosts) {
+                if (candidate.url.host.lowercase(Locale.ROOT) in suppressedHosts ||
+                    (hostGpuEmulatorRuntime &&
+                        candidate.url.host.lowercase(Locale.ROOT) in
+                            sessionTransportSuppressedHosts)
+                ) {
                     return@forEachIndexed
                 }
                 val physicalCandidate = if (index == 0) {
@@ -4895,7 +6694,7 @@ data class NtkResolvedSourceRoute(
                         val canonicalIndex = candidates.indexOfFirst {
                             it.url == candidate.url
                         }.coerceAtLeast(0)
-                        return maybeWrapStalledReplicaBody(
+                        return handOffCurrentCallPermit(maybeWrapStalledReplicaBody(
                             response,
                             candidates,
                             canonicalIndex,
@@ -4906,7 +6705,7 @@ data class NtkResolvedSourceRoute(
                             directWifiNetworkHandleAtCallStart =
                                 capturedDirectWifiNetworkHandle,
                             viewerGenerationAtCallStart = viewerGeneration,
-                        )
+                        ))
                     }
                     suppressedHosts += candidate.url.host.lowercase(Locale.ROOT)
                     val explicitMissFailure = IOException(
@@ -4938,6 +6737,35 @@ data class NtkResolvedSourceRoute(
                     if (cancelled.get()) throw failure
                     val socketPressure = NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy
                         .isSocketPressureFailure(failure)
+                    if (hostGpuEmulatorRuntime && socketPressure &&
+                        hostEmulatorScopeKey != null
+                    ) {
+                        val failureCount = ReaderImageCache
+                            .ntkHostEmulatorWebtoonSessionSocketFailures
+                            .computeIfAbsent(hostEmulatorScopeKey) {
+                                ConcurrentHashMap()
+                            }
+                            .computeIfAbsent(normalizedHost) { AtomicInteger(0) }
+                            .incrementAndGet()
+                        if (NtkWebtoonReplicaHeaderPolicy
+                                .shouldSuppressHostEmulatorSessionAfterSocketFailures(
+                                    failureCount,
+                                ) &&
+                            sessionTransportSuppressedHosts.add(normalizedHost)
+                        ) {
+                            Log.w(
+                                TAG,
+                                "reader_strict_direct_wifi_h2_session_host_suppressed " +
+                                    "host=$normalizedHost,failures=$failureCount," +
+                                    "session=$hostEmulatorSourceSessionId",
+                            )
+                        }
+                    }
+                    if (socketPressure) {
+                        attemptHostEmulatorFragmentedTlsRecovery(failure)?.let {
+                            return handOffCurrentCallPermit(it)
+                        }
+                    }
                     val firstFenceTrip = currentHostEmulatorResumeRecovery && socketPressure &&
                         currentResumeRecoveryFence?.trip(requestPageIndex) == true
                     if (firstFenceTrip) {
@@ -4950,6 +6778,12 @@ data class NtkResolvedSourceRoute(
                     if (currentHostEmulatorResumeRecovery &&
                         currentResumeRecoveryFence?.isTripped() == true
                     ) {
+                        attemptHostEmulatorFragmentedTlsRecovery(failure)?.let {
+                            return handOffCurrentCallPermit(it)
+                        }
+                        attemptCurrentSocketExhaustedExactQuicRecovery(failure)?.let {
+                            return handOffCurrentCallPermit(it)
+                        }
                         if (currentRecoveryCallStartedAfterFence && socketPressure &&
                             currentResumeRecoveryFence.requiresDirectH1(requestPageIndex)
                         ) {
@@ -4961,13 +6795,19 @@ data class NtkResolvedSourceRoute(
                                     "h2Error=${failure.javaClass.simpleName}",
                             )
                             executeDirectWifiAdjacentWebtoonH1Recovery(
-                                candidates = orderedCandidates,
+                                candidates = currentH1Candidates(),
                                 episodePageCount = episodePageCount,
                                 capturedDirectWifiNetworkHandle =
                                     capturedDirectWifiNetworkHandle,
                                 viewerGeneration = viewerGeneration,
                                 h2Failure = failure,
-                            )?.let { return it }
+                            )?.let { return handOffCurrentCallPermit(it) }
+                        }
+                        attemptHostEmulatorFragmentedTlsRecovery(failure)?.let {
+                            return handOffCurrentCallPermit(it)
+                        }
+                        attemptCurrentSocketExhaustedExactQuicRecovery(failure)?.let {
+                            return handOffCurrentCallPermit(it)
                         }
                         Log.w(
                             TAG,
@@ -4982,7 +6822,9 @@ data class NtkResolvedSourceRoute(
                     // alternates one complete ring; only if neither owns a response do we spend the
                     // single bounded H3 permit. A failed H3 therefore cannot delay a healthy H2 URL.
                     if (index == orderedCandidates.lastIndex) {
-                        attemptExplicitMissExactQuicRecovery(failure)?.let { return it }
+                        attemptExplicitMissExactQuicRecovery(failure)?.let {
+                            return handOffCurrentCallPermit(it)
+                        }
                     }
                     val nextHost = attempts.drop(index + 1).firstOrNull {
                         it.url.host.lowercase(Locale.ROOT) !in suppressedHosts
@@ -4998,15 +6840,33 @@ data class NtkResolvedSourceRoute(
                     deadline.cancel(false)
                 }
             }
+            val exhaustedH2Failure = lastFailure
+                ?: IOException("Direct Wi-Fi H2 replica image Call exhausted")
+            attemptHostEmulatorFragmentedTlsRecovery(exhaustedH2Failure)?.let {
+                return handOffCurrentCallPermit(it)
+            }
+            attemptCurrentSocketExhaustedExactQuicRecovery(exhaustedH2Failure)?.let {
+                return handOffCurrentCallPermit(it)
+            }
             executeDirectWifiAdjacentWebtoonH1Recovery(
-                candidates = orderedCandidates,
+                candidates = currentH1Candidates(),
                 episodePageCount = episodePageCount,
                 capturedDirectWifiNetworkHandle = capturedDirectWifiNetworkHandle,
                 viewerGeneration = viewerGeneration,
-                h2Failure = lastFailure
-                    ?: IOException("Direct Wi-Fi H2 replica image Call exhausted"),
-            )?.let { return it }
-            throw lastFailure ?: IOException("Direct Wi-Fi H2 replica image Call exhausted")
+                h2Failure = exhaustedH2Failure,
+            )?.let { return handOffCurrentCallPermit(it) }
+            attemptHostEmulatorFragmentedTlsRecovery(exhaustedH2Failure)?.let {
+                return handOffCurrentCallPermit(it)
+            }
+            attemptCurrentSocketExhaustedExactQuicRecovery(exhaustedH2Failure)?.let {
+                return handOffCurrentCallPermit(it)
+            }
+            throw exhaustedH2Failure
+            } finally {
+                if (currentCallPermitHeld && !currentCallPermitHandedOff) {
+                    hostEmulatorDirectWifiCurrentOrdinaryWebtoonCallPermits.release()
+                }
+            }
         }
 
         /**
@@ -5069,7 +6929,8 @@ data class NtkResolvedSourceRoute(
                             Build.HARDWARE,
                             Build.PRODUCT,
                         ),
-                    productionStrictRequest = strictTag?.isProductionStrict == true,
+                    productionStrictRequest = strictTag?.isProductionStrict == true ||
+                        quarantineTag?.isValid == true,
                     currentForegroundEpisode = episodePath.isNotEmpty() &&
                         MainApplication.isNtkForegroundViewerPath(episodePath),
                     sameNetwork = sameNetwork,
@@ -5078,8 +6939,13 @@ data class NtkResolvedSourceRoute(
             if ((!adjacentEligible && !currentEligible) ||
                 liveNetwork == null || cancelled.get()
             ) return null
+            val recoveryPermits = if (adjacentEligible) {
+                clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits
+            } else {
+                clickOwnedDirectWifiCurrentWebtoonRecoveryPermits
+            }
             try {
-                clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits.acquire()
+                recoveryPermits.acquire()
             } catch (interrupted: InterruptedException) {
                 Thread.currentThread().interrupt()
                 throw InterruptedIOException(
@@ -5091,10 +6957,11 @@ data class NtkResolvedSourceRoute(
             val recoveryMode = if (adjacentEligible) "adjacent_runway" else "current_emulator"
             val recoveryPath = proof?.path ?: episodePath
             val shared = httpClient.client ?: httpClient.imageClient
-            val h1Factory = clickOwnedDirectWifiAdjacentWebtoonRecoveryClient(
-                shared,
-                liveNetwork,
-            )
+            val h1Factory = if (adjacentEligible) {
+                clickOwnedDirectWifiAdjacentWebtoonRecoveryClient(shared, liveNetwork)
+            } else {
+                clickOwnedDirectWifiCurrentWebtoonRecoveryClient(shared, liveNetwork)
+            }
             Log.w(
                 TAG,
                 "reader_strict_direct_wifi_adjacent_h1_recovery_start " +
@@ -5113,9 +6980,16 @@ data class NtkResolvedSourceRoute(
                 val call = h1Factory.newCall(physicalRequest)
                 active.set(call)
                 val headerResolved = AtomicBoolean(false)
+                val h1HeaderDeadlineMs = if (adjacentEligible) {
+                    NtkWebtoonReplicaHeaderPolicy
+                        .WIFI_DIRECT_ADJACENT_H1_RECOVERY_HEADER_MS
+                } else {
+                    NtkWebtoonReplicaHeaderPolicy
+                        .WIFI_DIRECT_CURRENT_H1_RECOVERY_HEADER_MS
+                }
                 val deadline = strictReplicaHeaderDeadlineScheduler.schedule({
                     if (headerResolved.compareAndSet(false, true)) call.cancel()
-                }, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_HEADER_MS,
+                }, h1HeaderDeadlineMs,
                     TimeUnit.MILLISECONDS)
                 try {
                     val response = call.execute()
@@ -5123,7 +6997,7 @@ data class NtkResolvedSourceRoute(
                         response.close()
                         throw java.net.SocketTimeoutException(
                             "Direct Wi-Fi adjacent H1 response headers exceeded " +
-                                "${NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_HEADER_MS}ms"
+                                "${h1HeaderDeadlineMs}ms"
                         )
                     }
                     val emptySuccessfulBody = response.code in 200..299 &&
@@ -5162,7 +7036,7 @@ data class NtkResolvedSourceRoute(
                     releasePermitDirectly = false
                     return recoveredResponse.newBuilder()
                         .body(NtkH1RecoveryPermitResponseBody(recoveredBody) {
-                            clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits.release()
+                            recoveryPermits.release()
                         })
                         .build()
                 } catch (failure: IOException) {
@@ -5188,7 +7062,7 @@ data class NtkResolvedSourceRoute(
             return null
             } finally {
                 if (releasePermitDirectly) {
-                    clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits.release()
+                    recoveryPermits.release()
                 }
             }
         }
@@ -5285,6 +7159,7 @@ data class NtkResolvedSourceRoute(
                         val task = FutureTask {
                             executeManhwaRangeSegment(
                                 candidates = rangeCandidates,
+                                pageIndex = -1,
                                 firstCandidateIndex = (candidateIndex + ordinal) %
                                     rangeCandidates.size,
                                 start = start,
@@ -5349,6 +7224,7 @@ data class NtkResolvedSourceRoute(
 
         private fun executeManhwaRangeSegment(
             candidates: List<Request>,
+            pageIndex: Int,
             firstCandidateIndex: Int,
             start: Long,
             end: Long,
@@ -5360,6 +7236,7 @@ data class NtkResolvedSourceRoute(
             segmentActive: AtomicReference<Call?>? = null,
             bodyIdleMs: Long = NtkManhwaRangeResumePolicy.BODY_IDLE_MS,
             rangeHeaderDeadlineMs: Long = NTK_MANHWA_RANGE_HEADER_DEADLINE_MS,
+            bodyWallMs: Long? = null,
             rangeCallFactory: Call.Factory = delegateFactory,
             postRegistrationCancellationHandshake: Boolean = false,
             segmentCancellation:
@@ -5368,6 +7245,7 @@ data class NtkResolvedSourceRoute(
             if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
             require(bodyIdleMs > 0L)
             require(rangeHeaderDeadlineMs > 0L)
+            require(bodyWallMs == null || bodyWallMs > 0L)
             var lastFailure: IOException? = null
             val expectedSegmentLength = end - start + 1L
             if (expectedSegmentLength <= 0L || expectedSegmentLength > Int.MAX_VALUE) {
@@ -5380,7 +7258,22 @@ data class NtkResolvedSourceRoute(
             // array provides the same atomic result without either copy.
             val output = ByteArray(expectedSegmentLength.toInt())
             var received = 0
-            for (offset in candidates.indices) {
+            val maximumProgressRounds = NtkManhwaRangeResumePolicy
+                .maximumProgressRounds(pageIndex)
+            val maximumCandidateAttempts = candidates.size * maximumProgressRounds
+            var roundStartReceived = received
+            for (offset in 0 until maximumCandidateAttempts) {
+                if (offset > 0 && offset % candidates.size == 0) {
+                    if (received == roundStartReceived) break
+                    roundStartReceived = received
+                    Log.d(
+                        TAG,
+                        "reader_strict_manhwa_segment_progress_round " +
+                            "page=$pageIndex,round=${offset / candidates.size + 1}/" +
+                            "$maximumProgressRounds,received=$received," +
+                            "remaining=${output.size - received}",
+                    )
+                }
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
                 val requestStart = NtkManhwaRangeResumePolicy.nextStart(
                     start,
@@ -5457,6 +7350,12 @@ data class NtkResolvedSourceRoute(
                                 bodyIdleMs,
                                 TimeUnit.MILLISECONDS,
                             )
+                            bodyWallMs?.let { wallMs ->
+                                rangeSource.timeout().deadline(
+                                    wallMs,
+                                    TimeUnit.MILLISECONDS,
+                                )
+                            }
                         }
                         val beforeAttempt = received
                         try {
@@ -5553,6 +7452,7 @@ data class NtkResolvedSourceRoute(
             directWifiWebtoonBody: Boolean,
             directWifiNetworkHandleAtCallStart: Long? = null,
             viewerGenerationAtCallStart: Long = 0L,
+            continuationFactoryOverride: Call.Factory? = null,
         ): Response {
             val body = response.body ?: return response
             val contentLength = body.contentLength()
@@ -5609,6 +7509,11 @@ data class NtkResolvedSourceRoute(
                 ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } != false
             val webtoonReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
                 NTK_WEBTOON_IMAGE_REPLICA_HOSTS
+            val fragmentedTlsRecovery = response.header("x-mangaviewer-transport")
+                ?.equals("exact-fragmented-tls-recovery", ignoreCase = true) == true
+            val fragmentedTlsFollower = fragmentedTlsRecovery &&
+                response.header("x-mangaviewer-fragmented-tls-bootstrap")
+                    ?.equals("false", ignoreCase = true) == true
             if ((!webtoonReplica && !manhwaBody) || response.code != 200 ||
                 !rangeCapable ||
                 !identityEncoding || validator.isBlank() || contentLength <= 0L
@@ -5733,6 +7638,20 @@ data class NtkResolvedSourceRoute(
             }
             val directWifiProjectedWebtoonTailNetwork =
                 directWifiShortTailNetwork ?: directWifiAdjacentTailNetwork
+            val fragmentedTlsNetwork = if (fragmentedTlsRecovery) {
+                val liveClient = getHttpClient()
+                runCatching { liveClient.getNtkDirectWifiNetwork() }.getOrNull()
+                    ?.takeIf { network ->
+                        directWifiNetworkHandleAtCallStart != null &&
+                            network.networkHandle == directWifiNetworkHandleAtCallStart &&
+                            viewerGenerationAtCallStart > 0L &&
+                            ViewerTelemetry.activeGeneration() == viewerGenerationAtCallStart &&
+                            !liveClient.isNtkCellularResilientTransportActive() &&
+                            liveClient.isNtkWifiTransportActive()
+                    }
+            } else {
+                null
+            }
             val resumableCandidates = if (manhwaBody) {
                 val rangeCandidates = candidates.filter {
                     it.url.host.lowercase(Locale.ROOT) in NTK_MANHWA_RANGE_REPLICA_HOSTS
@@ -5778,7 +7697,22 @@ data class NtkResolvedSourceRoute(
                 // Only immutable direct-Wi-Fi current/adjacent tags get the early projected wall.
                 // All generic, carrier/SNI and untagged Wi-Fi paths retain their established wall.
                 absoluteInitialSegmentWallMs = when {
-                    directWifiIdleSuffixNetwork != null -> 0L
+                    // Fragmented TLS repairs socket reachability, but it does not guarantee body
+                    // throughput. A CDN can keep a 250 KiB entry page alive with sub-deadline
+                    // drips for three seconds while the user repeatedly swipes a blank viewport.
+                    // This response is already canonical-replica, Accept-Ranges and strong-
+                    // validator qualified above. Apply the same bounded entry-page wall as the
+                    // ordinary direct-Wi-Fi path; continuation starts at the first undelivered
+                    // byte and still requires an exact 206 range/total/validator match.
+                    fragmentedTlsRecovery ->
+                        NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                            pageIndex = pageIndex,
+                            episodePageCount = episodePageCount,
+                            contentLength = contentLength,
+                            currentForegroundEpisode = currentForegroundEpisode,
+                        )
+                    directWifiIdleSuffixNetwork != null ->
+                        NtkDirectWifiOrdinaryBodyRecoveryPolicy.STRAGGLER_SAMPLE_MS
                     manhwaBody && pageIndex != 0 -> NTK_MANHWA_BODY_WALL_MS
                     frozenTailTag != null && directWifiShortTailNetwork != null ->
                         NtkDirectWifiShortWebtoonProjectedTailPolicy.MIN_SAMPLE_MS
@@ -5801,6 +7735,8 @@ data class NtkResolvedSourceRoute(
                     } else {
                         NTK_MANHWA_BODY_IDLE_RESUME_MS
                     }
+                } else if (fragmentedTlsFollower) {
+                    NTK_FRAGMENTED_WEBTOON_FOLLOWER_BODY_IDLE_RESUME_MS
                 } else {
                     NTK_WEBTOON_BODY_IDLE_RESUME_MS
                 },
@@ -5810,6 +7746,8 @@ data class NtkResolvedSourceRoute(
                     } else {
                         NTK_MANHWA_BODY_FIRST_BYTE_DEADLINE_MS
                     }
+                } else if (fragmentedTlsFollower) {
+                    NTK_FRAGMENTED_WEBTOON_FOLLOWER_BODY_IDLE_RESUME_MS
                 } else {
                     NTK_WEBTOON_BODY_FIRST_BYTE_DEADLINE_MS
                 },
@@ -5819,6 +7757,8 @@ data class NtkResolvedSourceRoute(
                     } else {
                         NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS
                     }
+                } else if (fragmentedTlsFollower) {
+                    NTK_FRAGMENTED_WEBTOON_FOLLOWER_BODY_IDLE_RESUME_MS
                 } else {
                     NTK_WEBTOON_BODY_PROGRESS_DEADLINE_MS
                 },
@@ -5829,6 +7769,7 @@ data class NtkResolvedSourceRoute(
                 sessionStartedAtNanos = manhwaSessionStartedAtNanos,
                 sessionProjectedStartCount = manhwaSessionProjectedStartCount,
                 waveRecoveryState = waveRecoveryState,
+                directWifiOrdinaryBodyRecovery = directWifiIdleSuffixNetwork != null,
                 projectedTailFetcher = if (manhwaBody &&
                     directWifiIdleSuffixNetwork == null &&
                     resumableCandidates.isNotEmpty()
@@ -5836,6 +7777,7 @@ data class NtkResolvedSourceRoute(
                     { start, end, physicalAttempt, segmentActive, _ ->
                         executeManhwaRangeSegment(
                             candidates = resumableCandidates,
+                            pageIndex = pageIndex,
                             // resumableCandidates is already page-rotated above. Including the
                             // page index again could rotate attempt one back onto the original
                             // stalled host and waste the complete idle deadline there.
@@ -5854,6 +7796,10 @@ data class NtkResolvedSourceRoute(
                             segmentActive = segmentActive,
                             bodyIdleMs =
                                 NtkManhwaRangeResumePolicy.projectedBodyIdleMs(pageIndex),
+                            rangeHeaderDeadlineMs =
+                                NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(pageIndex),
+                            bodyWallMs =
+                                NtkManhwaRangeResumePolicy.projectedBodyWallMs(pageIndex),
                         )
                     }
                 } else if ((frozenTailTag != null || frozenAdjacentTailTag != null) &&
@@ -5873,6 +7819,7 @@ data class NtkResolvedSourceRoute(
                     ): ByteArray {
                         return executeManhwaRangeSegment(
                             candidates = resumableCandidates,
+                            pageIndex = pageIndex,
                             firstCandidateIndex =
                                 NtkManhwaProjectedBodyHedgePolicy.projectedFirstCandidateIndex(
                                     physicalAttempt,
@@ -5921,10 +7868,12 @@ data class NtkResolvedSourceRoute(
                     )
                 },
                 capturedDirectWifiNetwork =
-                    directWifiIdleSuffixNetwork ?: directWifiProjectedWebtoonTailNetwork,
+                    directWifiIdleSuffixNetwork ?: directWifiProjectedWebtoonTailNetwork ?:
+                        fragmentedTlsNetwork,
                 requiredDirectWifiViewerGeneration = when {
                     frozenTailTag != null -> frozenTailTag.viewerGeneration
                     frozenAdjacentTailTag != null -> viewerGenerationAtCallStart
+                    fragmentedTlsRecovery -> viewerGenerationAtCallStart
                     else -> null
                 },
                 requiredForegroundEpisodePath = if (directWifiShortTailNetwork != null) {
@@ -5933,8 +7882,9 @@ data class NtkResolvedSourceRoute(
                     directWifiIdleSuffixNetwork?.let {
                         ntkGeneratedImageRef(originalRequest.url.toString())
                             ?.let(::ntkGeneratedStatePath)
-                    }
+                    } ?: episodePath.takeIf { fragmentedTlsRecovery && it.isNotEmpty() }
                 },
+                continuationFactoryOverride = continuationFactoryOverride,
             )
             check(activeStalledReplicaBody.compareAndSet(null, resumable)) {
                 "Strict replica Call installed more than one active response body"
@@ -6158,6 +8108,7 @@ data class NtkResolvedSourceRoute(
         private val sessionStartedAtNanos: Long?,
         private val sessionProjectedStartCount: NtkManhwaProjectedBodyHedgePolicy.SessionStarts?,
         private val waveRecoveryState: NtkManhwaWaveRecoveryState?,
+        private val directWifiOrdinaryBodyRecovery: Boolean,
         private val projectedTailFetcher: ((
             Long,
             Long,
@@ -6174,6 +8125,7 @@ data class NtkResolvedSourceRoute(
         private val capturedDirectWifiNetwork: android.net.Network?,
         private val requiredDirectWifiViewerGeneration: Long?,
         private val requiredForegroundEpisodePath: String?,
+        private val continuationFactoryOverride: Call.Factory?,
     ) : ResponseBody(), NtkRangeContinuationProvenance {
         init {
             require(maxRangeContinuations > 0)
@@ -6189,7 +8141,9 @@ data class NtkResolvedSourceRoute(
 
         private val contentType = initialResponse.body?.contentType()
         private val requiresDirectWifiContinuation =
-            initialResponse.header("x-mangaviewer-transport") == "exact-quic-partial"
+            initialResponse.header("x-mangaviewer-transport") == "exact-quic-partial" ||
+                initialResponse.header("x-mangaviewer-transport") ==
+                "exact-fragmented-tls-recovery"
         private var currentResponse: Response = initialResponse
         private var currentSource: BufferedSource = checkedSource(initialResponse)
         private var nextCandidateIndex = initialCandidateIndex + 1
@@ -6275,27 +8229,50 @@ data class NtkResolvedSourceRoute(
                                 projectedCheckAtNanos - segmentStartedAtNanos,
                             ).coerceAtLeast(1L)
                             if (projectedTailFetcher == null) {
-                                absoluteInitialDeadlineConsumed = true
-                                if (NtkWebtoonBodyWallPolicy.shouldResume(
-                                        elapsedMs = elapsedMs,
-                                        deliveredBytes = deliveredBytes,
-                                        expectedLength = expectedLength,
-                                        segmentWallMs = absoluteInitialSegmentWallMs,
-                                    )
-                                ) {
-                                    throw java.net.SocketTimeoutException(
-                                        "Webtoon body wall exceeded " +
-                                            "${absoluteInitialSegmentWallMs}ms"
+                                if (directWifiOrdinaryBodyRecovery) {
+                                    nextProjectedBodyCheckAtNanos = projectedCheckAtNanos +
+                                        TimeUnit.MILLISECONDS.toNanos(
+                                            NtkDirectWifiOrdinaryBodyRecoveryPolicy
+                                                .STRAGGLER_RECHECK_MS,
+                                        )
+                                    if (NtkDirectWifiOrdinaryBodyRecoveryPolicy
+                                            .shouldResumeDrippingStraggler(
+                                                wave = waveRecoveryState,
+                                                pageIndex = pageIndex,
+                                                bodyElapsedMs = elapsedMs,
+                                                deliveredBytes = deliveredBytes,
+                                                expectedLength = expectedLength,
+                                            )
+                                    ) {
+                                        absoluteInitialDeadlineConsumed = true
+                                        throw java.net.SocketTimeoutException(
+                                            "Direct-WiFi manhwa dripping straggler exceeded " +
+                                                "${elapsedMs}ms"
+                                        )
+                                    }
+                                } else {
+                                    absoluteInitialDeadlineConsumed = true
+                                    if (NtkWebtoonBodyWallPolicy.shouldResume(
+                                            elapsedMs = elapsedMs,
+                                            deliveredBytes = deliveredBytes,
+                                            expectedLength = expectedLength,
+                                            segmentWallMs = absoluteInitialSegmentWallMs,
+                                        )
+                                    ) {
+                                        throw java.net.SocketTimeoutException(
+                                            "Webtoon body wall exceeded " +
+                                                "${absoluteInitialSegmentWallMs}ms"
+                                        )
+                                    }
+                                    Log.d(
+                                        TAG,
+                                        "reader_strict_source_body_wall_tail_grace " +
+                                            "page=$pageIndex,elapsedMs=$elapsedMs," +
+                                            "offset=$deliveredBytes," +
+                                            "remaining=${expectedLength - deliveredBytes}," +
+                                            "total=$expectedLength",
                                     )
                                 }
-                                Log.d(
-                                    TAG,
-                                    "reader_strict_source_body_wall_tail_grace " +
-                                        "page=$pageIndex,elapsedMs=$elapsedMs," +
-                                        "offset=$deliveredBytes," +
-                                        "remaining=${expectedLength - deliveredBytes}," +
-                                        "total=$expectedLength",
-                                )
                             } else {
                                 nextProjectedBodyCheckAtNanos = projectedCheckAtNanos +
                                     TimeUnit.MILLISECONDS.toNanos(
@@ -6455,7 +8432,28 @@ data class NtkResolvedSourceRoute(
                             bodyProgressDeadlineMs,
                             TimeUnit.MILLISECONDS,
                         )
-                        absoluteInitialDeadlineConsumed = true
+                        val rearmEntryViewportTail =
+                            NtkManhwaProjectedBodyHedgePolicy
+                                .shouldRearmEntryViewportTailAfterFailure(
+                                    pageIndex = pageIndex,
+                                    continuationCount = continuationCount,
+                                    maximumContinuations = maxRangeContinuations,
+                                )
+                        absoluteInitialDeadlineConsumed = !rearmEntryViewportTail
+                        if (rearmEntryViewportTail) {
+                            nextProjectedBodyCheckAtNanos =
+                                SystemClock.elapsedRealtimeNanos() +
+                                    TimeUnit.MILLISECONDS.toNanos(
+                                        NTK_MANHWA_PROJECTED_BODY_RECHECK_MS,
+                                    )
+                            projectedContinuationDeferredLogged = false
+                            Log.d(
+                                TAG,
+                                "reader_strict_source_entry_tail_rearmed page=$pageIndex," +
+                                    "continuations=$continuationCount/$maxRangeContinuations," +
+                                    "offset=$deliveredBytes,total=$expectedLength",
+                            )
+                        }
                         continue
                     } catch (failure: IOException) {
                         if (grantSmallTailDeadlineGrace(failure)) continue
@@ -6540,10 +8538,19 @@ data class NtkResolvedSourceRoute(
                             expectedLength,
                         ) ?: return false
                     }
-                    NtkManhwaProjectedBodyHedgePolicy.disjointTailSegments(
-                        split,
-                        expectedLength,
-                    )
+                    if (entryViewportTail) {
+                        NtkManhwaProjectedBodyHedgePolicy
+                            .disjointEntryViewportTailSegments(
+                                split,
+                                expectedLength,
+                                remainingTailSlots,
+                            )
+                    } else {
+                        NtkManhwaProjectedBodyHedgePolicy.disjointTailSegments(
+                            split,
+                            expectedLength,
+                        )
+                    }
                 }
             }
             if (ranges.isEmpty() || continuationCount + ranges.size >
@@ -6891,7 +8898,8 @@ data class NtkResolvedSourceRoute(
                 TAG,
                 "reader_strict_source_projected_tail_abandoned page=$pageIndex," +
                     "offset=$deliveredBytes,split=${tail.start}," +
-                    "reason=${reason.javaClass.simpleName}",
+                    "reason=${reason.javaClass.simpleName}," +
+                    "cause=${reason.cause?.javaClass?.simpleName ?: "none"}",
             )
         }
 
@@ -7052,7 +9060,8 @@ data class NtkResolvedSourceRoute(
                 !httpClient.isNtkWifiTransportActive()
             ) return false
             if (requiredForegroundEpisodePath != null &&
-                !MainApplication.isNtkForegroundViewerPath(requiredForegroundEpisodePath)
+                !MainApplication.isNtkForegroundViewerPath(requiredForegroundEpisodePath) &&
+                !hasActiveAdjacentNtkForegroundViewerGrant(requiredForegroundEpisodePath)
             ) return false
             if (requiredDirectWifiViewerGeneration != null &&
                 ViewerTelemetry.activeGeneration() != requiredDirectWifiViewerGeneration
@@ -7075,6 +9084,7 @@ data class NtkResolvedSourceRoute(
 
         private fun continuationCallFactoryOrNull(): Call.Factory? {
             if (!hasRequiredDirectWifiNetwork()) return null
+            continuationFactoryOverride?.let { return it }
             val capturedNetwork = capturedDirectWifiNetwork ?: return delegateFactory
             return clickOwnedDirectWifiRangeClient(capturedNetwork)
         }
@@ -7285,6 +9295,7 @@ data class NtkResolvedSourceRoute(
         val proofReadyAtNanos: Long,
         val physicalAttemptOrdinal: Int,
         val usedRangeContinuation: Boolean,
+        val transport: String = "",
     ) {
         init {
             require(protocol.isNotBlank())
@@ -7354,11 +9365,15 @@ data class NtkResolvedSourceRoute(
 
     data class NtkQuarantineCallContext(
         val identity: NtkQuarantineSourceCallIdentity,
-        val operationLease: NtkQuarantineSourceOwnershipRegistry.OperationLease
+        val operationLease: NtkQuarantineSourceOwnershipRegistry.OperationLease,
     ) {
         init {
             require(identity.isValid)
         }
+    }
+
+    internal enum class NtkManhwaHeaderRecoveryPriority {
+        VIEWPORT,
     }
 
     class NtkQuarantineFileLease internal constructor(
@@ -7686,6 +9701,12 @@ data class NtkResolvedSourceRoute(
             ntkWifiWebtoonReplicaPreferences.clear()
             ntkWifiWebtoonSessionSuppressedHosts.clear()
             ntkHostEmulatorWebtoonSessionSuppressedHosts.clear()
+            ntkHostEmulatorWebtoonSessionSocketFailures.clear()
+            ntkHostEmulatorWebtoonFragmentedTransports.values.forEach { transport ->
+                runCatching { transport.close() }
+            }
+            ntkHostEmulatorWebtoonFragmentedTransports.clear()
+            ntkHostEmulatorWebtoonQuicHealth.clear()
             NtkPhysicalConnectionObservationBridge.clear()
             protectedNativeStrictRestartAt.clear()
             suppressedPermitlessInitialGeneratedUntil.clear()
@@ -8180,7 +10201,7 @@ data class NtkResolvedSourceRoute(
     private class CompletionResponseBody(
         private val delegate: ResponseBody,
         private val onComplete: (Long, Boolean, Throwable?) -> Unit
-    ) : ResponseBody(), NtkRangeContinuationProvenance {
+    ) : ResponseBody(), NtkRangeContinuationProvenance, NtkFullyBufferedExactBody {
         private val completed = AtomicBoolean(false)
         private val bytesRead = AtomicLong(0L)
         private val reachedEof = AtomicBoolean(false)
@@ -8191,7 +10212,12 @@ data class NtkResolvedSourceRoute(
             }
         }
 
-        private val delegateSource = delegate.source()
+        private val delegateSource: BufferedSource by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+            delegate.source()
+        }
+
+        override val ntkFullyBufferedBytes: ByteArray?
+            get() = (delegate as? NtkFullyBufferedExactBody)?.ntkFullyBufferedBytes
 
         /** Called by the exact spool only after its length/SHA loop has observed real EOF. */
         fun markVerifiedEof(verifiedBytes: Long) {
@@ -9901,7 +11927,9 @@ data class NtkResolvedSourceRoute(
                 .dispatcher(clickOwnedProbeDispatcher)
                 .connectionPool(ConnectionPool())
                 .dns(singleFlightDns)
-                .socketFactory(directWifiNetwork.socketFactory)
+                .socketFactory(CustomHttpClient.sniFragmentingSocketFactory(
+                    directWifiNetwork.socketFactory,
+                ))
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .retryOnConnectionFailure(false)
@@ -9933,7 +11961,9 @@ data class NtkResolvedSourceRoute(
                 .dispatcher(clickOwnedMixedBodyDispatcher)
                 .connectionPool(ConnectionPool())
                 .dns(singleFlightDns)
-                .socketFactory(directWifiNetwork.socketFactory)
+                .socketFactory(CustomHttpClient.sniFragmentingSocketFactory(
+                    directWifiNetwork.socketFactory,
+                ))
                 .protocols(listOf(Protocol.HTTP_1_1))
                 .followRedirects(false)
                 .followSslRedirects(false)
@@ -9967,7 +11997,9 @@ data class NtkResolvedSourceRoute(
                 .dispatcher(clickOwnedDirectWifiRangeDispatcher)
                 .connectionPool(ConnectionPool())
                 .dns(singleFlightDns)
-                .socketFactory(directWifiNetwork.socketFactory)
+                .socketFactory(CustomHttpClient.sniFragmentingSocketFactory(
+                    directWifiNetwork.socketFactory,
+                ))
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .retryOnConnectionFailure(false)
@@ -10005,7 +12037,9 @@ data class NtkResolvedSourceRoute(
                     TimeUnit.MINUTES,
                 ))
                 .dns(singleFlightDns)
-                .socketFactory(directWifiNetwork.socketFactory)
+                .socketFactory(CustomHttpClient.sniFragmentingSocketFactory(
+                    directWifiNetwork.socketFactory,
+                ))
                 .protocols(listOf(Protocol.HTTP_1_1))
                 .followRedirects(false)
                 .followSslRedirects(false)
@@ -10047,7 +12081,9 @@ data class NtkResolvedSourceRoute(
                     TimeUnit.MINUTES,
                 ))
                 .dns(singleFlightDns)
-                .socketFactory(directWifiNetwork.socketFactory)
+                .socketFactory(CustomHttpClient.sniFragmentingSocketFactory(
+                    directWifiNetwork.socketFactory,
+                ))
                 .protocols(listOf(Protocol.HTTP_1_1))
                 .followRedirects(false)
                 .followSslRedirects(false)
@@ -10086,7 +12122,50 @@ data class NtkResolvedSourceRoute(
                     TimeUnit.MINUTES,
                 ))
                 .dns(singleFlightDns)
-                .socketFactory(directWifiNetwork.socketFactory)
+                .socketFactory(CustomHttpClient.sniFragmentingSocketFactory(
+                    directWifiNetwork.socketFactory,
+                ))
+                .protocols(listOf(Protocol.HTTP_1_1))
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .build()
+        }
+        return strictInstrumentedClient(bounded)
+    }
+
+    /**
+     * Independent H1 pool for a manifest-sealed current webtoon on the host emulator. Keeping it
+     * separate prevents a bulk H2 reset cohort from consuming the four connections reserved for
+     * an adjacent p0-p3 boundary. Physical devices and carrier/SNI never select this factory.
+     */
+    private fun clickOwnedDirectWifiCurrentWebtoonRecoveryClient(
+        shared: OkHttpClient,
+        directWifiNetwork: android.net.Network,
+    ): OkHttpClient {
+        val key = DirectWifiClientKey(
+            System.identityHashCode(shared),
+            directWifiNetwork.networkHandle,
+        )
+        val bounded = clickOwnedDirectWifiCurrentWebtoonRecoveryClients.computeIfAbsent(key) {
+            val singleFlightDns = NtkSingleFlightDns(
+                object : Dns {
+                    override fun lookup(hostname: String) =
+                        directWifiNetwork.getAllByName(hostname).toList()
+                },
+            )
+            shared.newBuilder()
+                .dispatcher(clickOwnedDirectWifiCurrentWebtoonRecoveryDispatcher)
+                .connectionPool(ConnectionPool(
+                    NtkWebtoonReplicaHeaderPolicy
+                        .WIFI_DIRECT_CURRENT_H1_RECOVERY_MAX_CONCURRENT,
+                    2L,
+                    TimeUnit.MINUTES,
+                ))
+                .dns(singleFlightDns)
+                .socketFactory(CustomHttpClient.sniFragmentingSocketFactory(
+                    directWifiNetwork.socketFactory,
+                ))
                 .protocols(listOf(Protocol.HTTP_1_1))
                 .followRedirects(false)
                 .followSslRedirects(false)
@@ -11062,6 +13141,7 @@ data class NtkResolvedSourceRoute(
         tempLease: NtkQuarantineFileLease,
         cancellation: Cancellation,
         waveRecoveryState: NtkManhwaWaveRecoveryState? = null,
+        prioritizeManhwaHeaderRecovery: Boolean = false,
         telemetryAfterImageHeaders: Boolean = false,
         responseHeadersSink: () -> Unit = {},
         validImageHeadersSink: (() -> Unit)? = null,
@@ -11108,6 +13188,14 @@ data class NtkResolvedSourceRoute(
             .header("Accept-Encoding", "identity")
             .tag(NtkQuarantineSourceCallIdentity::class.java, identity)
             .tag(NtkManhwaWaveRecoveryState::class.java, waveRecoveryState)
+            .tag(
+                NtkManhwaHeaderRecoveryPriority::class.java,
+                if (prioritizeManhwaHeaderRecovery) {
+                    NtkManhwaHeaderRecoveryPriority.VIEWPORT
+                } else {
+                    null
+                },
+            )
             .build()
         val call = try {
             newTrackedNtkEpisodeCall(
@@ -11258,7 +13346,10 @@ data class NtkResolvedSourceRoute(
                     runCatching {
                         sink(
                             NtkStrictPhysicalBodyEvidence(
-                                protocol = protocol,
+                                protocol = response.header("x-mangaviewer-negotiated-protocol")
+                                    ?.trim()
+                                    ?.takeIf(String::isNotEmpty)
+                                    ?: protocol,
                                 responseHost = response.request.url.host.lowercase(Locale.ROOT),
                                 physicalStartedAtNanos = physicalStartedAtNs,
                                 proofReadyAtNanos = completedAtNs,
@@ -11269,6 +13360,9 @@ data class NtkResolvedSourceRoute(
                                 usedRangeContinuation =
                                     (body as? NtkRangeContinuationProvenance)
                                         ?.usedAnyContinuation() == true,
+                                transport = response.header("x-mangaviewer-transport")
+                                    ?.trim()
+                                    .orEmpty(),
                             )
                         )
                     }.onFailure { failure ->
@@ -11420,25 +13514,42 @@ data class NtkResolvedSourceRoute(
         val boundedContentLength = contentLength
             .takeIf { it in 1..(64L * 1024L * 1024L) }
             ?.toInt()
+        val fullyBufferedBytes = (body as? NtkFullyBufferedExactBody)
+            ?.ntkFullyBufferedBytes
+            ?.takeIf { bytes ->
+                boundedContentLength != null && bytes.size == boundedContentLength
+            }
         val encodedBytes: ByteArray? = if (preferFileBackedBody) {
             // The sealed part file is already the final EOF/SHA-owned source for native decode.
-            // Stream into it with one fixed read buffer instead of materializing a second body.
+            // A terminal H3 response already owns one complete immutable byte array; write and
+            // verify that array directly instead of copying it into Okio and pacing it as a live
+            // socket again. Ordinary streaming responses retain the fixed-buffer path below.
             FileOutputStream(tempLease.partFile).use { output ->
-                withNtkExactBodyReadBuffer { buffer ->
-                    body.byteStream().use { input ->
-                        while (true) {
-                            cancellation.throwIfCancelled()
-                            val count = readBodyChunk(input, buffer)
-                            if (count < 0) break
-                            if (count == 0) continue
-                            output.write(buffer, 0, count)
-                            consumeFileChunk(buffer, count)
+                if (fullyBufferedBytes != null) {
+                    cancellation.throwIfCancelled()
+                    output.write(fullyBufferedBytes)
+                    consumeFileChunk(fullyBufferedBytes, fullyBufferedBytes.size)
+                } else {
+                    withNtkExactBodyReadBuffer { buffer ->
+                        body.byteStream().use { input ->
+                            while (true) {
+                                cancellation.throwIfCancelled()
+                                val count = readBodyChunk(input, buffer)
+                                if (count < 0) break
+                                if (count == 0) continue
+                                output.write(buffer, 0, count)
+                                consumeFileChunk(buffer, count)
+                            }
                         }
                     }
                 }
                 output.flush()
             }
             null
+        } else if (fullyBufferedBytes != null) {
+            cancellation.throwIfCancelled()
+            consumeChunk(fullyBufferedBytes, 0, fullyBufferedBytes.size)
+            fullyBufferedBytes
         } else if (boundedContentLength != null) {
             // This array becomes the session-owned compressed body; no temporary duplicate is
             // created by ByteArrayOutputStream.toByteArray().
@@ -11677,6 +13788,29 @@ data class NtkResolvedSourceRoute(
         }
         val published = withCurrentCachePublication(generation) {
             withCacheWriteLock(cacheKey) {
+                // A replacement reader can claim the same immutable episode while the paused
+                // reader still owns FileLeases. Capture physical byte authority before the
+                // manifest-specific lookup removes an older resident revision from the registry.
+                val residentBeforeLookup = residentStrictPublishedBodies[finalFile.absolutePath]
+                val existingByteProofBeforeLookup = residentBeforeLookup
+                    ?.takeIf { resident ->
+                        resident.generation == generation &&
+                            resident.baseMode == manga.baseMode &&
+                            resident.cacheKey == cacheKey &&
+                            resident.canonicalAsset == canonical &&
+                            resident.file.absolutePath == finalFile.absolutePath &&
+                            finalFile.isFile &&
+                            finalFile.length() == resident.fileLength &&
+                            finalFile.lastModified() == resident.fileLastModified
+                    }
+                    ?.proof
+                val existingEncodedProofBeforeLookup = if (
+                    existingByteProofBeforeLookup == null && finalFile.isFile
+                ) {
+                    encodedOriginalByteProof(manga, canonical, finalFile)
+                } else {
+                    null
+                }
                 val existing = strictCachedPublishedBodyLocked(
                     context.applicationContext,
                     manga,
@@ -11699,6 +13833,56 @@ data class NtkResolvedSourceRoute(
                     )
                 } else {
                     if (finalFile.exists()) {
+                        val activeReadCount = activeReads[cacheKey]?.get() ?: 0
+                        val identicalLeasedBody = activeReadCount > 0 &&
+                            finalFile.length() == proof.encodedLength &&
+                            when {
+                                existingByteProofBeforeLookup != null ->
+                                    existingByteProofBeforeLookup.encodedSha256 ==
+                                        proof.encodedSha256 &&
+                                        existingByteProofBeforeLookup.encodedLength ==
+                                            proof.encodedLength &&
+                                        existingByteProofBeforeLookup.sourceWidth ==
+                                            proof.sourceWidth &&
+                                        existingByteProofBeforeLookup.sourceHeight ==
+                                            proof.sourceHeight
+                                existingEncodedProofBeforeLookup != null ->
+                                    existingEncodedProofBeforeLookup.encodedSha256 ==
+                                        proof.encodedSha256 &&
+                                        existingEncodedProofBeforeLookup.encodedLength ==
+                                            proof.encodedLength
+                                else -> false
+                            }
+                        if (identicalLeasedBody) {
+                            // Both strict responses independently proved the complete immutable
+                            // bytes. Never mutate the leased file; bind its unchanged body to the
+                            // new manifest revision and discard only this operation's duplicate
+                            // quarantine file. A queued predecode points at that duplicate, so
+                            // close it and decode from the shared final body instead.
+                            predecodedOriginal?.close()
+                            quarantinedBody.sealedFile.delete()
+                            touchCacheHitForLru(finalFile)
+                            Log.d(
+                                TAG,
+                                "reader_strict_leased_identical_body_reused " +
+                                    "page=$pageIndex,activeReads=$activeReadCount",
+                            )
+                            val resident = registerResidentStrictPublishedBody(
+                                generation,
+                                manga.baseMode,
+                                cacheKey,
+                                canonical,
+                                finalFile,
+                                metadata,
+                                proof,
+                            )
+                            deferStrictProofPersistence(resident)
+                            return@withCacheWriteLock strictPublishedBody(
+                                finalFile,
+                                metadata,
+                                proof,
+                            )
+                        }
                         retireUnprovedStrictCacheTarget(cacheKey, finalFile)
                     }
                     moveQuarantineBodyAtomically(
@@ -12160,6 +14344,13 @@ data class NtkResolvedSourceRoute(
                         NtkReaderTransferPacer.readByte(input)
                     }
 
+                val fullyBufferedBytes = (body as? NtkFullyBufferedExactBody)
+                    ?.ntkFullyBufferedBytes
+                    ?.takeIf { bytes ->
+                        contentLength in 1..(64L * 1024L * 1024L) &&
+                            bytes.size.toLong() == contentLength
+                    }
+
                 // The exact response is already bounded, immutable and SHA/header checked. Keep
                 // normal-sized bodies in their final session-owned byte array so decode can start
                 // at EOF while the rest of the episode is still downloading. Disk persistence is
@@ -12167,11 +14358,15 @@ data class NtkResolvedSourceRoute(
                 fun readAndSpoolStrictBody(): ByteArray? {
                 val residentBytes = if (preferFileBackedBody) {
                     null
+                } else if (fullyBufferedBytes != null) {
+                    cancellation.throwIfCancelled()
+                    consumeChunk(fullyBufferedBytes, 0, fullyBufferedBytes.size)
+                    fullyBufferedBytes
                 } else {
                     contentLength
                         .takeIf { it in 1..(64L * 1024L * 1024L) }
                         ?.toInt()
-                }?.let { expectedLength ->
+                        ?.let { expectedLength ->
                         val direct = ByteArray(expectedLength)
                         body.byteStream().use { input ->
                             var offset = 0
@@ -12195,6 +14390,7 @@ data class NtkResolvedSourceRoute(
                             }
                         }
                         direct
+                    }
                 }
                 if (residentBytes == null) {
                     val diskTmp = createStrictSpoolFile(
@@ -12202,15 +14398,21 @@ data class NtkResolvedSourceRoute(
                         "strict-primary-${callContext.tag.operationId}-"
                     ).also { tmp = it }
                     FileOutputStream(diskTmp).use { output ->
-                        withNtkExactBodyReadBuffer { buffer ->
-                            body.byteStream().use { input ->
-                                while (true) {
-                                    cancellation.throwIfCancelled()
-                                    val count = readStrictBodyChunk(input, buffer)
-                                    if (count < 0) break
-                                    if (count == 0) continue
-                                    output.write(buffer, 0, count)
-                                    consumeChunk(buffer, 0, count)
+                        if (fullyBufferedBytes != null) {
+                            cancellation.throwIfCancelled()
+                            output.write(fullyBufferedBytes)
+                            consumeChunk(fullyBufferedBytes, 0, fullyBufferedBytes.size)
+                        } else {
+                            withNtkExactBodyReadBuffer { buffer ->
+                                body.byteStream().use { input ->
+                                    while (true) {
+                                        cancellation.throwIfCancelled()
+                                        val count = readStrictBodyChunk(input, buffer)
+                                        if (count < 0) break
+                                        if (count == 0) continue
+                                        output.write(buffer, 0, count)
+                                        consumeChunk(buffer, 0, count)
+                                    }
                                 }
                             }
                         }
@@ -12299,7 +14501,10 @@ data class NtkResolvedSourceRoute(
                     runCatching {
                         sink(
                             NtkStrictPhysicalBodyEvidence(
-                                protocol = protocol,
+                                protocol = response.header("x-mangaviewer-negotiated-protocol")
+                                    ?.trim()
+                                    ?.takeIf(String::isNotEmpty)
+                                    ?: protocol,
                                 responseHost = response.request.url.host.lowercase(Locale.ROOT),
                                 physicalStartedAtNanos = physicalStartedAtNs,
                                 proofReadyAtNanos = proofReadyAtNs,
@@ -12310,6 +14515,9 @@ data class NtkResolvedSourceRoute(
                                 usedRangeContinuation =
                                     (body as? NtkRangeContinuationProvenance)
                                         ?.usedAnyContinuation() == true,
+                                transport = response.header("x-mangaviewer-transport")
+                                    ?.trim()
+                                    .orEmpty(),
                             )
                         )
                     }.onFailure { failure ->

@@ -7,6 +7,28 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BitmapNativeRetirementArchitectureTest {
+    @Test
+    fun pendingDirectTileMirrorCannotOccupyTheOnlyVisibleMailboxSlot() {
+        val source = File("src/main/cpp/ntk_rolling_surface_renderer.cpp").readText()
+        val submitStart = source.indexOf("std::int64_t submit(JNIEnv* env")
+        val submitEnd = source.indexOf("std::int64_t submitProducerGeometry(", submitStart)
+        val submit = source.substring(submitStart, submitEnd)
+        val helperStart = source.indexOf(
+            "bool frameHasVisiblePendingDirectTileMirror(",
+        )
+        val helperEnd = source.indexOf("bool directTileFrameEligible(", helperStart)
+        val helper = source.substring(helperStart, helperEnd)
+
+        val pendingGate = submit.indexOf("frameHasVisiblePendingDirectTileMirror(command)")
+        val retain = submit.indexOf("retainFrameBitmapReferences(command.tiles)")
+        val enqueue = submit.indexOf("enqueueFrame(env, std::move(command))")
+        assertTrue(pendingGate >= 0)
+        assertTrue(retain > pendingGate)
+        assertTrue(enqueue > retain)
+        assertTrue(helper.contains("tileIntersectsSourceCrop"))
+        assertTrue(helper.contains("hardwareMirrorReady.load(std::memory_order_acquire)"))
+    }
+
     private val session = source("reader/ReaderSession.kt")
     private val surface = source("reader/ReaderSurfaceView.kt")
     private val activity = source("activity/ReaderV2Activity.kt")
@@ -41,7 +63,7 @@ class BitmapNativeRetirementArchitectureTest {
             "private fun shouldParkHostGpuAdjacentWebtoonRemainder(",
         )
         val forwardPresence = session.section(
-            "private fun hasForwardNtkEpisodeAfterSource(",
+            "private fun forwardNtkEpisodePathAfterSource(",
             "private fun shouldStartWifiAdjacentCascade(",
         )
         val redrive = session.section(
@@ -128,13 +150,15 @@ class BitmapNativeRetirementArchitectureTest {
         )
         val rendererCallback = rollingNative.section(
             "void callbackWindowFramePresented(",
-            "void fatal(",
+            "bool consumeDirectTileEvents(",
         )
 
         assertTrue(rollingNative.contains(
             "presentationCallbackThread_ =\n            std::thread(&RollingRenderer::presentationCallbackLoop, this)",
         ))
         assertTrue(callbackLoop.contains("env->CallVoidMethod("))
+        assertTrue(callbackLoop.contains("static_cast<jlong>(callbackBeginNanos)"))
+        assertFalse(callbackLoop.contains("static_cast<jlong>(callback.observedNanos)"))
         assertTrue(callbackLoop.contains("presentationCallbackRead_.store("))
         assertTrue(rendererCallback.contains("enqueueWindowPresentationCallback({"))
         assertFalse(rendererCallback.contains("env->CallVoidMethod("))
@@ -314,14 +338,15 @@ class BitmapNativeRetirementArchitectureTest {
             "private fun drawablePrefixDrawStateOrNull(",
         )
         val completedDraw = activity.section(
-            "private fun handleStrictRollingCompletedDraw(",
+            "private fun handleAcceptedStrictRollingCompletedDraw(",
             "private fun adoptPhysicallyPresentedAdjacentEpisode(",
         )
 
-        assertTrue(cap.contains("physicalEpisodeTailHoldLimitLocked(rawNext, direction)"))
+        assertTrue(cap.contains("physicalEpisodeTailHoldLimitLocked(episodeScopedNext, direction)"))
         assertTrue(cap.contains("NtkPhysicalEpisodeTailHoldPolicy.shouldHoldCrossing("))
+        assertTrue(cap.contains("if (!pageHasCompleteDrawableContentLocked(index)) continue"))
         assertTrue(
-            cap.indexOf("physicalEpisodeTailHoldLimitLocked(rawNext, direction)") <
+            cap.indexOf("physicalEpisodeTailHoldLimitLocked(episodeScopedNext, direction)") <
                 cap.indexOf("allPagesHaveDrawableContentLocked()"),
         )
         assertTrue(surface.contains("isCleanPhysicalEpisodeTailHoldAppliedLocked(boundedNext)"))
@@ -693,6 +718,9 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(session.contains("HostExactHardwareTilePool.subscribePressure("))
         assertTrue(hostPool.contains("minimumRetirementBytes: Long"))
         assertTrue(hostPool.contains("MAX_POOL_BYTES = 64L * 1024L * 1024L"))
+        assertTrue(
+            hostPool.contains("CURRENT_ROLLING_MAX_POOL_BYTES = 128L * 1024L * 1024L"),
+        )
         assertTrue(hostPool.contains("MAX_ATOMIC_PAGE_BYTES = 128L * 1024L * 1024L"))
         assertTrue(hostPool.contains("HARD_MAX_POOL_BYTES = 320L * 1024L * 1024L"))
         assertTrue(hostPool.contains("listener(minimumRetirementBytes)"))
@@ -707,20 +735,26 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(pressure.contains("physicalVisibleLast = decodeProtectionRange.last"))
         assertTrue(pressure.contains("synchronized(pagesLock)"))
         assertTrue(pressure.contains("hostPressureRetirement = true"))
-        assertTrue(pressure.contains("trimPendingBitmapDeliveriesOutside(keep[0], keep[1])"))
+        assertTrue(pressure.contains("trimPendingBitmapDeliveriesOutside("))
+        assertTrue(pressure.contains("protectedPendingRunwayIndexes,"))
         assertTrue(pressure.contains("evictDeliveredBitmapsWithinHostPressureWindow("))
         assertTrue(pressure.contains("physicalVisibleFirst = physicalVisibleRange.first"))
         assertTrue(pressure.contains("physicalVisibleLast = physicalVisibleRange.last"))
         assertEquals(2, Regex("deferPublication = true").findAll(pressure).count())
         assertTrue(pressure.contains("postBitmapReleases(pressureReleases)"))
-        assertTrue(
-            pressure.indexOf("postBitmapReleases(pressureReleases)") >
-                pressure.lastIndexOf("synchronized(pagesLock)"),
+        val pressureSelectionEnd = pressure.indexOf(
+            "// PageRef selection and the decode-admission park above are the only work"
         )
+        val releasePost = pressure.indexOf("postBitmapReleases(pressureReleases)")
+        assertTrue(
+            pressureSelectionEnd >= 0 && releasePost > pressureSelectionEnd,
+        )
+        assertFalse(pressure.substring(pressureSelectionEnd, releasePost)
+            .contains("synchronized(pagesLock)"))
         assertTrue(pressure.contains("remainingRetirementBytes"))
         val adaptive = session.section(
             "private fun evictDeliveredBitmapsWithinHostPressureWindow(",
-            "/**\n     * The short direct-Wi-Fi profile",
+            "private fun trimDirectWifiLaunchPixelsOutsideWindow()",
         )
         assertTrue(adaptive.contains("latestReportedWindow.get()"))
         assertTrue(adaptive.contains("index in visibleFirst..visibleLast"))
@@ -737,7 +771,7 @@ class BitmapNativeRetirementArchitectureTest {
         )
         val eviction = session.section(
             "private fun evictDeliveredBitmaps(",
-            "private fun trimShortWebtoonLaunchPixelsOutsideWindow()",
+            "private fun trimDirectWifiLaunchPixelsOutsideWindow()",
         )
         assertEquals(
             2,
@@ -753,8 +787,13 @@ class BitmapNativeRetirementArchitectureTest {
         )
         assertTrue(eviction.contains("if (!hostPressureRetirement) {"))
         val windowRequest = session.section(
-            "val order = windowOrder(demandFirst, demandLast, safeAnchor, direction)",
+            "val order = buildList {",
             "private fun rehydrateSameStrictExactColdWindow(",
+        )
+        assertTrue(
+            windowRequest.contains(
+                "addAll(windowOrder(demandFirst, demandLast, safeAnchor, direction))",
+            ),
         )
         assertTrue(windowRequest.contains("hostExactPoolPressureRetiredPages.contains(index)"))
         assertTrue(windowRequest.contains("isPhysicalRehydrateEligible("))
@@ -771,9 +810,14 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(listenerAdoption.contains(
             "listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)",
         ))
-        assertTrue(listenerAdoption.contains(
-            "if (hasListenerDrawableDelivery(index, page) && authoritativeInstalled) return true",
-        ))
+        val repeatedDelivery = listenerAdoption.indexOf(
+            "if (hasListenerDrawableDelivery(index, page) && authoritativeInstalled) {",
+        )
+        val missingOwner = listenerAdoption.indexOf("if (!authoritativeInstalled) return false")
+        assertTrue(repeatedDelivery >= 0 && missingOwner > repeatedDelivery)
+        assertTrue(
+            listenerAdoption.substring(repeatedDelivery, missingOwner).contains("return true"),
+        )
         assertFalse(listenerAdoption.contains(
             "if (hasListenerDrawableDelivery(index, page)) return true",
         ))
@@ -805,7 +849,7 @@ class BitmapNativeRetirementArchitectureTest {
         val pressureClaimAt = exactRehydrate.indexOf(
             "claimHostPressureRetiredExactPageForRehydrate(index, page)",
         )
-        val exactFlightAt = exactRehydrate.indexOf("StrictAdjacentRehydrateFlight(")
+        val exactFlightAt = exactRehydrate.indexOf("val flight = StrictAdjacentRehydrateFlight(")
         assertTrue(exactRehydrate.contains("reportedHostPressureRehydrateWindowLocked("))
         assertFalse(exactRehydrate.contains("reportedPhysicalDecodeProtectionWindowLocked("))
         assertTrue(exactRehydrate.contains("isPhysicalRehydrateEligible("))
@@ -838,7 +882,7 @@ class BitmapNativeRetirementArchitectureTest {
             Regex("hostExactPoolPressureRetiredPages\\.remove\\(").findAll(session).count(),
         )
         val surfaceWindow = surface.section(
-            "private fun windowRequestLocked(busy: Boolean)",
+            "private fun windowRequestLocked(",
             "private fun dispatchWindowRequest(",
         )
         assertTrue(surfaceWindow.contains("firstVisiblePageLocked(scrollOffset)"))
@@ -886,10 +930,10 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(session.contains("val hostPressurePhysicalReentry: Boolean = false"))
         assertTrue(rehydrate.contains("authoritativeAdjacentRehydrate = true"))
         assertTrue(rehydrate.contains(
-            "!flight.hostPressurePhysicalReentry &&",
+            "!flight.hostPressurePhysicalReentry.get() &&",
         ))
         assertTrue(rehydrate.contains(
-            "hostPressurePhysicalReentry = flight.hostPressurePhysicalReentry",
+            "hostPressurePhysicalReentry = flight.hostPressurePhysicalReentry.get()",
         ))
         assertTrue(session.contains("delivery.hostPressurePhysicalReentry ||"))
         assertTrue(session.contains("delivery.exactAdjacentPhysicalIntent ||"))
@@ -920,6 +964,13 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(structureDelivery.indexOf("currentIndex != delivery.index") <
             structureDelivery.indexOf("canAccessAppendOnlyStablePrefix(currentIndex)"))
         assertTrue(activityAck.contains("val adjacentExactRehydrate = seal != null"))
+        assertTrue(activityAck.contains("val synchronousOpeningFirst = strictForwardReadyFirstPage"))
+        assertTrue(activityAck.contains(
+            "NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_SCROLL_RUNWAY_BODIES",
+        ))
+        assertTrue(activityAck.contains("val currentAnchor = currentPage"))
+        assertFalse(activityAck.contains("renderView.currentProgressPosition()"))
+        assertTrue(activityAck.contains("index == currentAnchor || synchronousOpeningRunway"))
         assertTrue(activityAck.contains("syncRenderPageIdentity(index)"))
         assertTrue(activityAck.contains("renderView.setPageAuthoritativeOriginalTiles("))
         assertTrue(surfaceInstall.contains("isIndependentAdjacentRunwayOriginalLocked("))
@@ -974,7 +1025,7 @@ class BitmapNativeRetirementArchitectureTest {
 
         assertTrue(route.contains("if (isAdjacentDrawableBatchPublicationPending(page))"))
         assertTrue(route.indexOf("if (isAdjacentDrawableBatchPublicationPending(page))") <
-            route.indexOf("StrictAdjacentRehydrateFlight("))
+            route.indexOf("val flight = StrictAdjacentRehydrateFlight("))
         assertTrue(completion.contains("publication.pageIdentities.forEach"))
         assertTrue(completion.contains("adjacentDrawableBatchPublicationPages.computeIfPresent"))
         assertTrue(completion.contains("requestRetainedWindowAfterStructureChange()"))
@@ -1129,6 +1180,9 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(prime.contains("synchronized(tokenCreationLock)"))
         assertTrue(prime.contains("freshTokenReserve.size < TOKEN_RESERVE_TARGET"))
         assertTrue(prime.contains("tokenReservePrimed = true"))
+        assertTrue(hostPool.contains("PROCESS_PRIME_TALL_SLOT_COUNT = 10"))
+        assertTrue(prime.contains("PROCESS_PRIME_TALL_SLOT_HEIGHT"))
+        assertFalse(hostPool.contains("PROCESS_PRIME_COMMON_SLOT_HEIGHT"))
         assertTrue(application.contains(
             "AppDispatchers.runIo(HostExactHardwareTilePool::primeProcessTokenReserve)",
         ))
@@ -1155,11 +1209,15 @@ class BitmapNativeRetirementArchitectureTest {
             "private fun fulfillSlotAllocationPlan(",
             "private fun rollbackSlotAllocationPlan(",
         )
+        val serializedAllocation = hostPool.section(
+            "private fun allocateExactHardwareBufferSerially(",
+            "private fun rollbackSlotAllocationPlan(",
+        )
         val slowAllocationPrefix =
             nativeAllocation.substringBefore("val poolStats = synchronized(lock)")
 
         val scratch = decode.indexOf("val scratchLease = acquireScratch(")
-        val batch = decode.indexOf("val reservedSlots = acquireSlots(")
+        val batch = decode.indexOf("            acquireSlots(")
         val copy = decode.indexOf("nativeCopyExactBitmapToHardwareTile(")
         val tokens = decode.indexOf("createTokensForSlots(reservedSlots)")
         assertTrue(scratch >= 0)
@@ -1169,7 +1227,7 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(hostPool.contains("BitmapRegionDecoder.newInstance("))
         assertTrue(decode.contains("decoder.decodeRegion("))
         assertTrue(decode.contains("inBitmap = scratchLease.bitmap"))
-        assertTrue(decode.contains("sourceWidth,\n                        0,\n                        span"))
+        assertTrue(decode.contains("sourceRegionWidth,\n                        0,\n                        span"))
         assertTrue(fileDecode.contains("nativeDecodeExactFileToHardwareTiles("))
         assertFalse(fileDecode.contains("readBytes()"))
         assertFalse(fileDecode.contains("BitmapRegionDecoder.newInstance("))
@@ -1182,8 +1240,10 @@ class BitmapNativeRetirementArchitectureTest {
         assertFalse(acquire.contains("nativeAllocateExactHardwareBuffer("))
         assertFalse(acquire.contains("nativeReleaseExactHardwareBuffer("))
         assertTrue(slowAllocationPrefix.contains("nativeReleaseExactHardwareBuffer("))
-        assertTrue(slowAllocationPrefix.contains("nativeAllocateExactHardwareBuffer("))
+        assertTrue(slowAllocationPrefix.contains("allocateExactHardwareBufferSerially("))
         assertFalse(slowAllocationPrefix.contains("synchronized(lock)"))
+        assertTrue(serializedAllocation.contains("nativeAllocateExactHardwareBuffer("))
+        assertFalse(serializedAllocation.contains("synchronized(lock)"))
         assertTrue(nativeAllocation.contains("return plan.reusable + allocatedSlots"))
         assertTrue(acquire.contains("signalPressureLocked("))
         assertTrue(hostPool.contains("listener(minimumRetirementBytes)"))
@@ -1202,6 +1262,68 @@ class BitmapNativeRetirementArchitectureTest {
         assertFalse(allocation.contains("AHardwareBuffer_allocate"))
         assertFalse(allocation.contains("AHardwareBuffer_unlock"))
         assertTrue(allocation.contains("nativeReleaseExactHardwareBuffer"))
+    }
+
+    @Test
+    fun hostExactMirrorUsesSurfaceAcquireFenceWithoutBlockingEveryDecode() {
+        val native = File("src/main/cpp/ntk_rolling_surface_renderer.cpp").readText()
+        val presenter = File("src/main/cpp/present/DirectTileSurfacePresenter.cpp").readText()
+        val header = File("src/main/cpp/present/DirectTileSurfacePresenter.h").readText()
+        val publish = native.section(
+            "bool publishExactCpuTileHardwareBuffer(",
+            "// gfxstream exposes one process-wide gralloc submission lane.",
+        )
+        val buildInputs = native.section(
+            "bool collectDirectTileInputs(",
+            "bool buildDirectTileInputs(",
+        )
+
+        assertTrue(native.contains("std::atomic<int> hardwareWriteFenceFd{-1}"))
+        assertTrue(native.contains("waitAndCloseExactHardwareWriteFence(storage)"))
+        assertTrue(native.contains("closeExactHardwareWriteFence(storage)"))
+        assertTrue(publish.contains(
+            "hardwareWriteFenceFd.store(completionFenceFd, std::memory_order_release)",
+        ))
+        assertFalse(publish.contains("poll("))
+        assertTrue(buildInputs.contains("hardwareWriteFenceFd.load("))
+        assertTrue(header.contains("int acquireFenceFd = -1"))
+        assertTrue(presenter.contains("duplicateFence(tile.acquireFenceFd)"))
+        assertTrue(presenter.contains("waitFence(tile.acquireFenceFd)"))
+        assertTrue(presenter.contains(
+            "transaction, layer.surface, tile.buffer, acquireFences[tileIndex]",
+        ))
+    }
+
+    @Test
+    fun duplicateDirectTileCommitCannotPermanentlyPoisonTheVisibleQueue() {
+        val presenter = File("src/main/cpp/present/DirectTileSurfacePresenter.cpp").readText()
+        val commit = presenter.section(
+            "void handleCommit(Cookie& cookie, ASurfaceTransactionStats* stats) noexcept",
+            "void handleComplete(Cookie& cookie, ASurfaceTransactionStats* stats) noexcept",
+        )
+        val validCompletion = commit.indexOf("maybeReleaseCookieLocked(cookie);")
+        val duplicateBranch = commit.indexOf("} else {", validCompletion)
+        assertTrue(validCompletion >= 0 && duplicateBranch > validCompletion)
+        assertTrue(commit.substring(duplicateBranch).contains("late duplicate as idempotent"))
+        assertFalse(commit.substring(duplicateBranch).contains("callbackFailure = true"))
+        assertTrue(commit.contains("events.size() < kMaxQueuedEvents"))
+    }
+
+    @Test
+    fun immutableProducerSceneGeometryNeverBlocksItsProducerOnSurfaceControlApply() {
+        val native = File("src/main/cpp/ntk_rolling_surface_renderer.cpp").readText()
+        val geometrySubmit = native.section(
+            "std::int64_t submitProducerGeometry(",
+            "private:\n    std::int64_t enqueueFrame(",
+        )
+
+        assertTrue(geometrySubmit.contains("return enqueueFrame(env, std::move(command))"))
+        assertFalse(geometrySubmit.contains("directTilePresenter_.present("))
+        assertFalse(native.contains("tryPresentProducerGeometryDirect("))
+        assertTrue(native.contains("constexpr int kRollingConsumerNice = -14;"))
+        assertTrue(native.contains("constexpr int kRollingConsumerNiceFallback = -10;"))
+        val presenter = File("src/main/cpp/present/DirectTileSurfacePresenter.cpp").readText()
+        assertTrue(presenter.contains("setpriority(PRIO_PROCESS, 0, -14)"))
     }
 
     @Test
@@ -1399,11 +1521,18 @@ class BitmapNativeRetirementArchitectureTest {
             "private fun protectedStrictExactLaunchDisplayIndexes(",
             "private fun shouldProtectDeliveredPixelFromClear(",
         )
-        val viewportGate = protection.indexOf("if (isViewportInsideEpisode(page.manga)) continue")
+        val viewportGate = protection.indexOf(
+            "if (physicalViewportHasInstalledEpisodeBodyLocked(page.manga)) continue"
+        )
         val initialRunwayProtection = protection.indexOf(
             "page.sourceIndex < requiredInitialAdjacentRunwayPages(page.manga)",
         )
 
+        assertTrue(protection.contains("if (!strictExactColdRolling) return emptySet()"))
+        assertFalse(protection.contains(
+            "if (strictExactColdRolling && !strictExactRollingPixelResidency.get())"
+        ))
+        assertTrue(session.contains("if (index in protectedLaunchIndexes) return true"))
         assertTrue(viewportGate >= 0)
         assertTrue(initialRunwayProtection > viewportGate)
     }
@@ -1480,7 +1609,7 @@ class BitmapNativeRetirementArchitectureTest {
         val afterCommit = window.substringAfter("if (!retainedCommitted)")
         val history = session.section(
             "private fun retireConsumedForwardHistoryPixels(",
-            "private fun scheduleForwardReadingRetry()",
+            "private fun scheduleForwardReadingRetry(",
         )
 
         assertFalse(protectedCommit.contains("trimDeliveredPixelsForRetainedWindow("))
@@ -1504,6 +1633,23 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(update.contains("pageTopDeltas.size != pages.size"))
         assertTrue(surface.contains("var placeholderRatio: Float"))
         assertTrue(surface.contains("viewWidth * page.placeholderRatio"))
+    }
+
+    @Test
+    fun legacyTileRedeliveryCannotDowngradeThePresentedAuthoritativeOwner() {
+        val setter = surface.section(
+            "fun setPageTiles(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>)",
+            "fun clearPageBitmap(index: Int)",
+        )
+
+        assertFalse(setter.contains("page.originalProof = null"))
+        assertTrue(setter.contains("isSettledTilesDeliveryNoOpLocked("))
+        val appliedMutation = "invalidateRetainedPageNodeIfTilesChanged(index, page, tiles)"
+        assertTrue(setter.contains(appliedMutation))
+        assertTrue(
+            setter.indexOf("isSettledTilesDeliveryNoOpLocked(") <
+                setter.indexOf(appliedMutation),
+        )
     }
 
     @Test

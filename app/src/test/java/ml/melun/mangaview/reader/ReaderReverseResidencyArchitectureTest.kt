@@ -27,10 +27,12 @@ class ReaderReverseResidencyArchitectureTest {
         )
         val directionRecorded = drag.indexOf("activeInputDirection = direction")
         val reverseRecorded = drag.indexOf("pendingReverseWindowFirstPageHint =")
-        val edgeReturn = drag.indexOf("if (isAtInputEdgeLocked(direction)) return false")
+        val edgeCheck = drag.indexOf("if (isAtInputEdgeLocked(direction))")
+        val edgeReturn = drag.indexOf("return false", edgeCheck)
         assertTrue(directionRecorded >= 0)
         assertTrue(reverseRecorded > directionRecorded)
-        assertTrue(edgeReturn > reverseRecorded)
+        assertTrue(edgeCheck > reverseRecorded)
+        assertTrue(edgeReturn > edgeCheck)
 
         val input = slice(surface, "override fun onTouchEvent(", "override fun performClick(")
         val noMovement = input.indexOf("suppressEdgeNoMovementScrollStatsLocked(nowMs)")
@@ -44,7 +46,7 @@ class ReaderReverseResidencyArchitectureTest {
             "private fun dispatchWindowRequest(",
         )
         val captureIndex = capture.indexOf("pendingReverseWindowFirstPageHint =")
-        val cadenceReturn = capture.indexOf("if (busy && lastRequestedBusy)")
+        val cadenceReturn = capture.indexOf("if (!forceDispatch && busy && lastRequestedBusy)")
         assertTrue(captureIndex >= 0)
         assertTrue(cadenceReturn > captureIndex)
 
@@ -64,7 +66,7 @@ class ReaderReverseResidencyArchitectureTest {
         val evidence = window.indexOf("val exactReverseFirstPage")
         val exactFloor = window.indexOf("recordStrictExactPhysicalReverseFloor(", evidence)
         val restoreGate = window.indexOf("if (\n                activeInitialRestorePage >= 0", exactFloor)
-        val floor = window.indexOf("directWifiShortWebtoonForwardRequestStartPage(", exactFloor)
+        val floor = window.indexOf("directWifiRollingForwardRequestStartPage(", exactFloor)
         val request = window.indexOf("activeSession?.requestWindowAsync(", floor)
         assertTrue(evidence >= 0)
         assertTrue(exactFloor > evidence)
@@ -75,10 +77,11 @@ class ReaderReverseResidencyArchitectureTest {
         val exactFloorLatch = slice(
             session,
             "fun recordStrictExactPhysicalReverseFloor(",
-            "fun directWifiShortWebtoonForwardRequestStartPage(",
+            "fun directWifiRollingForwardRequestStartPage(",
         )
         assertTrue(exactFloorLatch.contains("if (!strictExactColdRolling"))
-        assertTrue(exactFloorLatch.contains("synchronized(pagesLock)"))
+        assertTrue(exactFloorLatch.contains("val pageIndex = publishedPageIndex.get()"))
+        assertTrue(!exactFloorLatch.contains("synchronized(pagesLock)"))
         assertTrue(exactFloorLatch.contains("isStrictExactLaunchPage(first)"))
         assertTrue(exactFloorLatch.contains("first.sourceIndex"))
         assertTrue(exactFloorLatch.contains("strictActiveSourceFloor.compareAndSet"))
@@ -88,7 +91,7 @@ class ReaderReverseResidencyArchitectureTest {
     @Test
     fun displayIndexChangingMutationsAdvanceTheStructureEpochBeforeScheduling() {
         val prepend = slice(surface, "fun prependPageCount(", "fun removePageRange(")
-        val prependMutation = prepend.indexOf("pages.add(0,")
+        val prependMutation = prepend.indexOf("addPageLocked(0,")
         val prependReset = prepend.indexOf("resetTraversalProofLocked(pages.size)")
         val prependSchedule = prepend.indexOf("scheduleFrameLocked()")
         assertTrue(prependMutation >= 0)
@@ -96,7 +99,7 @@ class ReaderReverseResidencyArchitectureTest {
         assertTrue(prependSchedule > prependReset)
 
         val remove = slice(surface, "fun removePageRange(", "fun setPageLoading(")
-        val removeMutation = remove.indexOf("pages.subList(startIndex, endExclusive).clear()")
+        val removeMutation = remove.indexOf("removePageRangeLocked(startIndex, endExclusive)")
         val removeReset = remove.indexOf("resetTraversalProofLocked(pages.size)")
         val removeSchedule = remove.indexOf("scheduleFrameLocked()")
         assertTrue(removeMutation >= 0)
@@ -172,9 +175,15 @@ class ReaderReverseResidencyArchitectureTest {
             "private fun renderDirectSurfaceFrame(",
             "private fun revealNativeSurfaceAfterPresentedFrame(",
         )
-        assertTrue(producer.contains("deferredNativeCommandsInFlight.get() == 0"))
+        assertTrue(producer.contains("val deferredCommandCount = deferredNativeCommandsInFlight.get()"))
+        assertTrue(producer.contains("val noDeferredCommand = deferredCommandCount == 0"))
         assertTrue(producer.contains("nativeHasFrameMailboxCapacity"))
         assertTrue(producer.contains("if (!nativeMailboxReady)"))
+        val backpressure = producer.substring(producer.indexOf("if (!nativeMailboxReady)"))
+        assertTrue(
+            backpressure.indexOf("postNativeMailboxAdmissionWake()") <
+                backpressure.indexOf("return"),
+        )
         assertTrue(!producer.contains("activeBandCropRunway ||"))
 
         val renderRegistration = slice(

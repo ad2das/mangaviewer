@@ -202,14 +202,17 @@ data class StrictRollingAdmission(
             allowedLastSource == other.allowedLastSource
 
     /**
-     * Source transport work changes only when its gate, direction priority, or admitted source
-     * range changes. Visible display bounds still update decoded-pixel residency, but must not
-     * create a new source epoch: boundary jitter otherwise cancels/requeues the same bodies for
-     * every presented frame and makes long reading progressively janky.
+     * Source transport work changes only when its gate or admitted source range changes. A noisy
+     * compositor can alternate its direction hint while one physical fling is still moving. The
+     * direction remains useful for local decode ordering, but it must not create a new transport
+     * epoch for the identical immutable source range: doing so cancels/requeues the same bodies
+     * on every frame and can starve the pixels that the fling is waiting for.
+     *
+     * Visible display bounds likewise update decoded-pixel residency without changing source
+     * ownership.
      */
     fun hasSameSourceDemand(other: StrictRollingAdmission): Boolean =
         physicalDrawPresented == other.physicalDrawPresented &&
-            direction == other.direction &&
             allowedFirstSource == other.allowedFirstSource &&
             allowedLastSource == other.allowedLastSource
 

@@ -59,6 +59,15 @@ bool waitFence(int fd) noexcept {
     return result > 0 && (descriptor.revents & (POLLIN | POLLERR | POLLHUP)) != 0;
 }
 
+int duplicateFence(int fd) noexcept {
+    if (fd < 0) return -1;
+    int duplicate = -1;
+    do {
+        duplicate = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    } while (duplicate < 0 && errno == EINTR);
+    return duplicate;
+}
+
 }  // namespace
 
 struct DirectTileSurfacePresenter::Impl {
@@ -222,6 +231,7 @@ struct DirectTileSurfacePresenter::Impl {
     std::deque<ReleaseJob> releaseJobs;
     std::deque<DirectTilePresentEvent> events;
     bool callbackFailure = false;
+    std::uint32_t callbackFailureReason = 0;
 
     ~Impl() {
         stopping.store(true, std::memory_order_release);
@@ -241,6 +251,7 @@ struct DirectTileSurfacePresenter::Impl {
             std::lock_guard<std::mutex> lock(mutex);
             if (events.size() >= kMaxQueuedEvents) {
                 callbackFailure = true;
+                if (callbackFailureReason == 0) callbackFailureReason = 1;
             } else {
                 events.push_back(event);
             }
@@ -316,10 +327,18 @@ struct DirectTileSurfacePresenter::Impl {
                     events.push_back(event);
                 } else {
                     callbackFailure = true;
+                    if (callbackFailureReason == 0) callbackFailureReason = 2;
                 }
                 maybeReleaseCookieLocked(cookie);
             } else {
-                callbackFailure = true;
+                // SurfaceFlinger can redeliver an OnCommit callback when the parent Surface is
+                // detached/reattached repeatedly while transactions are being coalesced. Commit
+                // owns no acquire/release-fence resources, and commitPendingCount was already
+                // retired by the first valid callback. Treat this late duplicate as idempotent.
+                // Poisoning the whole presenter here left canPresent() false without a FAILED
+                // event, so one visible frame remained queued forever despite every slot/fence
+                // ledger being empty. Event overflow and invalid OnComplete evidence remain
+                // fail-closed through their existing callbackFailure/FAILED paths.
             }
         }
         if (valid) commitPendingCount.fetch_sub(1, std::memory_order_acq_rel);
@@ -384,6 +403,7 @@ struct DirectTileSurfacePresenter::Impl {
                 maybeReleaseCookieLocked(cookie);
             } else {
                 callbackFailure = true;
+                if (callbackFailureReason == 0) callbackFailureReason = 3;
             }
         }
         if (!valid) {
@@ -440,7 +460,9 @@ struct DirectTileSurfacePresenter::Impl {
 
     void completionLoop() noexcept {
         (void)pthread_setname_np(pthread_self(), "ReaderTileFence");
-        (void)setpriority(PRIO_PROCESS, 0, -10);
+        // Commit/fence evidence releases the next exact content transaction. Match the bounded
+        // display owner instead of competing with ordinary decode threads at -10.
+        (void)setpriority(PRIO_PROCESS, 0, -14);
         while (true) {
             CompletionJob job{};
             {
@@ -748,6 +770,22 @@ struct DirectTileSurfacePresenter::Impl {
 
         ASurfaceTransaction* transaction = presentTransaction;
         if (transaction == nullptr) return false;
+        // Duplicate every pending CPU-write fence before mutating the reusable transaction. The
+        // framework consumes these descriptors in setBuffer(). If descriptor duplication is ever
+        // exhausted, synchronously proving the borrowed fence is the safe rare fallback.
+        std::array<int, kLayerCount> acquireFences{};
+        acquireFences.fill(-1);
+        for (std::size_t tileIndex = 0; tileIndex < visibleCount; ++tileIndex) {
+            const auto layerIndex = static_cast<std::size_t>(assignment[tileIndex]);
+            const auto& tile = *visible[tileIndex];
+            if (sameLayer(layers[layerIndex], tile) || tile.acquireFenceFd < 0) continue;
+            acquireFences[tileIndex] = duplicateFence(tile.acquireFenceFd);
+            if (acquireFences[tileIndex] >= 0 || waitFence(tile.acquireFenceFd)) continue;
+            for (int fenceFd : acquireFences) {
+                if (fenceFd >= 0) close(fenceFd);
+            }
+            return false;
+        }
         Cookie* cookie = nullptr;
         if (cookieIndex.has_value()) {
             std::lock_guard<std::mutex> lock(mutex);
@@ -800,7 +838,10 @@ struct DirectTileSurfacePresenter::Impl {
                         .buffer = layer.buffer,
                     };
                 }
-                api.setBuffer(transaction, layer.surface, tile.buffer, -1);
+                // ASurfaceTransaction_setBuffer consumes the duplicated acquire-fence fd.
+                api.setBuffer(
+                    transaction, layer.surface, tile.buffer, acquireFences[tileIndex]);
+                acquireFences[tileIndex] = -1;
                 layer.buffer = tile.buffer;
                 layer.contentIdentity = tile.contentIdentity;
                 layer.structureEpoch = tile.structureEpoch;
@@ -928,6 +969,18 @@ bool DirectTileSurfacePresenter::canPresent() const noexcept {
     if (!attached()) return false;
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return !impl_->callbackFailure;
+}
+
+std::uint32_t DirectTileSurfacePresenter::failureReason() const noexcept {
+    if (impl_ == nullptr) return 0;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->callbackFailureReason;
+}
+
+std::size_t DirectTileSurfacePresenter::queuedEventCount() const noexcept {
+    if (impl_ == nullptr) return 0;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->events.size();
 }
 
 bool DirectTileSurfacePresenter::present(const DirectTileFrameInput& frame) noexcept {

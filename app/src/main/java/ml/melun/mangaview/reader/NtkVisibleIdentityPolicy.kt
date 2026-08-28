@@ -78,6 +78,32 @@ internal object NtkVisibleIdentityPolicy {
         return if (count == indexes.size) indexes else indexes.copyOf(count)
     }
 
+    /**
+     * Selects the episode block that owns current-state metadata in one validated viewport.
+     *
+     * The launch seal remains fixed for the whole continuous-reader session.  Several chapters
+     * later a real boundary frame can therefore contain B-tail and C-p0 while both differ from
+     * launch A.  Selecting the first non-A identity rolls the toolbar back to B on every delayed
+     * completion.  Physical document order is authoritative: forward motion owns the last block,
+     * reverse motion owns the first block.
+     */
+    fun stateEpisodeIdentity(
+        identities: List<ReaderSurfaceView.CommittedPageIdentity>,
+        launchEpisodePath: String,
+        direction: Int,
+    ): ReaderSurfaceView.CommittedPageIdentity? {
+        if (identities.isEmpty()) return null
+        return if (direction < 0) {
+            identities.firstOrNull { identity ->
+                identity.normalizedEpisodePath != launchEpisodePath
+            }
+        } else {
+            identities.lastOrNull { identity ->
+                identity.normalizedEpisodePath != launchEpisodePath
+            }
+        }
+    }
+
     /** Validates exact Surface identities without per-frame wrapper/block/set allocations. */
     fun isValidCommitted(
         identities: List<ReaderSurfaceView.CommittedPageIdentity>,

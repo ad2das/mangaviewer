@@ -120,4 +120,111 @@ class NtkHostGpuEmulatorCurrentWebtoonC8HealthStateTest {
         }
         assertFalse(state.qualified)
     }
+
+    @Test
+    fun fragmentedTlsRecoveryNeedsThreeDistinctExactEofProofs() {
+        val state = NtkHostGpuEmulatorFragmentedTlsRecoveryHealthState()
+        val recovered = evidence().copy(
+            transport = NtkHostGpuEmulatorFragmentedTlsRecoveryHealthState.TRANSPORT,
+        )
+
+        assertFalse(state.recordSuccess(1L, recovered))
+        assertFalse(state.recordSuccess(1L, recovered))
+        assertFalse(state.recordSuccess(2L, recovered.copy(usedRangeContinuation = true)))
+        assertTrue(state.recordSuccess(3L, recovered))
+        assertTrue(state.qualified)
+        assertFalse(state.recordSuccess(4L, recovered))
+    }
+
+    @Test
+    fun ordinaryTransportCannotQualifyFragmentedTlsRecoveryLanes() {
+        val state = NtkHostGpuEmulatorFragmentedTlsRecoveryHealthState(requiredSuccesses = 1)
+        assertFalse(state.recordSuccess(1L, evidence()))
+        assertFalse(state.qualified)
+    }
+
+    @Test
+    fun currentQuicNeedsThreeExactH3ProofsAndDegradesOnFallback() {
+        val state = NtkHostGpuEmulatorCurrentWebtoonQuicHealthState()
+        val h3 = evidence(protocol = "h3").copy(
+            transport = NtkHostGpuEmulatorCurrentWebtoonQuicHealthState.TRANSPORT,
+        )
+        // Opening pages are already transport-exact EOF/SHA evidence. They remain behind the
+        // separate contiguous p0..p5 viewport fence, but must not force a redundant second proof
+        // wave after that fence opens.
+        assertFalse(state.recordSuccess(0, 1L, h3))
+        assertFalse(state.recordSuccess(1, 2L, h3))
+        assertTrue(state.recordSuccess(2, 3L, h3))
+        assertTrue(state.qualified)
+        assertFalse(state.wellProven)
+
+        assertFalse(state.recordSuccess(3, 4L, h3))
+        assertFalse(state.recordSuccess(4, 5L, h3))
+        assertTrue(state.recordSuccess(5, 6L, h3))
+        assertTrue(state.wellProven)
+
+        assertFalse(state.recordSuccess(6, 7L, evidence()))
+        assertTrue(state.qualified)
+        assertFalse(state.wellProven)
+        assertFalse(state.frozen)
+    }
+
+    @Test
+    fun currentQuicPhysicalFailureDropsToBaseUntilFreshExactH3Window() {
+        val state = NtkHostGpuEmulatorCurrentWebtoonQuicHealthState()
+        val h3 = evidence(protocol = "h3").copy(
+            transport = NtkHostGpuEmulatorCurrentWebtoonQuicHealthState.TRANSPORT,
+        )
+        assertTrue(state.recordFailure(0))
+        assertTrue(state.frozen)
+        assertFalse(state.qualified)
+        assertFalse(state.wellProven)
+        assertFalse(state.recordSuccess(1, 1L, h3))
+        assertFalse(state.recordSuccess(2, 2L, h3))
+        assertTrue(state.recordSuccess(3, 3L, h3))
+        assertFalse(state.frozen)
+        assertTrue(state.qualified)
+        assertFalse(state.wellProven)
+    }
+
+    @Test
+    fun currentQuicFallbackBeforeQualificationRestartsProofWithoutPermanentFreeze() {
+        val state = NtkHostGpuEmulatorCurrentWebtoonQuicHealthState()
+        val h3 = evidence(protocol = "h3").copy(
+            transport = NtkHostGpuEmulatorCurrentWebtoonQuicHealthState.TRANSPORT,
+        )
+        assertFalse(state.recordSuccess(0, 1L, evidence()))
+        assertFalse(state.frozen)
+        assertFalse(state.qualified)
+        assertFalse(state.recordSuccess(1, 2L, h3))
+        assertFalse(state.recordSuccess(2, 3L, h3))
+        assertTrue(state.recordSuccess(3, 4L, h3))
+        assertTrue(state.qualified)
+    }
+
+    @Test
+    fun qualifiedQuicRangeContinuationDegradesAndRequiresFreshProofWindow() {
+        val state = NtkHostGpuEmulatorCurrentWebtoonQuicHealthState()
+        val h3 = evidence(protocol = "h3").copy(
+            transport = NtkHostGpuEmulatorCurrentWebtoonQuicHealthState.TRANSPORT,
+        )
+        repeat(6) { index ->
+            state.recordSuccess(index, index.toLong() + 1L, h3)
+        }
+        assertTrue(state.qualified)
+        assertTrue(state.wellProven)
+
+        assertFalse(state.recordSuccess(6, 7L, h3.copy(usedRangeContinuation = true)))
+        assertTrue(state.qualified)
+        assertFalse(state.wellProven)
+        assertFalse(state.frozen)
+
+        repeat(5) { index ->
+            assertFalse(state.recordSuccess(7 + index, 8L + index, h3))
+        }
+        assertFalse(state.wellProven)
+        assertTrue(state.recordSuccess(12, 13L, h3))
+        assertTrue(state.wellProven)
+        assertFalse(state.frozen)
+    }
 }

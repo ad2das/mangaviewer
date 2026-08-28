@@ -32,7 +32,66 @@ internal object NtkStrictDiscoveryThreadPolicy {
     }
 }
 
+/**
+ * A numeric adjacent chapter has already finished its document, trusted API and immutable manifest
+ * construction before these ownership boundaries run.  Once the predecessor is completely
+ * drawable, committing that prepared authority is a small registry transition and is what permits
+ * the bounded p0..p4 source runway to start.  Deferring it until an uninterrupted motion-idle gap
+ * makes a sustained reader hold the ready manifest for the whole chapter, then begin p0 only after
+ * the viewport is clamped at the boundary.  Webtoon and non-direct transports retain the stronger
+ * motion-idle fence because their authority and surface graphs have different measured pressure.
+ */
+internal object NtkPreparedAdjacentAuthorityMotionPolicy {
+    private fun isPreparedDirectWifiManhwa(
+        directWifiAdjacentBodyGate: Boolean,
+        predecessorReady: Boolean,
+        episodePath: String,
+    ): Boolean = directWifiAdjacentBodyGate && predecessorReady &&
+        episodePath.startsWith("/manhwa/")
+
+    fun mayParseDocumentDuringMotion(
+        directWifiAdjacentBodyGate: Boolean,
+        predecessorReady: Boolean,
+        episodePath: String,
+    ): Boolean = isPreparedDirectWifiManhwa(
+        directWifiAdjacentBodyGate,
+        predecessorReady,
+        episodePath,
+    )
+
+    fun mayParseBeforePredecessorComplete(
+        directWifiAdjacentBodyGate: Boolean,
+        episodePath: String,
+    ): Boolean = directWifiAdjacentBodyGate && episodePath.startsWith("/manhwa/")
+
+    fun mayCommitDuringMotion(
+        directWifiAdjacentBodyGate: Boolean,
+        predecessorReady: Boolean,
+        episodePath: String,
+    ): Boolean = isPreparedDirectWifiManhwa(
+        directWifiAdjacentBodyGate,
+        predecessorReady,
+        episodePath,
+    )
+}
+
 internal object NtkHostGpuEmulatorWebtoonControlPlanePolicy {
+    /**
+     * The host emulator's UDP/QUIC route can remain black-holed for the complete document
+     * timeout even while its TCP/TLS route is healthy.  Select the already-bounded strict H2
+     * client before the sole physical document request starts; this is transport selection, not
+     * a hedge or retry.  Cold page zero keeps the canonical RSC response below, while resumes and
+     * prepared adjacent chapters may additionally use the compact response shape.
+     */
+    fun shouldForceHttp2(
+        directWebtoon: Boolean,
+        emulatorRuntime: Boolean,
+        directWifiAdjacent: Boolean,
+        directWifiCurrent: Boolean,
+        rollingAdmission: Boolean,
+    ): Boolean = directWebtoon && emulatorRuntime && rollingAdmission &&
+        (directWifiAdjacent || directWifiCurrent)
+
     fun isEligible(
         directWebtoon: Boolean,
         emulatorRuntime: Boolean,
@@ -54,6 +113,19 @@ enum class NtkValidatedAdjacentFlightPhase {
     GATE_RELEASED,
     NETWORK_ENTERED,
     ROUTE_RECOVERY_SLOT_HELD,
+}
+
+/**
+ * An adjacent control flight shares the active reader generation. While that generation already
+ * owns the client's foreground network gate, re-entering under the target path would cancel the
+ * predecessor's live image dispatcher. The adjacent flight still owns and retires every one of
+ * its physical calls through its identity-bound call registry.
+ */
+internal object NtkAdjacentForegroundNetworkAdmissionPolicy {
+    fun shouldBorrowCurrentOwner(
+        adjacentPredecessorGate: Boolean,
+        sameGenerationOwnerActive: Boolean,
+    ): Boolean = adjacentPredecessorGate && sameGenerationOwnerActive
 }
 
 internal data class NtkValidatedAdjacentFlightRetirementCandidate(
@@ -180,8 +252,8 @@ internal object NtkPauseAdjustedTimestampPolicy {
  * Calls from activities, warmup and the reader all join this path-level flight. The document GET
  * and grant prerequisite overlap, but there is exactly one logical document request, one challenge
  * request, one image-API request, one document parse and one API parse for a discovery generation.
- * Webtoon consumes the server's response-local trusted grant directly; manhwa and a real full
- * challenge retain the isolated browser/key-signing authority.
+ * The isolated ACK engine handles both the server's short trusted-grant branch and its full
+ * challenge branch, so a full challenge never waits for a failed duplicate main-process probe.
  */
 object NtkStrictEpisodeDiscoveryCoordinator {
     private const val ADJACENT_GATE_OWNERSHIP_SLICE_MS = 1_000L
@@ -1616,6 +1688,17 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             }
         }
         if (!entered) return
+        // DNS-only work has no content or manifest authority. Starting it immediately after the
+        // committed foreground admission hides resolver latency under the mandatory ACK while the
+        // exact signed manifest remains the only code path allowed to open an image request.
+        flight.client.warmNtkStrictImageDnsAfterViewerClick(
+            flight.episodePath,
+            flight.viewerGeneration,
+        )
+        ReaderImageCache.prepareHostEmulatorCurrentWebtoonTransportAfterViewerClick(
+            flight.episodePath,
+            flight.viewerGeneration,
+        )
         try {
             // WebView teardown is marshalled to main and may wait for that callback. Never retain
             // the flight monitor across this compatibility barrier: the main thread can be behind
@@ -2085,23 +2168,21 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         path: String,
         ackRoute: AckRoute,
     ) {
-        if (isDirectTrustedWebtoon(path) && ackRoute.directTrustedTask == null) {
-            val task = FutureTask {
-                traceStage("NtkTrustedChallenge") {
-                    client.fetchExactNtkTrustedChallengeGrant(
-                        ackRoute.bootstrap,
-                        flight.physicalCalls,
-                    )
-                }
-            }
-            val thread = Thread(task, "ntk-strict-trusted-challenge").apply {
-                isDaemon = true
-                priority = (Thread.NORM_PRIORITY + 1).coerceAtMost(Thread.MAX_PRIORITY)
-            }
-            ackRoute.attachDirectTrustedTask(task, thread)
-            thread.start()
-        }
-        if (requiresClickOwnedIsolatedAck(path)) {
+        if (isDirectTrustedWebtoon(path)) {
+            // Webtoon normally selects the full challenge. The former main-process challenge
+            // first waited for nv-issue and only then started the isolated engine, adding one
+            // complete control-plane RTT to every cold open. Start the sole challenge owner and
+            // the independent nv seed together after the committed click. NtkAckBrowserEngine
+            // already validates and completes the short trusted-grant response without creating
+            // a WebView, so this preserves both server branches without duplicate requests.
+            ensureExactNvSeed(client, flight, ackRoute)
+            ensureIsolatedAck(client, flight, ackRoute)
+            Log.d(
+                "ViewerPerf",
+                "ntk_strict_click_owned_isolated_ack_start path=$path," +
+                    "generation=${flight.lease.generation.value},mode=webtoon_single_owner",
+            )
+        } else if (requiresClickOwnedIsolatedAck(path)) {
             // Slug manhwa cannot bind the document's virtual numeric replica names directly;
             // its exact source table is issued by the signed image API. Numeric manhwa retains
             // the demand-driven observation path.
@@ -2207,7 +2288,22 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 // Every profile uses this control gate. Only the scoped host-emulator webtoon can
                 // receive it before the full predecessor-drawable event.
                 awaitAdjacentControlReady(flight)
-                enterForegroundNetworkIfNeeded(flight)
+                val borrowedCurrentNetworkOwner =
+                    NtkAdjacentForegroundNetworkAdmissionPolicy.shouldBorrowCurrentOwner(
+                        adjacentPredecessorGate = true,
+                        sameGenerationOwnerActive =
+                            client.hasNtkStrictForegroundNetworkOwner(flight.viewerGeneration),
+                    )
+                if (!borrowedCurrentNetworkOwner) {
+                    enterForegroundNetworkIfNeeded(flight)
+                } else {
+                    Log.d(
+                        "ViewerPerf",
+                        "ntk_adjacent_foreground_network_borrowed " +
+                            "predecessor=${flight.adjacentPredecessorEpisodePath}," +
+                            "target=${flight.episodePath},generation=${flight.viewerGeneration}",
+                    )
+                }
                 startAckNetworkPrerequisites(client, flight, path, ackRoute)
             }
             // Keep the current resume and its exact forward neighbor on one strict OkHttp H2
@@ -2222,6 +2318,14 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     directWifiCurrent = flight.directWifiCurrentViewer,
                     rollingAdmission = flight.rollingAdmission,
                     initialPageIndex = flight.initialPageIndexHint,
+                )
+            val forceHostGpuEmulatorDirectWifiWebtoonDocumentHttp2 =
+                NtkHostGpuEmulatorWebtoonControlPlanePolicy.shouldForceHttp2(
+                    directWebtoon = directWebtoon,
+                    emulatorRuntime = hostGpuEmulatorRuntime,
+                    directWifiAdjacent = flight.directWifiAdjacentBodyGate,
+                    directWifiCurrent = flight.directWifiCurrentViewer,
+                    rollingAdmission = flight.rollingAdmission,
                 )
             if (!directWebtoon) {
                 // Resolve a four-page format sample at the committed click. It downloads no image
@@ -2375,7 +2479,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                                         }
                                     },
                                     flight.sameOriginFallbackConsumed ||
-                                        hostGpuEmulatorDirectWifiWebtoonControlPlane,
+                                        forceHostGpuEmulatorDirectWifiWebtoonDocumentHttp2,
                                     hostGpuEmulatorDirectWifiWebtoonControlPlane,
                                 )
                             }
@@ -2487,13 +2591,28 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             if (flight.adjacentPredecessorGate && !directWebtoon) {
                 // The exact document GET and bounded format probes may overlap the predecessor,
                 // but parsing their complete RSC/JSON response creates the discovery flight's
-                // largest short-lived Java object graph. No adjacent image body may cross the
-                // predecessor gate anyway, so parsing earlier has no publication benefit. Wait
-                // until predecessor bodies are resident, then keep this allocation burst out of
-                // an actual drag/fling. Network ownership and the already-consumed response stay
-                // intact; lifecycle ownership is checked during every short motion wait.
-                awaitAdjacentPredecessorComplete(flight)
-                if (hostGpuEmulatorRuntime) {
+                // largest short-lived Java object graph. Wait until predecessor bodies are
+                // resident. On transports whose adjacent body gate is still closed, keep this
+                // allocation burst out of an actual drag/fling. A direct-WiFi manhwa is different:
+                // predecessor completion opens its bounded p0 runway, and postponing this parse
+                // until the physical tail also postpones the image API and p0 body by the entire
+                // chapter. Parse that already-consumed response on this background owner so its
+                // bounded/paced runway can overlap the remaining read instead of blocking entry.
+                val parseBeforePredecessorComplete =
+                    NtkPreparedAdjacentAuthorityMotionPolicy.mayParseBeforePredecessorComplete(
+                        directWifiAdjacentBodyGate = flight.directWifiAdjacentBodyGate,
+                        episodePath = flight.episodePath,
+                    )
+                if (!parseBeforePredecessorComplete) {
+                    awaitAdjacentPredecessorComplete(flight)
+                }
+                if (hostGpuEmulatorRuntime &&
+                    !NtkPreparedAdjacentAuthorityMotionPolicy.mayParseDocumentDuringMotion(
+                        directWifiAdjacentBodyGate = flight.directWifiAdjacentBodyGate,
+                        predecessorReady = flight.adjacentPredecessorComplete.isDone,
+                        episodePath = flight.episodePath,
+                    )
+                ) {
                     NtkReaderTransferPacer.awaitMotionIdleUntilRequired(
                         requiredNow = flight.adjacentPhysicalBoundaryDemand::isDone,
                         stillOwned = {
@@ -2523,6 +2642,16 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 }
             }
             logStage(flight, "document_plan_ready")
+            if (flight.adjacentPredecessorGate && !directWebtoon &&
+                NtkPreparedAdjacentAuthorityMotionPolicy.mayParseBeforePredecessorComplete(
+                    directWifiAdjacentBodyGate = flight.directWifiAdjacentBodyGate,
+                    episodePath = flight.episodePath,
+                )
+            ) {
+                // Parsing the already-consumed response is safe at motion idle, but no target
+                // authority, API or body may cross the existing predecessor drawable gate.
+                awaitAdjacentPredecessorComplete(flight)
+            }
             clickOwnedAnchor?.let { anchor ->
                 check(anchor.validateDocumentDraft(draft)) {
                     "Click payload image count differs from the fresh episode document"
@@ -3227,7 +3356,12 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         // the unchanged atomic boundary in the next real input-idle gap. Current-episode work and
         // all network I/O retain their original admission and concurrency.
         if (flight.adjacentPredecessorGate &&
-            isAdjacentDisplayDeferredOwnershipBoundary(boundary)
+            isAdjacentDisplayDeferredOwnershipBoundary(boundary) &&
+            !NtkPreparedAdjacentAuthorityMotionPolicy.mayCommitDuringMotion(
+                directWifiAdjacentBodyGate = flight.directWifiAdjacentBodyGate,
+                predecessorReady = flight.adjacentPredecessorComplete.isDone,
+                episodePath = flight.episodePath,
+            )
         ) {
             NtkReaderTransferPacer.awaitMotionIdleUntilRequired(
                 requiredNow = flight.adjacentPhysicalBoundaryDemand::isDone,

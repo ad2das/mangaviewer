@@ -219,6 +219,22 @@ class NtkStrictPublishedBodyPinLifecycleTest {
             quarantineSpool.indexOf("call.markVerifiedBodyEof(encodedLength)") <
                 quarantineSpool.indexOf("succeeded = true")
         )
+
+        val adoption = functionSlice(
+            cacheSource,
+            "fun adoptQuarantinedEncodedOriginal(",
+            "/**\n     * Persists a memory-published exact body",
+        )
+        assertTrue(adoption.contains("val activeReadCount = activeReads[cacheKey]?.get() ?: 0"))
+        assertTrue(adoption.contains("existingByteProofBeforeLookup.encodedSha256"))
+        assertTrue(adoption.contains("existingEncodedProofBeforeLookup.encodedSha256"))
+        assertOrdered(
+            adoption,
+            "if (identicalLeasedBody)",
+            "registerResidentStrictPublishedBody(",
+            "return@withCacheWriteLock strictPublishedBody(",
+            "retireUnprovedStrictCacheTarget(cacheKey, finalFile)",
+        )
     }
 
     private fun functionSlice(source: String, start: String, end: String): String {

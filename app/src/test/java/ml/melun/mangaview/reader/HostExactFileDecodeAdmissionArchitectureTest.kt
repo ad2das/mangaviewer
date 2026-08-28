@@ -6,23 +6,29 @@ import org.junit.Test
 
 class HostExactFileDecodeAdmissionArchitectureTest {
     @Test
-    fun physicalMotionAdmissionIsCheckedOnlyAfterQueuedExactFileDecodeOwnsJvmGate() {
+    fun physicalMotionAdmissionIsCheckedOnlyAfterPriorityOrderedExactFileDecodeOwnsJvmGate() {
         val source = File(
             "src/main/java/ml/melun/mangaview/reader/HostExactHardwareTilePool.kt",
         ).readText()
 
-        assertTrue(source.contains("private val exactFileDecodeAdmissionLock = Any()"))
+        assertTrue(source.contains("private class ExactFileDecodeAdmissionGate"))
+        assertTrue(source.contains("compareByDescending<Waiter> { it.isUrgentNow() }"))
+        assertTrue(source.contains("requiredNow = mirrorPublicationRequiredNow"))
+        assertTrue(source.contains("private val exactFileDecodeAdmissionGate ="))
         assertTrue(
             source.contains(
-                "val nativeDecodeSucceeded = synchronized(exactFileDecodeAdmissionLock) {\n" +
-                    "                // This must remain inside the JVM mirror of native's scratch mutex.",
+                "exactFileDecodeAdmissionGate.withAdmission(\n" +
+                    "                    prioritized = prioritizeMirrorPublication,",
             ),
         )
         val gateStart = source.indexOf(
-            "val nativeDecodeSucceeded = synchronized(exactFileDecodeAdmissionLock)",
+            "exactFileDecodeAdmissionGate.withAdmission(\n" +
+                "                    prioritized = prioritizeMirrorPublication,",
         )
         val admission = source.indexOf(
-            "awaitOptionalPhysicalMotionAdmission(deferWhilePhysicalMotion)",
+            "awaitOptionalDecodeAdmission(\n" +
+                "                        deferWhilePhysicalMotion,\n" +
+                "                        decodeAdmission,",
             startIndex = gateStart,
         )
         val nativeCall = source.indexOf(
@@ -35,5 +41,11 @@ class HostExactFileDecodeAdmissionArchitectureTest {
         assertTrue(admission > gateStart)
         assertTrue(nativeCall > admission)
         assertTrue(gateEnd > nativeCall)
+        assertTrue(
+            source.contains(
+                "decodeAdmission?.invoke()\n" +
+                    "        awaitOptionalPhysicalMotionAdmission(deferWhilePhysicalMotion)",
+            ),
+        )
     }
 }

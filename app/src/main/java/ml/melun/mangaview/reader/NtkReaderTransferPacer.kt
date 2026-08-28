@@ -38,6 +38,7 @@ internal object NtkReaderTransferPacer {
     // The short grace protects latency-sensitive runway/decode admission without delaying it for
     // seconds after an ordinary gesture.
     private const val DISPLAY_IDLE_GRACE_NANOS = 250_000_000L
+    private const val PHYSICAL_INPUT_IDLE_GRACE_NANOS = 750_000_000L
     // An offscreen suffix has no visible deadline. Reader gestures commonly have one-to-three
     // second gaps, so sharing the short display grace resumed TLS decrypt, hashing and publication
     // immediately before the next gesture. Keep only this optional byte lane paused until a real
@@ -50,9 +51,10 @@ internal object NtkReaderTransferPacer {
     private val nextChunkReturnNanos = AtomicLong(0L)
     @Volatile private var active = false
     @Volatile private var displayIdleGraceUntilNanos = 0L
+    @Volatile private var physicalInputIdleGraceUntilNanos = 0L
     @Volatile private var optionalTransferIdleGraceUntilNanos = 0L
     private var owner: Any? = null
-    private var touchActive = false
+    @Volatile private var touchActive = false
     private var viewportMotionActive = false
     private var physicalForegroundOwner: Any? = null
     @Volatile private var physicalForegroundEpisodePath = ""
@@ -62,6 +64,11 @@ internal object NtkReaderTransferPacer {
             if (value) adoptOwnerLocked(ownerToken)
             if (owner !== ownerToken) return
             touchActive = value
+            physicalInputIdleGraceUntilNanos = if (value) {
+                0L
+            } else {
+                System.nanoTime() + PHYSICAL_INPUT_IDLE_GRACE_NANOS
+            }
             publishLocked()
         }
     }
@@ -83,6 +90,7 @@ internal object NtkReaderTransferPacer {
                 viewportMotionActive = false
                 active = false
                 displayIdleGraceUntilNanos = 0L
+                physicalInputIdleGraceUntilNanos = 0L
                 optionalTransferIdleGraceUntilNanos = 0L
                 nextChunkReturnNanos.set(0L)
             }
@@ -165,6 +173,18 @@ internal object NtkReaderTransferPacer {
     /** Lock-free display-priority level for maintenance workers outside the transfer path. */
     fun isPhysicalMotionActive(): Boolean = isDisplayPriorityActive()
 
+    /** Pointer-only priority used by offscreen native retirement during a passive fling. */
+    fun isPhysicalInputPriorityActive(): Boolean {
+        if (touchActive) return true
+        val deadline = physicalInputIdleGraceUntilNanos
+        if (deadline <= 0L) return false
+        if (System.nanoTime() < deadline) return true
+        if (physicalInputIdleGraceUntilNanos == deadline) {
+            physicalInputIdleGraceUntilNanos = 0L
+        }
+        return false
+    }
+
     /**
      * Waits only for the foreground motion level; it owns no socket, permit, or application lock.
      * Callers use this before allocation-heavy optional control work whose network response is
@@ -190,11 +210,27 @@ internal object NtkReaderTransferPacer {
         requiredNow: () -> Boolean,
         stillOwned: () -> Unit,
     ) {
+        var lastDiagnosticNanos = 0L
         while (!requiredNow() && isDisplayPriorityActive()) {
             stillOwned()
+            val now = System.nanoTime()
+            if (now - lastDiagnosticNanos >= 2_000_000_000L) {
+                lastDiagnosticNanos = now
+                android.util.Log.d(
+                    "ViewerPerf",
+                    "ntk_transfer_motion_wait ${diagnosticState(now)}",
+                )
+            }
             LockSupport.parkNanos(4_000_000L)
         }
         stillOwned()
+    }
+
+    private fun diagnosticState(nowNanos: Long): String = synchronized(lock) {
+        "active=$active,touch=$touchActive,viewport=$viewportMotionActive," +
+            "owner=${owner?.let(System::identityHashCode) ?: 0}," +
+            "displayGraceMs=${((displayIdleGraceUntilNanos - nowNanos) / 1_000_000L).coerceAtLeast(0L)}," +
+            "inputGraceMs=${((physicalInputIdleGraceUntilNanos - nowNanos) / 1_000_000L).coerceAtLeast(0L)}"
     }
 
     private fun awaitCompletedChunkSlot() {
@@ -248,6 +284,7 @@ internal object NtkReaderTransferPacer {
         touchActive = false
         viewportMotionActive = false
         displayIdleGraceUntilNanos = 0L
+        physicalInputIdleGraceUntilNanos = 0L
         optionalTransferIdleGraceUntilNanos = 0L
         nextChunkReturnNanos.set(0L)
     }

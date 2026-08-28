@@ -13,14 +13,21 @@ class NtkTransitionCardNativeReadinessArchitectureTest {
     ).readText()
 
     @Test
-    fun visibleStructuralCardWaitsForItsNativePixelTwinBeforeSubmission() {
+    fun visibleStructuralCardWaitsForItsNativeTwinWithoutBlockingFarOffscreenPixels() {
+        val frameItems = block("private fun nativeItemsReadyForCurrentFrame(", surface)
         val readiness = block("private fun nativeStructuralPixelsReady(", surface)
         val submit = block("private fun submitNativeFrame(", surface)
 
-        assertTrue(readiness.contains("item.cardText == null"))
-        assertTrue(readiness.contains("item.nativeCardBitmap"))
-        assertTrue(readiness.contains("HostExactHardwareTilePool.nativeHandle(nativeCard) == 0L"))
-        assertTrue(submit.contains("nativeStructuralPixelsReady(state)"))
+        assertTrue(frameItems.contains("state.nativeBandItems.ifEmpty { state.items }"))
+        assertTrue(frameItems.contains("nativeItemPixelsReadyForSubmission(item, directTiles)"))
+        assertTrue(frameItems.contains("top >= state.height.toFloat() + guard"))
+        assertTrue(frameItems.contains("top + item.pageHeight <= -guard"))
+        assertTrue(frameItems.contains("return nativeItems.filterNot"))
+        assertTrue(readiness.contains("nativeItems.all"))
+        assertTrue(submit.contains("val nativeItems = nativeItemsReadyForCurrentFrame(state)"))
+        assertTrue(submit.contains("nativeStructuralPixelsReady(state, nativeItems)"))
+        assertTrue(submit.indexOf("nativeItemsReadyForCurrentFrame(state)") <
+            submit.indexOf("val cleanPixels"))
     }
 
     @Test
@@ -30,6 +37,26 @@ class NtkTransitionCardNativeReadinessArchitectureTest {
 
         assertTrue(copy.contains("waitForCompatibleRetirement = false"))
         assertTrue(acquire.contains("waitForCompatibleRetirement && newAllocationExceedsSettledTarget"))
+    }
+
+    @Test
+    fun adjacentTransitionCardNativeTwinIsPreparedBeforeAtomicStructurePublication() {
+        val session = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderSession.kt",
+        ).readText()
+        val append = block("private fun appendResolvedEpisodeInitialRunway(", session)
+        val prepare = block("fun preparePageCard(", surface)
+        val install = block("fun setPageCard(", surface)
+
+        assertTrue(append.contains("listener::onPageCardPreparationRequested"))
+        assertTrue(
+            append.indexOf("listener::onPageCardPreparationRequested") <
+                append.indexOf("shouldDeferDirectWifiAdjacentStructurePublication(target)"),
+        )
+        assertTrue(prepare.contains("TRANSITION_CARD_NATIVE_EXECUTOR.execute"))
+        assertTrue(prepare.contains("preparedNativeTransitionCards.put("))
+        assertTrue(install.contains("preparedNativeTransitionCards.remove(title)"))
+        assertTrue(install.contains("page.nativeCardBitmap = prepared?.nativeToken"))
     }
 
     private fun block(signature: String, source: String): String {

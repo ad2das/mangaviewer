@@ -38,6 +38,30 @@ class NtkExecutionBootstrapTest {
     }
 
     @Test
+    fun rollingDirectWifiTopologyDefersCurrentAndAdjacentWorkersWithoutChangingOwnership() {
+        val policy = NtkDirectWifiRollingBootstrapTopology
+
+        assertTrue(policy.shouldDeferBootstrap(
+            "/webtoon/work/current", true, true, false,
+        ))
+        assertTrue(policy.shouldDeferBootstrap(
+            "/manhwa/work/current", true, true, false,
+        ))
+        assertFalse(policy.shouldDeferBootstrap(
+            "/webtoon/work/current", false, true, false,
+        ))
+        assertFalse(policy.shouldDeferBootstrap(
+            "/webtoon/work/current", true, false, false,
+        ))
+        assertFalse(policy.shouldDeferBootstrap(
+            "/webtoon/work/current", true, true, true,
+        ))
+        assertEquals(2, policy.routeLaneCount(true, 8))
+        assertEquals(1, policy.routeLaneCount(true, 1))
+        assertEquals(8, policy.routeLaneCount(false, 8))
+    }
+
+    @Test
     fun strictSourceBootstrapPrestartsTheCompleteBoundedPhysicalRing() {
         val bootstrap = NtkStrictSourceExecutionBootstrap()
         awaitThreads(1 + NTK_STRICT_PHYSICAL_WORKER_LANES + 8) {

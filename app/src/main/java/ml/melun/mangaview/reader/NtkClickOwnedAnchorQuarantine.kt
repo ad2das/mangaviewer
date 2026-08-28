@@ -3912,6 +3912,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 opened,
                 callCancellation,
                 waveRecoveryState = manhwaWaveRecoveryState,
+                prioritizeManhwaHeaderRecovery = restoredAnchorOrdinaryDirectWifi ||
+                    (directWifiAdjacentOwned &&
+                        pageIndex - forwardFirstPage in
+                            0 until directWifiAdjacentPhysicalRunwayPages),
                 telemetryAfterImageHeaders = telemetryAfterImageHeaders,
                 validImageHeadersSink = {
                     onValidImageHeaders()

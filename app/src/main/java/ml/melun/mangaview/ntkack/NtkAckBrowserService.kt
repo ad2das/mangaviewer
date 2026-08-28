@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.Process
+import android.util.Log
 import java.util.UUID
 
 class NtkAckBrowserService : Service() {
@@ -42,11 +43,37 @@ class NtkAckBrowserService : Service() {
             if (!authorize(request?.protocolVersion, callback, request?.clientPid ?: 0, "warm")) return
             val target = callback!!
             mainHandler.post {
-                // This RPC establishes and authenticates the isolated service, not a content
-                // warm-up. A trusted server grant is entirely native and must not wait for a
-                // Chromium renderer that it will never use. The engine creates its WebView on
-                // demand only if the server returns the full JavaScript/WASM challenge branch.
-                safeCallback(target) { it.onWarmReady(buildHello()) }
+                // Prepare the two content-free process resources together: the reusable public
+                // request key and an inert, measured WebView shell. Neither warm carries a work,
+                // episode, challenge, guard, ACK, or image identity. The committed click remains
+                // the sole owner of all content-bearing operations, while a cold Chromium process
+                // no longer consumes most of the first physical scroll runway.
+                var controlFinished = false
+                var rendererFinished = false
+                var callbackSent = false
+                fun maybeCompleteWarm() {
+                    if (callbackSent || !controlFinished || !rendererFinished) return
+                    callbackSent = true
+                    safeCallback(target) { it.onWarmReady(buildHello()) }
+                }
+                engine.warmControlPlane(request!!) { result ->
+                    result.exceptionOrNull()?.let {
+                        // Warming is never authority. The click-owned flight can re-register the
+                        // same key through its normal fail-closed protocol.
+                        Log.w("NtkAckBrowserService", "ack_control_plane_warm_failed", it)
+                    }
+                    controlFinished = true
+                    maybeCompleteWarm()
+                }
+                engine.warm(request) { result ->
+                    result.exceptionOrNull()?.let {
+                        // A renderer warm failure likewise leaves startAck's cold creation path
+                        // intact instead of making the service unusable.
+                        Log.w("NtkAckBrowserService", "ack_renderer_warm_failed", it)
+                    }
+                    rendererFinished = true
+                    maybeCompleteWarm()
+                }
             }
         }
 

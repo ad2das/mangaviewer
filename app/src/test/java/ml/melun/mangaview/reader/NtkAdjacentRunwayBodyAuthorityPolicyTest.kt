@@ -116,11 +116,20 @@ class NtkAdjacentRunwayBodyAuthorityPolicyTest {
                 append.indexOf("startAdjacentForegroundStreamsForRefs("),
         )
         assertTrue(append.contains("if (!strictExactDescriptorOnly) {\n                startAdjacentForegroundStreamsForRefs("))
-        assertTrue(append.contains("strictExactDescriptorOnly && !isDirectWifiStrictAdjacentTransportActive()"))
         assertTrue(
-            initialPreparation.indexOf("if (strictExactManhwaLeaseRequired)") <
-                initialPreparation.indexOf("prepareAdjacentRunwayDrawableBatch("),
+            append.contains(
+                "!strictExactDescriptorOnly || isDirectWifiStrictAdjacentTransportActive()"
+            )
         )
+        val sparseP0Handoff = initialPreparation.indexOf(
+            "append_adjacent_exact_p0_prefetch_deferred_to_sparse_head",
+        )
+        assertTrue(sparseP0Handoff >= 0)
+        assertTrue(
+            initialPreparation.indexOf("if (strictExactManhwaLeaseRequired)") >
+                sparseP0Handoff,
+        )
+        assertTrue(initialPreparation.contains("isNtkManhwaOrWebtoonEpisodePath(path)"))
     }
 
     @Test
@@ -133,7 +142,7 @@ class NtkAdjacentRunwayBodyAuthorityPolicyTest {
         assertTrue(reject >= 0)
         assertTrue(legacyFetch > reject)
         val rejectionBranch = preparation.substring(reject, legacyFetch)
-        assertTrue(rejectionBranch.contains("preparingInitialAdjacentRunways.remove"))
+        assertTrue(rejectionBranch.contains("finishInitialAdjacentRunwayPreparation"))
         assertTrue(rejectionBranch.contains("return false"))
     }
 

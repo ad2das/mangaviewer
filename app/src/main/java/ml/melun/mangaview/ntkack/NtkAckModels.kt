@@ -58,6 +58,7 @@ data class NtkAckWarmRequest(
     val userAgent: String,
     val viewport: NtkAckViewport,
     val clientPid: Int,
+    val identitySeeds: List<NtkAckCookie> = emptyList(),
 ) : Parcelable
 
 @Parcelize

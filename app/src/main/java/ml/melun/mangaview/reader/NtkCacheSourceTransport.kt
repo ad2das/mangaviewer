@@ -93,6 +93,9 @@ internal class NtkCacheSourceTransport(
     override fun onForegroundIdleCompletionRequested(episode: NtkEpisodeToken) =
         strictSession.onForegroundIdleCompletionRequested(episode)
 
+    override fun onPhysicalBlockedPageRequested(episode: NtkEpisodeToken, pageIndex: Int) =
+        strictSession.onPhysicalBlockedPageRequested(episode, pageIndex)
+
     override fun unresolvedStreamedExactBodyCount(): Int =
         strictSession.unresolvedStreamedExactBodyCount()
 

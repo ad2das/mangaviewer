@@ -1,5 +1,7 @@
 package ml.melun.mangaview.activity;
 
+import android.net.Network;
+
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
@@ -18,19 +20,25 @@ import ml.melun.mangaview.mangaview.CustomHttpClient;
 
 public final class LocalWebViewProxy {
     private final ServerSocket serverSocket;
+    private final Network upstreamNetwork;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private volatile boolean closed = false;
 
     public static LocalWebViewProxy start() throws Exception {
+        return start(null);
+    }
+
+    public static LocalWebViewProxy start(Network upstreamNetwork) throws Exception {
         ServerSocket socket = new ServerSocket();
         socket.bind(new InetSocketAddress("127.0.0.1", 0));
-        LocalWebViewProxy proxy = new LocalWebViewProxy(socket);
+        LocalWebViewProxy proxy = new LocalWebViewProxy(socket, upstreamNetwork);
         proxy.acceptLoop();
         return proxy;
     }
 
-    private LocalWebViewProxy(ServerSocket serverSocket) {
+    private LocalWebViewProxy(ServerSocket serverSocket, Network upstreamNetwork) {
         this.serverSocket = serverSocket;
+        this.upstreamNetwork = upstreamNetwork;
     }
 
     public int port() {
@@ -90,14 +98,31 @@ public final class LocalWebViewProxy {
     private Socket connectUpstream(String host, int port) throws Exception {
         Exception lastError = null;
         for(String connectHost : proxyConnectCandidates(host)) {
-            Socket upstream = new Socket();
             try {
-                upstream.bind(new InetSocketAddress(InetAddress.getByName("0.0.0.0"), 0));
-                upstream.connect(new InetSocketAddress(InetAddress.getByName(connectHost), port), 10000);
-                return upstream;
+                InetAddress[] addresses = upstreamNetwork != null
+                        ? upstreamNetwork.getAllByName(connectHost)
+                        : InetAddress.getAllByName(connectHost);
+                for(InetAddress address : addresses) {
+                    Socket upstream = upstreamNetwork != null
+                            ? upstreamNetwork.getSocketFactory().createSocket()
+                            : new Socket();
+                    try {
+                        upstream.setTcpNoDelay(true);
+                        upstream.setKeepAlive(true);
+                        upstream.connect(new InetSocketAddress(address, port), 10000);
+                        return upstream;
+                    } catch (Exception e) {
+                        lastError = e;
+                        closeQuietly(upstream);
+                        android.util.Log.d(
+                                "CaptchaActivity",
+                                "NTK WebView proxy upstream failed: " + connectHost + "/" + address,
+                                e
+                        );
+                    }
+                }
             } catch (Exception e) {
                 lastError = e;
-                closeQuietly(upstream);
                 android.util.Log.d("CaptchaActivity", "NTK WebView proxy upstream failed: " + connectHost, e);
             }
         }

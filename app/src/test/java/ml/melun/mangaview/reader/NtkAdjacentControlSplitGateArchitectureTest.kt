@@ -300,11 +300,11 @@ class NtkAdjacentControlSplitGateArchitectureTest {
         )
         assertTrue(
             atomicRunway.indexOf("claimForwardAdjacentStructurePublication(target)") <
-                atomicRunway.indexOf("pages.addAll(initialRefs)")
+                atomicRunway.indexOf("pages.addAll(structureRefs)")
         )
         assertTrue(
             exactP0.indexOf("claimForwardAdjacentStructurePublication(target)") <
-                exactP0.indexOf("pages.addAll(initialRefs)")
+                exactP0.indexOf("pages.addAll(allRefs)")
         )
         assertTrue(numeric.contains("rememberAdjacentStrictPredecessor("))
     }

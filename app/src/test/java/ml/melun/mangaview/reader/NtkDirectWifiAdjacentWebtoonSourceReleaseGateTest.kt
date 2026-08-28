@@ -107,7 +107,10 @@ class NtkDirectWifiAdjacentWebtoonSourceReleaseGateTest {
                 cellularResilientTransport = false,
                 adjacentPrefetchReleased = true,
                 episodePath = "/manhwa/2/next",
-            ) == 2,
+            ) == NtkAdjacentBulkReleasePolicy.HOST_GPU_MANHWA_RELEASED_BODY_TRANSFERS,
+        )
+        assertTrue(
+            NtkAdjacentBulkReleasePolicy.HOST_GPU_MANHWA_RELEASED_BODY_TRANSFERS == 4,
         )
         assertTrue(
             NtkAdjacentBulkReleasePolicy.releasedPhysicalLaneCount(

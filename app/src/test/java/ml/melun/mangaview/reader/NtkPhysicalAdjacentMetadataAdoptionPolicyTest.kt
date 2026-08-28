@@ -6,6 +6,31 @@ import org.junit.Test
 
 class NtkPhysicalAdjacentMetadataAdoptionPolicyTest {
     @Test
+    fun stationaryMixedBoundaryCannotUndoManualPreviousNavigation() {
+        assertFalse(
+            NtkPhysicalAdjacentMetadataAdoptionPolicy.shouldAdoptMixedBoundary(
+                outgoingPixelsFullyConsumed = false,
+            ),
+        )
+        assertFalse(
+            NtkPhysicalAdjacentMetadataAdoptionPolicy.shouldAdoptMixedBoundary(
+                outgoingPixelsFullyConsumed = false,
+            ),
+        )
+        assertTrue(
+            NtkPhysicalAdjacentMetadataAdoptionPolicy.shouldAdoptMixedBoundary(
+                outgoingPixelsFullyConsumed = true,
+            ),
+        )
+        assertFalse(
+            NtkPhysicalAdjacentMetadataAdoptionPolicy.shouldAdoptMixedBoundary(
+                outgoingPixelsFullyConsumed = true,
+                freshPhysicalInputAfterEpisodeLaunch = false,
+            ),
+        )
+    }
+
+    @Test
     fun matchingCommittedPhysicalAdjacentPathOwnsMetadataTransition() {
         assertTrue(
             NtkPhysicalAdjacentMetadataAdoptionPolicy.hasCommittedPhysicalAuthority(

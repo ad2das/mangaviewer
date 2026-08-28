@@ -681,6 +681,15 @@ class ReaderSessionListenerGate(
         if (active() && !suppressInstalledVisualMutation(index)) downstream.onPageError(index, message)
     }
 
+    override fun onStrictExactSourceTerminal(
+        episodePath: String,
+        retryableTransport: Boolean,
+    ) {
+        if (active()) {
+            downstream.onStrictExactSourceTerminal(episodePath, retryableTransport)
+        }
+    }
+
     override fun onPageCleared(index: Int) {
         if (!active()) return
         val entry = adopted.entry(index)

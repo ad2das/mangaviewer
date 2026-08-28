@@ -150,12 +150,16 @@ class BenchmarkAdjacentP0SignalArchitectureTest {
     @Test
     fun activitySemanticFallbackAndMacroCrossChecksRemainMandatory() {
         val activityCommit = block(
-            "private fun handleStrictRollingCompletedDraw(",
+            "private fun handleAcceptedStrictRollingCompletedDraw(",
             activitySource,
         )
         val telemetry = activityCommit.indexOf("ViewerTelemetry.adjacentActualDrawCommitted(")
         val fallback = activityCommit.indexOf("BenchmarkAdjacentCommitSignal.publish(")
-        assertTrue(telemetry >= 0)
+        assertTrue(
+            "Completed-draw body omitted adjacent telemetry; length=${activityCommit.length}," +
+                "tail=${activityCommit.takeLast(160)}",
+            telemetry >= 0,
+        )
         assertTrue(fallback > telemetry)
         assertTrue(activityCommit.contains("presentedUptimeNanos"))
         assertTrue(activityCommit.contains("benchmarkSemanticSourceIndexes"))
@@ -312,20 +316,6 @@ class BenchmarkAdjacentP0SignalArchitectureTest {
     private fun source(path: String): String = File(path).readText()
 
     private fun block(signature: String, source: String): String {
-        val start = source.indexOf(signature)
-        require(start >= 0) { "Missing source signature: $signature" }
-        val brace = source.indexOf('{', start)
-        require(brace >= 0) { "Missing opening brace: $signature" }
-        var depth = 0
-        for (index in brace until source.length) {
-            when (source[index]) {
-                '{' -> depth++
-                '}' -> {
-                    depth--
-                    if (depth == 0) return source.substring(start, index + 1)
-                }
-            }
-        }
-        error("Missing closing brace: $signature")
+        return SourceFunctionBody.extract(source, signature)
     }
 }

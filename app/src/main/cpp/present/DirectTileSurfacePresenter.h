@@ -12,12 +12,15 @@ namespace ntk::present {
 /**
  * Immutable display-resolution page tile submitted directly to SurfaceFlinger.
  *
- * The backing AHardwareBuffer is already populated and unlocked. The presenter takes its own
- * strong reference only when the tile becomes a layer buffer, and retires the replaced reference
- * after the compositor's previous-release fence signals.
+ * The backing AHardwareBuffer is unlocked and may still have an asynchronous write in flight.
+ * The presenter duplicates the borrowed acquire fence when the tile becomes a layer buffer,
+ * takes its own strong buffer reference, and retires replaced references only after the
+ * compositor's previous-release fence signals.
  */
 struct DirectTileLayerInput {
     AHardwareBuffer* buffer = nullptr;
+    /** Borrowed; storage retains ownership. SurfaceFlinger receives a duplicate. */
+    int acquireFenceFd = -1;
     std::uint64_t contentIdentity = 0;
     std::int64_t structureEpoch = 0;
     std::int32_t page = 0;
@@ -88,6 +91,8 @@ public:
 
     bool attached() const noexcept;
     bool canPresent() const noexcept;
+    std::uint32_t failureReason() const noexcept;
+    std::size_t queuedEventCount() const noexcept;
     bool present(const DirectTileFrameInput& frame) noexcept;
     bool drainEvent(DirectTilePresentEvent* event) noexcept;
     bool idle() const noexcept;

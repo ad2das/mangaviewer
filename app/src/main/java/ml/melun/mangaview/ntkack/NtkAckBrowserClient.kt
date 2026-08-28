@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import ml.melun.mangaview.MainApplication
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -407,6 +408,12 @@ class NtkAckBrowserClient private constructor(private val context: Context) {
         configuredUserAgent(),
         viewport(),
         Process.myPid(),
+        runCatching {
+            MainApplication.getHttpClient().prepareNtkAckControlWarmSeeds()
+        }.getOrElse { error ->
+            Log.d(TAG, "ack_control_plane_seed_prepare_failed", error)
+            emptyList()
+        },
     )
 
     private fun authEpoch(): Long = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)

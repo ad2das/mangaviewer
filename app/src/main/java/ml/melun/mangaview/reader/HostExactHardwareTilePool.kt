@@ -14,10 +14,14 @@ import java.util.IdentityHashMap
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Host-emulator exact-pixel storage whose native AHardwareBuffers survive page retirement.
@@ -46,6 +50,7 @@ internal object HostExactHardwareTilePool {
     // atomic page may still use the separate 128 MiB page envelope and the unchanged 320 MiB hard
     // boundary envelope; idle slots then compact back to the settled bound.
     private const val MAX_POOL_BYTES = 64L * 1024L * 1024L
+    private const val CURRENT_ROLLING_MAX_POOL_BYTES = 128L * 1024L * 1024L
     private const val MAX_ATOMIC_PAGE_BYTES = 128L * 1024L * 1024L
     private const val HARD_MAX_POOL_BYTES = 320L * 1024L * 1024L
     private const val MAX_SCRATCH_BYTES = 48L * 1024L * 1024L
@@ -68,6 +73,19 @@ internal object HostExactHardwareTilePool {
     // has gone quiet. Published identities are never returned or reused.
     private const val TOKEN_RESERVE_TARGET = 512
     private const val TOKEN_RESERVE_LOW_WATERMARK = 128
+    // Allocate the first physical scroll runway while the application process is genuinely idle.
+    // gfxstream can spend tens of seconds registering its first compositor-capable buffer when
+    // that registration races the reader's opening HWUI transition and a wide TLS response wave.
+    // Prime the settled 64 MiB pool with the largest ordinary compact-webtoon tile geometry.
+    // A 2048-row slot can also serve every 1664-row page, while the reverse is not true. The old
+    // 2-tall + 10-common split therefore left only p0 reusable for real 690x2500 pages: p1..p4
+    // allocated eight new AHardwareBuffers during the first gesture, serializing gfxstream and
+    // blocking HWUI for hundreds of milliseconds. Ten tall slots fit below 64 MiB and cover the
+    // complete five-page opening runway (two tiles per page) without source-specific assumptions.
+    // Later pages reuse retired slots; uncommon larger geometry follows the checked on-demand path.
+    private const val PROCESS_PRIME_SLOT_WIDTH = HostExactDisplayStorageGeometry.TARGET_WIDTH_PX
+    private const val PROCESS_PRIME_TALL_SLOT_HEIGHT = 2_048
+    private const val PROCESS_PRIME_TALL_SLOT_COUNT = 10
     // Token creation enters NativeAllocationRegistry even though each identity is 1x1. Keep its
     // heavier bulk refill on the original long idle fence, independently from slot compaction.
     private const val TOKEN_RESERVE_REFILL_QUIET_MS = 5_000L
@@ -77,9 +95,13 @@ internal object HostExactHardwareTilePool {
         val capacityWidth: Int,
         val capacityHeight: Int,
         val bytes: Long,
-        var inUse: Boolean = false,
+        @Volatile var inUse: Boolean = false,
         /** True only after the current immutable token has entered the Surface retirement path. */
         var retirementPending: Boolean = false,
+        /** Monotonic CPU-pixel generation used to discard queued work after slot reuse. */
+        var mirrorGeneration: Long = 0L,
+        /** Terminal native-handle fence. Accessed only while synchronized on this slot. */
+        var released: Boolean = false,
     )
 
     private data class Scratch(
@@ -117,17 +139,160 @@ internal object HostExactHardwareTilePool {
     private val pressureListeners = CopyOnWriteArraySet<(Long) -> Unit>()
     private val idleCompactionPosted = AtomicBoolean(false)
     private val tokenRefillPosted = AtomicBoolean(false)
+    private val processCommonSlotsPrimed = AtomicBoolean(false)
     private val tokenCreationLock = Any()
     /**
      * Mirrors the native exact-file decoder's process-wide scratch mutex at the JVM boundary.
      *
-     * Adjacent-runway pages can be submitted together.  The native decoder serializes them on a
-     * private mutex, so checking physical motion before the JNI call allowed every submitted page
-     * to pass while idle and then wait invisibly inside native code.  Those queued pages continued
-     * decoding through later touch/fling intervals.  Owning this monitor before the admission
-     * check makes every page re-check motion only when it can actually enter native decode.
+     * A plain synchronized monitor serialized the JNI calls, but it did not order its waiters.
+     * During an episode boundary a p0-p4 runway page could therefore sit behind several already
+     * queued offscreen decodes for seconds. The Surface correctly capped scrolling at the first
+     * missing page, but releasing that cap later produced a visible 100 ms freeze-and-jump.
+     *
+     * This gate keeps exactly one native scratch owner while allowing an immutable viewport/runway
+     * priority captured by the Session to pass ordinary waiters. The admission callback still runs
+     * only after the caller owns the gate, so queued work must re-check physical motion at the last
+     * reversible edge exactly as before.
      */
-    private val exactFileDecodeAdmissionLock = Any()
+    private class ExactFileDecodeAdmissionGate {
+        private data class Waiter(
+            val sequence: Long,
+            val prioritized: Boolean,
+            val requiredNow: (() -> Boolean)?,
+        ) {
+            fun isUrgentNow(): Boolean = prioritized ||
+                runCatching { requiredNow?.invoke() == true }.getOrDefault(false)
+        }
+
+        private val monitor = Object()
+        private val waiters = ArrayList<Waiter>()
+        private var sequence = 1L
+        private var active = false
+
+        fun <T> withAdmission(
+            prioritized: Boolean,
+            requiredNow: (() -> Boolean)?,
+            block: () -> T,
+        ): T {
+            val waiter: Waiter
+            synchronized(monitor) {
+                waiter = Waiter(sequence++, prioritized, requiredNow)
+                waiters += waiter
+                try {
+                    while (active || nextWaiterLocked() !== waiter) {
+                        monitor.wait()
+                    }
+                    check(waiters.remove(waiter))
+                    active = true
+                } catch (failure: InterruptedException) {
+                    waiters.remove(waiter)
+                    monitor.notifyAll()
+                    Thread.currentThread().interrupt()
+                    throw failure
+                }
+            }
+            try {
+                return block()
+            } finally {
+                synchronized(monitor) {
+                    check(active)
+                    active = false
+                    monitor.notifyAll()
+                }
+            }
+        }
+
+        private fun nextWaiterLocked(): Waiter? = waiters.minWithOrNull(
+            compareByDescending<Waiter> { it.isUrgentNow() }
+                .thenBy { it.sequence },
+        )
+    }
+
+    private val exactFileDecodeAdmissionGate = ExactFileDecodeAdmissionGate()
+
+    private class MirrorPublication(
+        private val priority: Int,
+        private val sequence: Long,
+        private val requiredNow: () -> Boolean,
+        private val shouldDefer: () -> Boolean,
+        private val defer: (MirrorPublication) -> Unit,
+        private val publish: () -> Unit,
+    ) : Runnable, Comparable<MirrorPublication> {
+        fun isUrgentNow(): Boolean =
+            priority < MIRROR_PRIORITY_ORDINARY || requiredNow()
+
+        fun runCurrentState() {
+            if (!isUrgentNow() && shouldDefer()) {
+                defer(this)
+            } else {
+                publish()
+            }
+        }
+
+        override fun run() = runMirrorPublication(this)
+
+        override fun compareTo(other: MirrorPublication): Int {
+            val priorityOrder = priority.compareTo(other.priority)
+            return if (priorityOrder != 0) priorityOrder else sequence.compareTo(other.sequence)
+        }
+    }
+
+    private const val MIRROR_PRIORITY_STRUCTURAL = -1
+    private const val MIRROR_PRIORITY_INITIAL_RUNWAY = 0
+    private const val MIRROR_PRIORITY_ORDINARY = 1
+    private const val MIRROR_MOTION_RECHECK_MS = 16L
+    private const val MIRROR_INTER_TILE_YIELD_MS = 16L
+    private const val MIRROR_PHYSICAL_INPUT_QUIET_MS = 500L
+    private val mirrorPublicationSequence = AtomicLong(1L)
+    private val nextOrdinaryMirrorAtMs = AtomicLong(0L)
+    /**
+     * gfxstream completes AHardwareBuffer_unlock synchronously even after CPU decode is done.
+     * Keep that emulator transfer off decoder threads and serialize it on one bounded lane. A
+     * priority queue lets a late p0-p4 decode pass already-queued offscreen work without issuing
+     * concurrent unlocks, which otherwise stalls SurfaceFlinger and touch delivery globally.
+     */
+    private val mirrorPublisherExecutor = ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        PriorityBlockingQueue(),
+        { command ->
+            Thread(
+                {
+                    runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
+                    command.run()
+                },
+                "host-exact-mirror-publisher",
+            ).apply { isDaemon = true }
+        },
+        ThreadPoolExecutor.AbortPolicy(),
+    ).apply { prestartAllCoreThreads() }
+
+    /**
+     * PriorityBlockingQueue cannot reorder an element whose viewport demand changes after enqueue.
+     * Before ordinary work publishes, explicitly extract one newly demanded task and run it on the
+     * same sole gfxstream lane. Requeueing the current task preserves serialization and FIFO order
+     * for every remaining offscreen publication.
+     */
+    private fun runMirrorPublication(publication: MirrorPublication) {
+        if (!publication.isUrgentNow()) {
+            val promoted = mirrorPublisherExecutor.queue
+                .asSequence()
+                .filterIsInstance<MirrorPublication>()
+                .firstOrNull(MirrorPublication::isUrgentNow)
+            if (promoted != null && mirrorPublisherExecutor.queue.remove(promoted)) {
+                try {
+                    mirrorPublisherExecutor.execute(publication)
+                } catch (failure: Throwable) {
+                    Log.e(TAG, "exact mirror promotion requeue rejected", failure)
+                }
+                promoted.runCurrentState()
+                return
+            }
+        }
+        publication.runCurrentState()
+    }
     private val freshTokenReserve = ArrayDeque<Bitmap>(TOKEN_RESERVE_TARGET)
     private var tokenReservePrimed = false
     private val idleCompactionExecutor = ScheduledThreadPoolExecutor(
@@ -152,6 +317,10 @@ internal object HostExactHardwareTilePool {
     private var lastPressureSignalAtMs = 0L
     @Volatile
     private var lastPoolActivityAtMs = 0L
+    @Volatile
+    private var lastPhysicalReaderActivityAtMs = 0L
+    @Volatile
+    private var lastPhysicalReaderInputAtMs = 0L
 
     fun supported(hostGpuEmulatorRuntime: Boolean): Boolean =
         hostGpuEmulatorRuntime && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -169,30 +338,70 @@ internal object HostExactHardwareTilePool {
     @JvmStatic
     fun primeProcessTokenReserve() {
         synchronized(tokenCreationLock) {
-            if (tokenReservePrimed) return
-            val startedAt = SystemClock.elapsedRealtime()
-            try {
-                while (freshTokenReserve.size < TOKEN_RESERVE_TARGET) {
-                    freshTokenReserve.addLast(
-                        Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888),
+            if (!tokenReservePrimed) {
+                val startedAt = SystemClock.elapsedRealtime()
+                try {
+                    while (freshTokenReserve.size < TOKEN_RESERVE_TARGET) {
+                        freshTokenReserve.addLast(
+                            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888),
+                        )
+                    }
+                    tokenReservePrimed = true
+                    Log.i(
+                        TAG,
+                        "process_token_reserve_primed count=${freshTokenReserve.size}," +
+                            "ms=${SystemClock.elapsedRealtime() - startedAt}",
+                    )
+                } catch (failure: Throwable) {
+                    // A later decoder can finish a partial reserve. Do not declare it primed until the
+                    // complete target exists, otherwise per-page creation re-enters physical input.
+                    Log.w(
+                        TAG,
+                        "process_token_reserve_prime_failed count=${freshTokenReserve.size}",
+                        failure,
                     )
                 }
-                tokenReservePrimed = true
-                Log.i(
-                    TAG,
-                    "process_token_reserve_primed count=${freshTokenReserve.size}," +
-                        "ms=${SystemClock.elapsedRealtime() - startedAt}",
-                )
-            } catch (failure: Throwable) {
-                // A later decoder can finish a partial reserve. Do not declare it primed until the
-                // complete target exists, otherwise per-page creation re-enters physical input.
-                Log.w(
-                    TAG,
-                    "process_token_reserve_prime_failed count=${freshTokenReserve.size}",
-                    failure,
-                )
             }
         }
+        primeProcessCommonSlots()
+    }
+
+    private fun primeProcessCommonSlots() {
+        if (!processCommonSlotsPrimed.compareAndSet(false, true)) return
+        val startedAt = SystemClock.elapsedRealtime()
+        val tallRequiredBytes = PROCESS_PRIME_SLOT_WIDTH.toLong() *
+            PROCESS_PRIME_TALL_SLOT_HEIGHT.toLong() * 4L
+        val tallPrimed = try {
+            acquireSlots(
+                capacityWidth = PROCESS_PRIME_SLOT_WIDTH,
+                capacityHeight = PROCESS_PRIME_TALL_SLOT_HEIGHT,
+                requiredBytes = tallRequiredBytes,
+                count = PROCESS_PRIME_TALL_SLOT_COUNT,
+                deferWhilePhysicalMotion = false,
+                waitForCompatibleRetirement = false,
+            )
+        } catch (failure: Throwable) {
+            Log.w(TAG, "process_common_slots_prime_failed", failure)
+            null
+        }
+        if (tallPrimed?.size != PROCESS_PRIME_TALL_SLOT_COUNT) {
+            tallPrimed?.forEach(::releaseSlot)
+            processCommonSlotsPrimed.set(false)
+            Log.w(
+                TAG,
+                "process_common_slots_prime_incomplete tall=${tallPrimed?.size ?: 0}," +
+                    "ms=${SystemClock.elapsedRealtime() - startedAt}",
+            )
+            return
+        }
+        tallPrimed.forEach(::releaseSlot)
+        Log.i(
+            TAG,
+            "process_common_slots_primed tall=${tallPrimed.size}," +
+                "width=$PROCESS_PRIME_SLOT_WIDTH," +
+                "bytes=${tallRequiredBytes * tallPrimed.size.toLong()}," +
+                "ms=${SystemClock.elapsedRealtime() - startedAt}",
+        )
     }
 
     /**
@@ -231,7 +440,35 @@ internal object HostExactHardwareTilePool {
      * callers retain the original software bitmap for HWUI fallback and use this token solely for
      * native presentation.
      */
-    fun copyStructuralBitmap(bitmap: Bitmap): Bitmap? {
+    fun copyStructuralBitmap(bitmap: Bitmap): Bitmap? = copyExactBitmap(
+        bitmap = bitmap,
+        allowTransientOvercommit = true,
+        waitForCompatibleRetirement = false,
+        structural = true,
+    )
+
+    /**
+     * Promotes one immutable exact image tile into direct-presenter storage. Unlike a structural
+     * card, image pixels wait for a compatible retired slot and may not grow into the 320 MiB
+     * overlap envelope. Callers already retain the encoded original and can retry after a viewport
+     * retirement, so allocation growth here would only trade a bounded wait for a display hitch.
+     */
+    fun copyExactTileBitmap(bitmap: Bitmap): Bitmap? = copyExactBitmap(
+        bitmap = bitmap,
+        allowTransientOvercommit = false,
+        // The caller rechecks pointer quiet immediately before every tile. Do not wait inside the
+        // pool and then resume after a new DOWN; reuse now or allocate inside the bounded rolling
+        // envelope while that admission is still current.
+        waitForCompatibleRetirement = false,
+        structural = false,
+    )
+
+    private fun copyExactBitmap(
+        bitmap: Bitmap,
+        allowTransientOvercommit: Boolean,
+        waitForCompatibleRetirement: Boolean,
+        structural: Boolean,
+    ): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || bitmap.isRecycled ||
             bitmap.width <= 0 || bitmap.height <= 0 ||
             bitmap.config != Bitmap.Config.ARGB_8888
@@ -254,16 +491,19 @@ internal object HostExactHardwareTilePool {
             requiredBytes = requiredBytes,
             count = 1,
             deferWhilePhysicalMotion = false,
-            // A transition card is part of the next physically visible frame. Waiting for an
-            // older card with the same small bucket to retire leaves the direct presenter with
-            // structure but no pixel source for the whole compatible-retirement grace period.
-            // Keep ordinary image pages on the reuse-first path, but admit this bounded structural
-            // overlap immediately; historical-card pruning still returns both slots normally.
-            waitForCompatibleRetirement = false,
+            allowTransientOvercommit = allowTransientOvercommit,
+            // Image callers admit this non-preemptible write only after pointer quiet. If the
+            // predecessor still owns every settled slot, use the existing bounded 128 MiB rolling
+            // envelope instead of entering a 30-second wait that cannot observe boundary demand.
+            settledPoolOnly = false,
+            // A transition card is part of the next physically visible frame and therefore keeps
+            // the old bounded-overlap behavior. Image tiles instead wait for reusable page storage.
+            waitForCompatibleRetirement = waitForCompatibleRetirement,
         )?.singleOrNull() ?: return null
         var token: Bitmap? = null
         var success = false
         try {
+            val mirrorGeneration = beginSlotWrite(slot)
             if (!NtkRollingNativeBridge.nativeCopyExactBitmapToHardwareTile(
                     bitmap,
                     slot.nativeHandle,
@@ -274,6 +514,14 @@ internal object HostExactHardwareTilePool {
                 )
             ) return null
             token = createTokensForSlots(listOf(slot))?.singleOrNull() ?: return null
+            if (!enqueueMirrorPublications(
+                    listOf(slot),
+                    longArrayOf(mirrorGeneration),
+                    prioritized = true,
+                    awaitCompletion = true,
+                    structural = structural,
+                )
+            ) return null
             success = true
             return token
         } finally {
@@ -285,13 +533,198 @@ internal object HostExactHardwareTilePool {
 
     /** Prevents host-buffer close work from overlapping a real touch/fling interval. */
     fun notePhysicalReaderActivity() {
-        lastPoolActivityAtMs = SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
+        lastPhysicalReaderActivityAtMs = now
+        lastPoolActivityAtMs = now
+    }
+
+    /** Records a real pointer sample separately from compositor/scroller motion. */
+    fun notePhysicalReaderInput() {
+        val now = SystemClock.elapsedRealtime()
+        lastPhysicalReaderInputAtMs = now
+        lastPhysicalReaderActivityAtMs = now
+        lastPoolActivityAtMs = now
     }
 
     fun isMaintenanceIdle(): Boolean {
         if (idleCompactionPosted.get()) return false
         return synchronized(lock) {
             allocatedBytes <= MAX_POOL_BYTES || slots.none { slot -> !slot.inUse }
+        }
+    }
+
+    fun maintenanceDiagnostic(): String {
+        val now = SystemClock.elapsedRealtime()
+        val pool = synchronized(lock) {
+            "allocated=$allocatedBytes,slots=${slots.size},free=${slots.count { !it.inUse }}"
+        }
+        return "posted=${idleCompactionPosted.get()},$pool," +
+            "executorActive=${idleCompactionExecutor.activeCount}," +
+            "executorQueue=${idleCompactionExecutor.queue.size}," +
+            "motion=${NtkReaderTransferPacer.isPhysicalMotionActive()}," +
+            "lastActivityAgeMs=${(now - lastPoolActivityAtMs).coerceAtLeast(0L)}"
+    }
+
+    /** Invalidates older queued publication before the caller overwrites this slot's pixels. */
+    private fun beginSlotWrite(slot: Slot): Long = synchronized(slot) {
+        check(!slot.released)
+        slot.mirrorGeneration += 1L
+        check(slot.mirrorGeneration > 0L)
+        slot.mirrorGeneration
+    }
+
+    private fun beginSlotWrites(pageSlots: List<Slot>): LongArray =
+        LongArray(pageSlots.size) { index -> beginSlotWrite(pageSlots[index]) }
+
+    /**
+     * Publishes immutable CPU pixels on the dedicated gfxstream lane. Reuse increments the slot
+     * generation first, so stale queued work exits without touching replacement pixels. A page
+     * token is not allowed to escape decode until this publication completes: the Surface's
+     * logical drawable ledger cannot observe the native mirror-ready flag, and exposing the token
+     * first lets a real drag enter an unpresentable page while gfxstream is still copying it.
+     */
+    private fun publishMirrorIfCurrent(slot: Slot, generation: Long): Boolean =
+        synchronized(slot) {
+            if (slot.released || slot.mirrorGeneration != generation || !slot.inUse) {
+                return@synchronized true
+            }
+            NtkRollingNativeBridge.nativePublishExactHardwareTile(slot.nativeHandle).also { ready ->
+                if (!ready) {
+                    Log.e(
+                        TAG,
+                        "exact mirror publication failed handle=${slot.nativeHandle}," +
+                            "generation=$generation,capacity=" +
+                            "${slot.capacityWidth}x${slot.capacityHeight}",
+                    )
+                }
+            }
+        }
+
+    /**
+     * Admits at most one ordinary gfxstream upload per display interval. A drawable-prefix stall
+     * can stop the scroller's motion flag just before several completed offscreen pages become
+     * publishable; draining those uploads immediately then creates the same GPU burst at resume.
+     * Visible runway and structural publications use their independent urgent priorities.
+     */
+    private fun awaitOrdinaryMirrorCadence() {
+        while (true) {
+            val now = SystemClock.elapsedRealtime()
+            val observed = nextOrdinaryMirrorAtMs.get()
+            val admittedAt = maxOf(now, observed)
+            if (!nextOrdinaryMirrorAtMs.compareAndSet(
+                    observed,
+                    admittedAt + MIRROR_MOTION_RECHECK_MS,
+                )
+            ) continue
+            val waitMs = admittedAt - now
+            if (waitMs > 0L) SystemClock.sleep(waitMs)
+            return
+        }
+    }
+
+    private fun enqueueMirrorPublications(
+        pageSlots: List<Slot>,
+        generations: LongArray,
+        prioritized: Boolean,
+        requiredNow: (() -> Boolean)? = null,
+        awaitCompletion: Boolean = false,
+        structural: Boolean = false,
+        cancelOnDeferredInput: Boolean = false,
+    ): Boolean {
+        check(pageSlots.size == generations.size)
+        if (pageSlots.isEmpty()) return true
+        val completed = if (awaitCompletion) CountDownLatch(1) else null
+        val publicationSucceeded = AtomicBoolean(true)
+        val deferredByNewInput = AtomicBoolean(false)
+        val priority = when {
+            structural -> MIRROR_PRIORITY_STRUCTURAL
+            prioritized -> MIRROR_PRIORITY_INITIAL_RUNWAY
+            else -> MIRROR_PRIORITY_ORDINARY
+        }
+        val publication = MirrorPublication(
+            priority = priority,
+            sequence = mirrorPublicationSequence.getAndIncrement(),
+            requiredNow = { requiredNow?.invoke() == true },
+            shouldDefer = {
+                priority == MIRROR_PRIORITY_ORDINARY &&
+                    requiredNow?.invoke() != true &&
+                    pageSlots.any(Slot::inUse) &&
+                    (NtkReaderTransferPacer.isPhysicalMotionActive() ||
+                        NtkReaderTransferPacer.isPhysicalInputPriorityActive() ||
+                        SystemClock.elapsedRealtime() - lastPhysicalReaderInputAtMs <
+                        MIRROR_PHYSICAL_INPUT_QUIET_MS)
+            },
+            defer = { deferred ->
+                if (cancelOnDeferredInput && completed != null) {
+                    // This page began decoding in a real quiet gap, but new input arrived before
+                    // its ordinary gfxstream upload. Holding the caller's private page token here
+                    // also holds a serial adjacent-completion worker, so one offscreen page can
+                    // prevent every nearer page from entering its visible urgent path forever.
+                    // Return the unchanged work to that owner. It will retry from the sealed exact
+                    // body, while a compositor-reported blocker is independently promoted.
+                    deferredByNewInput.set(true)
+                    completed.countDown()
+                } else {
+                    // Keep the sole gfxstream submission lane out of a real touch/fling interval.
+                    // Sleeping one frame on this private worker bounds CPU churn; requeueing then
+                    // allows a newly-arrived visible/structural publication to overtake it.
+                    SystemClock.sleep(MIRROR_MOTION_RECHECK_MS)
+                    runCatching { mirrorPublisherExecutor.execute(deferred) }
+                        .onFailure { failure ->
+                            Log.e(TAG, "exact mirror motion retry rejected", failure)
+                        }
+                }
+            },
+        ) {
+            try {
+                if (priority == MIRROR_PRIORITY_ORDINARY && requiredNow?.invoke() != true) {
+                    awaitOrdinaryMirrorCadence()
+                }
+                pageSlots.indices.forEach { index ->
+                    if (!publishMirrorIfCurrent(pageSlots[index], generations[index])) {
+                        publicationSucceeded.set(false)
+                    }
+                    if (index < pageSlots.lastIndex) {
+                        // A tall page owns several HardwareBuffers. gfxstream's synchronous unlock
+                        // can hold its global host transfer path for 60-100 ms per buffer; publishing
+                        // a two-to-six tile page back-to-back produced observed 165-198 ms gaps even
+                        // though the render callback itself stayed below 2 ms. Yield one display
+                        // interval while the page token is still private so SurfaceFlinger can
+                        // present the already-valid scene between exact tile uploads.
+                        SystemClock.sleep(MIRROR_INTER_TILE_YIELD_MS)
+                    }
+                }
+            } finally {
+                completed?.countDown()
+            }
+        }
+        try {
+            mirrorPublisherExecutor.execute(publication)
+        } catch (failure: Throwable) {
+            Log.e(TAG, "exact mirror publication queue rejected", failure)
+            return false
+        }
+        if (completed != null) {
+            try {
+                completed.await()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+        if (deferredByNewInput.get()) {
+            throw NtkPhysicalMotionDecodeDeferredException()
+        }
+        return publicationSucceeded.get()
+    }
+
+    /** Closes a handle only after an already-running publication leaves the slot monitor. */
+    private fun releaseNativeSlot(slot: Slot) {
+        synchronized(slot) {
+            if (slot.released) return
+            slot.released = true
+            slot.mirrorGeneration += 1L
+            NtkRollingNativeBridge.nativeReleaseExactHardwareBuffer(slot.nativeHandle)
         }
     }
 
@@ -334,6 +767,11 @@ internal object HostExactHardwareTilePool {
         sourceHeight: Int,
         tileCapacityHeight: Int,
         deferWhilePhysicalMotion: Boolean = false,
+        decodeAdmission: (() -> Unit)? = null,
+        allowTransientOvercommit: Boolean = true,
+        settledPoolOnly: Boolean = false,
+        prioritizeMirrorPublication: Boolean = false,
+        mirrorPublicationRequiredNow: (() -> Boolean)? = null,
         sourceLeft: Int = 0,
         sourceRegionWidth: Int = sourceWidth,
     ): List<Bitmap>? {
@@ -347,6 +785,11 @@ internal object HostExactHardwareTilePool {
             sourceHeight,
             tileCapacityHeight,
             deferWhilePhysicalMotion,
+            decodeAdmission,
+            allowTransientOvercommit,
+            settledPoolOnly,
+            prioritizeMirrorPublication,
+            mirrorPublicationRequiredNow,
             sourceLeft,
             sourceRegionWidth,
         ) {
@@ -362,6 +805,11 @@ internal object HostExactHardwareTilePool {
         sourceHeight: Int,
         tileCapacityHeight: Int,
         deferWhilePhysicalMotion: Boolean = false,
+        decodeAdmission: (() -> Unit)? = null,
+        allowTransientOvercommit: Boolean = true,
+        settledPoolOnly: Boolean = false,
+        prioritizeMirrorPublication: Boolean = false,
+        mirrorPublicationRequiredNow: (() -> Boolean)? = null,
         sourceLeft: Int = 0,
         sourceRegionWidth: Int = sourceWidth,
     ): List<Bitmap>? {
@@ -397,30 +845,70 @@ internal object HostExactHardwareTilePool {
             requiredBytes = requiredBytes,
             count = tileCount,
             deferWhilePhysicalMotion = deferWhilePhysicalMotion,
+            decodeAdmission = decodeAdmission,
+            allowTransientOvercommit = allowTransientOvercommit,
+            settledPoolOnly = settledPoolOnly,
         ) ?: return null
         var decodedTiles: List<Bitmap> = emptyList()
         var success = false
         try {
+            val mirrorGenerations = beginSlotWrites(reservedSlots)
             val nativeHandles = LongArray(reservedSlots.size) { index ->
                 reservedSlots[index].nativeHandle
             }
-            val nativeDecodeSucceeded = synchronized(exactFileDecodeAdmissionLock) {
-                // This must remain inside the JVM mirror of native's scratch mutex.  Moving it
-                // outside recreates a queue of already-admitted decodes that outlives a gesture.
-                awaitOptionalPhysicalMotionAdmission(deferWhilePhysicalMotion)
-                NtkRollingNativeBridge.nativeDecodeExactFileToHardwareTiles(
-                    encodedFile.absolutePath,
-                    nativeHandles,
-                    sourceWidth,
-                    sourceHeight,
-                    sourceLeft,
-                    sourceRegionWidth,
-                    tileCapacityHeight,
-                    contentWidth,
-                )
-            }
+            // A common one-tile/no-resize JPEG owns both its decoder and final slot, so several
+            // verified opening pages can decode in parallel without allocating any shared image
+            // scratch. Every scaling, crop, multi-tile and non-JPEG case retains the original
+            // JVM/native scratch mutex and its motion recheck.
+            val directSingleJpegSucceeded = tileCount == 1 && sourceLeft == 0 &&
+                sourceRegionWidth == sourceWidth && contentWidth == sourceWidth &&
+                run {
+                    awaitOptionalDecodeAdmission(
+                        deferWhilePhysicalMotion,
+                        decodeAdmission,
+                    )
+                    NtkRollingNativeBridge.nativeDecodeExactSingleJpegFileToHardwareTile(
+                        encodedFile.absolutePath,
+                        nativeHandles[0],
+                        sourceWidth,
+                        sourceHeight,
+                    )
+                }
+            val nativeDecodeSucceeded = directSingleJpegSucceeded ||
+                exactFileDecodeAdmissionGate.withAdmission(
+                    prioritized = prioritizeMirrorPublication,
+                    requiredNow = mirrorPublicationRequiredNow,
+                ) {
+                    // This must remain inside the JVM mirror of native's scratch mutex. Moving
+                    // fallback work outside recreates a queue of already-admitted decodes that
+                    // outlives a gesture. Viewport/runway callers may pass ordinary waiters, but
+                    // never the active owner of this sole native scratch resource.
+                    awaitOptionalDecodeAdmission(
+                        deferWhilePhysicalMotion,
+                        decodeAdmission,
+                    )
+                    NtkRollingNativeBridge.nativeDecodeExactFileToHardwareTiles(
+                        encodedFile.absolutePath,
+                        nativeHandles,
+                        sourceWidth,
+                        sourceHeight,
+                        sourceLeft,
+                        sourceRegionWidth,
+                        tileCapacityHeight,
+                        contentWidth,
+                    )
+                }
             if (!nativeDecodeSucceeded) return null
             decodedTiles = createTokensForSlots(reservedSlots) ?: return null
+            if (!enqueueMirrorPublications(
+                    reservedSlots,
+                    mirrorGenerations,
+                    prioritized = prioritizeMirrorPublication,
+                    requiredNow = mirrorPublicationRequiredNow,
+                    awaitCompletion = true,
+                    cancelOnDeferredInput = deferWhilePhysicalMotion,
+                )
+            ) return null
             success = true
             return decodedTiles
         } finally {
@@ -440,6 +928,11 @@ internal object HostExactHardwareTilePool {
         sourceHeight: Int,
         tileCapacityHeight: Int,
         deferWhilePhysicalMotion: Boolean,
+        decodeAdmission: (() -> Unit)?,
+        allowTransientOvercommit: Boolean,
+        settledPoolOnly: Boolean,
+        prioritizeMirrorPublication: Boolean,
+        mirrorPublicationRequiredNow: (() -> Boolean)?,
         sourceLeft: Int,
         sourceRegionWidth: Int,
         createDecoder: () -> BitmapRegionDecoder,
@@ -472,6 +965,9 @@ internal object HostExactHardwareTilePool {
                 requiredBytes = requiredBytes,
                 count = tileCount,
                 deferWhilePhysicalMotion = deferWhilePhysicalMotion,
+                decodeAdmission = decodeAdmission,
+                allowTransientOvercommit = allowTransientOvercommit,
+                settledPoolOnly = settledPoolOnly,
             )
         } catch (failure: Throwable) {
             releaseScratch(scratchLease)
@@ -480,12 +976,16 @@ internal object HostExactHardwareTilePool {
             releaseScratch(scratchLease)
             return null
         }
+        val mirrorGenerations = beginSlotWrites(reservedSlots)
         val decoder = createDecoder()
         var copiedSlots = 0
         var decodedTiles: List<Bitmap> = emptyList()
         var success = false
         try {
-            awaitOptionalPhysicalMotionAdmission(deferWhilePhysicalMotion)
+            awaitOptionalDecodeAdmission(
+                deferWhilePhysicalMotion,
+                decodeAdmission,
+            )
             val region = Rect()
             var top = 0
             while (top < sourceHeight) {
@@ -529,6 +1029,15 @@ internal object HostExactHardwareTilePool {
                 top = bottom
             }
             decodedTiles = createTokensForSlots(reservedSlots) ?: return null
+            if (!enqueueMirrorPublications(
+                    reservedSlots,
+                    mirrorGenerations,
+                    prioritized = prioritizeMirrorPublication,
+                    requiredNow = mirrorPublicationRequiredNow,
+                    awaitCompletion = true,
+                    cancelOnDeferredInput = deferWhilePhysicalMotion,
+                )
+            ) return null
             success = true
             return decodedTiles
         } finally {
@@ -696,7 +1205,10 @@ internal object HostExactHardwareTilePool {
         requiredBytes: Long,
         count: Int,
         deferWhilePhysicalMotion: Boolean,
+        decodeAdmission: (() -> Unit)? = null,
+        allowTransientOvercommit: Boolean = true,
         waitForCompatibleRetirement: Boolean = true,
+        settledPoolOnly: Boolean = false,
     ): List<Slot>? {
         if (capacityWidth <= 0 || capacityHeight <= 0 || requiredBytes <= 0L || count <= 0 ||
             requiredBytes > MAX_ATOMIC_PAGE_BYTES / count.toLong()
@@ -707,6 +1219,7 @@ internal object HostExactHardwareTilePool {
         var retirementSelectionDeadlineMs = 0L
         synchronized(lock) {
             while (allocationPlan == null) {
+                decodeAdmission?.invoke()
                 if (deferWhilePhysicalMotion &&
                     NtkReaderTransferPacer.isPhysicalMotionActive()
                 ) {
@@ -733,7 +1246,13 @@ internal object HostExactHardwareTilePool {
                     allocatedBytes > MAX_POOL_BYTES - newBytes
                 if (waitForCompatibleRetirement && newAllocationExceedsSettledTarget) {
                     val now = SystemClock.elapsedRealtime()
-                    val physicalMotionActive = NtkReaderTransferPacer.isPhysicalMotionActive()
+                    // A Session-owned input admission callback has already rejected real pointer
+                    // input and its quiet fence at the top of this loop. Passive inertial motion
+                    // may therefore wait for an offscreen Surface retirement instead of growing
+                    // toward the 320 MiB boundary envelope. Legacy callers that explicitly defer
+                    // all motion retain the old no-wait behavior.
+                    val physicalMotionActive = deferWhilePhysicalMotion &&
+                        NtkReaderTransferPacer.isPhysicalMotionActive()
                     if (retirementSelectionDeadlineMs == 0L) {
                         retirementSelectionDeadlineMs =
                             minOf(deadline, now + RETIREMENT_SELECTION_GRACE_MS)
@@ -784,6 +1303,16 @@ internal object HostExactHardwareTilePool {
                 val reusableSet = java.util.Collections.newSetFromMap(
                     IdentityHashMap<Slot, Boolean>(),
                 ).apply { addAll(reusable) }
+                val transientLimit = if (settledPoolOnly) {
+                    // The process-wide prime can sit slightly above 64 MiB. Freezing the current
+                    // allocation admits a fully reusable batch while prohibiting even one new
+                    // gfxstream buffer for an offscreen successor.
+                    allocatedBytes
+                } else if (allowTransientOvercommit) {
+                    HARD_MAX_POOL_BYTES
+                } else {
+                    CURRENT_ROLLING_MAX_POOL_BYTES
+                }
                 val idleVictims = slots.asSequence()
                     .filter { !it.inUse && it !in reusableSet }
                     .sortedBy(Slot::bytes)
@@ -792,16 +1321,16 @@ internal object HostExactHardwareTilePool {
                 var reclaimedBytes = 0L
                 for (victim in idleVictims) {
                     if (allocatedBytes - reclaimedBytes <=
-                        HARD_MAX_POOL_BYTES - newBytes
+                        transientLimit - newBytes
                     ) break
                     victims += victim
                     reclaimedBytes += victim.bytes
                 }
                 val fitsTarget =
                     allocatedBytes - reclaimedBytes <= MAX_POOL_BYTES - newBytes
-                val fitsHardLimit =
-                    allocatedBytes - reclaimedBytes <= HARD_MAX_POOL_BYTES - newBytes
-                if (fitsTarget || fitsHardLimit) {
+                val fitsTransientLimit =
+                    allocatedBytes - reclaimedBytes <= transientLimit - newBytes
+                if (fitsTarget || fitsTransientLimit) {
                     // HARD_MAX_POOL_BYTES is the deliberate atomic episode-boundary envelope:
                     // the current physical viewport and the four-page successor runway can need
                     // the full 320 MiB together. Signalling pressure after already approving that
@@ -824,7 +1353,11 @@ internal object HostExactHardwareTilePool {
                     // the monitor. A second caller can neither exceed the cap nor claim these
                     // reusable slots while gfxstream performs its comparatively slow work.
                     val allocationLimit =
-                        if (fitsTarget) MAX_POOL_BYTES else HARD_MAX_POOL_BYTES
+                        if (fitsTarget) {
+                            MAX_POOL_BYTES
+                        } else {
+                            transientLimit
+                        }
                     check(newBytes <= allocationLimit - allocatedBytes)
                     allocatedBytes += newBytes
                     lastPoolActivityAtMs = SystemClock.elapsedRealtime()
@@ -886,6 +1419,15 @@ internal object HostExactHardwareTilePool {
         }
     }
 
+    /** Applies a Session-owned input fence at the same irreversible native edges as motion. */
+    private fun awaitOptionalDecodeAdmission(
+        deferWhilePhysicalMotion: Boolean,
+        decodeAdmission: (() -> Unit)?,
+    ) {
+        decodeAdmission?.invoke()
+        awaitOptionalPhysicalMotionAdmission(deferWhilePhysicalMotion)
+    }
+
     /** Slow gfxstream lifetime calls intentionally execute before the brief commit monitor. */
     private fun fulfillSlotAllocationPlan(
         plan: SlotAllocationPlan,
@@ -897,9 +1439,7 @@ internal object HostExactHardwareTilePool {
         var compactionFailure: Throwable? = null
         for (victim in plan.victims) {
             try {
-                NtkRollingNativeBridge.nativeReleaseExactHardwareBuffer(
-                    victim.nativeHandle,
-                )
+                releaseNativeSlot(victim)
             } catch (failure: Throwable) {
                 if (compactionFailure == null) compactionFailure = failure
             }
@@ -971,6 +1511,12 @@ internal object HostExactHardwareTilePool {
                     "transientOvercommit=${plan.transientOvercommit}",
             )
         }
+        // A successful transient allocation can push the pool over its settled target while an
+        // older, incompatible slot was already idle. That slot's retirement edge happened before
+        // the growth, so it correctly decided no compaction was needed at the time and no later
+        // release is guaranteed to repeat the decision. Re-evaluate after publishing the new
+        // slots; the existing quiet/motion gate keeps native close work off the scroll hot path.
+        scheduleIdleCompactionIfNeeded()
         return plan.reusable + allocatedSlots
     }
 
@@ -1145,7 +1691,7 @@ internal object HostExactHardwareTilePool {
                 selected
             }
             runCatching {
-                NtkRollingNativeBridge.nativeReleaseExactHardwareBuffer(victim.nativeHandle)
+                releaseNativeSlot(victim)
             }.onFailure { failure ->
                 Log.e(TAG, "transient idle slot close failed", failure)
             }

@@ -21,6 +21,11 @@ class NtkPublishedExactEpisodePixelCompletionArchitectureTest {
         assertTrue(completion.contains("NtkReaderTransferPacer.isPhysicalMotionActive()"))
         assertTrue(completion.contains("NTK_ENTERED_EXACT_PIXEL_COMPLETION_IDLE_MS"))
         assertTrue(completion.contains("commitAdjacentRunwayDrawableBatch("))
+        assertTrue(completion.contains("scheduleEnteredExactEpisodePixelCompletionAudit(path)"))
+        val audit = functionBody("private fun scheduleEnteredExactEpisodePixelCompletionAudit(")
+        assertTrue(audit.contains("enteredExactEpisodePixelCompletionAuditPaths.add(path)"))
+        assertTrue(audit.contains("latestEnteredExactEpisodePath.get() == path"))
+        assertTrue(audit.contains("requestEnteredExactEpisodePixelCompletion(path)"))
         assertFalse(completion.contains("pages.add"))
         assertFalse(completion.contains("listener.onPreparedAdjacentPagesAppended"))
     }

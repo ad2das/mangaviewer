@@ -210,6 +210,11 @@ public class MainApplication extends MultiDexApplication implements Configuratio
             ntkForegroundViewerInputAtMs = 0L;
         }
         Log.d("MainApplication", "ntk_foreground_viewer_path_clear path=" + path);
+        CustomHttpClient local = httpClient;
+        if(local != null) {
+            AppDispatchers.submitNtkViewerCritical(
+                    local::applyDeferredResolvedNtkRootFromSearch);
+        }
     }
 
     static boolean shouldClearNtkForegroundViewerPath(String currentPath, String closingPath) {

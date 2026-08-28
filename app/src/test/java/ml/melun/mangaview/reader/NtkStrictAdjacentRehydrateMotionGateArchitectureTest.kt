@@ -57,8 +57,93 @@ class NtkStrictAdjacentRehydrateMotionGateArchitectureTest {
 
         assertTrue(body.contains("strictAdjacentRehydrateFlights[flight.identity] === flight"))
         assertTrue(body.contains("flight.ownerScheduledOrRunning.set(false)"))
-        assertTrue(body.contains("scheduleStrictAdjacentExactRehydrate(flight, visibleIntent)"))
-        assertTrue(body.contains("NTK_STRICT_ADJACENT_REHYDRATE_MOTION_RECHECK_MS"))
+        assertTrue(body.contains("flight.motionDeferred.set(true)"))
+        assertTrue(body.contains("flight.parked.set(true)"))
+        assertTrue(body.contains("scheduleStrictAdjacentMotionDeferredWake()"))
+        assertTrue(body.contains("NTK_STRICT_ADJACENT_REHYDRATE_IDLE_WAKE_MS"))
+        assertTrue(body.contains("flight.motionDeferred.compareAndSet(true, false)"))
+        assertTrue(body.contains("scheduleStrictAdjacentExactRehydrate(flight, flight.visibleIntent)"))
         assertFalse(body.contains("flight.retryCount.incrementAndGet()"))
     }
+
+    @Test
+    fun physicalStrictOwnerRoutesBeforeGenericGeneratedPagePolicies() {
+        val requestStart = source.indexOf("private fun requestPage(")
+        val requestEnd = source.indexOf("private fun prefetchBusyPage(", requestStart)
+        assertTrue(requestStart >= 0)
+        assertTrue(requestEnd > requestStart)
+        val body = source.substring(requestStart, requestEnd)
+
+        val strictRoute = body.indexOf("routeStrictAdjacentExactRehydrate(index, page, visibleIntent)")
+        val preparedColdHold = body.indexOf("shouldKeepPreparedRunwayDecodeColdUntilInput(index, page)")
+        val generatedFallback = body.indexOf("shouldSuppressTrustedManifestGeneratedFallback(index, page")
+        assertTrue(strictRoute >= 0)
+        assertTrue(preparedColdHold > strictRoute)
+        assertTrue(generatedFallback > strictRoute)
+    }
+
+    @Test
+    fun everyScheduledOwnerExitClearsOnlyItsOwnRunningGeneration() {
+        val scheduleStart = source.indexOf(
+            "private fun scheduleStrictAdjacentExactRehydrate(",
+        )
+        val scheduleEnd = source.indexOf(
+            "private fun runStrictAdjacentExactRehydrate(",
+            scheduleStart,
+        )
+        assertTrue(scheduleStart >= 0)
+        assertTrue(scheduleEnd > scheduleStart)
+        val body = source.substring(scheduleStart, scheduleEnd)
+
+        assertTrue(source.contains("val ownerAttemptVersion: AtomicLong"))
+        assertTrue(body.contains("flight.ownerAttemptVersion.incrementAndGet()"))
+        assertTrue(body.contains("try {\n                    runStrictAdjacentExactRehydrate("))
+        assertTrue(body.contains("} finally {"))
+        assertTrue(body.contains("flight.ownerAttemptVersion.get() == ownerAttemptVersion"))
+        assertTrue(body.contains("ownerScheduledOrRunning.compareAndSet(true, false)"))
+    }
+
+    @Test
+    fun delayedRetryNeverClearsANewerOwnerAttempt() {
+        val retryStart = source.indexOf(
+            "private fun postStrictAdjacentExactRehydrateRetry(",
+        )
+        val retryEnd = source.indexOf(
+            "private fun prepareAdjacentRunwayDrawableBatch(",
+            retryStart,
+        )
+        assertTrue(retryStart >= 0)
+        assertTrue(retryEnd > retryStart)
+        val body = source.substring(retryStart, retryEnd)
+        val ownerReleaseAt = body.indexOf("flight.ownerScheduledOrRunning.set(false)")
+        val delayedPostAt = body.indexOf("main.postDelayed")
+
+        assertTrue(ownerReleaseAt >= 0 && delayedPostAt > ownerReleaseAt)
+        assertFalse(
+            body.substring(delayedPostAt).contains(
+                "flight.ownerScheduledOrRunning.set(false)",
+            ),
+        )
+        assertTrue(
+            body.substring(delayedPostAt).contains(
+                "scheduleStrictAdjacentExactRehydrate(flight, visibleIntent)",
+            ),
+        )
+    }
+
+    @Test
+    fun postedExactDeliveryClaimSurvivesPrefixReindexByContentIdentity() {
+        assertTrue(
+            source.contains(
+                "initialContinuousPostedWidthsByIdentity = ConcurrentHashMap<String, Int>()",
+            ),
+        )
+        assertTrue(source.contains("private fun initialContinuousPostedIdentity(page: PageRef)"))
+        assertTrue(source.contains("append(page.manifestDigest)"))
+        assertTrue(source.contains("append(page.sourceIndex)"))
+        assertTrue(source.contains("append(page.side)"))
+        assertFalse(source.contains("shiftConcurrentMap(initialContinuousPostedWidths"))
+        assertFalse(source.contains("shiftConcurrentMapAfterRemoval(initialContinuousPostedWidths"))
+    }
+
 }

@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
+import android.util.Log
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.runtime.ViewerTelemetry
 import java.io.Closeable
@@ -93,6 +94,20 @@ internal object NtkStrictLogicalImageTelemetryPolicy {
         directWifiTransport: Boolean,
         cellularResilientTransport: Boolean,
     ): Boolean = directWifiTransport && !cellularResilientTransport
+}
+
+/**
+ * Decides whether a route prepared after rolling admission must still wait for the click-time
+ * filename probe. Once the exact manifest is owned, a page that has no click-owned body in flight
+ * already has its complete canonical identity in that manifest. Waiting for the unrelated probe
+ * can otherwise leave every newly admitted suffix route as an incomplete future forever when the
+ * finite click wave has ceded that suffix to the strict source actor.
+ */
+internal object NtkStrictLateRoutePreparationPolicy {
+    fun shouldWaitForStreamedSourceRoute(
+        exactManifestOwned: Boolean,
+        streamedExactBodyPending: Boolean,
+    ): Boolean = !exactManifestOwned || streamedExactBodyPending
 }
 
 /**
@@ -458,9 +473,10 @@ internal class NtkDirectWifiAdjacentWebtoonPredecessorGate {
  * direct-Wi-Fi pool. This preserves p0's DNS/TLS/wire-order head start while giving the current tail
  * enough time to prepare the complete next runway. Once p0 reaches EOF, admissions pause only
  * for its short decode/install ACK; afterwards the bounded p1-p4 lanes remain available. Rolling
- * admission still caps this phase at p1-p4 on the host and at p1-p3 on legacy profiles. Carrier/SNI,
- * manhwa, generic, and current-episode
- * sessions never set [requiresHeadInstall] and retain their established lane policy.
+ * admission still caps this phase at p1-p4 on the host and at p1-p3 on legacy profiles. The host
+ * emulator's adjacent manhwa uses the stricter EOF form because concurrent multi-megabyte PNG
+ * bodies were measured starving input before p0; carrier/SNI, generic and current-episode sessions
+ * retain their established lane policy.
  */
 internal object NtkDirectWifiAdjacentHeadInstallGatePolicy {
     fun usableLaneCount(
@@ -514,9 +530,65 @@ internal object NtkHostGpuEmulatorCurrentWebtoonLanePolicy {
     // existing recovery governor narrows it to 1/4 after a socket failure and never cancels an
     // already-running exact body.
     private const val MAX_POST_ANCHOR_TRANSFERS = 8
-    private const val INITIAL_VISIBLE_RUNWAY_TRANSFERS = 9
-    internal const val INITIAL_VISIBLE_RUNWAY_BODIES = 6
+    // Exact H3 removes the H2 reset constraint, but it does not remove the edge's bandwidth and
+    // request-queue limit. Keep the proven transport work-conserving at the measured eight-body
+    // optimum instead of mistaking protocol proof for unlimited useful concurrency.
+    internal const val MAX_PROVEN_QUIC_TRANSFERS = 8
+    internal const val MAX_WELL_PROVEN_QUIC_TRANSFERS = 8
+    internal const val WELL_PROVEN_QUIC_FINAL_WAVE_MAX_TRANSFERS = 12
+    // The exact recovery transport owns eight captured-network H2 pools, matching the reset-safe
+    // current-episode wave. Refill one body per pool from the sealed manifest.
+    internal const val MAX_PROVEN_FRAGMENTED_TLS_TRANSFERS = 8
+    // p0 still owns the cold connection alone. Once it is exact-resident, admit four successors
+    // at a time and refill only from the finite opening runway. This avoids concentrating every
+    // decode/publication callback in one frame while keeping later suffix pages out of the wave.
+    internal const val INITIAL_VISIBLE_RUNWAY_TRANSFERS = 4
+    // The first nine bodies are the finite physical runway and the same transport proof. Six
+    // bodies cover only about 1.3 seconds of a fast fling for ordinary webtoon slices; the next
+    // body's request then starts with the bulk suffix and its first gfxstream upload lands exactly
+    // at the drawable-prefix fence. Keeping p0..p8 in the opening wave starts those immutable
+    // bodies before input without widening the steady-state ring or changing any retry authority.
+    internal const val INITIAL_VISIBLE_RUNWAY_BODIES = 9
+    // Keep all nine encoded bodies in the cold transport runway, but exempt only the established
+    // p0..p5 physical opening runway from the decode fence. Decoding p6..p8 into large host
+    // HardwareBuffers during the same gesture made input injection wait several seconds even
+    // though those pixels were still offscreen. Their verified bodies remain resident and the
+    // ordinary identity-bound blocker lane decodes them as the viewport actually approaches.
+    internal const val INITIAL_SCROLL_RUNWAY_BODIES = 6
+    // The settled 64 MiB pixel budget holds the physical webtoon viewport plus eight common
+    // 800px compositor pages. Fill this window only while idle, one page at a time; the existing
+    // 128 MiB rolling envelope remains the hard ceiling for unusually tall atomic pages.
+    internal const val STEADY_FORWARD_RETAIN_AHEAD_PAGES =
+        INITIAL_VISIBLE_RUNWAY_BODIES + 2
     internal const val SHORT_CURRENT_MAX_EPISODE_PAGES = 16
+
+    fun openingProofIncomplete(contiguousForwardBodyCount: Int): Boolean {
+        require(contiguousForwardBodyCount >= 0)
+        return contiguousForwardBodyCount < INITIAL_VISIBLE_RUNWAY_BODIES
+    }
+
+    /**
+     * Starts only the final two partial batches early. The ordinary wave stays at eight; once at
+     * most sixteen bodies remain, admission may rise to twelve so the last four bodies begin as
+     * soon as earlier slots finish. Sustained bulk transfer never observes this tail-only cap.
+     */
+    fun finalWaveCap(
+        ordinaryCap: Int,
+        remainingBodies: Int,
+        wellProvenQuicRecoveryQualified: Boolean,
+    ): Int {
+        require(ordinaryCap >= 0)
+        require(remainingBodies >= 0)
+        return if (wellProvenQuicRecoveryQualified &&
+            ordinaryCap == MAX_WELL_PROVEN_QUIC_TRANSFERS &&
+            remainingBodies > ordinaryCap &&
+            remainingBodies <= ordinaryCap * 2
+        ) {
+            minOf(WELL_PROVEN_QUIC_FINAL_WAVE_MAX_TRANSFERS, remainingBodies)
+        } else {
+            ordinaryCap
+        }
+    }
 
     fun cap(
         progressiveLaneCount: Int,
@@ -531,30 +603,57 @@ internal object NtkHostGpuEmulatorCurrentWebtoonLanePolicy {
         anchorBodyPublished: Boolean,
         contiguousForwardBodyCount: Int,
         healthyBulkExpansion: Boolean,
+        fragmentedTlsRecoveryQualified: Boolean = false,
+        quicRecoveryQualified: Boolean = false,
+        wellProvenQuicRecoveryQualified: Boolean = false,
     ): Int {
         require(progressiveLaneCount >= 0)
         require(initialPageIndex >= 0)
         require(contiguousForwardBodyCount >= 0)
         val eligible = emulatorRuntime && directWifiTransport &&
             !cellularResilientTransport && webtoon && rollingAdmission &&
-            initialPageIndex > 0 && currentForegroundEpisode && !adjacentPrefetch &&
+            currentForegroundEpisode && !adjacentPrefetch &&
             anchorBodyPublished
         return if (eligible) {
-            // Reserve the established balanced 3x3 wave for the pixels immediately in front of
-            // the viewport. As soon as six consecutive forward bodies are exact-resident, use a
+            // Reserve the established bounded opening wave for the pixels immediately in front of
+            // the viewport. As soon as nine consecutive forward bodies are exact-resident, use a
             // bounded eight-body rolling wave. This keeps small-object downloads work-conserving
             // while the recovery governor still collapses any socket pressure to 1/4 immediately;
             // it never reopens the measured 22-24-body reset storm for the long suffix.
-            val scopedLimit = if (
-                contiguousForwardBodyCount < INITIAL_VISIBLE_RUNWAY_BODIES
-            ) {
+            val scopedLimit = if (openingProofIncomplete(contiguousForwardBodyCount)) {
+                // A transport qualification proves that the completed bodies were exact; it does
+                // not prove that pixels immediately in front of the viewport are resident. Keep
+                // the finite opening wave focused on those contiguous pages before allowing the
+                // wider recovered-transport ring to consume bandwidth or decode/disk callbacks.
                 INITIAL_VISIBLE_RUNWAY_TRANSFERS
+            } else if (wellProvenQuicRecoveryQualified) {
+                // The complete opening runway and distinct exact H3 proofs have completed without
+                // failover or range continuation. Fill the measured stable isolated-engine ring.
+                MAX_WELL_PROVEN_QUIC_TRANSFERS
+            } else if (quicRecoveryQualified) {
+                // Three exact H3 EOF/SHA bodies prove the recovery transport before the bounded
+                // isolated-engine ring receives eight streams. Opening proofs count, while the
+                // independent contiguous p0..p8 fence still prevents premature bulk admission.
+                MAX_PROVEN_QUIC_TRANSFERS
+            } else if (fragmentedTlsRecoveryQualified) {
+                // Ordinary H2 is capped because one translated socket previously reset at wide
+                // admission. This recovered transport has eight independent connection shards
+                // and reaches this branch only after exact EOF/SHA progress.
+                MAX_PROVEN_FRAGMENTED_TLS_TRANSFERS
             } else if (healthyBulkExpansion) {
                 MAX_POST_ANCHOR_TRANSFERS
             } else {
                 INITIAL_VISIBLE_RUNWAY_BODIES
             }
-            minOf(progressiveLaneCount, scopedLimit)
+            if (openingProofIncomplete(contiguousForwardBodyCount)) {
+                // The generic cold-cohort gate describes H2 connection settlement and can expose
+                // only three lanes here. This finite current-episode runway is already routed to
+                // independent H3 engines, so after p0 publication it may keep four opening lanes
+                // full until p8 without admitting the unrelated suffix.
+                INITIAL_VISIBLE_RUNWAY_TRANSFERS
+            } else {
+                minOf(progressiveLaneCount, scopedLimit)
+            }
         } else {
             progressiveLaneCount
         }
@@ -585,10 +684,10 @@ internal object NtkHostGpuEmulatorCurrentWebtoonLanePolicy {
     }
 
     /**
-     * The compatibility-host shard function intentionally maps some consecutive canonical
-     * replica stripes onto the same physical H2 pool. Permit exactly one paired stream only in
-     * the finite three-body opening viewport; otherwise the anchor-pool EOF fence and the
-     * one-operation-per-pool recovery topology remain unchanged.
+     * The compatibility-host shard function maps consecutive opening pages onto only three H2
+     * identities even though this current-episode runway uses independent H3 engines. Permit the
+     * complete p1..p8 wave only inside that finite viewport; every later page retains the
+     * one-operation-per-pool recovery topology.
      */
     fun openingWaveAnchorPoolOperationLimit(
         ordinaryLimit: Int,
@@ -598,12 +697,132 @@ internal object NtkHostGpuEmulatorCurrentWebtoonLanePolicy {
     ): Int {
         require(ordinaryLimit > 0)
         return if (eligible && openingWaveIncomplete && pageInOpeningWave) {
-            maxOf(ordinaryLimit, 2)
+            maxOf(ordinaryLimit, INITIAL_VISIBLE_RUNWAY_TRANSFERS)
         } else {
             ordinaryLimit
         }
     }
 
+}
+
+/**
+ * Exact post-failure proof for widening only the fragmented-TLS recovery transport.
+ * Cache hits and ordinary/H1/H2 responses cannot qualify.
+ */
+internal class NtkHostGpuEmulatorFragmentedTlsRecoveryHealthState(
+    private val requiredSuccesses: Int = REQUIRED_SUCCESSES,
+) {
+    companion object {
+        const val TRANSPORT = "exact-fragmented-tls-recovery"
+        const val REQUIRED_SUCCESSES = 3
+    }
+
+    private val successfulWorkIds = HashSet<Long>()
+
+    var qualified: Boolean = false
+        private set
+
+    init {
+        require(requiredSuccesses > 0)
+    }
+
+    fun recordSuccess(
+        workId: Long,
+        evidence: ReaderImageCache.NtkStrictPhysicalBodyEvidence,
+    ): Boolean {
+        require(workId > 0L)
+        if (qualified || !evidence.transport.equals(TRANSPORT, ignoreCase = true) ||
+            !successfulWorkIds.add(workId)
+        ) return false
+        if (successfulWorkIds.size < requiredSuccesses) return false
+        qualified = true
+        return true
+    }
+}
+
+/** Exact H3 EOF/SHA proof that alone may widen the balanced recovery ring. */
+internal class NtkHostGpuEmulatorCurrentWebtoonQuicHealthState(
+    private val requiredSuccesses: Int = REQUIRED_SUCCESSES,
+    private val requiredWellProvenSuccesses: Int = REQUIRED_WELL_PROVEN_SUCCESSES,
+) {
+    companion object {
+        const val TRANSPORT = "exact-quic-recovery"
+        const val REQUIRED_SUCCESSES = 3
+        const val REQUIRED_WELL_PROVEN_SUCCESSES = 6
+    }
+
+    private val observedWorkIds = HashSet<Long>()
+    private var successfulProofs = 0
+
+    var qualified: Boolean = false
+        private set
+    var wellProven: Boolean = false
+        private set
+    var frozen: Boolean = false
+        private set
+
+    init {
+        require(requiredSuccesses > 0)
+        require(requiredWellProvenSuccesses > requiredSuccesses)
+    }
+
+    fun recordSuccess(
+        pageIndex: Int,
+        workId: Long,
+        evidence: ReaderImageCache.NtkStrictPhysicalBodyEvidence,
+    ): Boolean {
+        require(pageIndex >= 0)
+        require(workId > 0L)
+        if (!observedWorkIds.add(workId)) return false
+        val exactH3 = evidence.transport.equals(TRANSPORT, ignoreCase = true) &&
+            evidence.protocol.equals("h3", ignoreCase = true) &&
+            !evidence.usedRangeContinuation
+        if (!exactH3) {
+            if (qualified) {
+                // A Range-completed H3 body or one exact fallback is saturation evidence, not
+                // proof that every already-qualified H3 authority is dead. Permanently
+                // blacklisting the transport here pushed the full suffix onto known-slower H2.
+                // Drop the 24-body tier now, retain the proven twelve-body tier, and require a
+                // complete new exact-H3 proof window before widening again. A physical operation
+                // that fails altogether first drops to the same conservative base and cannot
+                // recover until that fresh window is complete.
+                successfulProofs = 0
+                wellProven = false
+                return false
+            }
+            // A fallback proves only that this one body did not use the preferred H3 path. Keep
+            // the conservative six-lane cap and reset the proof window, but do not permanently
+            // blacklist a session in which later independent bodies may prove exact H3 again.
+            // An outright physical failure enters the same base cap through recordFailure(); it
+            // likewise requires a complete fresh window before it can recover.
+            successfulProofs = 0
+            qualified = false
+            wellProven = false
+            return false
+        }
+        successfulProofs++
+        var changed = false
+        if ((!qualified || frozen) && successfulProofs >= requiredSuccesses) {
+            frozen = false
+            qualified = true
+            changed = true
+        }
+        if (!wellProven && successfulProofs >= requiredWellProvenSuccesses) {
+            wellProven = true
+            changed = true
+        }
+        return changed
+    }
+
+    fun recordFailure(pageIndex: Int): Boolean {
+        require(pageIndex >= 0)
+        if (frozen) return false
+        frozen = true
+        qualified = false
+        wellProven = false
+        successfulProofs = 0
+        return true
+    }
 }
 
 /**
@@ -989,6 +1208,17 @@ internal class NtkDirectWifiAdjacentWebtoonSourceReleaseGate(
 
 /** Format-aware governor for an exact adjacent suffix. */
 internal object NtkAdjacentBulkReleasePolicy {
+    /**
+     * Once the adjacent chapter owns the real viewport, its protected p0..p4 opening wave has
+     * already crossed EOF and committed a drawable runway.  Keeping the suffix at the opening
+     * two-transfer host-emulator limit made ordinary 12-16 page manhwa arrive in five-second
+     * pairs while the user was already blocked on those exact pages.  Four background body reads
+     * overlap the independent CDN pools without reopening the five-body pre-viewport wave; disk,
+     * decode and native publication remain independently paced by their existing single-owner
+     * gates.
+     */
+    internal const val HOST_GPU_MANHWA_RELEASED_BODY_TRANSFERS = 4
+
     fun requiresActualViewportAndDrawableRunway(
         hostGpuEmulatorRuntime: Boolean,
         directWifiTransport: Boolean,
@@ -1017,7 +1247,11 @@ internal object NtkAdjacentBulkReleasePolicy {
         val boundedHostManhwa = hostGpuEmulatorRuntime && directWifiTransport &&
             !cellularResilientTransport && adjacentPrefetchReleased &&
             episodePath.startsWith("/manhwa/")
-        return if (boundedHostManhwa) minOf(proposedLaneCount, 2) else proposedLaneCount
+        return if (boundedHostManhwa) {
+            minOf(proposedLaneCount, HOST_GPU_MANHWA_RELEASED_BODY_TRANSFERS)
+        } else {
+            proposedLaneCount
+        }
     }
 }
 
@@ -1299,12 +1533,45 @@ internal object NtkDirectWifiAdjacentExecutionTopology {
 }
 
 /**
+ * Defers construction of blocking worker lanes for every rolling direct-Wi-Fi episode.
+ *
+ * Discovery overlaps the document/API exchange and does not yet know the immutable body's
+ * actual missing count. Eagerly prestarting the generic 120+8 ring here made a current webtoon
+ * create 129 runnable Java threads while the main thread was still receiving touch input. The
+ * session adoption point already has the sealed manifest and exact missing-body count, so it can
+ * create the same maximum-capability lane identities lazily without sacrificing later expansion.
+ * Adjacent episodes additionally share their smaller process-wide ring; current episodes retain
+ * episode-owned workers and therefore preserve request cancellation and ownership semantics.
+ */
+internal object NtkDirectWifiRollingBootstrapTopology {
+    private const val HOST_GPU_ROUTE_PREPARATION_LANES = 2
+
+    fun shouldDeferBootstrap(
+        episodePath: String,
+        rollingAdmission: Boolean,
+        directWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+    ): Boolean = rollingAdmission && directWifiTransport && !cellularResilientTransport &&
+        (episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
+
+    fun routeLaneCount(hostGpuProfileActive: Boolean, ordinaryCount: Int): Int {
+        require(ordinaryCount >= 0)
+        return if (hostGpuProfileActive) {
+            minOf(ordinaryCount, HOST_GPU_ROUTE_PREPARATION_LANES)
+        } else {
+            ordinaryCount
+        }
+    }
+}
+
+/**
  * An adjacent direct-Wi-Fi webtoon can physically admit only p0..p3 before its drawable runway
  * commits. Building the generic 120-body/8-route executor ring for that four-body session leaves
  * more than a hundred idle Java threads alive during the physical fling and makes InputManager,
  * SurfaceFlinger and the renderer compete for the emulator's four CPUs. Size only this immutable
- * adjacent profile from its already-established admission bound. Current episodes, manhwa,
- * carrier/SNI and every ordinary source keep their existing worker topology.
+ * adjacent profile from its already-established admission bound. Current direct-Wi-Fi episodes
+ * keep their full sealed-manifest topology but materialize its workers only when real work uses a
+ * lane; carrier/SNI and ordinary non-rolling sources keep the eager topology.
  */
 /** Registers every started executor in a preallocated cleanup holder before starting the next. */
 private fun buildStrictBootstrapResources(
@@ -1586,6 +1853,12 @@ internal object NtkStrictInitialWavePolicy {
     // so this protects first-visible bandwidth without serializing the remaining chapter.
     // Adjacent work has its separate exact four-body contract below.
     private const val WEBTOON_DIRECT_WIFI_SHORT_CURRENT_ANCHOR_GATE_OPERATIONS = 1
+    // The click-time H3 HEAD now warms one opening engine, and p0..p4 deliberately multiplex that
+    // same connection. A one-body gate made the four successors repay another 1.0-1.5 second body
+    // wave after p0 even though all five are required by the first physical gesture. Open exactly
+    // that visible prefix together. This does not re-enable the failed five-connection H2 wave:
+    // an unavailable H3 path still falls back sequentially through the bounded transport policy.
+    private const val WEBTOON_HOST_GPU_CURRENT_ANCHOR_GATE_OPERATIONS = 5
     // A short current episode can contain a handful of unusually tall JPEGs. Letting three of
     // those cold bodies divide the opening window made the exact resume page miss the first-frame
     // SLA even though decode/presentation took only one frame. Give episodes that still fit in the
@@ -1648,8 +1921,10 @@ internal object NtkStrictInitialWavePolicy {
     internal const val WIFI_ADJACENT_INITIAL_RUNWAY_BODIES = 4
     internal const val HOST_GPU_ADJACENT_INITIAL_RUNWAY_BODIES = 5
     // Keep p0..p4 admitted, but do not make all five bodies compete with physical input on the
-    // host-GPU emulator. Two rolling transfers fill that finite runway in at most three waves while
-    // retaining the exact same pages and authority. Physical devices keep the qualified four-body
+    // host-GPU emulator. Exact discovery now starts as soon as the predecessor is complete and p0
+    // keeps exclusive wire ownership through EOF. Two rolling followers then finish p1..p4 in two
+    // waves during the remaining chapter without the three-way TLS/hash completion bursts measured
+    // at 166-285 ms. No page or byte is dropped, and physical devices keep the qualified four-body
     // production transfer ring.
     internal const val HOST_GPU_ADJACENT_ACTIVE_BODY_TRANSFERS = 2
     private const val WIFI_ADJACENT_ANCHOR_GATE_OPERATIONS = 1
@@ -1667,6 +1942,7 @@ internal object NtkStrictInitialWavePolicy {
         directWifiTransport: Boolean = false,
         adjacentPrefetch: Boolean = false,
         directWifiCurrentEpisode: Boolean = false,
+        hostGpuEmulatorRuntime: Boolean = false,
     ): Int {
         require(cohortCount >= 0)
         require(episodePageCount >= 0)
@@ -1683,6 +1959,13 @@ internal object NtkStrictInitialWavePolicy {
             // remaining three admitted runway bodies open immediately after p0 reaches EOF.
             WIFI_ADJACENT_ANCHOR_GATE_OPERATIONS
         } else if (
+            hostGpuEmulatorRuntime && directWifiTransport && directWifiCurrentEpisode
+        ) {
+            // Start precisely the H3-multiplexed p0..p4 visible prefix. The post-anchor governor
+            // continues through the finite p0..p8 runway without admitting the unrelated suffix.
+            WEBTOON_HOST_GPU_CURRENT_ANCHOR_GATE_OPERATIONS
+        } else if (
+            directWifiTransport &&
             directWifiCurrentEpisode &&
             episodePageCount in
                 1..NtkHostGpuEmulatorCurrentWebtoonLanePolicy.SHORT_CURRENT_MAX_EPISODE_PAGES
@@ -2333,6 +2616,36 @@ internal class NtkStrictPublishedBodyPinLifecycle {
 }
 
 /**
+ * Gives a generation-qualified non-zero resume source sole wire ownership until its body is safe.
+ * This is deliberately narrower than an arbitrary requested page: the registry has already
+ * proven current foreground ownership, direct Wi-Fi and non-cellular transport before constructing
+ * this session.  Starting an entire short chapter beside that anchor divides bandwidth precisely
+ * when no other page can produce the requested first frame.
+ */
+internal object NtkForwardResumeAnchorWirePolicy {
+    fun isExclusive(
+        rollingAdmission: Boolean,
+        directWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        currentForegroundViewerGeneration: Long,
+        adjacentPrefetch: Boolean,
+        initialPageIndex: Int,
+    ): Boolean = rollingAdmission && directWifiTransport &&
+        !cellularResilientTransport && currentForegroundViewerGeneration > 0L &&
+        !adjacentPrefetch && initialPageIndex > 0
+
+    fun usableLaneCount(
+        proposedLaneCount: Int,
+        exclusive: Boolean,
+        anchorBodyPublished: Boolean,
+    ): Int = if (exclusive && !anchorBodyPublished) {
+        proposedLaneCount.coerceAtMost(1)
+    } else {
+        proposedLaneCount
+    }
+}
+
+/**
  * A single two-phase source owner. The same actor, bounded physical lanes, page ledger, Call and
  * quarantine file survive PLAN_RESERVED -> exact ownership. Pre-exact work may only write
  * quarantined bytes and evidence; exact events and leases are gated until ownership is installed.
@@ -2557,6 +2870,12 @@ internal class NtkStrictSourceSession(
     private val appContext = context.applicationContext
     private val retryHandler = Handler(Looper.getMainLooper())
     private val sessionStartAtMs = SystemClock.elapsedRealtime()
+    private val hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+        Build.FINGERPRINT,
+        Build.MODEL,
+        Build.HARDWARE,
+        Build.PRODUCT,
+    )
     private val candidateSeal = NtkEpisodeManifestSeal.create(
         planBinding.episodePath,
         planBinding.discoveryGeneration,
@@ -2597,6 +2916,13 @@ internal class NtkStrictSourceSession(
             directWifiTransport = directWifiTransport,
             cellularResilientTransport = cellularResilientTransport,
         )
+    private val hostGpuDirectWifiRollingExecution = hostGpuEmulatorRuntime &&
+        NtkDirectWifiRollingBootstrapTopology.shouldDeferBootstrap(
+            episodePath = candidateSeal.normalizedEpisodePath,
+            rollingAdmission = rollingAdmission,
+            directWifiTransport = directWifiTransport,
+            cellularResilientTransport = cellularResilientTransport,
+        )
     private val streamedExactBodyFutures = streamedExactBodies?.bodyFutures.orEmpty()
     private val externallyOwnedPageIndexes = streamedExactBodyFutures.keys
     private val bulkSourcePhysicalAdmissionReady =
@@ -2628,9 +2954,12 @@ internal class NtkStrictSourceSession(
             finiteDirectWifiAdjacentExecution,
             ordinaryRequiredPhysicalLanes,
         ),
-        requiredRoutePreparationLanes = NtkDirectWifiAdjacentExecutionTopology.routeLaneCount(
-            finiteDirectWifiAdjacentExecution,
-            ordinaryRequiredRoutePreparationLanes,
+        requiredRoutePreparationLanes = NtkDirectWifiRollingBootstrapTopology.routeLaneCount(
+            hostGpuDirectWifiRollingExecution,
+            NtkDirectWifiAdjacentExecutionTopology.routeLaneCount(
+                finiteDirectWifiAdjacentExecution,
+                ordinaryRequiredRoutePreparationLanes,
+            ),
         ),
         shareWorkerLanes = finiteDirectWifiAdjacentExecution,
     )
@@ -2672,6 +3001,10 @@ internal class NtkStrictSourceSession(
         NtkHostGpuEmulatorCurrentWebtoonRecoveryFence()
     private val currentWebtoonC8HealthState =
         NtkHostGpuEmulatorCurrentWebtoonC8HealthState()
+    private val currentWebtoonFragmentedTlsRecoveryHealthState =
+        NtkHostGpuEmulatorFragmentedTlsRecoveryHealthState()
+    private val currentWebtoonQuicHealthState =
+        NtkHostGpuEmulatorCurrentWebtoonQuicHealthState()
     private val publishedBodyPins = NtkStrictPublishedBodyPinLifecycle()
     private val actorThread = AtomicReference<Thread>()
     private val publishedView = AtomicReference(SessionPublishedView.initial())
@@ -2716,12 +3049,6 @@ internal class NtkStrictSourceSession(
     private var boundEpisode: NtkEpisodeToken? = null
     private var preGeometryPlan = NtkPreGeometrySourcePlanner.create(initialPageIndex, pages.size)
     private var sourceDemand: NtkSourceDemandSnapshot? = null
-    private val hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
-        Build.FINGERPRINT,
-        Build.MODEL,
-        Build.HARDWARE,
-        Build.PRODUCT,
-    )
     private val adjacentInitialRunwayBodyCount =
         NtkStrictInitialWavePolicy.adjacentInitialRunwayBodyCount(
             emulatorRuntime = hostGpuEmulatorRuntime,
@@ -2746,7 +3073,16 @@ internal class NtkStrictSourceSession(
     private val hostGpuCurrentWebtoonPreferredPhysicalCohorts =
         hostGpuEmulatorRuntime && directWifiTransport && !cellularResilientTransport &&
             planBinding.episodePath.startsWith("/webtoon/") && rollingAdmission &&
-            initialPageIndex > 0 && currentForegroundViewerGeneration > 0L && !adjacentPrefetch
+            currentForegroundViewerGeneration > 0L && !adjacentPrefetch
+    private val forwardResumeAnchorWireExclusive =
+        NtkForwardResumeAnchorWirePolicy.isExclusive(
+            rollingAdmission = rollingAdmission,
+            directWifiTransport = directWifiTransport,
+            cellularResilientTransport = cellularResilientTransport,
+            currentForegroundViewerGeneration = currentForegroundViewerGeneration,
+            adjacentPrefetch = adjacentPrefetch,
+            initialPageIndex = initialPageIndex,
+        )
     private var rollingAdmittedPages: Set<Int> =
         NtkStrictInitialWavePolicy.admittedPageIndexes(
             pages.size,
@@ -2757,17 +3093,23 @@ internal class NtkStrictSourceSession(
             adjacentRunwayBodyCount = adjacentInitialRunwayBodyCount,
         )
     private var adjacentPrefetchReleased = false
+    private val hostGpuAdjacentManhwaHeadInstall = hostGpuEmulatorRuntime &&
+        planBinding.episodePath.startsWith("/manhwa/")
     private val requiresAdjacentHeadPixelsInstall = adjacentPrefetch && directWifiTransport &&
-        !cellularResilientTransport && planBinding.episodePath.startsWith("/webtoon/")
+        !cellularResilientTransport && (
+            planBinding.episodePath.startsWith("/webtoon/") ||
+                hostGpuAdjacentManhwaHeadInstall
+            )
     private val hostGpuEmulatorAdjacentP0Predecode =
-        requiresAdjacentHeadPixelsInstall && hostGpuEmulatorRuntime
+        requiresAdjacentHeadPixelsInstall && hostGpuEmulatorRuntime &&
+            planBinding.episodePath.startsWith("/webtoon/")
     private var adjacentAnchorRequestHeadersSent =
         !requiresAdjacentHeadPixelsInstall
     private var adjacentHeadPixelsInstalled = !requiresAdjacentHeadPixelsInstall
     private val requiresAdjacentViewportAndDrawableBulkRelease =
         NtkAdjacentBulkReleasePolicy.requiresActualViewportAndDrawableRunway(
             hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
-            directWifiTransport = directWifiTransport,
+            directWifiTransport = directWifiTransport && adjacentPrefetch,
             cellularResilientTransport = cellularResilientTransport,
             adjacentPrefetch = adjacentPrefetch,
             episodePath = planBinding.episodePath,
@@ -2818,10 +3160,11 @@ internal class NtkStrictSourceSession(
             cellularResilientTransport = cellularResilientTransport,
             episodePageCount = pages.size,
             // Keep the adjacent identity separate from the current short-scene exception below.
-            directWifiTransport = directWifiTransport && adjacentPrefetch,
+            directWifiTransport = directWifiTransport,
             adjacentPrefetch = adjacentPrefetch,
             directWifiCurrentEpisode = directWifiTransport && !adjacentPrefetch &&
                 currentForegroundViewerGeneration > 0L,
+            hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
         )
     private val settledColdConnectionCohortLeaders = ConcurrentHashMap.newKeySet<Int>()
     private val coldConnectionCohortByPage = Array(pages.size) { pageIndex ->
@@ -2843,10 +3186,29 @@ internal class NtkStrictSourceSession(
      * into an allocation-heavy O(n²) actor loop before the final HTTP Call could even start.
      */
     private val preGeometryPendingPages = ArrayDeque<Int>(pages.size).apply {
-        coldConnectionCohortLeaders.forEach(::addLast)
+        // The first pages are the only bodies that can remove the physical forward-scroll cap.
+        // Put the complete visible runway ahead of offscreen cold-pool leaders. The old leaders-
+        // first order launched pages 9/24/33/48/66 immediately after the first three bodies and
+        // starved pages 3-5 on a healthy but bandwidth-limited link.
+        val openingRunwayEndExclusive = minOf(
+            pages.size,
+            initialPageIndex + maxOf(
+                webtoonPreAnchorGateOperations,
+                NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES,
+            ),
+        )
+        for (pageIndex in initialPageIndex until openingRunwayEndExclusive) {
+            if (pageIndex in rollingAdmittedPages) addLast(pageIndex)
+        }
+        coldConnectionCohortLeaders.forEach { pageIndex ->
+            if (pageIndex !in initialPageIndex until openingRunwayEndExclusive) {
+                addLast(pageIndex)
+            }
+        }
         for (pageIndex in initialPageIndex until pages.size) {
             if (pageIndex in rollingAdmittedPages &&
-                pageIndex !in coldConnectionCohortLeaderSet
+                pageIndex !in coldConnectionCohortLeaderSet &&
+                pageIndex !in initialPageIndex until openingRunwayEndExclusive
             ) addLast(pageIndex)
         }
         for (pageIndex in 0 until initialPageIndex) {
@@ -2867,6 +3229,15 @@ internal class NtkStrictSourceSession(
         // promotion is needed to draw the stream, while bulk source GETs intentionally wait for
         // that draw. Start with a zero-call source proof and open exact publication immediately.
         streamedExactBodyFutures.isNotEmpty() -> 0
+        // A restored viewport has exactly one first-frame body.  Its source index is already
+        // generation-qualified by NtkForwardResumeFloorPolicy, so do not dilute it across the
+        // chapter's cold connection cohorts before its first successful EOF.
+        forwardResumeAnchorWireExclusive -> 1
+        // The host adjacent-manhwa contract deliberately gives p0 exclusive wire ownership until
+        // EOF and its renderer ACK. Requiring the wider two-lane steady-state target in the
+        // synchronous opening proof contradicts that gate and retires a healthy source before p0
+        // can complete. The second lane is admitted by the same actor immediately after the ACK.
+        hostGpuAdjacentManhwaHeadInstall -> 1
         planBinding.episodePath.startsWith("/webtoon/") ->
             webtoonPreAnchorGateOperations
         else -> coldConnectionCohortLeaders.size
@@ -2888,6 +3259,7 @@ internal class NtkStrictSourceSession(
     private var metadataAllAtMs = 0L
     private var metadataPublishedCount = 0
     private var bodyPublishedCount = 0
+    private var finalWellProvenQuicWaveLogged = false
     private var forwardResumeReadyLogged = false
     private val wifiWebtoonAdaptiveLanes =
         if (NtkWifiWebtoonAdaptiveLaneState.isEligible(
@@ -2928,6 +3300,8 @@ internal class NtkStrictSourceSession(
      * active-motion viewport demand remains the only path that can widen before this idle edge.
      */
     private var foregroundIdleCompletionRequested = false
+    private var lastPhysicalBlockedRedrivePage = -1
+    private var lastPhysicalBlockedRedriveAtMs = 0L
     private lateinit var quarantineRoutePreparations:
         Array<CompletableFuture<QuarantineRoutePreparation>>
 
@@ -3000,10 +3374,15 @@ internal class NtkStrictSourceSession(
                 "reader_strip_streamed_exact_body_fallback",
                 "pageIndex=$pageIndex,error=${failure?.javaClass?.simpleName ?: "empty_body"}",
             )
+            // Admission is part of the failed click-owned body's fallback transition. Publish it
+            // before asking the route-preparation gate to revalidate the page. The inverse order
+            // made a suffix body that failed before adjacent release fail its own admission check;
+            // release then saw the page in previousAdmission, omitted it from newlyAdmitted, and
+            // left the placeholder route future incomplete forever.
+            if (rollingAdmission) rollingAdmittedPages = rollingAdmittedPages + pageIndex
             if (::quarantineRoutePreparations.isInitialized) {
                 prepareFallbackRouteForStreamedPage(pageIndex)
             }
-            if (rollingAdmission) rollingAdmittedPages = rollingAdmittedPages + pageIndex
             if (!isGeometrySealed() && pageIndex !in preGeometryPendingPages) {
                 preGeometryPendingPages.addLast(pageIndex)
             }
@@ -3070,6 +3449,15 @@ internal class NtkStrictSourceSession(
                 NtkQuarantineSourceOwnershipRegistry.beginSession(planBinding, sessionId)
                 planReservedAtMs = SystemClock.elapsedRealtime()
                 phase = SessionPhase.Quarantining(planReservedAtMs)
+                logSourceEvent(
+                    "reader_strip_source_runtime_profile",
+                    "hostGpu=$hostGpuEmulatorRuntime,currentWebtoon=" +
+                        "$hostGpuCurrentWebtoonPreferredPhysicalCohorts," +
+                        "directWifi=$directWifiTransport,rolling=$rollingAdmission," +
+                        "generation=$currentForegroundViewerGeneration," +
+                        "resumeAnchor=$initialPageIndex," +
+                        "resumeAnchorExclusive=$forwardResumeAnchorWireExclusive",
+                )
                 refillLanesActor()
                 check(initialWaveCount == initialQuarantineWaveTargetCount) {
                     val openingEnd = minOf(
@@ -3139,9 +3527,11 @@ internal class NtkStrictSourceSession(
             "Quarantine route preparation already started"
         }
         // Previously the source actor resolved the Request route and calculated two SHA-256
-        // identities serially for every page. On a 114-page webtoon that held back the last
-        // physical GET by roughly 400 ms. Compute the immutable, CPU-only material on eight
-        // bounded prestarted lanes; the actor still performs every ownership admission in order.
+        // identities serially for every page. Compute immutable, CPU-only material on bounded
+        // worker lanes; the actor still performs every ownership admission in order. The host
+        // emulator direct-Wi-Fi profile uses two lanes because eight simultaneous hash/request
+        // builders descheduled input for more than half a second; its opening routes are still
+        // submitted first and the remaining work overlaps the body wave.
         // A click-owned exact wave can already contain every immutable body. In that case there
         // is no source route left to resolve, and scheduling page-count hash work only steals CPU
         // from exact publication and decode on the entry deadline.
@@ -3169,7 +3559,11 @@ internal class NtkStrictSourceSession(
         if (hostGpuCurrentWebtoonPreferredPhysicalCohorts) {
             val openingEnd = minOf(
                 pages.size,
-                initialPageIndex + initialQuarantineWaveTargetCount,
+                initialPageIndex + maxOf(
+                    initialQuarantineWaveTargetCount,
+                    NtkHostGpuEmulatorCurrentWebtoonLanePolicy
+                        .INITIAL_VISIBLE_RUNWAY_BODIES,
+                ),
             )
             for (pageIndex in initialPageIndex until openingEnd) {
                 schedulePreparation(pageIndex)
@@ -3319,7 +3713,14 @@ internal class NtkStrictSourceSession(
                     adjacentRunwayBodyCount = adjacentInitialRunwayBodyCount,
                 )
             if (wasInitiallyAdmitted) return@forEach
-            val preparation = createRoutePreparation(pageIndex)
+            val preparation = createRoutePreparation(
+                pageIndex,
+                waitForStreamedSourceRoute =
+                    NtkStrictLateRoutePreparationPolicy.shouldWaitForStreamedSourceRoute(
+                        exactManifestOwned = phase is SessionPhase.ExactOpen,
+                        streamedExactBodyPending = page.streamedExactBodyPending,
+                    ),
+            )
             quarantineRoutePreparations[pageIndex] = preparation
             preparation.whenComplete { _, _ -> scheduleRoutePreparationRefill() }
         }
@@ -3343,7 +3744,14 @@ internal class NtkStrictSourceSession(
                 page.primaryStarted || page.terminalEvent != null ||
                 quarantineRoutePreparations[pageIndex].isDone
             ) continue
-            val preparation = createRoutePreparation(pageIndex)
+            val preparation = createRoutePreparation(
+                pageIndex,
+                waitForStreamedSourceRoute =
+                    NtkStrictLateRoutePreparationPolicy.shouldWaitForStreamedSourceRoute(
+                        exactManifestOwned = phase is SessionPhase.ExactOpen,
+                        streamedExactBodyPending = page.streamedExactBodyPending,
+                    ),
+            )
             quarantineRoutePreparations[pageIndex] = preparation
             preparation.whenComplete { _, _ -> scheduleRoutePreparationRefill() }
         }
@@ -3617,11 +4025,13 @@ internal class NtkStrictSourceSession(
             // transferred from the click-owned quarantine ledger, while plan reservation still
             // precedes this actor command by construction. Requiring a positive *millisecond*
             // gap makes fast process-restores fail nondeterministically when both ordered events
-            // share one clock tick. A real session-owned wave retains the strict positive gap,
-            // except for the already-bounded host-emulator adjacent actor path.
+            // share one clock tick. A real multi-call session-owned wave retains the strict
+            // positive gap. The already-bounded adjacent path and the generation-qualified
+            // one-call resume anchor are actor-ordered and can validly share that tick.
             sameMillisecondSeededExactAllowed = initialWaveCount == 0 ||
                 (adjacentPrefetch && directWifiTransport &&
-                    !cellularResilientTransport && hostGpuEmulatorRuntime),
+                    !cellularResilientTransport && hostGpuEmulatorRuntime) ||
+                forwardResumeAnchorWireExclusive,
         )
         logOverlapProofActor()
     }
@@ -3749,9 +4159,26 @@ internal class NtkStrictSourceSession(
     fun onAdjacentHeadPixelsInstalled(episode: NtkEpisodeToken) {
         if (closeRequested.get()) return
         executeActor {
-            if (!acceptsEpisode(episode) || adjacentHeadPixelsInstalled) return@executeActor
+            val acceptedEpisode = acceptsEpisode(episode)
+            val alreadyInstalled = adjacentHeadPixelsInstalled
+            logSourceEvent(
+                "reader_strip_adjacent_head_pixels_event",
+                "episode=${episode.value},bound=${boundEpisode?.value ?: 0L}," +
+                    "accepted=$acceptedEpisode,already=$alreadyInstalled," +
+                    "phase=${phase.javaClass.simpleName},active=" +
+                    activeWorks.filterNotNull().joinToString("|") { it.pageIndex.toString() } +
+                    ",pending=${preGeometryPendingPages.joinToString("|")}",
+            )
+            if (!acceptedEpisode || alreadyInstalled) return@executeActor
             adjacentHeadPixelsInstalled = true
             refillLanesActor()
+            logSourceEvent(
+                "reader_strip_adjacent_head_pixels_refilled",
+                "active=${activeWorks.filterNotNull().joinToString("|") { it.pageIndex.toString() }}," +
+                    "pending=${preGeometryPendingPages.joinToString("|")}," +
+                    "published=$bodyPublishedCount,initialWave=$initialWaveCount/" +
+                    initialQuarantineWaveTargetCount,
+            )
         }
     }
 
@@ -3797,6 +4224,65 @@ internal class NtkStrictSourceSession(
                         "remaining=${pages.count { !it.primaryStarted && it.publishedBody == null }}",
                 )
             }
+            refillLanesActor()
+        }
+    }
+
+    /**
+     * Repairs a lost or indefinitely pending route-preparation edge for the exact source which
+     * already stopped a physical gesture. Source demand normally prepares newly-admitted pages,
+     * but a page can already be present in [rollingAdmittedPages] while its original asynchronous
+     * route future never completes. Repeating the same demand then has an empty admission delta
+     * and cannot replace that future. Revalidate just this source on the actor, keep the immutable
+     * manifest/route ownership, and let the ordinary bounded physical lanes perform the GET.
+     */
+    fun onPhysicalBlockedPageRequested(episode: NtkEpisodeToken, pageIndex: Int) {
+        if (closeRequested.get() || pageIndex < 0) return
+        executeActor {
+            if (!acceptsEpisode(episode) || !adjacentPrefetch ||
+                !NtkReaderTransferPacer.isPhysicalForegroundEpisode(
+                    candidateSeal.normalizedEpisodePath,
+                ) || pageIndex !in pages.indices
+            ) return@executeActor
+            val page = pages[pageIndex]
+            if (page.publishedBody != null || page.seededExactBody != null ||
+                page.terminalEvent != null
+            ) return@executeActor
+            val now = SystemClock.elapsedRealtime()
+            if (lastPhysicalBlockedRedrivePage == pageIndex &&
+                now - lastPhysicalBlockedRedriveAtMs <
+                    PHYSICAL_BLOCKED_SOURCE_REDRIVE_MIN_INTERVAL_MS
+            ) return@executeActor
+            lastPhysicalBlockedRedrivePage = pageIndex
+            lastPhysicalBlockedRedriveAtMs = now
+
+            if (rollingAdmission && pageIndex !in rollingAdmittedPages) {
+                rollingAdmittedPages = rollingAdmittedPages + pageIndex
+                pendingRollingAdmittedPages = null
+            }
+            if (adjacentPrefetchReleased && !page.streamedExactBodyPending &&
+                ::quarantineRoutePreparations.isInitialized &&
+                quarantineRoutePreparations.isNotEmpty() &&
+                !quarantineRoutePreparations[pageIndex].isDone &&
+                !page.primaryStarted
+            ) {
+                // The exact manifest is already installed and this PageState is the compositor's
+                // immutable blocker. Do not wait for a click-stream route edge which may never
+                // repeat after its finite wave ceded the suffix.
+                prepareFallbackRouteForStreamedPage(pageIndex)
+            }
+            logSourceEvent(
+                "reader_strip_source_physical_blocker_redrive",
+                "pageIndex=$pageIndex,admitted=${pageIndex in rollingAdmittedPages}," +
+                    "started=${page.primaryStarted},route=" +
+                    if (::quarantineRoutePreparations.isInitialized &&
+                        quarantineRoutePreparations.isNotEmpty()
+                    ) {
+                        quarantineRoutePreparations[pageIndex].isDone
+                    } else {
+                        false
+                    },
+            )
             refillLanesActor()
         }
     }
@@ -3874,7 +4360,12 @@ internal class NtkStrictSourceSession(
                     }
                 }
             }
-            startReleasedAdjacentRoutePreparationsActor(newlyAdmitted)
+            // A click-owned suffix future may have failed before this release and already added
+            // its page to previousAdmission. Its earlier fallback route was correctly gated while
+            // adjacentPrefetchReleased was false, so newlyAdmitted alone is not a complete work
+            // list. Reconcile every effective page with the placeholder futures; the helper is
+            // idempotent for completed/initially prepared routes and starts no physical Call.
+            startReleasedAdjacentRoutePreparationsActor(effectiveAdmission)
         }
         logSourceEvent(
                 "reader_strip_source_adjacent_prefetch_released",
@@ -3970,6 +4461,7 @@ internal class NtkStrictSourceSession(
                 check(all.size == pages.size && all.toSet() == pages.indices.toSet())
                 sourceDemand = delivery.candidate
                 if (rollingAdmission) {
+                    var admissionChanged = false
                     // The exact manifest is already owned by the visible viewer. Keep physical
                     // calls bounded to HARD/SOFT demand; BACKGROUND remains authority-only until
                     // a later compositor viewport moves the runway.
@@ -3991,6 +4483,7 @@ internal class NtkStrictSourceSession(
                                 preserveExistingAdmission = foregroundIdleCompletionRequested,
                             )
                         val newlyAdmitted = effectiveAdmission - previousAdmission
+                        admissionChanged = effectiveAdmission != previousAdmission
                         if (newlyAdmitted.isNotEmpty()) {
                             if (primaryAdmissionsSealed && isGeometrySealed()) {
                                 val seal = exactOpenManifestActor().seal
@@ -4025,12 +4518,14 @@ internal class NtkStrictSourceSession(
                             pendingRollingAdmittedPages = null
                         }
                     }
-                    val admittedFloor = rollingAdmittedPages.minOrNull() ?: initialPageIndex
-                    logSourceEvent(
-                        "reader_strip_source_forward_runway_admitted",
-                        "initialPage=$initialPageIndex,admittedFloor=$admittedFloor," +
-                            "admitted=${rollingAdmittedPages.size}"
-                    )
+                    if (admissionChanged) {
+                        val admittedFloor = rollingAdmittedPages.minOrNull() ?: initialPageIndex
+                        logSourceEvent(
+                            "reader_strip_source_forward_runway_admitted",
+                            "initialPage=$initialPageIndex,admittedFloor=$admittedFloor," +
+                                "admitted=${rollingAdmittedPages.size}"
+                        )
+                    }
                 }
                 sourceDemandAppliedCount.incrementAndGet()
                 refillLanesActor()
@@ -4145,6 +4640,7 @@ internal class NtkStrictSourceSession(
             maybeFinishClosedActor()
             return
         }
+        logCurrentWebtoonCloseDiagnosticActor()
         phase = SessionPhase.Closing(currentExactIdentityActor(), cause)
         currentWebtoonRecoveryProofOwner = null
         manhwaWaveRecoveryState?.close()
@@ -4158,6 +4654,52 @@ internal class NtkStrictSourceSession(
         routePreparationLanes.forEach(ExecutorService::shutdown)
         physicalLanes.forEach(ExecutorService::shutdown)
         maybeFinishClosedActor()
+    }
+
+    /**
+     * One bounded line at retirement preserves the evidence that is otherwise lost when a strict
+     * source is cancelled by Activity teardown. This is intentionally aggregate-only: per-body
+     * logging measurably perturbs the emulator's four CPU cores and hides the network tail.
+     */
+    private fun logCurrentWebtoonCloseDiagnosticActor() {
+        assertActorThread()
+        if (!hostGpuCurrentWebtoonPreferredPhysicalCohorts || bodyPublishedCount <= 0) return
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
+        val completed = pages.filter { page ->
+            page.physicalStartedAtNanos > 0L &&
+                page.physicalCompletedAtNanos >= page.physicalStartedAtNanos
+        }
+        val hostSummary = completed
+            .groupBy { page -> page.physicalHost.ifBlank { "unknown" } }
+            .toSortedMap()
+            .entries
+            .joinToString(";") { (host, hostPages) ->
+                val durationsMs = hostPages.map { page ->
+                    (page.physicalCompletedAtNanos - page.physicalStartedAtNanos) / 1_000_000L
+                }
+                "$host{n=${hostPages.size},avg=${durationsMs.average().toLong()}," +
+                    "max=${durationsMs.maxOrNull() ?: 0L}}"
+            }
+        val activeSummary = activeWorks.filterNotNull()
+            .sortedBy(PrimaryWork::pageIndex)
+            .joinToString(";") { work ->
+                val ageMs = if (work.physicalStartedAtNanos > 0L) {
+                    (nowNanos - work.physicalStartedAtNanos) / 1_000_000L
+                } else {
+                    -1L
+                }
+                "${work.pageIndex}@${ageMs}ms"
+            }
+        Log.i(
+            "ViewerPerf",
+            "reader_strip_current_close_diagnostic published=$bodyPublishedCount/${pages.size}," +
+                "active=${activeWorks.count { it != null }},remaining=" +
+                "${pages.count { it.publishedBody == null && it.terminalEvent == null }}," +
+                "quicQualified=${currentWebtoonQuicHealthState.qualified}," +
+                "quicWellProven=${currentWebtoonQuicHealthState.wellProven}," +
+                "quicFrozen=${currentWebtoonQuicHealthState.frozen}," +
+                "hosts=$hostSummary,activePages=$activeSummary",
+        )
     }
 
     /**
@@ -4252,6 +4794,79 @@ internal class NtkStrictSourceSession(
             cohortKey = coldConnectionCohortByPage[work.pageIndex],
             evidence = evidence,
         )?.let(::logCurrentWebtoonC8HealthTransitionActor)
+    }
+
+    private fun recordCurrentWebtoonFragmentedTlsRecoverySuccessActor(work: PrimaryWork) {
+        assertActorThread()
+        // Quarantine and exact work share this immutable source-session profile and the same
+        // post-EOF/SHA evidence sink. Requiring an exact context here discarded every response
+        // which started before promotion, even though those bodies are the opening proofs that
+        // must qualify the rolling lane cap. Foreground state is still checked when the cap is
+        // consumed, so observing a finishing background body cannot launch new work.
+        if (!hostGpuCurrentWebtoonPreferredPhysicalCohorts) return
+        val evidence = work.physicalBodyEvidence ?: return
+        if (currentWebtoonFragmentedTlsRecoveryHealthState.recordSuccess(work.workId, evidence)) {
+            logSourceEvent(
+                "reader_strip_fragmented_tls_recovery_qualified",
+                "pageIndex=${work.pageIndex},workId=${work.workId}," +
+                    "laneTarget=${NtkHostGpuEmulatorCurrentWebtoonLanePolicy.MAX_PROVEN_FRAGMENTED_TLS_TRANSFERS}",
+            )
+        }
+    }
+
+    private fun recordCurrentWebtoonQuicHealthSuccessActor(work: PrimaryWork) {
+        assertActorThread()
+        if (!hostGpuCurrentWebtoonPreferredPhysicalCohorts) return
+        val evidence = work.physicalBodyEvidence
+        if (evidence == null) {
+            if (work.pageIndex <= NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE) {
+                logSourceEvent(
+                    "reader_strip_current_quic_evidence_missing",
+                    "pageIndex=${work.pageIndex},workId=${work.workId}",
+                )
+            }
+            return
+        }
+        val wasQualified = currentWebtoonQuicHealthState.qualified
+        val wasWellProven = currentWebtoonQuicHealthState.wellProven
+        val wasFrozen = currentWebtoonQuicHealthState.frozen
+        val newlyQualified = currentWebtoonQuicHealthState.recordSuccess(
+            work.pageIndex,
+            work.workId,
+            evidence,
+        )
+        if (newlyQualified || wasQualified != currentWebtoonQuicHealthState.qualified ||
+            wasWellProven != currentWebtoonQuicHealthState.wellProven ||
+            wasFrozen != currentWebtoonQuicHealthState.frozen
+        ) {
+            logSourceEvent(
+                "reader_strip_current_quic_health",
+                "pageIndex=${work.pageIndex},workId=${work.workId}," +
+                    "qualified=${currentWebtoonQuicHealthState.qualified}," +
+                    "wellProven=${currentWebtoonQuicHealthState.wellProven}," +
+                    "frozen=${currentWebtoonQuicHealthState.frozen}," +
+                    "laneTarget=${if (currentWebtoonQuicHealthState.wellProven) {
+                        NtkHostGpuEmulatorCurrentWebtoonLanePolicy.MAX_WELL_PROVEN_QUIC_TRANSFERS
+                    } else if (currentWebtoonQuicHealthState.qualified) {
+                        NtkHostGpuEmulatorCurrentWebtoonLanePolicy.MAX_PROVEN_QUIC_TRANSFERS
+                    } else {
+                        NtkHostGpuEmulatorCurrentWebtoonLanePolicy.MAX_PROVEN_FRAGMENTED_TLS_TRANSFERS
+                    }}",
+            )
+        }
+    }
+
+    private fun recordCurrentWebtoonQuicHealthFailureActor(work: PrimaryWork) {
+        assertActorThread()
+        if (!hostGpuCurrentWebtoonPreferredPhysicalCohorts) return
+        if (currentWebtoonQuicHealthState.recordFailure(work.pageIndex)) {
+            logSourceEvent(
+                "reader_strip_current_quic_health",
+                "pageIndex=${work.pageIndex},workId=${work.workId},qualified=false," +
+                    "frozen=true,laneTarget=" +
+                    NtkHostGpuEmulatorCurrentWebtoonLanePolicy.MAX_PROVEN_FRAGMENTED_TLS_TRANSFERS,
+            )
+        }
     }
 
     private fun recordCurrentWebtoonC8HealthFailureActor(work: PrimaryWork) {
@@ -4424,7 +5039,7 @@ internal class NtkStrictSourceSession(
             currentWebtoonC8HealthState.qualified &&
                 !currentWebtoonC8HealthState.frozen &&
                 !currentWebtoonRecoveryFence.isTripped()
-        val currentWebtoonLaneCount = NtkHostGpuEmulatorCurrentWebtoonLanePolicy.cap(
+        val currentWebtoonOrdinaryLaneCount = NtkHostGpuEmulatorCurrentWebtoonLanePolicy.cap(
             progressiveLaneCount = progressiveLaneCount,
             emulatorRuntime = hostGpuEmulatorRuntime,
             directWifiTransport = directWifiTransport,
@@ -4437,7 +5052,33 @@ internal class NtkStrictSourceSession(
             anchorBodyPublished = anchorBodyPublished,
             contiguousForwardBodyCount = contiguousForwardPublishedBodyCountActor(),
             healthyBulkExpansion = healthyCurrentWebtoonBulkExpansion,
+            fragmentedTlsRecoveryQualified =
+                currentWebtoonFragmentedTlsRecoveryHealthState.qualified,
+            quicRecoveryQualified = currentWebtoonQuicHealthState.qualified &&
+                !currentWebtoonQuicHealthState.frozen,
+            wellProvenQuicRecoveryQualified = currentWebtoonQuicHealthState.wellProven &&
+                !currentWebtoonQuicHealthState.frozen,
         )
+        val remainingCurrentBodies = pages.count { page ->
+            page.publishedBody == null && page.terminalEvent == null
+        }
+        val currentWebtoonLaneCount = NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(
+            ordinaryCap = currentWebtoonOrdinaryLaneCount,
+            remainingBodies = remainingCurrentBodies,
+            wellProvenQuicRecoveryQualified = currentWebtoonQuicHealthState.wellProven &&
+                !currentWebtoonQuicHealthState.frozen,
+        )
+        if (currentWebtoonLaneCount > currentWebtoonOrdinaryLaneCount &&
+            !finalWellProvenQuicWaveLogged
+        ) {
+            finalWellProvenQuicWaveLogged = true
+            Log.i(
+                "ViewerPerf",
+                "reader_strip_final_quic_wave ordinary=$currentWebtoonOrdinaryLaneCount," +
+                    "expanded=$currentWebtoonLaneCount,remaining=$remainingCurrentBodies," +
+                    "active=${activeWorks.count { it != null }}",
+            )
+        }
         val fenceObservedState =
             NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.observeFenceTrip(
                 currentWebtoonRecoveryState,
@@ -4476,7 +5117,7 @@ internal class NtkStrictSourceSession(
         // before page zero EOF. Carrier mode opens one demanded leader per finite host/pool cohort instead:
         // otherwise fifteen pools remain idle for about one second, then their leaders and
         // followers stampede those cold connections together.
-        val headGateLaneCount = NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
+        val baseHeadGateLaneCount = NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
             progressiveLaneCount = recoveryGovernedLaneCount,
             preAnchorGateOperations = webtoonPreAnchorGateOperations,
             webtoon = planBinding.episodePath.startsWith("/webtoon/"),
@@ -4484,16 +5125,25 @@ internal class NtkStrictSourceSession(
             anchorBodyPublished = anchorBodyPublished,
             anchorRequestHeadersSent = adjacentAnchorRequestHeadersSent,
             headPixelsInstalled = adjacentHeadPixelsInstalled,
-            prioritizeAnchorUntilEof = false,
+            prioritizeAnchorUntilEof = hostGpuAdjacentManhwaHeadInstall,
             initialRunwayBodyCount = adjacentInitialRunwayBodyCount,
         )
-        val usableLaneCount = NtkAdjacentBulkReleasePolicy.releasedPhysicalLaneCount(
+        // A response header proves only the route, not delivery of the anchor body. The pure gate
+        // above already defines the bounded p0..p4 visible prefix; do not expand it again from a
+        // header callback. The actor opens the remaining finite runway only after p0 publication.
+        val headGateLaneCount = baseHeadGateLaneCount
+        val releasedLaneCount = NtkAdjacentBulkReleasePolicy.releasedPhysicalLaneCount(
             proposedLaneCount = headGateLaneCount,
             hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
             directWifiTransport = directWifiTransport,
             cellularResilientTransport = cellularResilientTransport,
             adjacentPrefetchReleased = adjacentPrefetchReleased,
             episodePath = planBinding.episodePath,
+        )
+        val usableLaneCount = NtkForwardResumeAnchorWirePolicy.usableLaneCount(
+            proposedLaneCount = releasedLaneCount,
+            exclusive = forwardResumeAnchorWireExclusive,
+            anchorBodyPublished = anchorBodyPublished,
         )
         val launchLimitThisTurn = when {
             initialWaveCount < initialQuarantineWaveTargetCount ->
@@ -4747,13 +5397,28 @@ internal class NtkStrictSourceSession(
             repeat(pendingCount) {
                 val pageIndex = preGeometryPendingPages.removeFirst()
                 val page = pages[pageIndex]
+                val openingProofIncomplete =
+                    hostGpuCurrentWebtoonPreferredPhysicalCohorts &&
+                        NtkHostGpuEmulatorCurrentWebtoonLanePolicy.openingProofIncomplete(
+                            contiguousForwardPublishedBodyCountActor(),
+                        )
                 if (!NtkHostGpuEmulatorCurrentWebtoonLanePolicy.allowsOpeningWavePage(
                         pageIndex = pageIndex,
                         pageCount = pages.size,
                         initialPageIndex = initialPageIndex,
-                        initialWaveTarget = initialQuarantineWaveTargetCount,
+                        initialWaveTarget = if (openingProofIncomplete) {
+                            // p0..p4 are the immediately scrollable runway. p5 is the exact
+                            // contiguous-body proof that releases the stable eight-lane suffix;
+                            // keep it ahead of unrelated cold-pool leaders as part of the same
+                            // finite opening cohort.
+                            NtkHostGpuEmulatorCurrentWebtoonLanePolicy
+                                .INITIAL_VISIBLE_RUNWAY_BODIES
+                        } else {
+                            initialQuarantineWaveTargetCount
+                        },
                         openingWaveIncomplete =
-                            initialWaveCount < initialQuarantineWaveTargetCount,
+                            openingProofIncomplete ||
+                                initialWaveCount < initialQuarantineWaveTargetCount,
                         eligible = hostGpuCurrentWebtoonPreferredPhysicalCohorts,
                     )
                 ) {
@@ -4766,6 +5431,10 @@ internal class NtkStrictSourceSession(
                     page.physicalRetryNotBeforeMs > now ||
                     (rollingAdmission && pageIndex !in rollingAdmittedPages)
                 ) return@repeat
+                if (!allowsCurrentOpeningScrollRunwayActor(pageIndex)) {
+                    preGeometryPendingPages.addLast(pageIndex)
+                    return@repeat
+                }
                 if (!isBulkSourcePhysicalAdmissionReady(pageIndex)) {
                     preGeometryPendingPages.addLast(pageIndex)
                     return@repeat
@@ -4798,6 +5467,7 @@ internal class NtkStrictSourceSession(
                     !it.streamedExactBodyPending &&
                     it.physicalRetryNotBeforeMs <= now &&
                     (!rollingAdmission || it.pageIndex in rollingAdmittedPages) &&
+                    allowsCurrentOpeningScrollRunwayActor(it.pageIndex) &&
                     isBulkSourcePhysicalAdmissionReady(it.pageIndex) &&
                     isColdConnectionCohortEligible(it.pageIndex) &&
                     isRoutePreparationReadyWithoutActorWait(it.pageIndex) &&
@@ -4815,10 +5485,37 @@ internal class NtkStrictSourceSession(
                     laneFor(page.pageIndex)
                 )
             }.toList()
+        val contiguousOpeningBodies = if (hostGpuCurrentWebtoonPreferredPhysicalCohorts) {
+            contiguousForwardPublishedBodyCountActor()
+        } else {
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES
+        }
+        val openingEndExclusive = minOf(
+            pages.size,
+            initialPageIndex +
+                NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES,
+        )
+        val nextOpeningProofPage = if (
+            contiguousOpeningBodies <
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES
+        ) {
+            // A lower page may already be in flight while a later page completes first. Using
+            // only the contiguous published count then points at that active page and lets the
+            // generic priority order select p4/p5 ahead of p3. Prefer the earliest selectable
+            // opening candidate instead, preserving the exact physical scroll runway.
+            candidates.asSequence()
+                .map { it.pageIndex }
+                .filter { it in initialPageIndex until openingEndExclusive }
+                .minOrNull()
+        } else {
+            null
+        }
         val selection = NtkStrictSourceSchedulerPolicy.selectPrimary(
             candidates,
             laneRouteAffinity[laneIndex],
-            preferredPageIndexes = if (preferHealthyColdCohortLeaders) {
+            preferredPageIndexes = if (nextOpeningProofPage != null) {
+                setOf(nextOpeningProofPage)
+            } else if (preferHealthyColdCohortLeaders) {
                 coldConnectionCohortLeaderSet
             } else {
                 emptySet()
@@ -4829,14 +5526,24 @@ internal class NtkStrictSourceSession(
     }
 
     private fun isColdConnectionCohortEligible(pageIndex: Int): Boolean {
+        val openingProofIncomplete =
+            hostGpuCurrentWebtoonPreferredPhysicalCohorts &&
+                NtkHostGpuEmulatorCurrentWebtoonLanePolicy.openingProofIncomplete(
+                    contiguousForwardPublishedBodyCountActor(),
+                )
         val openingViewportFollower =
             hostGpuCurrentWebtoonPreferredPhysicalCohorts &&
-                initialWaveCount < initialQuarantineWaveTargetCount &&
+                (openingProofIncomplete ||
+                    initialWaveCount < initialQuarantineWaveTargetCount) &&
                 NtkHostGpuEmulatorCurrentWebtoonLanePolicy.allowsOpeningWavePage(
                     pageIndex = pageIndex,
                     pageCount = pages.size,
                     initialPageIndex = initialPageIndex,
-                    initialWaveTarget = initialQuarantineWaveTargetCount,
+                    initialWaveTarget = if (openingProofIncomplete) {
+                        NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES
+                    } else {
+                        initialQuarantineWaveTargetCount
+                    },
                     openingWaveIncomplete = true,
                     eligible = true,
                 )
@@ -4860,6 +5567,25 @@ internal class NtkStrictSourceSession(
             firstSettledAtMs = firstColdConnectionCohortSettledAtMs,
             nowMs = SystemClock.elapsedRealtime(),
             unsettledFollowerGraceMs = UNSETTLED_COHORT_FOLLOWER_GRACE_MS,
+        )
+    }
+
+    /**
+     * Source demand can become non-null as soon as the user starts swiping, before geometry or the
+     * first drawable is committed. Keep the same contiguous opening fence in both selectors so a
+     * demand update cannot bypass it and substitute page 5/69 for the still-missing pages 3/4.
+     */
+    private fun allowsCurrentOpeningScrollRunwayActor(pageIndex: Int): Boolean {
+        assertActorThread()
+        if (!hostGpuCurrentWebtoonPreferredPhysicalCohorts) return true
+        if (!NtkHostGpuEmulatorCurrentWebtoonLanePolicy.openingProofIncomplete(
+                contiguousForwardPublishedBodyCountActor(),
+            )
+        ) return true
+        return pageIndex in initialPageIndex until minOf(
+            pages.size,
+            initialPageIndex +
+                NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES,
         )
     }
 
@@ -4888,7 +5614,28 @@ internal class NtkStrictSourceSession(
         val anchor = pages[initialPageIndex]
         val anchorBodySealed = anchor.quarantinedBody != null || anchor.publishedBody != null ||
             anchor.terminalEvent != null
-        val effectiveLimit = if (poolKey == anchorPool && !anchorBodySealed) {
+        val openingProofIncomplete =
+            hostGpuCurrentWebtoonPreferredPhysicalCohorts &&
+                NtkHostGpuEmulatorCurrentWebtoonLanePolicy.openingProofIncomplete(
+                    contiguousForwardPublishedBodyCountActor(),
+                )
+        val pageInOpeningWave = pageIndex in initialPageIndex until minOf(
+            pages.size,
+            initialPageIndex +
+                NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES,
+        )
+        val effectiveLimit = if (openingProofIncomplete && pageInOpeningWave) {
+            // Scheduling still carries compatibility-H2 cohort identities, but these finite
+            // current-episode bodies are physically isolated H3 requests. The global five-lane
+            // opening cap is the real bound; do not serialize p4/p5 behind p1..p3.
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy
+                .openingWaveAnchorPoolOperationLimit(
+                    ordinaryLimit = 1,
+                    eligible = true,
+                    openingWaveIncomplete = true,
+                    pageInOpeningWave = true,
+                )
+        } else if (poolKey == anchorPool && !anchorBodySealed) {
             // Keep the entry image alone on its H2 connection until EOF except for the finite
             // host-emulator opening viewport. Consecutive canonical stripes can map to this same
             // compatibility-host shard; one paired stream lets all three visible bodies start
@@ -4898,10 +5645,16 @@ internal class NtkStrictSourceSession(
                     ordinaryLimit = 1,
                     eligible = hostGpuCurrentWebtoonPreferredPhysicalCohorts,
                     openingWaveIncomplete =
-                        initialWaveCount < initialQuarantineWaveTargetCount,
+                        openingProofIncomplete ||
+                            initialWaveCount < initialQuarantineWaveTargetCount,
                     pageInOpeningWave = pageIndex in initialPageIndex until minOf(
                         pages.size,
-                        initialPageIndex + initialQuarantineWaveTargetCount,
+                        initialPageIndex + if (openingProofIncomplete) {
+                            NtkHostGpuEmulatorCurrentWebtoonLanePolicy
+                                .INITIAL_VISIBLE_RUNWAY_BODIES
+                        } else {
+                            initialQuarantineWaveTargetCount
+                        },
                     ),
                 )
         } else {
@@ -5093,7 +5846,7 @@ internal class NtkStrictSourceSession(
                         route,
                         ReaderImageCache.NtkQuarantineCallContext(
                             checkNotNull(work.quarantineLease).identity,
-                            work.quarantineLease
+                            work.quarantineLease,
                         ),
                         openedLease,
                         work.cancellation,
@@ -5400,10 +6153,8 @@ internal class NtkStrictSourceSession(
                 !cellularResilientTransport &&
                 planBinding.episodePath.startsWith("/webtoon/") &&
                 rollingAdmission &&
-                initialPageIndex > 0 &&
                 isCurrentForegroundViewerEpisode() &&
-                !adjacentPrefetch &&
-                anchorBodyPublishedActor()
+                !adjacentPrefetch
         return ReaderImageCache.NtkStrictCallContext(
             tag,
             lease,
@@ -5647,6 +6398,7 @@ internal class NtkStrictSourceSession(
         }
         val failure = result.exceptionOrNull()
         if (failure != null) {
+            recordCurrentWebtoonQuicHealthFailureActor(work)
             recordCurrentWebtoonC8HealthFailureActor(work)
             recordWifiWebtoonAdaptiveFailureActor(work)
             // executePhysical can reject before the operation lambda (and its finally block) runs.
@@ -5796,6 +6548,8 @@ internal class NtkStrictSourceSession(
             return
         }
         recordCurrentWebtoonC8HealthSuccessActor(work)
+        recordCurrentWebtoonFragmentedTlsRecoverySuccessActor(work)
+        recordCurrentWebtoonQuicHealthSuccessActor(work)
         recordWifiWebtoonAdaptiveSuccessActor(work)
         recordCurrentWebtoonRecoverySuccessActor(work)
         when (val value = result.getOrThrow()) {
@@ -7027,6 +7781,7 @@ internal class NtkStrictSourceSession(
         const val DIRECT_WIFI_ADJACENT_RELEASE_LAUNCH_SPACING_MS = 64L
         const val HOST_GPU_ADJACENT_P0_PREDECODE_MAX_SOURCE_HEIGHT = 2_048
         const val HOST_GPU_ADJACENT_P0_PREDECODE_MAX_RGBA_BYTES = 16L * 1024L * 1024L
+        const val PHYSICAL_BLOCKED_SOURCE_REDRIVE_MIN_INTERVAL_MS = 1_000L
         val SESSION_SEQUENCE = AtomicLong(1L)
         val CLOSE_BARRIER_SEQUENCE = AtomicLong(1L)
     }

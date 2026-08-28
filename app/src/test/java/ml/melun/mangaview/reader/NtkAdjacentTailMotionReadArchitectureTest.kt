@@ -104,7 +104,7 @@ class NtkAdjacentTailMotionReadArchitectureTest {
         assertTrue(strict.contains("startReleasedAdjacentRoutePreparationsActor(newlyAdmitted)"))
         assertTrue(session.contains("applyAdjacentStrictViewportSourceDemand("))
         assertTrue(session.contains("NTK_ADJACENT_VIEWPORT_SOURCE_LOOKAHEAD"))
-        assertTrue(session.contains("NTK_ADJACENT_VIEWPORT_SOURCE_LOOKAHEAD = 4"))
+        assertTrue(session.contains("NTK_ADJACENT_VIEWPORT_SOURCE_LOOKAHEAD = 8"))
         assertTrue(session.contains("backgroundPages = background.toIntArray()"))
         assertTrue(activity.contains("candidate.sourcePageIndex"))
         assertTrue(activity.contains("onExactNtkAdjacentActualFramePresented("))
@@ -155,5 +155,41 @@ class NtkAdjacentTailMotionReadArchitectureTest {
         val prepare = demand.indexOf("startReleasedAdjacentRoutePreparationsActor(newlyAdmitted)")
         assertTrue(publish >= 0)
         assertTrue(prepare > publish)
+    }
+
+    @Test
+    fun physicalBlockerCanRepairAnAlreadyAdmittedButUnfinishedRoute() {
+        val contract = File(
+            "src/main/java/ml/melun/mangaview/reader/NtkStrictSourceTransport.kt",
+        ).readText()
+        val strict = File(
+            "src/main/java/ml/melun/mangaview/reader/NtkStrictSourceSession.kt",
+        ).readText()
+        val session = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderSession.kt",
+        ).readText()
+
+        assertTrue(contract.contains("fun onPhysicalBlockedPageRequested("))
+        assertTrue(session.contains("claim.transport.onPhysicalBlockedPageRequested("))
+        val blockerStart = session.indexOf("fun onBlockedForwardPageRequested(")
+        val blockerEnd = session.indexOf("\n    private fun ", blockerStart + 1)
+        assertTrue(blockerStart >= 0 && blockerEnd > blockerStart)
+        val blocker = session.substring(blockerStart, blockerEnd)
+        val foregroundReassert = blocker.indexOf(
+            "NtkReaderTransferPacer.notePhysicalForegroundEpisode(this, normalizedPath)",
+        )
+        val exactRedrive = blocker.indexOf(
+            "claim.transport.onPhysicalBlockedPageRequested(",
+        )
+        assertTrue(foregroundReassert >= 0)
+        assertTrue(exactRedrive > foregroundReassert)
+        val start = strict.indexOf("fun onPhysicalBlockedPageRequested(")
+        val end = strict.indexOf("fun unresolvedStreamedExactBodyCount()", start)
+        assertTrue(start >= 0 && end > start)
+        val redrive = strict.substring(start, end)
+        assertTrue(redrive.contains("rollingAdmittedPages = rollingAdmittedPages + pageIndex"))
+        assertTrue(redrive.contains("prepareFallbackRouteForStreamedPage(pageIndex)"))
+        assertTrue(redrive.contains("refillLanesActor()"))
+        assertTrue(redrive.contains("PHYSICAL_BLOCKED_SOURCE_REDRIVE_MIN_INTERVAL_MS"))
     }
 }

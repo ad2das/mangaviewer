@@ -90,4 +90,25 @@ public final class ViewerTelemetryNativeCadenceTest {
                 PRESENTED - 120_000_000L,
                 PRESENTED - 120_000_000L));
     }
+
+    @Test
+    public void producerOwnedPhysicalProofIsNotCountedAgainBySemanticMailbox() {
+        ViewerTelemetry.PhysicalCadenceOwnership ownership =
+                new ViewerTelemetry.PhysicalCadenceOwnership();
+        ownership.recordProducer(PRESENTED);
+
+        assertFalse(ownership.semanticOwns(PRESENTED));
+        assertFalse(ownership.semanticOwns(PRESENTED - 1L));
+        assertTrue(ownership.semanticOwns(PRESENTED + 1L));
+    }
+
+    @Test
+    public void lateOlderProducerCallbackCannotMoveOwnershipBackwards() {
+        ViewerTelemetry.PhysicalCadenceOwnership ownership =
+                new ViewerTelemetry.PhysicalCadenceOwnership();
+        ownership.recordProducer(PRESENTED);
+        ownership.recordProducer(PRESENTED - 10_000_000L);
+
+        assertFalse(ownership.semanticOwns(PRESENTED));
+    }
 }

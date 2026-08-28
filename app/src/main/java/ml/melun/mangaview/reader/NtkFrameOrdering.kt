@@ -25,6 +25,16 @@ internal fun areAdjacentNtkFrames(
     first.frameSequence < Long.MAX_VALUE &&
     second.frameSequence == first.frameSequence + 1L
 
+/** A new DOWN may continue cadence only when it interrupted live pixel motion. */
+internal fun isContinuousNativeCadenceGesturePair(
+    previousProofGesture: Long,
+    currentProofGesture: Long,
+    continuationFromGesture: Long,
+    continuationToGesture: Long,
+): Boolean = previousProofGesture > 0L && currentProofGesture > 0L &&
+    continuationFromGesture == previousProofGesture &&
+    continuationToGesture == currentProofGesture
+
 /** Functional submission cadence deliberately does not inspect compositor proof state. */
 internal fun functionalSubmissionDeltaNanos(
     first: NtkFrameOrderKey,

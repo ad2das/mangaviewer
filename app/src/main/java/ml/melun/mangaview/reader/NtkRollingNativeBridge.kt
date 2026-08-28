@@ -9,13 +9,29 @@ internal object NtkRollingNativeBridge {
         System.loadLibrary("ntk_strip_renderer")
     }
 
-    external fun nativeCreate(callback: ReaderSurfaceView, creationGeneration: Long): Long
+    external fun nativeCreate(
+        callback: ReaderSurfaceView,
+        creationGeneration: Long,
+        directWifiTextureProfile: Boolean,
+        hostGpuEmulator: Boolean,
+    ): Long
 
     /** Returns one owned native exact CPU tile pointer, or zero on failure. */
     external fun nativeAllocateExactHardwareBuffer(width: Int, height: Int): Long
 
     /** Releases exactly the owner reference returned by [nativeAllocateExactHardwareBuffer]. */
     external fun nativeReleaseExactHardwareBuffer(nativeHandle: Long)
+
+    /** Publishes already-decoded CPU pixels to the compositor buffer on the bounded mirror lane. */
+    external fun nativePublishExactHardwareTile(nativeHandle: Long): Boolean
+
+    /** Parallel-safe one-tile JPEG decode that writes directly into its final pooled storage. */
+    external fun nativeDecodeExactSingleJpegFileToHardwareTile(
+        encodedPath: String,
+        nativeHandle: Long,
+        sourceWidth: Int,
+        sourceHeight: Int,
+    ): Boolean
 
     /** Copies one exact private software scratch into the top-left of reusable RGBA storage. */
     external fun nativeCopyExactBitmapToHardwareTile(

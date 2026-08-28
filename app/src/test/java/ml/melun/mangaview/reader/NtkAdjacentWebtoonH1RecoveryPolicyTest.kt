@@ -1,5 +1,6 @@
 package ml.melun.mangaview.reader
 
+import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -127,6 +128,60 @@ class NtkAdjacentWebtoonH1RecoveryPolicyTest {
     }
 
     @Test
+    fun currentHostEmulatorUsesAnIndependentBoundedH1RecoveryPool() {
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_H1_RECOVERY_MAX_CONCURRENT == 16
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_CALL_MAX_CONCURRENT == 8
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_H1_RECOVERY_HEADER_MS == 2_500L
+        )
+        val source = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt"
+        ).readText()
+        val direct = source.substringAfter("private fun executeDirectWifiWebtoonH2(")
+            .substringBefore("private fun executeSegmentedManhwa(")
+        assertTrue(direct.contains("currentResumeRecoveryTag == null ||"))
+        assertTrue(direct.contains("quarantineTag?.isValid == true"))
+        assertTrue(direct.contains("clickOwnedDirectWifiCurrentWebtoonRecoveryPermits"))
+        assertTrue(direct.contains("clickOwnedDirectWifiCurrentWebtoonRecoveryClient("))
+        assertTrue(direct.contains("if (adjacentEligible)"))
+        assertTrue(direct.contains("hostEmulatorDirectWifiCurrentFragmentedTlsPermits"))
+        assertTrue(direct.contains("hostEmulatorDirectWifiCurrentOrdinaryWebtoonCallPermits"))
+        assertTrue(direct.contains("wifiExactQuicSessionPool?.leaseOpeningSession("))
+        assertTrue(source.contains("quicPool.preconnectOpeningSession("))
+        val primaryMarker = direct.indexOf("val primaryFragmentedFailure =")
+        val openingPrimaryQuic = direct.indexOf(
+            "attemptQualifiedCurrentExactQuic()",
+            startIndex = primaryMarker,
+        )
+        val fragmentedPrimary = direct.indexOf(
+            "attemptHostEmulatorFragmentedTlsRecovery(",
+            startIndex = primaryMarker,
+        )
+        assertTrue(primaryMarker >= 0)
+        assertTrue(openingPrimaryQuic > primaryMarker)
+        assertTrue(openingPrimaryQuic < fragmentedPrimary)
+        assertTrue(fragmentedPrimary > primaryMarker)
+        val ordinaryPermit = direct.indexOf("acquireCurrentOrdinaryCallPermitIfNeeded()")
+        val fragmentedRecovery = direct.indexOf(
+            "attemptHostEmulatorFragmentedTlsRecovery(",
+            startIndex = ordinaryPermit,
+        )
+        assertTrue(ordinaryPermit >= 0)
+        assertTrue(fragmentedRecovery > ordinaryPermit)
+        assertTrue(direct.contains("ntkHostEmulatorWebtoonFragmentedTransportCreationLock"))
+        assertTrue(source.contains(".callTimeout(0L, TimeUnit.MILLISECONDS)"))
+        assertTrue(
+            source.contains(
+                "WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_OPENING_PAGES"
+            )
+        )
+    }
+
+    @Test
     fun emulatorDefinitiveMissIsCallLocalAndTransportHealthIsStrictSessionScoped() {
         assertTrue(
             NtkWebtoonReplicaHeaderPolicy.isolateDefinitiveMissToLogicalCall(true)
@@ -152,5 +207,148 @@ class NtkAdjacentWebtoonH1RecoveryPolicyTest {
                 quarantineSessionId = null,
             ) == null
         )
+    }
+
+    @Test
+    fun repeatedSocketFailureSuppressesOnlyAfterIndependentConfirmation() {
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy
+                .shouldSuppressHostEmulatorSessionAfterSocketFailures(1)
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy
+                .shouldSuppressHostEmulatorSessionAfterSocketFailures(2)
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy
+                .shouldSuppressHostEmulatorSessionAfterSocketFailures(3)
+        )
+    }
+
+    @Test
+    fun exactQuicRecoveryOpensOnlyAfterEveryTcpReplicaIsIndependentlySuppressed() {
+        val candidates = listOf("f1spard.site", "shaomoi.org", "xiaomichina.com")
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.areAllDirectWifiReplicaHostsSuppressed(
+                candidates,
+                setOf("f1spard.site", "shaomoi.org"),
+            )
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.areAllDirectWifiReplicaHostsSuppressed(
+                candidates,
+                setOf("F1SPARD.SITE", "shaomoi.org", "xiaomichina.com"),
+            )
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorSocketExhaustedQuic(
+                currentHostEmulatorRecovery = true,
+                directWifiActive = true,
+                allReplicaHostsSuppressed = true,
+                sameNetwork = true,
+                sameViewerGeneration = true,
+                currentForegroundEpisode = true,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorSocketExhaustedQuic(
+                currentHostEmulatorRecovery = true,
+                directWifiActive = true,
+                allReplicaHostsSuppressed = false,
+                sameNetwork = true,
+                sameViewerGeneration = true,
+                currentForegroundEpisode = true,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorSocketExhaustedQuic(
+                currentHostEmulatorRecovery = false,
+                directWifiActive = true,
+                allReplicaHostsSuppressed = true,
+                sameNetwork = true,
+                sameViewerGeneration = true,
+                currentForegroundEpisode = true,
+            )
+        )
+    }
+
+    @Test
+    fun fragmentedTlsRecoveryRequiresARepeatedSocketFailureAndExactOwnership() {
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorFragmentedTlsRecovery(
+                currentHostEmulatorRecovery = true,
+                directWifiActive = true,
+                repeatedSocketFailureConfirmed = true,
+                sameNetwork = true,
+                sameViewerGeneration = true,
+                currentForegroundEpisode = true,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorFragmentedTlsRecovery(
+                currentHostEmulatorRecovery = true,
+                directWifiActive = true,
+                repeatedSocketFailureConfirmed = false,
+                sameNetwork = true,
+                sameViewerGeneration = true,
+                currentForegroundEpisode = true,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorFragmentedTlsRecovery(
+                currentHostEmulatorRecovery = true,
+                directWifiActive = true,
+                repeatedSocketFailureConfirmed = true,
+                sameNetwork = true,
+                sameViewerGeneration = false,
+                currentForegroundEpisode = true,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorFragmentedTlsRecovery(
+                currentHostEmulatorRecovery = true,
+                directWifiActive = true,
+                repeatedSocketFailureConfirmed = true,
+                sameNetwork = true,
+                sameViewerGeneration = true,
+                currentForegroundEpisode = false,
+            )
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorPrimaryFragmentedTls(
+                currentHostEmulatorRecovery = true,
+                directWifiActive = true,
+                sameNetwork = true,
+                sameViewerGeneration = true,
+                currentForegroundEpisode = true,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorPrimaryFragmentedTls(
+                currentHostEmulatorRecovery = true,
+                directWifiActive = true,
+                sameNetwork = true,
+                sameViewerGeneration = false,
+                currentForegroundEpisode = true,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAttemptHostEmulatorPrimaryFragmentedTls(
+                currentHostEmulatorRecovery = false,
+                directWifiActive = true,
+                sameNetwork = true,
+                sameViewerGeneration = true,
+                currentForegroundEpisode = true,
+            )
+        )
+        val source = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt"
+        ).readText()
+        assertTrue(source.contains("exact-fragmented-tls-recovery"))
+        assertTrue(source.contains("fragmentedTlsRecovery ->"))
+        assertTrue(source.contains("NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs("))
+        assertTrue(source.contains("currentForegroundEpisode = currentForegroundEpisode"))
+        assertFalse(source.contains("currentForegroundEpisode = true"))
+        assertFalse(source.contains("fragmentedTlsRecovery -> 0L"))
     }
 }

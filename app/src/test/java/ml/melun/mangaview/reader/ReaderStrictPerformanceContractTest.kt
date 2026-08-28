@@ -6,6 +6,101 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReaderStrictPerformanceContractTest {
+
+    @Test
+    fun rollingResidencyNeverReexpandsTheDirectionalWindowToTheWholeLaunchEpisode() {
+        assertTrue(ReaderStrictBitmapResidencyPolicy.protectsFullLaunchSpan(true, false))
+        assertFalse(ReaderStrictBitmapResidencyPolicy.protectsFullLaunchSpan(true, true))
+        assertFalse(ReaderStrictBitmapResidencyPolicy.protectsFullLaunchSpan(false, false))
+    }
+    @Test
+    fun directWifiRollingKeepsThePhysicalOpeningRunway() {
+        assertEquals(
+            6,
+            ReaderStrictBitmapResidencyPolicy.initialForwardRunwayPages(
+                directWifiRolling = true,
+                ordinaryPages = 12,
+            ),
+        )
+        assertEquals(
+            12,
+            ReaderStrictBitmapResidencyPolicy.initialForwardRunwayPages(
+                directWifiRolling = false,
+                ordinaryPages = 12,
+            ),
+        )
+        assertEquals(
+            11,
+            ReaderStrictBitmapResidencyPolicy.forwardRetainAheadPages(
+                directWifiRolling = true,
+                ordinaryPages = 12,
+            ),
+        )
+        assertEquals(
+            12,
+            ReaderStrictBitmapResidencyPolicy.forwardRetainAheadPages(
+                directWifiRolling = false,
+                ordinaryPages = 12,
+            ),
+        )
+        assertEquals(
+            8,
+            ReaderStrictBitmapResidencyPolicy.nextIdleForwardWarmPage(
+                directWifiRolling = true,
+                busy = false,
+                direction = 1,
+                visibleLast = 7,
+                retainedLast = 11,
+                pageCount = 12,
+            ),
+        )
+        assertEquals(
+            null,
+            ReaderStrictBitmapResidencyPolicy.nextIdleForwardWarmPage(
+                directWifiRolling = true,
+                busy = true,
+                direction = 1,
+                visibleLast = 7,
+                retainedLast = 11,
+                pageCount = 12,
+            ),
+        )
+        assertEquals(
+            10,
+            ReaderStrictBitmapResidencyPolicy.nextIdleForwardWarmPage(
+                directWifiRolling = true,
+                busy = false,
+                direction = 1,
+                visibleLast = 7,
+                retainedLast = 11,
+                pageCount = 12,
+                residentPages = setOf(8, 9),
+            ),
+        )
+        assertEquals(
+            null,
+            ReaderStrictBitmapResidencyPolicy.nextIdleForwardWarmPage(
+                directWifiRolling = true,
+                busy = false,
+                direction = -1,
+                visibleLast = 7,
+                retainedLast = 11,
+                pageCount = 12,
+            ),
+        )
+        assertEquals(
+            null,
+            ReaderStrictBitmapResidencyPolicy.nextIdleForwardWarmPage(
+                directWifiRolling = true,
+                busy = false,
+                direction = 1,
+                visibleLast = 11,
+                retainedLast = 11,
+                pageCount = 12,
+            ),
+        )
+    }
+
     @Test
     fun productionAcceptanceValuesCannotBeRelaxed() {
         assertEquals(1.5f, ReaderStrictPerformanceContract.ACTIVATION_AHEAD_VIEWPORTS)
@@ -23,7 +118,7 @@ class ReaderStrictPerformanceContractTest {
     }
 
     @Test
-    fun onlyOversizedNumericOrDirectWifiShortWebtoonsUseRollingPixels() {
+    fun oversizedHostScenesOrDirectWifiEpisodesUseRollingPixels() {
         assertTrue(
             ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
                 "/manhwa/3360/18755",
@@ -54,7 +149,7 @@ class ReaderStrictPerformanceContractTest {
                 8,
                 1_440,
                 28_800,
-                directWifiCurrentWebtoon = true,
+                directWifiCurrentEpisode = true,
             )
         )
         assertFalse(
@@ -63,33 +158,76 @@ class ReaderStrictPerformanceContractTest {
                 8,
                 1_440,
                 28_800,
-                directWifiCurrentWebtoon = false,
+                directWifiCurrentEpisode = false,
             )
         )
-        assertFalse(
+        assertTrue(
             ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
                 "/webtoon/12868/1346337",
                 9,
                 1_440,
                 28_800,
-                directWifiCurrentWebtoon = true,
+                directWifiCurrentEpisode = true,
             )
         )
-        assertFalse(
+        assertTrue(
             ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
                 "/webtoon/ordinary/episode",
                 8,
                 690,
                 1_600,
-                directWifiCurrentWebtoon = true,
+                directWifiCurrentEpisode = true,
+            )
+        )
+        assertTrue(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/webtoon/840540/nv-840540-37",
+                55,
+                690,
+                2_600,
+                directWifiCurrentEpisode = true,
             )
         )
         assertFalse(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/webtoon/840540/nv-840540-37",
+                55,
+                690,
+                2_600,
+                directWifiCurrentEpisode = false,
+            )
+        )
+        assertTrue(
             ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
                 "/manhwa/3360/18755",
                 159,
                 1_432,
                 2_048,
+            )
+        )
+        assertTrue(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/manhwa/10073/238729",
+                176,
+                580,
+                838,
+            )
+        )
+        assertFalse(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/manhwa/10073/ordinary",
+                80,
+                580,
+                838,
+            )
+        )
+        assertTrue(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/manhwa/one-piece/1181",
+                12,
+                1_644,
+                2_400,
+                directWifiCurrentEpisode = true,
             )
         )
     }
@@ -155,33 +293,33 @@ class ReaderStrictPerformanceContractTest {
             ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
                 strictColdSession = true,
                 rollingPixelResidency = false,
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
             ),
         )
         assertTrue(
             ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
                 strictColdSession = true,
                 rollingPixelResidency = true,
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
             ),
         )
         assertTrue(
             ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
                 strictColdSession = true,
                 rollingPixelResidency = false,
-                shortWebtoonRolling = true,
+                directWifiRolling = true,
             ),
         )
         assertTrue(
             ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
                 strictColdSession = false,
                 rollingPixelResidency = false,
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
             ),
         )
         assertTrue(
             ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
                 immediateGeneratedUx = true,
                 strictColdSession = true,
                 rollingPixelResidency = false,
@@ -192,7 +330,7 @@ class ReaderStrictPerformanceContractTest {
         )
         assertTrue(
             ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
                 immediateGeneratedUx = true,
                 strictColdSession = true,
                 rollingPixelResidency = false,
@@ -203,7 +341,7 @@ class ReaderStrictPerformanceContractTest {
         )
         assertFalse(
             ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
                 immediateGeneratedUx = true,
                 strictColdSession = true,
                 rollingPixelResidency = false,
@@ -214,7 +352,7 @@ class ReaderStrictPerformanceContractTest {
         )
         assertTrue(
             ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
                 immediateGeneratedUx = true,
                 strictColdSession = true,
                 rollingPixelResidency = false,
@@ -225,7 +363,7 @@ class ReaderStrictPerformanceContractTest {
         )
         assertFalse(
             ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
                 immediateGeneratedUx = true,
                 strictColdSession = false,
                 rollingPixelResidency = false,
@@ -236,7 +374,7 @@ class ReaderStrictPerformanceContractTest {
         )
         assertTrue(
             ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
-                shortWebtoonRolling = true,
+                directWifiRolling = true,
                 immediateGeneratedUx = true,
                 strictColdSession = true,
                 rollingPixelResidency = true,
@@ -247,7 +385,7 @@ class ReaderStrictPerformanceContractTest {
         )
         assertTrue(
             ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
-                shortWebtoonRolling = false,
+                directWifiRolling = false,
                 immediateGeneratedUx = true,
                 strictColdSession = false,
                 rollingPixelResidency = false,

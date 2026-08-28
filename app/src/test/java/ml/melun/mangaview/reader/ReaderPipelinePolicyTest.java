@@ -112,6 +112,16 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
+    public void blockedForwardGeometryRepairDoesNotChurnTheSourceDirection() {
+        assertEquals(1, ReaderSession.resolveWindowDirectionForTest(
+                5, 3, 1, 0, true, 5));
+        assertEquals(-1, ReaderSession.resolveWindowDirectionForTest(
+                5, 3, 1, -1, true, 5));
+        assertEquals(-1, ReaderSession.resolveWindowDirectionForTest(
+                5, 3, -1, 0, true, 5));
+    }
+
+    @Test
     public void exactColdWindowAdmitsTheForwardRunwayBeforePhysicalDraw() {
         assertArrayEquals(new int[]{0, 19},
                 ReaderPipelinePolicy.strictExactColdVisibleDemandBounds(
@@ -263,6 +273,20 @@ public class ReaderPipelinePolicyTest {
                 widerVisible, 77, 24, 27, 24, 27, -1, true, true, 21);
         assertEquals(committed.getEpoch() + 1L, reverse.getEpoch());
         assertFalse(widerVisible.hasSameSourceDemand(reverse));
+    }
+
+    @Test
+    public void directionHintJitterReordersPixelsWithoutRestartingIdenticalSourceDemand() {
+        StrictRollingAdmission initial = StrictRollingAdmission.initial(77, 25, 25);
+        StrictRollingAdmission forward = StrictRollingAdmission.update(
+                initial, 77, 25, 28, 25, 28, 1, true);
+        StrictRollingAdmission noisyReverseHint = StrictRollingAdmission.update(
+                forward, 77, 25, 28, 25, 28, -1, true, false);
+
+        assertFalse(forward == noisyReverseHint);
+        assertEquals(-1, noisyReverseHint.getDirection());
+        assertTrue(forward.hasSameSourceDemand(noisyReverseHint));
+        assertEquals(forward.getEpoch(), noisyReverseHint.getEpoch());
     }
 
     @Test

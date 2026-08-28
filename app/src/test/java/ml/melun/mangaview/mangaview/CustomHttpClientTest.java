@@ -1035,6 +1035,14 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkSearchRootMutationCannotInvalidateAnActiveViewerProof() {
+        assertTrue(CustomHttpClient.shouldDeferResolvedNtkRootMutationForTest(true, false));
+        assertTrue(CustomHttpClient.shouldDeferResolvedNtkRootMutationForTest(false, true));
+        assertTrue(CustomHttpClient.shouldDeferResolvedNtkRootMutationForTest(true, true));
+        assertFalse(CustomHttpClient.shouldDeferResolvedNtkRootMutationForTest(false, false));
+    }
+
+    @Test
     public void ntkAddressRefreshSeparatesDomainErrorsFromCloudflareChallenges() {
         String challenge = "<!DOCTYPE html><html><head><title>Just a moment...</title></head>"
                 + "<body><script src=\"https://challenges.cloudflare.com/turnstile/v0/api.js\"></script></body></html>";
@@ -1091,6 +1099,14 @@ public class CustomHttpClientTest {
 
     @Test
     public void currentBrokenDefaultTriesTrustedAliasBeforeNumberedDomainSweep() {
+        assertEquals(4000L, CustomHttpClient.ntkDomainProbeWallMsForTest());
+        assertEquals(3, CustomHttpClient.ntkDomainProbeMaxCandidatesForTest());
+        assertTrue(CustomHttpClient.shouldDeferNtkDomainResolveUntilDemandFailureForTest(
+                false, "https://sbxh9.com"));
+        assertFalse(CustomHttpClient.shouldDeferNtkDomainResolveUntilDemandFailureForTest(
+                true, "https://sbxh9.com"));
+        assertFalse(CustomHttpClient.shouldDeferNtkDomainResolveUntilDemandFailureForTest(
+                false, "https://example.com"));
         assertTrue(CustomHttpClient.shouldTryTrustedNtkAliasFirstForTest(
                 CustomHttpClient.NTK_WEBTOON_URL,
                 CustomHttpClient.NTK_CELLULAR_ALIAS_URL,

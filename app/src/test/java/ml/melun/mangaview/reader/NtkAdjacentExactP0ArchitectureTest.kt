@@ -10,6 +10,7 @@ class NtkAdjacentExactP0ArchitectureTest {
     private val reader = source("ReaderSession.kt")
     private val surface = source("ReaderSurfaceView.kt")
     private val strict = source("NtkStrictSourceSession.kt")
+    private val hostPool = source("HostExactHardwareTilePool.kt")
     private val imageCache = source("ReaderImageCache.kt")
     private val transport = source("NtkStrictSourceTransport.kt")
     private val cacheTransport = source("NtkCacheSourceTransport.kt")
@@ -19,6 +20,19 @@ class NtkAdjacentExactP0ArchitectureTest {
     private val activity = File(
         "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt",
     ).readText()
+
+    @Test
+    fun exactP0OwnerAcceptsBothSupportedLongStripEpisodeKinds() {
+        assertTrue(adjacentContracts.contains("normalizedEpisodePath.startsWith(\"/webtoon/\") ||"))
+        assertTrue(adjacentContracts.contains("normalizedEpisodePath.startsWith(\"/manhwa/\")"))
+    }
+
+    @Test
+    fun failedResidentP0PreparationRetriesFromTimerInsteadOfRewakingTheSameEvent() {
+        val append = block("private fun appendResolvedEpisodeInitialRunway(", reader)
+        val failure = block("if (flight == null) {", append)
+        assertTrue(failure.contains("forceDelayedPolling = true"))
+    }
 
     @Test
     fun p1ToP3OpenOnlyAfterRendererHeadAckAcrossEveryTransportBoundary() {
@@ -116,7 +130,8 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(drawState.contains("emulatorNativeSurfaceRuntime"))
         assertTrue(drawState.contains("qualifyDirectWifiForwardOnlyInitialResumeRevealLocked()"))
         assertTrue(drawState.contains(
-            "directWifiForwardOnlyInitialResumeRevealQualified &&"
+            "forwardOnlyInitialResumeViewport =\n" +
+                "            qualifyDirectWifiForwardOnlyInitialResumeRevealLocked()"
         ))
         assertTrue(qualifier.contains("directWifiForwardOnlyInitialResumeViewportOpaqueLocked()"))
         assertFalse(qualifier.contains("emulatorNativeSurfaceRuntime"))
@@ -124,30 +139,30 @@ class NtkAdjacentExactP0ArchitectureTest {
 
     @Test
     fun hostGpuExactNativeSubmissionHoldsStructuralGapsWithoutLosingBoundaryState() {
-        val render = block("private fun renderFrame(", surface)
+        val prepare = block("private fun prepareRenderWork(", surface)
         val drawState = block("private fun buildDrawStateLocked(", surface)
         val traversal = block("private fun frameTraversalProof(", surface)
         val structure = block(
             "private fun hasNonContiguousExactNativeStructure(",
             surface,
         )
-        assertTrue(render.contains("exactStructureHeld"))
-        assertTrue(render.contains("state = null"))
-        assertTrue(render.contains("boundaryDispatchInFlight = false"))
-        assertTrue(render.contains("boundaryArmedDirection = heldBoundary.direction"))
-        assertTrue(render.contains("releasePostedAdmissionLocked(preserveDirty = true)"))
-        assertTrue(render.contains("if (exactStructureHeld && animateScroll)"))
-        assertTrue(render.indexOf("exactStructureHeld") <
-            render.indexOf("consumePendingPixelMutationTimingLocked"))
+        assertTrue(prepare.contains("exactStructureHeld"))
+        assertTrue(prepare.contains("state = null"))
+        assertTrue(prepare.contains("boundaryDispatchInFlight = false"))
+        assertTrue(prepare.contains("boundaryArmedDirection = heldBoundary.direction"))
+        assertTrue(prepare.contains("releasePostedAdmissionLocked(preserveDirty = true)"))
+        assertTrue(prepare.contains("if (exactStructureHeld && animateScroll)"))
+        assertTrue(prepare.indexOf("exactStructureHeld") <
+            prepare.indexOf("consumePendingPixelMutationTimingLocked"))
         assertTrue(traversal.contains("exactStructureContinuous"))
         assertTrue(drawState.contains("NtkDirectWifiExactVisibleStructurePolicy.shouldEnforce"))
         assertFalse(drawState.substringAfter(
             "NtkDirectWifiExactVisibleStructurePolicy.shouldEnforce"
         ).substringBefore("),").contains("directWifiExpandedNativeTextureRunway"))
         assertTrue(structure.contains("state.enforceContiguousExactStructure"))
-        assertTrue(structure.contains("it.stripAuthoritative || it.adjacentExactAuthoritative"))
-        assertTrue(structure.contains("it.committedIdentity != null"))
-        assertTrue(structure.contains("NtkDirectWifiExactVisibleStructurePolicy.isContiguous"))
+        assertTrue(structure.contains("item.stripAuthoritative || item.adjacentExactAuthoritative ||"))
+        assertTrue(structure.contains("item.committedIdentity != null"))
+        assertTrue(structure.contains("item.index != previousIndex + 1"))
     }
 
     @Test
@@ -189,22 +204,67 @@ class NtkAdjacentExactP0ArchitectureTest {
     }
 
     @Test
-    fun exactSparseRouteIsDirectWifiAdjacentWebtoonP0Only() {
+    fun exactSparseRouteAlsoProtectsHostGpuAdjacentManhwaP0() {
         val candidate = block("private fun isDirectWifiAdjacentExactP0HeadCandidate(", reader)
         val prepare = block("private fun prepareDirectWifiAdjacentExactP0Head(", reader)
         val publish = block("private fun appendResolvedEpisodeInitialRunway(", reader)
+        val install = block("fun installAdjacentExactP0Delta(", surface)
         val construction = block("internal class NtkStrictSourceSession(", strict)
         assertTrue(candidate.contains("isDirectWifiStrictAdjacentRunwayProfile(target)"))
         assertTrue(candidate.contains("path.startsWith(\"/webtoon/\")"))
+        assertTrue(candidate.contains("hostGpuEmulatorRuntime && path.startsWith(\"/manhwa/\")"))
         assertTrue(candidate.contains("p0.sourceIndex == 0"))
-        assertTrue(prepare.contains("decodeAdjacentExactP0Slots(lease, plan, headSlots, parallel = true)"))
+        assertTrue(prepare.contains("promoteAdjacentExactTilesForDirectPresenter("))
+        assertTrue(prepare.contains("decodeAdjacentExactSoftwareSlots(lease, plan, headSlots, parallel = true)"))
         assertTrue(publish.contains("adjacentExactP0PreparePaths.add(exactPath)"))
         assertTrue(publish.contains("append_adjacent_exact_p0_prepare_join"))
         assertTrue(publish.contains("adjacentExactP0PreparePaths.remove(exactPath)"))
+        val passiveJoin = block("if (!adjacentExactP0PreparePaths.add(exactPath)) {", publish)
+        assertFalse(passiveJoin.contains("scheduleInitialAdjacentRunwayAppendRetry("))
+        assertTrue(passiveJoin.contains("shouldLogRateLimitedDiagnostic("))
         assertTrue(publish.contains("val publishedFallbackReady = !descriptorReady"))
+        assertTrue(install.contains("!ownerPath.startsWith(\"/webtoon/\")"))
+        assertTrue(install.contains("!ownerPath.startsWith(\"/manhwa/\")"))
         assertTrue(construction.contains("adjacentPrefetch && directWifiTransport"))
         assertTrue(construction.contains("!cellularResilientTransport"))
         assertTrue(construction.contains("planBinding.episodePath.startsWith(\"/webtoon/\")"))
+        assertTrue(construction.contains("hostGpuAdjacentManhwaHeadInstall"))
+        assertTrue(construction.contains("hostGpuAdjacentManhwaHeadInstall -> 1"))
+        val completion = block(
+            "private fun drainPublishedExactAdjacentInitialRunwayCompletion(",
+            reader,
+        )
+        val runwayLimit = block("private fun initialAdjacentRunwayPageLimit(", reader)
+        assertTrue(runwayLimit.contains("path.startsWith(\"/webtoon/\")"))
+        assertTrue(runwayLimit.contains("path.startsWith(\"/manhwa/\")"))
+        assertTrue(runwayLimit.contains("NTK_HOST_GPU_DIRECT_WIFI_ADJACENT_RUNWAY_PAGES"))
+        assertTrue(reader.contains("NTK_HOST_GPU_DIRECT_WIFI_ADJACENT_RUNWAY_PAGES = 5"))
+        assertTrue(completion.contains("initialAdjacentRunwayPageLimit(path)"))
+        assertFalse(completion.contains("forceSoftwareExactTiles"))
+        val promotion = block(
+            "private fun promoteAdjacentExactTilesForDirectPresenter(",
+            reader,
+        )
+        assertTrue(promotion.contains("HostExactHardwareTilePool.copyExactTileBitmap(software)"))
+        assertTrue(promotion.contains("HostExactHardwareTilePool.hasExactStorage("))
+        assertTrue(promotion.contains("HostExactHardwareTilePool.retireAll("))
+        val exactCopy = block("fun copyExactTileBitmap(", hostPool)
+        assertTrue(exactCopy.contains("allowTransientOvercommit = false"))
+        assertTrue(exactCopy.contains("waitForCompatibleRetirement = false"))
+        assertTrue(exactCopy.contains("bounded rolling"))
+        val complete = block("private fun pageHasCompleteDrawableContentLocked(", surface)
+        val nativeResources = block("private fun pageHasDirectPresenterResourcesLocked(", surface)
+        val nativeReady = block("private fun nativeStructuralPixelsReady(", surface)
+        val itemReady = block("private fun nativeItemPixelsReadyForSubmission(", surface)
+        assertTrue(complete.contains("pageHasDirectPresenterResourcesLocked(page)"))
+        assertTrue(nativeResources.contains("directWifiExpandedNativeTextureEpisodePaths"))
+        assertTrue(nativeResources.contains("HostExactHardwareTilePool.nativeHandle(tile.bitmap) != 0L"))
+        assertTrue(nativeReady.contains("nativeItemPixelsReadyForSubmission(item, directTiles)"))
+        assertTrue(itemReady.contains("HostExactHardwareTilePool.nativeHandle(tile.bitmap) == 0L"))
+        val headPublish = block("private fun publishDirectWifiAdjacentExactP0Head(", reader)
+        assertTrue(headPublish.contains(
+            "requestPublishedExactAdjacentInitialRunwayCompletion(publishedPath)"
+        ))
     }
 
     @Test
@@ -425,8 +485,11 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(sparseHandoff >= 0)
         assertTrue(prepare.indexOf("strictBodiesReady", 0) in 0 until sparseHandoff)
         assertTrue(prepare.indexOf("isDirectWifiStrictAdjacentRunwayProfile(target)", 0) in 0 until sparseHandoff)
-        assertTrue(prepare.indexOf("path).startsWith(\"/webtoon/\")", 0) in 0 until sparseHandoff)
+        assertTrue(prepare.indexOf("isNtkManhwaOrWebtoonEpisodePath(path)", 0) in 0 until sparseHandoff)
         assertTrue(prepare.indexOf("refs.singleOrNull()?.sourceIndex == 0", 0) in 0 until sparseHandoff)
+        assertTrue(
+            prepare.indexOf("if (strictExactManhwaLeaseRequired)", 0) > sparseHandoff,
+        )
 
         val success = prepare.indexOf("return true", sparseHandoff)
         val failure = prepare.indexOf("return false", sparseHandoff)
@@ -441,11 +504,63 @@ class NtkAdjacentExactP0ArchitectureTest {
     }
 
     @Test
+    fun rollingLaunchEvictionClearsTheAuthoritativeStripSlotLedgerAtomically() {
+        val clear = block("fun clearRollingAuthoritativePage(", surface)
+        val retire = clear.indexOf("retireCurrentPageDrawableLocked(page)")
+        val cycle = clear.indexOf("stripResidentCycles.remove(tileGeometry.key)")
+        val coverage = clear.indexOf("stripResidentCoverage.remove(")
+        val slots = clear.indexOf("page.stripSlots = List(pageGeometry.tiles.size) { null }")
+        val drawables = clear.indexOf("page.tiles = emptyList()")
+
+        assertTrue(clear.contains("page.stripAuthority == authority"))
+        assertTrue(clear.contains("page.stripEpisode != geometry.episode.value"))
+        assertTrue(clear.contains("page.stripAsset != pageGeometry.asset.canonicalAsset"))
+        assertTrue(retire >= 0)
+        assertTrue(cycle > retire)
+        assertTrue(coverage > cycle)
+        assertTrue(slots > coverage)
+        assertTrue(drawables > slots)
+        assertTrue(clear.contains("invalidateRetainedPageNodeStateLocked(index)"))
+        assertFalse(clear.contains("Launch-strip and exact-p0 slot resources"))
+    }
+
+    @Test
+    fun sparseP0PromotionWaitsForPointerQuietButBoundaryDemandCannotDeadlock() {
+        val prepare = block("private fun prepareDirectWifiAdjacentExactP0Head(", reader)
+        val admission = block(
+            "private fun awaitDirectWifiAdjacentP0PromotionInputQuiet(",
+            reader,
+        )
+        assertTrue(prepare.contains("awaitDirectWifiAdjacentP0PromotionInputQuiet(p0.manga)"))
+        val promote = block("private fun promoteAdjacentExactTilesForDirectPresenter(", reader)
+        assertTrue(
+            promote.indexOf("awaitDirectWifiAdjacentP0PromotionInputQuiet(target)") in
+                0 until promote.indexOf("HostExactHardwareTilePool.copyExactTileBitmap(software)"),
+        )
+        assertTrue(admission.contains("isPhysicalBoundaryDemandingAdjacentTarget(target)"))
+        assertTrue(admission.contains("physicalTouchActive.get()"))
+        assertTrue(admission.contains("NTK_DIRECT_ADJACENT_PIXEL_INPUT_QUIET_MS"))
+        assertTrue(admission.contains("Thread.sleep(minOf(16L"))
+    }
+
+    @Test
     fun generationGateForwardsBothSparseP0Callbacks() {
         val head = block("override fun onAdjacentExactP0HeadReady(", listenerGate)
         val tail = block("override fun onAdjacentExactP0TailReady(", listenerGate)
         assertTrue(head.contains("active() && downstream.onAdjacentExactP0HeadReady(publication)"))
         assertTrue(tail.contains("active() && downstream.onAdjacentExactP0TailReady(delta)"))
+    }
+
+    @Test
+    fun sparseP0ReestablishesDrawablePrefixBeforeGrowingTheSuccessorTable() {
+        val callback = block("override fun onAdjacentExactP0HeadReady(", activity)
+        val append = callback.indexOf("onPreparedAdjacentPagesAppended(publication.totalPageCount)")
+        val guard = callback.indexOf("renderView.setLimitScrollToDrawablePrefix(true)")
+        val appendPageCount = block("fun appendPageCount(\n", surface)
+
+        assertTrue(guard >= 0)
+        assertTrue(append > guard)
+        assertTrue(appendPageCount.contains("val shouldExtendActiveFling = !limitScrollToDrawablePrefix"))
     }
 
     @Test
@@ -491,20 +606,6 @@ class NtkAdjacentExactP0ArchitectureTest {
     ).readText()
 
     private fun block(signature: String, source: String): String {
-        val start = source.indexOf(signature)
-        require(start >= 0) { "Missing source signature: $signature" }
-        val brace = source.indexOf('{', start)
-        require(brace >= 0) { "Missing opening brace: $signature" }
-        var depth = 0
-        for (index in brace until source.length) {
-            when (source[index]) {
-                '{' -> depth++
-                '}' -> {
-                    depth--
-                    if (depth == 0) return source.substring(start, index + 1)
-                }
-            }
-        }
-        error("Missing closing brace: $signature")
+        return SourceFunctionBody.extract(source, signature)
     }
 }

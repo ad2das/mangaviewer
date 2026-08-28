@@ -7,6 +7,31 @@ import org.junit.Test
 
 class NtkStrictReverseDecodeRetentionTest {
     @Test
+    fun repeatedPhysicalBlockerReopensAParkedExactRehydrateOwner() {
+        val source = File("src/main/java/ml/melun/mangaview/reader/ReaderSession.kt").readText()
+        val start = source.indexOf("private fun routeStrictAdjacentExactRehydrate(")
+        val end = source.indexOf(
+            "private fun scheduleBlockedForwardPendingDeliveryAudit(",
+            start,
+        )
+        val route = source.substring(start, end)
+
+        assertTrue(
+            route.contains(
+                "visibleIntent && exactAdjacentPhysicalIntent &&\n" +
+                    "                owner.parked.compareAndSet(true, false)",
+            ),
+        )
+        assertTrue(
+            route.contains(
+                "promotedPressureIntent || promotedPhysicalIntent || repeatedPhysicalWake",
+            ),
+        )
+        assertTrue(route.contains("owner.retryCount.set(0)"))
+        assertTrue(route.contains("scheduleStrictAdjacentExactRehydrate(owner, true)"))
+    }
+
+    @Test
     fun blockedForwardIdleFallbackCannotFlipTheStrictSourceDirection() {
         val sessionSource =
             File("src/main/java/ml/melun/mangaview/reader/ReaderSession.kt").readText()
@@ -71,6 +96,7 @@ class NtkStrictReverseDecodeRetentionTest {
         val workerMark = workerHandoff.indexOf("claimDecodeResultsExternallyOwned(")
         val workerListener = workerHandoff.indexOf("listener.onPageAuthoritativeTilesReady(")
         assertTrue(workerMark >= 0 && workerListener > workerMark)
+        assertFalse(workerHandoff.contains("listener.isPageAuthoritativeDrawableInstalled("))
         assertFalse(source.contains("releaseExternalBitmapOwnershipClaim("))
         assertFalse(source.contains("commitExternalBitmapOwnershipClaim("))
 
@@ -118,6 +144,28 @@ class NtkStrictReverseDecodeRetentionTest {
         assertTrue(trim.contains("if (!released) forwardHistoryPixelClearPending.set(false)"))
         assertTrue(consumed.contains("forwardPixelRetirementLedger.removeEpisodePaths(paths)"))
         assertTrue(cancel.contains("forwardPixelRetirementLedger.clear()"))
+    }
+
+    @Test
+    fun hostResumeDefersDestructiveHistoryWorkPastTheFirstRealGesture() {
+        val source = File("src/main/java/ml/melun/mangaview/reader/ReaderSession.kt").readText()
+        val resume = functionBody(source, "fun onHostResumed()")
+        val trim = functionBody(source, "private fun trimConsumedForwardHistory(")
+        val retry = functionBody(source, "private fun scheduleForwardReadingRetry(")
+
+        assertTrue(resume.contains("forwardHistoryHostResumeNotBeforeMs.getAndUpdate"))
+        assertTrue(resume.contains("NTK_FORWARD_HISTORY_RESUME_QUIET_MS"))
+        val resumeFence = trim.indexOf("forwardHistoryHostResumeQuietRemainingMs()")
+        val candidate = trim.indexOf("val pixelCandidate = synchronized(pagesLock)")
+        val retirement = trim.indexOf("retireConsumedForwardHistoryPixels(")
+        val removal = trim.indexOf("pages.subList(0, candidate.removeCount).clear()")
+        assertTrue(resumeFence >= 0 && candidate > resumeFence)
+        assertTrue(retirement > candidate && removal > retirement)
+        assertTrue(trim.contains("scheduleForwardReadingRetry(resumeQuietRemainingMs)"))
+        assertTrue(
+            trim.split("forwardHistoryHostResumeQuietRemainingMs() > 0L").size - 1 >= 2,
+        )
+        assertTrue(retry.contains("maxOf(NTK_FORWARD_HISTORY_TRIM_RETRY_MS, minimumDelayMs)"))
     }
 
     @Test
@@ -203,6 +251,44 @@ class NtkStrictReverseDecodeRetentionTest {
     }
 
     @Test
+    fun rollingPixelLifetimeBridgesTheHeldPhysicalFrameToTheLogicalAnchor() {
+        val source = File("src/main/java/ml/melun/mangaview/reader/ReaderSession.kt").readText()
+        val requestStart = source.indexOf("private fun requestStrictExactColdWindow(")
+        val start = source.indexOf("private fun finishStrictExactColdWindowDemand(")
+        val end = source.indexOf("private fun tryCommitStrictForwardSuffixWindow(", start)
+        val request = source.substring(requestStart, start)
+        val demand = source.substring(start, end)
+
+        val unchangedStart = request.indexOf("if (admission === previous) {")
+        val unchangedEnd = request.indexOf("// Display-boundary jitter", unchangedStart)
+        val unchanged = request.substring(unchangedStart, unchangedEnd)
+        assertTrue(unchanged.contains("finishStrictExactColdWindowDemand("))
+        assertTrue(unchanged.contains("sourceDemandChanged = false"))
+        assertFalse(unchanged.contains("rehydrateSameStrictExactColdWindow("))
+        assertTrue(
+            demand.contains(
+                "maxOf(0, rollingDecodeCorridor.first - STRICT_OVERSIZED_BEHIND_PAGES)",
+            ),
+        )
+        assertTrue(
+            demand.contains("minOf(rollingDecodeCorridor.first, firstRetainedDisplay)"),
+        )
+        assertFalse(
+            demand.contains("minOf(physicalVisibleRange.first, firstRetainedDisplay)"),
+        )
+        assertTrue(
+            demand.contains(
+                "rollingDecodeCorridor.last + ReaderStrictBitmapResidencyPolicy.forwardRetainAheadPages(",
+            ),
+        )
+        assertFalse(
+            demand.contains(
+                "maxOf(0, physicalVisibleRange.first - STRICT_OVERSIZED_BEHIND_PAGES)",
+            ),
+        )
+    }
+
+    @Test
     fun boundedNumericWindowIsCheckedBeforeEitherColdDecodeRoute() {
         val source = File("src/main/java/ml/melun/mangaview/reader/ReaderSession.kt").readText()
         val strictStart = source.indexOf("private fun requestStrictExactSourcePage(")
@@ -233,7 +319,7 @@ class NtkStrictReverseDecodeRetentionTest {
         val strictWorkerGate = strictWorker.indexOf(
             "\"strict_exact_worker\""
         )
-        val strictDecode = strictWorker.indexOf("val result = opened.predecodedOriginal")
+        val strictDecode = strictWorker.indexOf("val result = if (")
         assertTrue(strictRequestGate >= 0)
         assertTrue(strictWorkerGate > strictRequestGate && strictDecode > strictWorkerGate)
 

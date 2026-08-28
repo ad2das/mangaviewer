@@ -26,25 +26,32 @@ class NtkAdjacentFirstActualFrameArchitectureTest {
         assertTrue(signal.contains("firstActualFramePresented.compareAndSet(false, true)"))
         assertTrue(signal.contains("transport.onFirstActualFramePresented(claim.episode)"))
 
-        val completedDraw = blockStartingAt(
+        val validation = blockStartingAt(
             "private fun handleStrictRollingCompletedDraw(",
             activitySource,
         )
-        val commitValidation = completedDraw.indexOf("if (!commitValid)")
-        val distinctPhysicalEpisodes = completedDraw.indexOf(
-            ".distinct()",
-            startIndex = commitValidation,
+        val commitValidation = validation.indexOf("if (!commitValid)")
+        val acceptedDispatch = validation.indexOf("handleAcceptedStrictRollingCompletedDraw(")
+        assertTrue(commitValidation >= 0)
+        assertTrue(acceptedDispatch > commitValidation)
+
+        val completedDraw = blockStartingAt(
+            "private fun handleAcceptedStrictRollingCompletedDraw(",
+            activitySource,
         )
+        val physicalEpisodes = completedDraw.indexOf("for (index in identities.indices)")
+        val immutableDedup = completedDraw.indexOf("for (prior in 0 until index)")
         val adjacentSignal = completedDraw.indexOf(
-            ".forEach(activeSession::onExactNtkAdjacentActualFramePresented)"
+            "activeSession.onExactNtkAdjacentActualFramePresented("
         )
         val launchSignal = completedDraw.indexOf(
             "activeSession.onExactNtkPhysicalDrawPresented("
         )
-        assertTrue(commitValidation >= 0)
-        assertTrue(distinctPhysicalEpisodes > commitValidation)
-        assertTrue(adjacentSignal > distinctPhysicalEpisodes)
+        assertTrue(physicalEpisodes >= 0)
+        assertTrue(immutableDedup > physicalEpisodes)
+        assertTrue(adjacentSignal > immutableDedup)
         assertTrue(launchSignal > adjacentSignal)
+        assertTrue(completedDraw.contains("viewportOwnsEpisode = identities.all"))
     }
 
     private fun blockStartingAt(signature: String, source: String): String {

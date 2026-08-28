@@ -88,12 +88,42 @@ class HostExactHardwareTilePoolCompactionPolicyTest {
     }
 
     @Test
+    fun offscreenRollingDecodeCannotEvictTheHomeReturnForwardRunway() {
+        assertFalse(
+            HostExactHardwareTilePoolPressurePolicy.mayRetireInsideForwardRunway(
+                rollingPixelResidency = true,
+                missingPhysicalSurfaceBlocker = false,
+            ),
+        )
+        assertTrue(
+            HostExactHardwareTilePoolPressurePolicy.mayRetireInsideForwardRunway(
+                rollingPixelResidency = true,
+                missingPhysicalSurfaceBlocker = true,
+            ),
+        )
+        assertTrue(
+            HostExactHardwareTilePoolPressurePolicy.mayRetireInsideForwardRunway(
+                rollingPixelResidency = false,
+                missingPhysicalSurfaceBlocker = false,
+            ),
+        )
+    }
+
+    @Test
     fun farFutureAdjacentRunwayDecodeWaitsUntilThePhysicalAnchorIsNear() {
+        assertEquals(
+            4,
+            HostExactHardwareTilePoolPressurePolicy.pagesStrictlyBeforeAdjacentBoundary(
+                viewportForwardEdge = 23,
+                adjacentStart = 28,
+            ),
+        )
         assertTrue(
             HostExactHardwareTilePoolPressurePolicy.shouldDeferOffscreenAdjacentRunwayDecode(
                 hostGpuRuntime = true,
                 directWifiStrictAdjacent = true,
                 predecessorIsLaunchEpisode = false,
+                predecessorHasPhysicalEntryProof = false,
                 viewportAnchor = 17,
                 adjacentStart = 28,
                 nearBoundaryPages = 4,
@@ -104,6 +134,29 @@ class HostExactHardwareTilePoolCompactionPolicyTest {
                 hostGpuRuntime = true,
                 directWifiStrictAdjacent = true,
                 predecessorIsLaunchEpisode = false,
+                predecessorHasPhysicalEntryProof = false,
+                viewportAnchor = 22,
+                adjacentStart = 28,
+                nearBoundaryPages = 5,
+            ),
+        )
+        assertFalse(
+            HostExactHardwareTilePoolPressurePolicy.shouldDeferOffscreenAdjacentRunwayDecode(
+                hostGpuRuntime = true,
+                directWifiStrictAdjacent = true,
+                predecessorIsLaunchEpisode = false,
+                predecessorHasPhysicalEntryProof = false,
+                viewportAnchor = 23,
+                adjacentStart = 28,
+                nearBoundaryPages = 4,
+            ),
+        )
+        assertFalse(
+            HostExactHardwareTilePoolPressurePolicy.shouldDeferOffscreenAdjacentRunwayDecode(
+                hostGpuRuntime = true,
+                directWifiStrictAdjacent = true,
+                predecessorIsLaunchEpisode = false,
+                predecessorHasPhysicalEntryProof = false,
                 viewportAnchor = 24,
                 adjacentStart = 28,
                 nearBoundaryPages = 4,
@@ -114,6 +167,7 @@ class HostExactHardwareTilePoolCompactionPolicyTest {
                 hostGpuRuntime = false,
                 directWifiStrictAdjacent = true,
                 predecessorIsLaunchEpisode = false,
+                predecessorHasPhysicalEntryProof = false,
                 viewportAnchor = 17,
                 adjacentStart = 28,
                 nearBoundaryPages = 4,
@@ -124,8 +178,21 @@ class HostExactHardwareTilePoolCompactionPolicyTest {
                 hostGpuRuntime = true,
                 directWifiStrictAdjacent = true,
                 predecessorIsLaunchEpisode = true,
+                predecessorHasPhysicalEntryProof = false,
                 viewportAnchor = 0,
                 adjacentStart = 13,
+                nearBoundaryPages = 4,
+            ),
+        )
+        assertFalse(
+            "an idle, physically entered predecessor may prepare exactly one bounded successor runway",
+            HostExactHardwareTilePoolPressurePolicy.shouldDeferOffscreenAdjacentRunwayDecode(
+                hostGpuRuntime = true,
+                directWifiStrictAdjacent = true,
+                predecessorIsLaunchEpisode = false,
+                predecessorHasPhysicalEntryProof = true,
+                viewportAnchor = 17,
+                adjacentStart = 28,
                 nearBoundaryPages = 4,
             ),
         )

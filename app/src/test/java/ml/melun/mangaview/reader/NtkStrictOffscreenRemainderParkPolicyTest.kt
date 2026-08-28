@@ -137,6 +137,62 @@ class NtkStrictOffscreenRemainderParkPolicyTest {
     }
 
     @Test
+    fun directAdjacentPixelsUseOneOffscreenPhysicalAndIdleRunwayContract() {
+        fun deferred(
+            inside: Boolean,
+            source: Int,
+            current: Int = 0,
+            physical: Boolean = false,
+            moving: Boolean = false,
+        ) = NtkDirectAdjacentPixelAdmissionPolicy.shouldDefer(
+            viewportInsideEpisode = inside,
+            sourceIndex = source,
+            currentSourceIndex = current,
+            physicalIntent = physical,
+            foregroundMotionActive = moving,
+            idleForwardRunway = 4,
+        )
+
+        assertTrue("offscreen p0 waits while the predecessor moves", deferred(false, 0, moving = true))
+        assertFalse("offscreen p0 may fill after motion retires", deferred(false, 0))
+        assertTrue("offscreen p1 stays encoded even during apparent idle", deferred(false, 1))
+        assertTrue("offscreen p2+ stays encoded", deferred(false, 2))
+        assertFalse("the next real Surface blocker bypasses motion deferral", deferred(true, 2, 1, true, true))
+        assertTrue("a distant placeholder intent cannot jump the source frontier", deferred(true, 5, 1, true, true))
+        assertTrue("near-forward work waits during motion", deferred(true, 3, 1, moving = true))
+        assertFalse("near-forward work may fill during idle", deferred(true, 3, 1))
+        assertTrue("idle work remains bounded to four sources", deferred(true, 6, 1))
+    }
+
+    @Test
+    fun previouslyPresentedPhysicalAnchorRepairsAnEvictedVisibleWindowWithoutTrustingColdPlaceholders() {
+        assertEquals(
+            12,
+            NtkDirectAdjacentViewportSourcePolicy.resolve(
+                installedPhysicalSource = -1,
+                installedBoundarySource = -1,
+                previouslyPresentedPhysicalAnchorSource = 12,
+            ),
+        )
+        assertEquals(
+            -1,
+            NtkDirectAdjacentViewportSourcePolicy.resolve(
+                installedPhysicalSource = -1,
+                installedBoundarySource = -1,
+                previouslyPresentedPhysicalAnchorSource = -1,
+            ),
+        )
+        assertEquals(
+            13,
+            NtkDirectAdjacentViewportSourcePolicy.resolve(
+                installedPhysicalSource = 13,
+                installedBoundarySource = 9,
+                previouslyPresentedPhysicalAnchorSource = 12,
+            ),
+        )
+    }
+
+    @Test
     fun racedWakeIsRetainedUntilTheCurrentOwnerReleases() {
         val latch = NtkPathEventWakeLatch()
         val path = "/manhwa/2/exact-next"

@@ -1,10 +1,48 @@
 package ml.melun.mangaview.reader
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkPhysicalEpisodeTailHoldPolicyTest {
+
+    @Test
+    fun acknowledgedEpisodeBoundaryDropsOnlyOldAbsoluteCarry() {
+        assertEquals(
+            10_480f,
+            NtkPhysicalEpisodeTailHoldPolicy.targetAfterAcknowledgedEpisodeBoundary(
+                requestedTarget = 27_000f,
+                physicalGestureTarget = 10_480f,
+                boundaryOffset = 10_000f,
+                priorGestureAcknowledgementObservable = true,
+                epsilonPx = 0.5f,
+            ),
+            0f,
+        )
+        assertEquals(
+            27_000f,
+            NtkPhysicalEpisodeTailHoldPolicy.targetAfterAcknowledgedEpisodeBoundary(
+                requestedTarget = 27_000f,
+                physicalGestureTarget = 10_480f,
+                boundaryOffset = 10_000f,
+                priorGestureAcknowledgementObservable = false,
+                epsilonPx = 0.5f,
+            ),
+            0f,
+        )
+        assertEquals(
+            27_000f,
+            NtkPhysicalEpisodeTailHoldPolicy.targetAfterAcknowledgedEpisodeBoundary(
+                requestedTarget = 27_000f,
+                physicalGestureTarget = 9_900f,
+                boundaryOffset = 10_000f,
+                priorGestureAcknowledgementObservable = true,
+                epsilonPx = 0.5f,
+            ),
+            0f,
+        )
+    }
 
     @Test
     fun sameGestureHoldSurvivesSuccessorStructureChanges() {
@@ -155,6 +193,40 @@ class NtkPhysicalEpisodeTailHoldPolicyTest {
                 requestedOffset = 1060f,
                 boundaryOffset = 1000f,
                 tailAcknowledged = true,
+                heldInCurrentGesture = false,
+                epsilonPx = 0.5f,
+            ),
+        )
+    }
+
+    @Test
+    fun onlyANewGestureGetsTheAcknowledgedBoundaryFlingContinuation() {
+        assertTrue(
+            NtkPhysicalEpisodeTailHoldPolicy.isNewAcknowledgedBoundaryCrossing(
+                currentOffset = 1_000f,
+                requestedOffset = 1_200f,
+                boundaryOffset = 1_000f,
+                tailAcknowledged = true,
+                heldInCurrentGesture = false,
+                epsilonPx = 0.5f,
+            ),
+        )
+        assertFalse(
+            NtkPhysicalEpisodeTailHoldPolicy.isNewAcknowledgedBoundaryCrossing(
+                currentOffset = 1_000f,
+                requestedOffset = 1_200f,
+                boundaryOffset = 1_000f,
+                tailAcknowledged = true,
+                heldInCurrentGesture = true,
+                epsilonPx = 0.5f,
+            ),
+        )
+        assertFalse(
+            NtkPhysicalEpisodeTailHoldPolicy.isNewAcknowledgedBoundaryCrossing(
+                currentOffset = 1_000f,
+                requestedOffset = 1_200f,
+                boundaryOffset = 1_000f,
+                tailAcknowledged = false,
                 heldInCurrentGesture = false,
                 epsilonPx = 0.5f,
             ),

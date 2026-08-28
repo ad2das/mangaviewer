@@ -88,7 +88,7 @@ internal class NtkAdjacentExactP0WakeRegistry(
 }
 
 /**
- * Immutable identity of the one direct-Wi-Fi adjacent `/webtoon/` source-page-zero flight.
+ * Immutable identity of one direct-Wi-Fi adjacent long-strip source-page-zero flight.
  * Display indexes are intentionally absent: a transition-card prune may renumber p0 while the
  * tail decode is still running, but it must never transfer ownership to a different manifest.
  */
@@ -107,7 +107,10 @@ data class NtkAdjacentExactP0Owner(
 ) {
     init {
         require(ownerToken > 0L && episode.value > 0L && descriptorId > 0L)
-        require(normalizedEpisodePath.startsWith("/webtoon/"))
+        require(
+            normalizedEpisodePath.startsWith("/webtoon/") ||
+                normalizedEpisodePath.startsWith("/manhwa/")
+        )
         require(manifestRevision >= 0L && NtkStripDigests.isSha256(manifestDigest))
         require(manifestPageCount > 0 && canonicalAsset.isNotBlank())
         require(sourceKey.pageIndex == 0 && sourceKey.manifestDigest == manifestDigest)

@@ -519,8 +519,25 @@ public class Utils {
         viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         try {
             if(context instanceof Activity) {
-                ((Activity) context).startActivityForResult(viewer, code);
-                ((Activity) context).overridePendingTransition(0, 0);
+                Activity source = (Activity) context;
+                if(source instanceof ml.melun.mangaview.activity.ReaderV2Activity) {
+                    // Continue from an already-open reader is a replacement, not a nested reader.
+                    // Keeping the paused source Activity alive leaves both ReaderSessions decoding
+                    // and pressure-trimming the same process-wide HardwareBuffer pool. The new
+                    // reader can then lose its reverse viewport to the hidden reader's forward
+                    // runway. Forward the original result target and retire the old owner only
+                    // after Android has accepted the replacement launch. System-HOME round trips
+                    // do not enter this branch and keep the same Activity/session warm.
+                    viewer.addFlags(Intent.FLAG_ACTIVITY_FORWARD_RESULT);
+                    source.startActivity(viewer);
+                    source.overridePendingTransition(0, 0);
+                    source.finish();
+                    android.util.Log.d("ViewerPerf",
+                            "viewer_continue_reader_replaced path=" + manga.getNtkEpisodePath());
+                } else {
+                    source.startActivityForResult(viewer, code);
+                    source.overridePendingTransition(0, 0);
+                }
             } else {
                 viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 context.startActivity(viewer);

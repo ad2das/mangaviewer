@@ -19,7 +19,15 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class NtkAsyncTelemetry(
     capacity: Int = DEFAULT_CAPACITY,
-    private val enabled: () -> Boolean = { Log.isLoggable(TAG, Log.DEBUG) },
+    private val enabled: () -> Boolean = {
+        try {
+            Log.isLoggable(TAG, Log.DEBUG)
+        } catch (_: RuntimeException) {
+            // Local JVM tests use the Android stub. Telemetry must remain optional there just as it
+            // is when the platform logger is unavailable during early process teardown.
+            false
+        }
+    },
     private val sink: (String, String) -> Unit = { tag, message -> Log.d(tag, message) }
 ) : Closeable {
     data class Snapshot(

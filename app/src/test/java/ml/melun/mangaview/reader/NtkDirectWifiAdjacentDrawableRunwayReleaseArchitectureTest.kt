@@ -61,6 +61,8 @@ class NtkDirectWifiAdjacentDrawableRunwayReleaseArchitectureTest {
         )
 
         assertTrue(actual.contains("isAdjacentStrictSourceClaimLive(normalizedPath, claim)"))
+        assertTrue(actual.contains("viewportOwnsEpisode: Boolean = true"))
+        assertTrue(actual.contains("if (viewportOwnsEpisode && claim.viewportActivated.compareAndSet(false, true))"))
         assertTrue(actual.contains("claim.viewportActivated.compareAndSet(false, true)"))
         assertTrue(viewport >= 0)
         assertTrue(firstActual > viewport)
@@ -88,18 +90,36 @@ class NtkDirectWifiAdjacentDrawableRunwayReleaseArchitectureTest {
         )
 
         assertTrue(route.contains("isStrictAdjacentPageInReportedPhysicalIntent(index, page)"))
-        assertTrue(route.contains("exactAdjacentPhysicalIntent = exactAdjacentPhysicalIntent"))
+        assertTrue(
+            route.contains(
+                "exactAdjacentPhysicalIntent = AtomicBoolean(exactAdjacentPhysicalIntent)",
+            ),
+        )
         assertTrue(worker.contains("!flight.exactAdjacentPhysicalIntent"))
         assertTrue(
             worker.contains(
                 "retainWhenBusy = visibleIntent ||\n" +
-                    "                    flight.hostPressurePhysicalReentry ||\n" +
-                    "                    flight.exactAdjacentPhysicalIntent",
+                    "                    flight.hostPressurePhysicalReentry.get() ||\n" +
+                    "                    flight.exactAdjacentPhysicalIntent.get()",
             ),
         )
-        assertTrue(worker.contains("exactAdjacentPhysicalIntent = flight.exactAdjacentPhysicalIntent"))
+        assertTrue(
+            worker.contains(
+                "exactAdjacentPhysicalIntent = flight.exactAdjacentPhysicalIntent.get()",
+            ),
+        )
         assertTrue(deliveryGate.contains("delivery.exactAdjacentPhysicalIntent"))
         assertTrue(busyFrontier.contains("!delivery.exactAdjacentPhysicalIntent"))
+
+        val surface = source("ReaderSurfaceView.kt")
+        val expiry = block("private fun blockedForwardIntentExpiredLocked(", surface)
+        val outstanding = block("private fun blockedForwardRequestOutstandingLocked()", surface)
+        assertTrue(expiry.contains("blockedForwardRequestOutstandingLocked()"))
+        assertTrue(expiry.contains("nowMs < blockedForwardIntentHardExpiresAtMs"))
+        assertTrue(expiry.contains("scheduleBlockedForwardIntentExpiryLocked()"))
+        assertTrue(outstanding.contains("blockedPage.loading"))
+        assertTrue(outstanding.contains("blocked == lastBlockedForwardPage"))
+        assertTrue(surface.contains("BLOCKED_FORWARD_INTENT_MAX_WAIT_MS = 30_000L"))
     }
 
     @Test
@@ -183,6 +203,9 @@ class NtkDirectWifiAdjacentDrawableRunwayReleaseArchitectureTest {
         assertTrue(
             repair.contains("!listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)"),
         )
+        assertTrue(repair.contains("isDirectWifiStrictAdjacentRunwayProfile(delivery.page.manga)"))
+        assertTrue(repair.contains("isCanonicalOriginalTileResult(delivery.result, delivery.page.image)"))
+        assertTrue(repair.contains("!listener.isPageDrawableInstalled(index)"))
     }
 
     @Test

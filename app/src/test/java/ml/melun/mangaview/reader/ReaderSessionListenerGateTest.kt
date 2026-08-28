@@ -155,9 +155,32 @@ class ReaderSessionListenerGateTest {
         gate.onPagesRemoved(0, 1, 11)
         gate.onPageLoading(2)
         gate.onMessage("stale")
+        gate.onStrictExactSourceTerminal("/manhwa/work/episode-7", true)
 
         assertTrue(downstream.events.isEmpty())
         assertEquals(DrawableOrigin.PREPARED_STORE, registry.origin(2))
+    }
+
+    @Test
+    fun strictSourceTerminalReachesOnlyTheActiveGeneration() {
+        val downstream = RecordingListener()
+        var activeGeneration = 9
+        val gate = ReaderSessionListenerGate(
+            generation = 9,
+            isActive = { it == activeGeneration },
+            adopted = AdoptedDrawableRegistry(),
+            installed = InstalledDrawableQuery { false },
+            downstream = downstream,
+        )
+
+        gate.onStrictExactSourceTerminal("/manhwa/work/episode-9", true)
+        activeGeneration = 10
+        gate.onStrictExactSourceTerminal("/manhwa/work/episode-9", true)
+
+        assertEquals(
+            listOf("source-terminal:/manhwa/work/episode-9:true"),
+            downstream.events,
+        )
     }
 
     @Test
@@ -505,6 +528,13 @@ class ReaderSessionListenerGateTest {
 
         override fun onPageError(index: Int, message: String) {
             events += "error:$index"
+        }
+
+        override fun onStrictExactSourceTerminal(
+            episodePath: String,
+            retryableTransport: Boolean,
+        ) {
+            events += "source-terminal:$episodePath:$retryableTransport"
         }
 
         override fun onPageCleared(index: Int) {

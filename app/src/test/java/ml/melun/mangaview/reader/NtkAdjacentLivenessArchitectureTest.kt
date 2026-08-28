@@ -189,7 +189,9 @@ class NtkAdjacentLivenessArchitectureTest {
         )
         val structure = functionBody(
             sessionSource,
-            "private fun claimForwardAdjacentStructurePublication(",
+            "private fun claimForwardAdjacentStructurePublication(\n" +
+                "        target: Manga,\n" +
+                "        context:",
         )
         assertTrue(structure.contains("forwardAdjacentValidatedRecoveryTombstones.remove(predecessorPath)"))
 
@@ -222,7 +224,7 @@ class NtkAdjacentLivenessArchitectureTest {
     fun launchTailRetainsTheSameScopedAdjacentWindowThatItAllowsToDecode() {
         val strictWindow = functionBody(
             sessionSource,
-            "private fun requestStrictExactColdWindow(",
+            "private fun finishStrictExactColdWindowDemand(",
         )
         val scopedAt = strictWindow.indexOf("protectedNumericBitmapWindowBoundsForSession(")
         val retainedFirstAt = strictWindow.indexOf("installableBounds?.get(0)")
@@ -330,6 +332,10 @@ class NtkAdjacentLivenessArchitectureTest {
             sessionSource,
             "private fun requestStrictExactColdWindow(",
         )
+        val finalWindow = functionBody(
+            sessionSource,
+            "private fun finishStrictExactColdWindowDemand(",
+        )
 
         val visibleSourcesAt = strictWindow.indexOf("val visibleSources = synchronized(pagesLock)")
         val emptySourcesAt = strictWindow.indexOf("if (visibleSources.isEmpty())", visibleSourcesAt)
@@ -359,13 +365,19 @@ class NtkAdjacentLivenessArchitectureTest {
                 unchangedAdmissionAt > initialPublishReturnAt,
         )
 
-        val fullSceneAt = strictWindow.indexOf("listener.areAllAuthoritativeDrawablesInstalled(pageCount)")
-        val sourceDemandAt = strictWindow.indexOf(
-            "if (sourceDemandChanged) applyStrictExactSourceDemand(admission)",
+        val requestWindow = functionBody(
+            sessionSource,
+            "private fun requestStrictExactColdWindow(",
+        )
+        val fullSceneAt = requestWindow.indexOf(
+            "listener.areAllAuthoritativeDrawablesInstalled(pageCount)"
+        )
+        val finishDemandAt = requestWindow.indexOf(
+            "finishStrictExactColdWindowDemand(",
             fullSceneAt,
         )
-        assertTrue(fullSceneAt >= 0 && sourceDemandAt > fullSceneAt)
-        val fullScene = strictWindow.substring(fullSceneAt, sourceDemandAt)
+        assertTrue(fullSceneAt >= 0 && finishDemandAt > fullSceneAt)
+        val fullScene = requestWindow.substring(fullSceneAt, finishDemandAt)
         val fullScenePublishAt = fullScene.indexOf("if (!publishProtectedBitmapWindowSnapshot(")
         val fullSceneMutationAt = fullScene.indexOf("physicalDeliveryFirstPage = 0")
         val fullSceneFailureAt = fullScene.indexOf("if (!committed)")
@@ -392,10 +404,10 @@ class NtkAdjacentLivenessArchitectureTest {
                 fullSceneReturnAt > fullSceneRedriveAt,
         )
 
-        val finalRetainedAt = strictWindow.indexOf("val commitRetainedWindow =")
-        val finalOrderAt = strictWindow.indexOf("val order = windowOrder(", finalRetainedAt)
+        val finalRetainedAt = finalWindow.indexOf("val commitRetainedWindow =")
+        val finalOrderAt = finalWindow.indexOf("val order = buildList", finalRetainedAt)
         assertTrue(finalRetainedAt >= 0 && finalOrderAt > finalRetainedAt)
-        val finalRetained = strictWindow.substring(finalRetainedAt, finalOrderAt)
+        val finalRetained = finalWindow.substring(finalRetainedAt, finalOrderAt)
         val transactionCheckAt = finalRetained.indexOf(
             "if (!isProtectedBitmapWindowTransactionCurrent(",
         )
@@ -534,12 +546,12 @@ class NtkAdjacentLivenessArchitectureTest {
             sessionSource,
             "private fun requestStrictExactColdWindow(",
         )
-        assertTrue(countOccurrences(strictWindow, "if (!committed)") == 4)
+        assertTrue(countOccurrences(strictWindow, "if (!committed)") == 2)
         assertTrue(countOccurrences(strictWindow, "retainedWindowRedrivePending.set(false)") == 0)
-        assertTrue(countOccurrences(strictWindow, "acknowledgeRetainedWindowRedrive(") == 5)
+        assertTrue(countOccurrences(strictWindow, "acknowledgeRetainedWindowRedrive(") == 2)
         assertTrue(strictWindow.contains("retainedRedriveRevisionAtStart: Long"))
         var cursor = 0
-        repeat(4) {
+        repeat(2) {
             val failureAt = strictWindow.indexOf("if (!committed)", cursor)
             val redriveAt = strictWindow.indexOf(
                 "retryRetainedWindowAfterFailedCommit(",
@@ -556,14 +568,20 @@ class NtkAdjacentLivenessArchitectureTest {
     @Test
     fun retainedWindowReplayUsesTheLatestIdentityBoundPhysicalViewport() {
         val publicOffer = functionBody(sessionSource, "fun requestWindowAsync(")
-        val captureAt = publicOffer.indexOf("latestReportedWindow.set(synchronized(pagesLock)")
-        val pageAt = publicOffer.indexOf("anchorPage = pages.getOrNull(safeAnchor)", captureAt)
-        val offerAt = publicOffer.indexOf("offerWindowAsync(", pageAt)
-        assertTrue(captureAt >= 0 && pageAt > captureAt && offerAt > pageAt)
+        val pageIndexAt = publicOffer.indexOf("val pageIndex = publishedPageIndex.get()")
+        val captureAt = publicOffer.indexOf("publishReportedWindow(", pageIndexAt)
+        val offerAt = publicOffer.indexOf("offerWindowAsync(", captureAt)
+        assertTrue(pageIndexAt >= 0 && captureAt > pageIndexAt && offerAt > captureAt)
+        val capture = functionBody(sessionSource, "private fun publishReportedWindow(")
+        assertTrue(capture.contains("anchorPage = pageIndex[safeAnchor]"))
+        assertTrue(capture.contains("latestReportedWindow.compareAndSet(prior, replacement)"))
 
         val replay = functionBody(sessionSource, "private fun performRetainedWindowRedrive(")
         val latestAt = replay.indexOf("val reported = latestReportedWindow.get()")
-        val resolveAt = replay.indexOf("pageIndexLocked(page, window.fallbackAnchor)", latestAt)
+        val resolveAt = replay.indexOf(
+            "pageIndexInPublishedSnapshot(pageIndex, page, window.fallbackAnchor)",
+            latestAt,
+        )
         val pendingAt = replay.indexOf("if (!retainedWindowRedrivePending.get()", resolveAt)
         val internalOfferAt = replay.indexOf("offerWindowAsync(", pendingAt)
         assertTrue(
@@ -733,7 +751,7 @@ class NtkAdjacentLivenessArchitectureTest {
 
         val shortTrim = functionBody(
             sessionSource,
-            "private fun trimShortWebtoonLaunchPixelsOutsideWindow(",
+            "private fun trimDirectWifiLaunchPixelsOutsideWindow(",
         )
         assertProtectedPixelWindowHasLegacyEmptyFallback(shortTrim)
         assertTrue(countOccurrences(shortTrim, "entry.key in protectedPixelWindow") >= 2)
@@ -763,22 +781,29 @@ class NtkAdjacentLivenessArchitectureTest {
             "private fun retireConsumedForwardHistoryPixels(",
         )
         assertProtectedPixelWindowHasLegacyEmptyFallback(retirePixels)
-        val retainedBitmapAt = retirePixels.indexOf("for ((index, bitmap) in deliveredBitmaps)")
+        val retainedIdentityAt = retirePixels.indexOf("val retainedIdentities =")
+        val retainedBitmapAt = retirePixels.indexOf(
+            "for ((index, bitmap) in deliveredBitmaps)",
+            retainedIdentityAt,
+        )
         val retainedBitmapGuardAt = retirePixels.indexOf(
             "index >= retireBefore || index in protectedPixelWindow",
             retainedBitmapAt,
         )
         val retainedBitmapAddAt = retirePixels.indexOf(
-            "retainedIdentities.add(bitmap)",
+            "retained.add(bitmap)",
             retainedBitmapGuardAt,
         )
-        val retainedTilesAt = retirePixels.indexOf("for ((index, tiles) in deliveredTiles)")
+        val retainedTilesAt = retirePixels.indexOf(
+            "for ((index, tiles) in deliveredTiles)",
+            retainedBitmapAddAt,
+        )
         val retainedTilesGuardAt = retirePixels.indexOf(
             "index >= retireBefore || index in protectedPixelWindow",
             retainedTilesAt,
         )
         val retainedTilesAddAt = retirePixels.indexOf(
-            "tiles.forEach { tile -> retainedIdentities.add(tile.bitmap) }",
+            "tiles.forEach { tile -> retained.add(tile.bitmap) }",
             retainedTilesGuardAt,
         )
         val bitmapIteratorAt = retirePixels.indexOf("val bitmapIterator =")
@@ -997,7 +1022,7 @@ class NtkAdjacentLivenessArchitectureTest {
 
         val shortTrim = functionBody(
             sessionSource,
-            "private fun trimShortWebtoonLaunchPixelsOutsideWindow(",
+            "private fun trimDirectWifiLaunchPixelsOutsideWindow(",
         )
         assertTrue(
             shortTrim.indexOf("synchronized(pagesLock)") in
@@ -1045,7 +1070,7 @@ class NtkAdjacentLivenessArchitectureTest {
         val flightOwnerAt = exactRoute.indexOf("strictAdjacentRehydrateFlights.putIfAbsent")
         assertTrue(pixelWindowGateAt >= 0 && flightOwnerAt > pixelWindowGateAt)
         assertTrue(exactRoute.contains("pendingDeliveryWidths[index]"))
-        assertTrue(exactRoute.contains("isPageAuthoritativeDrawableInstalled(index)"))
+        assertTrue(exactRoute.contains("isPageAuthoritativeDrawableCurrentlyInstalled(index)"))
         assertTrue(exactRoute.contains("scheduleStrictAdjacentExactRehydrate"))
 
         val exactClassification = functionBody(
@@ -1097,6 +1122,24 @@ class NtkAdjacentLivenessArchitectureTest {
         assertTrue(wake.contains("flight.retryCount.set(0)"))
         assertTrue(wake.contains("flight.parked.set(false)"))
         assertTrue(wake.contains("scheduleStrictAdjacentExactRehydrate"))
+
+        val descriptorInstall = functionBody(
+            sessionSource,
+            "private fun acceptAdjacentStrictBodyDescriptor(",
+        )
+        val descriptorPublishedAt = descriptorInstall.indexOf(
+            "adjacentStrictBodyDescriptors.putIfAbsent",
+        )
+        val eventWakeAt = descriptorInstall.indexOf(
+            "wakeStrictAdjacentExactRehydrate(",
+            startIndex = descriptorPublishedAt,
+        )
+        val firstActualGateAt = descriptorInstall.indexOf(
+            "NtkAdjacentDescriptorWakePolicy.shouldWakeRemainder",
+        )
+        assertTrue(descriptorPublishedAt >= 0)
+        assertTrue(eventWakeAt > descriptorPublishedAt)
+        assertTrue(firstActualGateAt < 0 || eventWakeAt < firstActualGateAt)
 
         val completion = functionBody(
             sessionSource,
@@ -1211,30 +1254,16 @@ class NtkAdjacentLivenessArchitectureTest {
             "private fun publishDirectWifiAdjacentExactP0Head(",
         )
 
-        assertTrue(initial.indexOf("pages.addAll(initialRefs)") <
+        assertTrue(initial.indexOf("pages.addAll(structureRefs)") <
             initial.indexOf("clearPageStateFromIndex(cardIndex, appendOnlyTail = true)"))
         assertTrue(remaining.indexOf("pages.addAll(appendable)") <
             remaining.indexOf("clearPageStateFromIndex(startIndex, appendOnlyTail = true)"))
-        assertTrue(exactP0.indexOf("pages.addAll(initialRefs)") <
+        assertTrue(exactP0.indexOf("pages.addAll(allRefs)") <
             exactP0.indexOf("clearPageStateFromIndex(cardIndex, appendOnlyTail = true)"))
     }
 
     private fun functionBody(source: String, signature: String): String {
-        val start = source.indexOf(signature)
-        check(start >= 0) { "Missing function: $signature" }
-        val open = source.indexOf('{', start)
-        check(open >= 0)
-        var depth = 0
-        for (index in open until source.length) {
-            when (source[index]) {
-                '{' -> depth++
-                '}' -> {
-                    depth--
-                    if (depth == 0) return source.substring(start, index + 1)
-                }
-            }
-        }
-        error("Unclosed function: $signature")
+        return SourceFunctionBody.extract(source, signature)
     }
 
     private fun assertProtectedWindowRevisionStartsInsidePagesLock(window: String) {

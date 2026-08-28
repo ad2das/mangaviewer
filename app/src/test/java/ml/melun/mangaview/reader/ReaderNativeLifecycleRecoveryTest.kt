@@ -63,6 +63,50 @@ class ReaderNativeLifecycleRecoveryTest {
     }
 
     @Test
+    fun activityPauseRemovesNativeTileLayersBeforeLauncherTransition() {
+        val pause = slice(
+            surface,
+            "fun pauseNativePresentationForLifecycle()",
+            "fun isPageBottomReachedAtScroll(",
+        )
+        val activity = File(
+            "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt",
+        ).readText()
+        val activityPause = slice(activity, "override fun onPause()", "override fun onSaveInstanceState(")
+
+        assertTrue(activityPause.contains("renderView.pauseNativePresentationForLifecycle()"))
+        assertTrue(
+            activityPause.indexOf("renderView.pauseNativePresentationForLifecycle()") <
+                activityPause.indexOf("super.onPause()"),
+        )
+        assertTrue(pause.contains("retireDirectSurfaceSchedulingLocked()"))
+        assertTrue(pause.contains("nativeSurfaceView.visibility = View.GONE"))
+        assertTrue(pause.contains("NtkRollingNativeBridge.nativeDetach(handle, epoch)"))
+        assertTrue(pause.contains("nativeSurfaceRevealAfterFirstHwuiCommitPending = true"))
+        assertTrue(surface.contains("publishWindowRequest: Boolean = true"))
+        assertTrue(surface.contains(
+            "request = if (publishWindowRequest) windowRequestLocked(false) else null",
+        ))
+    }
+
+    @Test
+    fun staleFirstReplacementBufferSchedulesCurrentStructureRevealFrame() {
+        val reveal = slice(
+            surface,
+            "private fun drainNativeSurfaceReveal()",
+            "fun onNtkRollingBandActivated(",
+        )
+
+        assertTrue(reveal.contains("!nativeSurfaceContentRevealed"))
+        assertTrue(reveal.contains("request.structureEpoch to traversalStructureEpoch"))
+        assertTrue(reveal.contains("advanceDesiredVersionLocked()"))
+        assertTrue(reveal.contains(
+            "pendingPixelReasons = pendingPixelReasons or DIRTY_INVALIDATION",
+        ))
+        assertTrue(reveal.contains("scheduleFrameLocked()"))
+    }
+
+    @Test
     fun recoveryStateCompletesBeforeTheRemovableMainReattach() {
         val fatal = slice(
             surface,
@@ -169,7 +213,7 @@ class ReaderNativeLifecycleRecoveryTest {
 
         val requestPrewarm = slice(
             surface,
-            "private fun requestResidentNativeTexturePrewarmLocked()",
+            "private fun requestResidentNativeTexturePrewarmLocked(",
             "private fun effectiveNativeTexturePrewarmAnchorLocked(",
         )
         assertTrue(requestPrewarm.contains(
@@ -182,7 +226,7 @@ class ReaderNativeLifecycleRecoveryTest {
         )
         val unpauseGate = pausePrewarm.indexOf("if (!paused && nativeTexturePrewarmDirty)")
         val coalescedRequest = pausePrewarm.indexOf(
-            "requestResidentNativeTexturePrewarmLocked()",
+            "requestResidentNativeTexturePrewarmLocked(newPixelOrWindowIntent = false)",
             unpauseGate,
         )
         assertTrue(unpauseGate >= 0)
@@ -240,7 +284,7 @@ class ReaderNativeLifecycleRecoveryTest {
         assertFalse(submit.contains("nativeFrameGeometryScratch.copyOf("))
         assertTrue(deferredScenePack.contains("acquireDeferredNativeScenePacket(required)"))
         assertTrue(deferredScenePack.contains("packNativeFrameTileInto("))
-        assertTrue(deferredScenePost.contains("synchronized(nativeSubmitOrderLock)"))
+        assertTrue(deferredScenePost.contains("nativeSubmitOrderLock.withLock"))
         assertTrue(deferredScenePost.contains("NtkRollingNativeBridge.nativeIsSurfaceAttached("))
         assertTrue(deferredScenePost.contains("handler.postDelayed("))
         assertTrue(deferredScenePost.contains("packDeferredNativeScene(submission)"))
@@ -264,7 +308,11 @@ class ReaderNativeLifecycleRecoveryTest {
         assertFalse(deferredScenePost.contains("handler.post { executeDeferredNativeSceneSubmission"))
         assertTrue(deferredScenePost.contains("releaseDeferredNativeSceneSubmission(submission)"))
         assertTrue(submit.contains("acquireDeferredNativeGeometrySubmission("))
-        assertFalse(submit.contains("val synchronousNativeGeometry"))
+        assertTrue(submit.contains("val synchronousEmulatorNativeGeometry"))
+        assertTrue(submit.contains("!synchronousEmulatorNativeGeometry"))
+        assertTrue(submit.contains("} else if (synchronousEmulatorNativeGeometry) {"))
+        assertTrue(submit.contains("if (!nativeSubmitOrderLock.tryLock())"))
+        assertTrue(submit.contains("nativeSubmitOrderLock.unlock()"))
         val deferredGeometryPost = slice(
             surface,
             "private fun postDeferredNativeGeometrySubmission(",
@@ -433,7 +481,9 @@ class ReaderNativeLifecycleRecoveryTest {
     @Test
     fun eglInitializationFailureFallsThroughTheSingleTerminalCleanup() {
         val run = slice(rollingNative, "void run() noexcept", "JavaVM* vm_")
-        val initialize = run.indexOf("const bool eglReady = env != nullptr && initializeEgl()")
+        val initialize = run.indexOf(
+            "const bool rendererReady = env != nullptr && (directTileOnly || initializeEgl())"
+        )
         val fatal = run.indexOf("fatal(env, \"cold-egl-initialize\")", initialize)
         val terminal = run.indexOf("std::deque<FrameCommand> remaining", fatal)
         assertTrue(initialize >= 0)
@@ -644,7 +694,6 @@ class ReaderNativeLifecycleRecoveryTest {
             "bool hasOptionalPrewarmTextureHeadroom(",
         )
         val plannedEviction = preflight.indexOf("eraseTexture(")
-        val nonBlockingPoll = preflight.indexOf("pollTextureRetirementFence()")
         val fenceArm = preflight.lastIndexOf("armTextureRetirementFence()")
         val uploadFence = preflight.indexOf(
             "shouldSettleTextureRetirementBeforeVisibleUpload("
@@ -652,7 +701,6 @@ class ReaderNativeLifecycleRecoveryTest {
         val physicalBarrier = preflight.indexOf(
             "settleTextureRetirementBeforeVisibleUpload()",
         )
-        assertTrue(nonBlockingPoll >= 0)
         assertTrue(plannedEviction >= 0)
         assertTrue(fenceArm > plannedEviction)
         assertTrue(uploadFence > plannedEviction)

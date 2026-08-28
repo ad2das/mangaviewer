@@ -162,7 +162,7 @@ class NtkDirectWifiAdjacentHeadInstallGatePolicyTest {
     }
 
     @Test
-    fun cellularSniGenericAndManhwaAreNoOps() {
+    fun cellularSniAndProfilesWithoutAHeadContractAreNoOps() {
         assertEquals(
             4,
             NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(

@@ -231,6 +231,12 @@ interface NtkStrictSourceTransport : NtkSourceEventTransport {
      */
     fun onForegroundIdleCompletionRequested(episode: NtkEpisodeToken) = Unit
 
+    /**
+     * Re-drives exactly one source whose absence has clamped a real physical forward gesture.
+     * This is narrower than idle completion: implementations must not admit the remaining tail.
+     */
+    fun onPhysicalBlockedPageRequested(episode: NtkEpisodeToken, pageIndex: Int) = Unit
+
     /** Generation-owned exact bodies which have not reached a terminal future yet. */
     fun unresolvedStreamedExactBodyCount(): Int = 0
 

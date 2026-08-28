@@ -50,6 +50,8 @@ class NtkDirectWifiOrdinaryBodyRecoveryPolicyTest {
     @Test
     fun idleRecoveryHasOneShortContinuationAndTheMeasuredGlobalBound() {
         assertEquals(3_000L, NtkDirectWifiOrdinaryBodyRecoveryPolicy.NO_PROGRESS_MS)
+        assertEquals(5_000L, NtkDirectWifiOrdinaryBodyRecoveryPolicy.STRAGGLER_SAMPLE_MS)
+        assertEquals(2, NtkDirectWifiOrdinaryBodyRecoveryPolicy.MAX_REMAINING_STRAGGLERS)
         assertEquals(
             1,
             NtkDirectWifiOrdinaryBodyRecoveryPolicy.MAX_CONTINUATIONS_PER_BODY,
@@ -57,6 +59,46 @@ class NtkDirectWifiOrdinaryBodyRecoveryPolicyTest {
         assertEquals(
             12,
             NtkDirectWifiOrdinaryBodyRecoveryPolicy.MAX_CONCURRENT_CONTINUATIONS,
+        )
+    }
+
+    @Test
+    fun onlyMeasuredLastTwoDrippingBodiesMoveTheirUntouchedSuffix() {
+        val wave = NtkManhwaWaveRecoveryState(4, 1L)
+        wave.armExactAuthority(4)
+        wave.markValidatedBody(0)
+        assertFalse(
+            NtkDirectWifiOrdinaryBodyRecoveryPolicy.shouldResumeDrippingStraggler(
+                wave, 2, 12_000L, 50_000L, 200_000L,
+            )
+        )
+        wave.markValidatedBody(1)
+        assertFalse(
+            NtkDirectWifiOrdinaryBodyRecoveryPolicy.shouldResumeDrippingStraggler(
+                wave, 2, 4_999L, 50_000L, 200_000L,
+            )
+        )
+        assertFalse(
+            NtkDirectWifiOrdinaryBodyRecoveryPolicy.shouldResumeDrippingStraggler(
+                wave, 2, 5_000L, 150_000L, 200_000L,
+            )
+        )
+        assertTrue(
+            NtkDirectWifiOrdinaryBodyRecoveryPolicy.shouldResumeDrippingStraggler(
+                wave, 2, 5_000L, 50_000L, 200_000L,
+            )
+        )
+        wave.markValidatedBody(2)
+        assertTrue(
+            NtkDirectWifiOrdinaryBodyRecoveryPolicy.shouldResumeDrippingStraggler(
+                wave, 3, 5_000L, 50_000L, 200_000L,
+            )
+        )
+        wave.close()
+        assertFalse(
+            NtkDirectWifiOrdinaryBodyRecoveryPolicy.shouldResumeDrippingStraggler(
+                wave, 3, 5_000L, 50_000L, 200_000L,
+            )
         )
     }
 
@@ -74,7 +116,12 @@ class NtkDirectWifiOrdinaryBodyRecoveryPolicyTest {
         assertTrue(wrapper.contains(
             "if (directWifiOrdinaryBody && directWifiIdleSuffixNetwork == null) return response"
         ))
-        assertTrue(wrapper.contains("directWifiIdleSuffixNetwork != null -> 0L"))
+        assertTrue(wrapper.contains(
+            "NtkDirectWifiOrdinaryBodyRecoveryPolicy.STRAGGLER_SAMPLE_MS"
+        ))
+        assertTrue(wrapper.contains(
+            "directWifiOrdinaryBodyRecovery = directWifiIdleSuffixNetwork != null"
+        ))
         assertTrue(wrapper.contains("projectedTailFetcher = if (manhwaBody &&"))
         assertTrue(wrapper.contains("directWifiIdleSuffixNetwork == null &&"))
         assertTrue(wrapper.contains(
@@ -91,6 +138,8 @@ class NtkDirectWifiOrdinaryBodyRecoveryPolicyTest {
         assertTrue(bodyStart >= 0)
         assertTrue(bodyEnd > bodyStart)
         val body = source.substring(bodyStart, bodyEnd)
+        assertTrue(body.contains("shouldResumeDrippingStraggler("))
+        assertTrue(body.contains("STRAGGLER_RECHECK_MS"))
         assertTrue(body.contains("if (!hasRequiredDirectWifiNetwork()) return false"))
         assertTrue(body.contains(
             "liveNetwork?.networkHandle == capturedNetwork.networkHandle"
@@ -115,11 +164,14 @@ class NtkDirectWifiOrdinaryBodyRecoveryPolicyTest {
 
         val recovery = call.substringAfter(
             "shouldPrioritizePngAfterCanonicalMiss("
-        ).substringBefore("if (\n                        retryableMiss &&\n                        index == attemptCandidates.lastIndex")
+        ).substringBefore("if (\n                        retryableMiss &&\n                        attemptState.index == attemptCandidates.lastIndex")
         assertTrue(recovery.contains("isDirectWifiClickOwnedOrdinaryManhwaJpeg()"))
         assertTrue(recovery.contains("interleaveExtensions = true"))
         assertTrue(recovery.contains("val earlyPngCandidate = extensionFallbacks.firstOrNull"))
-        assertTrue(recovery.contains("val remainingCanonical = attemptCandidates.drop(index + 1)"))
+        assertTrue(recovery.contains(
+            "val remainingCanonical =\n                                " +
+                "attemptCandidates.drop(attemptState.index + 1)"
+        ))
         assertTrue(recovery.contains("attemptCandidates.add(earlyPngCandidate)"))
         assertTrue(recovery.contains("attemptCandidates.addAll(remainingCanonical)"))
         assertTrue(

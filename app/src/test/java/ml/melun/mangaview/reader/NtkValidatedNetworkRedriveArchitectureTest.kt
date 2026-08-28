@@ -56,6 +56,9 @@ class NtkValidatedNetworkRedriveArchitectureTest {
         assertTrue(redrive.contains("ViewerTelemetry.isActiveViewer(owner.viewerGeneration, launchPath)"))
         assertTrue(redrive.contains("strictNtkPendingSessionPath"))
         assertTrue(redrive.contains("strictNtkManifestSubscription == null"))
+        assertTrue(redrive.contains("hasCurrentStrictNtkRecoverableSourceTerminal(launchPath)"))
+        assertTrue(redrive.contains("startStrictReaderSessionWhenExactReady("))
+        assertTrue(redrive.contains("clearViewImmediately = false"))
         assertTrue(redrive.contains("isActiveNetworkValidated(manager)"))
         assertTrue(redrive.contains("CurrentValidatedRedriveResult.SOURCE_SETTLING"))
         assertTrue(redrive.contains("scheduleStrictNtkValidatedNetworkRedrive("))
@@ -85,6 +88,14 @@ class NtkValidatedNetworkRedriveArchitectureTest {
         val sessionStart = functionBody(activity, "private fun startReaderSession(")
         assertFalse(sessionWait.contains("unregisterStrictNtkValidatedNetworkRedriveObserver()"))
         assertFalse(sessionStart.contains("unregisterStrictNtkValidatedNetworkRedriveObserver()"))
+
+        val sourceTerminal = functionBody(
+            activity,
+            "private fun postStrictNtkRecoverableSourceTerminal(",
+        )
+        assertTrue(sourceTerminal.contains("if (!retryableTransport) return"))
+        assertTrue(sourceTerminal.contains("sessionGeneration != activeReaderSessionGeneration.get()"))
+        assertTrue(sourceTerminal.contains("seal?.matchesEpisodePath(path) != true"))
     }
 
     @Test

@@ -393,9 +393,11 @@ public final class NtkStrictFreshArchitectureTest {
         assertFalse(start.contains("createWebView("));
 
         String pageReady = method(engine,
-                "private fun pageReady(created: WebView)",
+                "private fun pageReady(created: WebView, callbackUrl: String?)",
                 "private fun startNetworkPrerequisites(");
         assertTrue(pageReady.contains("markFlightShellReady(current.request.flightId"));
+        assertTrue(pageReady.contains("isExactFlightDocumentCallback(current, callbackUrl)"));
+        assertTrue(pageReady.contains("startsWith(INERT_ORIGIN)"));
         assertFalse(pageReady.contains("workers.submit { runNetworkPrerequisites"));
         String shellReady = method(engine,
                 "private fun markFlightShellReady(",
@@ -409,6 +411,18 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(guard.contains("current.shellReady.get()"));
         assertTrue(guard.contains("current.guardProgramReady.get()"));
         assertTrue(guard.contains("current.guardStarted.compareAndSet(false, true)"));
+
+        String await = method(engine,
+                "fun awaitNetworkPrerequisites(token: String): Boolean",
+                "@JavascriptInterface\n        fun prerequisitesWaitBudgetMs");
+        assertTrue(await.contains("prerequisitesReadySignal.await"));
+        assertTrue(await.contains("TimeUnit.NANOSECONDS"));
+        assertTrue(engine.contains("val prerequisitesReadySignal = CountDownLatch(1)"));
+        assertTrue(engine.contains("current.prerequisitesReadySignal.countDown()"));
+        assertTrue(engine.contains("bridge.awaitNetworkPrerequisites(token)"));
+        assertFalse(engine.contains("window.__ntkAckNetworkReady"));
+        assertFalse(engine.contains("while(!bridge.prerequisitesReady(token))"));
+        assertFalse(engine.contains("setTimeout(resolve,4)"));
     }
 
     @Test
@@ -439,7 +453,7 @@ public final class NtkStrictFreshArchitectureTest {
         // Explicit preflight warm requests still park their private renderer. Only automatic
         // cross-episode speculation is removed.
         String pageReady = method(engine,
-                "private fun pageReady(created: WebView)",
+                "private fun pageReady(created: WebView,",
                 "private fun startNetworkPrerequisites(");
         int readyState = pageReady.indexOf("state = State.READY");
         int parkRenderer = pageReady.indexOf("parkReadyWarmRenderer(created)");
@@ -540,6 +554,33 @@ public final class NtkStrictFreshArchitectureTest {
         assertFalse(onCreate.contains("startNtkEarlyViewerApiPrefetch("));
         assertFalse(onCreate.contains("bindAndWarm("));
 
+        String frameCommit = method(activity,
+                "private void publishNtkEpisodeShellFrameCommit()",
+                "@Override\n    protected void onPause()");
+        int committed = frameCommit.indexOf("ntkEpisodeShellFrameCommitted = true;");
+        int warm = frameCommit.indexOf("warmNtkAckServiceAfterEpisodeShellFrameCommit();");
+        assertTrue(committed >= 0 && warm > committed);
+        String serviceWarm = method(activity,
+                "private void warmNtkAckServiceAfterEpisodeShellFrameCommit()",
+                "@Override\n    protected void onPause()");
+        assertTrue(serviceWarm.contains("destroyed || isFinishing() || !online || !isNtkTitle()"));
+        assertTrue(serviceWarm.contains(".bindAndWarm()"));
+        assertFalse(serviceWarm.contains("startAck("));
+        assertFalse(serviceWarm.contains("startNtkEarlyViewerApiPrefetch("));
+
+        String ackService = read(ntkAckSourcePath("NtkAckBrowserService.kt"));
+        String warmRpc = method(ackService,
+                "override fun warm(",
+                "override fun startAck(");
+        assertTrue(warmRpc.contains("engine.warmControlPlane(request!!"));
+        assertTrue(warmRpc.contains("engine.warm(request)"));
+        assertFalse(warmRpc.contains("createWebView("));
+        assertFalse(warmRpc.contains("origin"));
+        assertFalse(warmRpc.contains("episodePath"));
+        assertFalse(warmRpc.contains("startAck("));
+        assertFalse(warmRpc.contains("postChallenge("));
+        assertFalse(warmRpc.contains("signExact("));
+
         String click = method(activity,
                 "private void enterPressedNtkEpisode(int adapterPosition, Manga selected)",
                 "private String ntkTelemetryWorkId(");
@@ -613,8 +654,9 @@ public final class NtkStrictFreshArchitectureTest {
         String ackPrerequisites = method(coordinator,
                 "private fun startAckNetworkPrerequisites(",
                 "private fun ensureIsolatedAck(");
-        assertTrue(ackPrerequisites.contains("val thread = Thread(task"));
-        assertTrue(ackPrerequisites.contains("ackRoute.attachDirectTrustedTask(task, thread)"));
+        assertTrue(ackPrerequisites.contains("ensureExactNvSeed(client, flight, ackRoute)"));
+        assertTrue(ackPrerequisites.contains("ensureIsolatedAck(client, flight, ackRoute)"));
+        assertFalse(ackPrerequisites.contains("ackRoute.attachDirectTrustedTask(task, thread)"));
         String foregroundEntry = method(coordinator,
                 "private fun enterForegroundNetworkIfNeeded(",
                 "private fun releaseAdjacentBodyGate(");

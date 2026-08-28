@@ -89,6 +89,31 @@ class NtkVisibleIdentityPolicyTest {
     }
 
     @Test
+    fun continuousReaderStateUsesTheMotionSideOfALaterBoundary() {
+        val identities = listOf(
+            committed("/manhwa/1/11", 3, DIGEST_B, 4, "b3", 20),
+            committed("/manhwa/1/12", 0, DIGEST_C, 5, "c0", 21),
+        )
+
+        assertEquals(
+            "/manhwa/1/12",
+            NtkVisibleIdentityPolicy.stateEpisodeIdentity(
+                identities,
+                launch.episodePath,
+                direction = 1,
+            )?.normalizedEpisodePath,
+        )
+        assertEquals(
+            "/manhwa/1/11",
+            NtkVisibleIdentityPolicy.stateEpisodeIdentity(
+                identities,
+                launch.episodePath,
+                direction = -1,
+            )?.normalizedEpisodePath,
+        )
+    }
+
+    @Test
     fun rejectsAssetSubstitutionAndPageOrderRegression() {
         assertFalse(
             NtkVisibleIdentityPolicy.isValid(
@@ -137,6 +162,22 @@ class NtkVisibleIdentityPolicyTest {
         count: Int = launchAssets.size,
         asset: String = launchAssets.getOrElse(index) { "asset-$index" }
     ) = NtkVisibleIdentityPolicy.Identity(path, index, asset, digest, count)
+
+    private fun committed(
+        path: String,
+        index: Int,
+        digest: String,
+        count: Int,
+        asset: String,
+        displayPage: Int,
+    ) = ReaderSurfaceView.CommittedPageIdentity(
+        displayPageIndex = displayPage,
+        normalizedEpisodePath = path,
+        sourcePageIndex = index,
+        canonicalAsset = asset,
+        manifestDigest = digest,
+        manifestPageCount = count,
+    )
 
     private companion object {
         const val DIGEST_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

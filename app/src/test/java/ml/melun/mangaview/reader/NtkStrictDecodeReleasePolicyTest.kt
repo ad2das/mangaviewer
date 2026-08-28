@@ -19,8 +19,8 @@ class NtkStrictDecodeReleasePolicyTest {
         assertFalse(NtkStrictDecodeReleasePolicy.shouldRelease(11, 114))
         assertTrue(NtkStrictDecodeReleasePolicy.shouldRelease(12, 114))
         assertEquals(12, NtkStrictDecodeReleasePolicy.releaseThreshold(95))
-        assertEquals(6, NtkStrictDecodeReleasePolicy.releaseThreshold(114, webtoon = true))
-        assertFalse(NtkStrictDecodeReleasePolicy.shouldRelease(5, 114, webtoon = true))
-        assertTrue(NtkStrictDecodeReleasePolicy.shouldRelease(6, 114, webtoon = true))
+        assertEquals(5, NtkStrictDecodeReleasePolicy.releaseThreshold(114, webtoon = true))
+        assertFalse(NtkStrictDecodeReleasePolicy.shouldRelease(4, 114, webtoon = true))
+        assertTrue(NtkStrictDecodeReleasePolicy.shouldRelease(5, 114, webtoon = true))
     }
 }

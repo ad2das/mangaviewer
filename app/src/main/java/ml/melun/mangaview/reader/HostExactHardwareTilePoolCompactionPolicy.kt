@@ -37,6 +37,7 @@ internal object HostExactDisplayStorageGeometry {
             .coerceAtMost(Int.MAX_VALUE.toLong())
             .toInt()
     }
+
 }
 
 /**
@@ -143,17 +144,28 @@ internal object HostExactHardwareTilePoolPressurePolicy {
     private const val BEHIND_PAGES = 1
     private const val AHEAD_PAGES = 4
 
+    fun pagesStrictlyBeforeAdjacentBoundary(
+        viewportForwardEdge: Int,
+        adjacentStart: Int,
+    ): Int = if (viewportForwardEdge < 0 || adjacentStart <= viewportForwardEdge) {
+        0
+    } else {
+        adjacentStart - viewportForwardEdge - 1
+    }
+
     fun shouldDeferOffscreenAdjacentRunwayDecode(
         hostGpuRuntime: Boolean,
         directWifiStrictAdjacent: Boolean,
         predecessorIsLaunchEpisode: Boolean,
+        predecessorHasPhysicalEntryProof: Boolean,
         viewportAnchor: Int,
         adjacentStart: Int,
         nearBoundaryPages: Int,
     ): Boolean = hostGpuRuntime && directWifiStrictAdjacent && !predecessorIsLaunchEpisode &&
+        !predecessorHasPhysicalEntryProof &&
         viewportAnchor >= 0 &&
         adjacentStart > viewportAnchor && nearBoundaryPages >= 0 &&
-        adjacentStart - viewportAnchor > nearBoundaryPages
+        pagesStrictlyBeforeAdjacentBoundary(viewportAnchor, adjacentStart) > nearBoundaryPages
 
     /**
      * A pressure retirement is newer than every decode which started before it. The marker is
@@ -163,6 +175,18 @@ internal object HostExactHardwareTilePoolPressurePolicy {
      */
     fun mayPublishDecodedPixels(pressureRetirementPending: Boolean): Boolean =
         !pressureRetirementPending
+
+    /**
+     * A rolling reader may use its bounded transient pool headroom for speculative decoded pages,
+     * but that work must not evict the p0-p4 reading runway merely to stay at the smaller settled
+     * target. Retiring inside the runway is an emergency operation reserved for an exact body
+     * which is already missing from the real physical viewport. Non-rolling owners retain their
+     * established adaptive-pressure behavior.
+     */
+    fun mayRetireInsideForwardRunway(
+        rollingPixelResidency: Boolean,
+        missingPhysicalSurfaceBlocker: Boolean,
+    ): Boolean = !rollingPixelResidency || missingPhysicalSurfaceBlocker
 
     fun retainedWindow(pageCount: Int, anchor: Int): IntArray {
         if (pageCount <= 0) return intArrayOf(0, -1)

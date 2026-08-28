@@ -68,12 +68,13 @@ bool rollingTimingDiagnosticsEnabled() noexcept {
     return isLoggable != nullptr &&
         isLoggable(ANDROID_LOG_DEBUG, kTag, ANDROID_LOG_INFO) != 0;
 }
-// The EGL owner performs the exact geometry transaction that replaces RenderThread.  std::thread
-// inherits its creator's nice value; never lower an already display-critical inherited priority.
-// The former unconditional -8 request changed an inherited -10 thread to -8 and needlessly put
-// received MOVE work behind other display lanes on the CPU-constrained emulator.
-constexpr int kRollingConsumerNice = -10;
-constexpr int kRollingConsumerNiceFallback = -8;
+// The display owner performs only bounded geometry/apply work after the -19 producer seals a
+// frame. At -10, emulator decode/GC pressure repeatedly left an already-enqueued physical frame
+// runnable for 85-88 ms even though SurfaceControl::apply itself took under 3 ms. Keep the owner
+// decisively below the producer (the former inherited -16 could preempt it during content
+// transactions), but above ordinary UI/background pools so a sealed frame cannot miss six vsyncs.
+constexpr int kRollingConsumerNice = -14;
+constexpr int kRollingConsumerNiceFallback = -10;
 constexpr int kCpuPrecomposeNice = 0;
 constexpr std::size_t kTileIntegerStride = 12U;
 // Kotlin maps view-space band origins into the 800px native target with roundToInt(). A legal
@@ -107,6 +108,15 @@ struct ExactCpuTileStorage {
     std::uint8_t* pixels = nullptr;
     /** Optional compositor-ready mirror used by the bounded direct-tile layer presenter. */
     AHardwareBuffer* hardwareBuffer = nullptr;
+    /**
+     * Fence returned by AHardwareBuffer_unlock for the most recent mirror publication.
+     *
+     * Decode owns this descriptor. The direct presenter borrows it long enough to duplicate it
+     * into SurfaceFlinger's acquire-fence argument; storage reuse waits and consumes the original.
+     */
+    std::atomic<int> hardwareWriteFenceFd{-1};
+    /** True once the current immutable CPU pixels have a compositor-safe mirror. */
+    std::atomic<bool> hardwareMirrorReady{false};
 };
 
 struct ExactHardwareBufferSymbols {
@@ -200,6 +210,37 @@ bool exactCpuTileHasContent(
         storage->contentHeight <= storage->height;
 }
 
+bool waitAndCloseExactHardwareWriteFence(ExactCpuTileStorage* storage) noexcept {
+    if (storage == nullptr) return false;
+    const int fenceFd = storage->hardwareWriteFenceFd.exchange(
+        -1, std::memory_order_acq_rel);
+    if (fenceFd < 0) return true;
+    pollfd descriptor{
+        .fd = fenceFd,
+        .events = POLLIN,
+        .revents = 0,
+    };
+    int result = -1;
+    do {
+        result = poll(&descriptor, 1, -1);
+    } while (result < 0 && errno == EINTR);
+    close(fenceFd);
+    return result > 0 &&
+        (descriptor.revents & (POLLIN | POLLERR | POLLHUP)) != 0;
+}
+
+void closeExactHardwareWriteFence(ExactCpuTileStorage* storage) noexcept {
+    if (storage == nullptr) return;
+    const int fenceFd = storage->hardwareWriteFenceFd.exchange(
+        -1, std::memory_order_acq_rel);
+    if (fenceFd >= 0) close(fenceFd);
+}
+
+std::int64_t exactMirrorDiagnosticNanos() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 bool publishExactCpuTileHardwareBuffer(ExactCpuTileStorage* storage) noexcept {
     if (!validExactCpuTile(storage) || storage->hardwareBuffer == nullptr ||
         storage->pixels == nullptr ||
@@ -208,6 +249,11 @@ bool publishExactCpuTileHardwareBuffer(ExactCpuTileStorage* storage) noexcept {
         storage->contentHeight > storage->height) return false;
     const auto& symbols = exactHardwareBufferSymbols();
     if (!symbols.validForAllocation()) return false;
+    // A slot is immutable while owned by a scene. Reuse is the only point at which the prior
+    // asynchronous CPU->gralloc transfer must finish before the same storage is locked again.
+    const std::int64_t startedNanos = exactMirrorDiagnosticNanos();
+    if (!waitAndCloseExactHardwareWriteFence(storage)) return false;
+    const std::int64_t priorFenceReadyNanos = exactMirrorDiagnosticNanos();
     AHardwareBuffer_Desc descriptor{};
     symbols.describe(storage->hardwareBuffer, &descriptor);
     if (descriptor.width < storage->width || descriptor.height < storage->height ||
@@ -227,6 +273,7 @@ bool publishExactCpuTileHardwareBuffer(ExactCpuTileStorage* storage) noexcept {
             -1,
             &bounds,
             &mapped) != 0 || mapped == nullptr) return false;
+    const std::int64_t lockedNanos = exactMirrorDiagnosticNanos();
     const std::size_t destinationStride =
         static_cast<std::size_t>(descriptor.stride) * 4U;
     const std::size_t contentRowBytes =
@@ -251,29 +298,47 @@ bool publishExactCpuTileHardwareBuffer(ExactCpuTileStorage* storage) noexcept {
             0,
             destinationStride);
     }
+    const std::int64_t copiedNanos = exactMirrorDiagnosticNanos();
     int completionFenceFd = -1;
     if (symbols.unlock(storage->hardwareBuffer, &completionFenceFd) != 0) {
         if (completionFenceFd >= 0) close(completionFenceFd);
         return false;
     }
+    const std::int64_t unlockedNanos = exactMirrorDiagnosticNanos();
     if (completionFenceFd >= 0) {
-        pollfd descriptorPoll{
-            .fd = completionFenceFd,
-            .events = POLLIN,
-            .revents = 0,
-        };
-        int result = -1;
-        do {
-            result = poll(&descriptorPoll, 1, -1);
-        } while (result < 0 && errno == EINTR);
-        close(completionFenceFd);
-        if (result < 0) return false;
+        // Do not serialize the decoder behind gfxstream's host transfer. SurfaceFlinger receives
+        // a duplicate as the layer acquire fence and therefore cannot sample partial pixels.
+        storage->hardwareWriteFenceFd.store(completionFenceFd, std::memory_order_release);
+    }
+    static std::atomic<std::uint32_t> diagnosticOrdinal{0};
+    const std::uint32_t ordinal = diagnosticOrdinal.fetch_add(1, std::memory_order_relaxed) + 1U;
+    if (ordinal <= 16U) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kTag,
+            "exact mirror phase ordinal=%u totalMs=%.3f priorFenceMs=%.3f lockMs=%.3f "
+            "copyMs=%.3f unlockMs=%.3f fence=%d",
+            ordinal,
+            static_cast<double>(unlockedNanos - startedNanos) / 1'000'000.0,
+            static_cast<double>(priorFenceReadyNanos - startedNanos) / 1'000'000.0,
+            static_cast<double>(lockedNanos - priorFenceReadyNanos) / 1'000'000.0,
+            static_cast<double>(copiedNanos - lockedNanos) / 1'000'000.0,
+            static_cast<double>(unlockedNanos - copiedNanos) / 1'000'000.0,
+            completionFenceFd);
     }
     return true;
 }
 
-void refreshExactCpuTileHardwareMirror(ExactCpuTileStorage* storage) noexcept {
-    if (storage == nullptr || storage->hardwareBuffer == nullptr) return;
+// gfxstream exposes one process-wide gralloc submission lane. Independent JPEG decoders may fill
+// private malloc storage in parallel; keep only lock/copy/unlock submission serial. Transfer
+// completion is represented by each tile's acquire fence and never blocks unrelated decoding.
+std::mutex gExactHardwareMirrorMutex;
+
+bool refreshExactCpuTileHardwareMirror(ExactCpuTileStorage* storage) noexcept {
+    const std::int64_t queuedNanos = exactMirrorDiagnosticNanos();
+    std::lock_guard<std::mutex> publication(gExactHardwareMirrorMutex);
+    const std::int64_t admittedNanos = exactMirrorDiagnosticNanos();
+    if (storage == nullptr || storage->hardwareBuffer == nullptr) return false;
     if (publishExactCpuTileHardwareBuffer(storage)) {
         // The compositor mirror is the settled display authority. Keep malloc storage only as a
         // transient decode/copy target; retaining both copies doubles every page and repeatedly
@@ -281,13 +346,28 @@ void refreshExactCpuTileHardwareMirror(ExactCpuTileStorage* storage) noexcept {
         // recreates this backing with ensureExactCpuTilePixels() before decoding.
         std::free(storage->pixels);
         storage->pixels = nullptr;
-        return;
+        storage->hardwareMirrorReady.store(true, std::memory_order_release);
+        static std::atomic<std::uint32_t> admissionOrdinal{0};
+        const std::uint32_t ordinal =
+            admissionOrdinal.fetch_add(1, std::memory_order_relaxed) + 1U;
+        if (ordinal <= 16U) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kTag,
+                "exact mirror admission ordinal=%u queueMs=%.3f publishMs=%.3f",
+                ordinal,
+                static_cast<double>(admittedNanos - queuedNanos) / 1'000'000.0,
+                static_cast<double>(exactMirrorDiagnosticNanos() - admittedNanos) / 1'000'000.0);
+        }
+        return true;
     }
     // The malloc-backed exact storage remains authoritative for the established renderer. A
     // device/driver that rejects the compositor mirror simply keeps using that path.
     const auto& symbols = exactHardwareBufferSymbols();
     if (symbols.release != nullptr) symbols.release(storage->hardwareBuffer);
     storage->hardwareBuffer = nullptr;
+    storage->hardwareMirrorReady.store(false, std::memory_order_release);
+    return false;
 }
 
 struct RgbaHorizontalSample {
@@ -784,6 +864,66 @@ bool decodeExactJpegFile(
                 destination,
                 expectedWidth,
                 expectedWidth * 4,
+                expectedHeight,
+                TJPF_RGBA,
+                TJFLAG_ACCURATEDCT) == 0;
+    }
+    tjDestroy(decoder);
+    munmap(mapping, encodedBytes);
+    return valid;
+}
+
+/**
+ * One-tile/no-resize JPEG fast path. Each call owns its TurboJPEG decoder and final tile, so it
+ * needs neither the process-wide image scratch nor its mutex. The destination pitch may be wider
+ * than the logical source because pooled display storage is width-bucketed.
+ */
+bool decodeExactJpegFileToStridedTile(
+        int fd, int expectedWidth, int expectedHeight,
+        std::uint8_t* destination, std::size_t destinationStride,
+        std::size_t destinationBytes) noexcept {
+    if (fd < 0 || expectedWidth <= 0 || expectedHeight <= 0 || destination == nullptr ||
+        destinationStride < static_cast<std::size_t>(expectedWidth) * 4U ||
+        destinationStride > static_cast<std::size_t>(INT32_MAX) ||
+        static_cast<std::size_t>(expectedHeight) > destinationBytes / destinationStride) {
+        return false;
+    }
+    struct stat status{};
+    if (fstat(fd, &status) != 0 || status.st_size <= 0 ||
+        static_cast<std::uint64_t>(status.st_size) >
+            static_cast<std::uint64_t>(std::numeric_limits<unsigned long>::max())) {
+        return false;
+    }
+    const std::size_t encodedBytes = static_cast<std::size_t>(status.st_size);
+    void* mapping = mmap(nullptr, encodedBytes, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mapping == MAP_FAILED) return false;
+    tjhandle decoder = tjInitDecompress();
+    if (decoder == nullptr) {
+        munmap(mapping, encodedBytes);
+        return false;
+    }
+    int width = 0;
+    int height = 0;
+    int subsampling = TJSAMP_UNKNOWN;
+    int colorSpace = 0;
+    const auto* encoded = static_cast<const unsigned char*>(mapping);
+    bool valid = tjDecompressHeader3(
+            decoder,
+            encoded,
+            static_cast<unsigned long>(encodedBytes),
+            &width,
+            &height,
+            &subsampling,
+            &colorSpace) == 0 &&
+        width == expectedWidth && height == expectedHeight;
+    if (valid) {
+        valid = tjDecompress2(
+                decoder,
+                encoded,
+                static_cast<unsigned long>(encodedBytes),
+                destination,
+                expectedWidth,
+                static_cast<int>(destinationStride),
                 expectedHeight,
                 TJPF_RGBA,
                 TJFLAG_ACCURATEDCT) == 0;
@@ -1388,7 +1528,12 @@ struct WindowPresentationCallback {
 
 class RollingRenderer final {
 public:
-    RollingRenderer(JNIEnv* env, jobject callback, std::int64_t creationGeneration)
+    RollingRenderer(
+            JNIEnv* env,
+            jobject callback,
+            std::int64_t creationGeneration,
+            bool directWifiTextureProfile,
+            bool hostGpuEmulator)
         : creationGeneration_(creationGeneration) {
         if (env == nullptr || callback == nullptr || creationGeneration_ <= 0 ||
             env->GetJavaVM(&vm_) != JNI_OK || vm_ == nullptr) {
@@ -1420,6 +1565,12 @@ public:
             failed_.store(true, std::memory_order_release);
             return;
         }
+        // Publish the immutable transport profile before the owner thread starts. The host
+        // direct-tile presenter needs no EGL context; learning this profile through a later JNI
+        // setter made the owner initialize an unused shader/texture backend and contend with HWUI
+        // for roughly a second on every cold reader entry.
+        directWifiTextureProfile_.store(directWifiTextureProfile, std::memory_order_release);
+        hostGpuEmulatorSurfaceProfile_.store(hostGpuEmulator, std::memory_order_release);
         // Never enter ART from the EGL owner. A concurrent/NativeAlloc GC can suspend a JNI
         // callback for hundreds of milliseconds even after the buffer was already handed to the
         // compositor. Keeping that call on the renderer made Java proof bookkeeping part of the
@@ -1652,6 +1803,18 @@ public:
             command.tiles.push_back(tile);
         }
 
+        // Direct-tile presentation cannot make progress until every visible exact CPU tile has
+        // its compositor mirror. Do not consume the one-command native mailbox with a token whose
+        // only possible result is transient backpressure. Kotlin retains the authoritative page
+        // and retries after the mirror publisher wakes; accepting it here used to leave the frame
+        // in frames_ forever while Surface believed the page was already drawable.
+        if (hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire) &&
+            directTilePresenter_.attached() &&
+            frameHasVisiblePendingDirectTileMirror(command)) {
+            releaseFrame(env, command);
+            return -2;
+        }
+
         // One ledger critical section per immutable scene replaces one lock/unlock pair per tile.
         // This is still exact per-identity ownership; it only removes avoidable producer jitter.
         if (!retainFrameBitmapReferences(command.tiles)) {
@@ -1726,6 +1889,8 @@ public:
                 }
             }
         }
+        // SurfaceControl apply can enter Binder for an unbounded interval even for crop-only
+        // geometry. Keep the producer non-blocking and let the dedicated display owner apply it.
         return enqueueFrame(env, std::move(command));
     }
 
@@ -2065,15 +2230,21 @@ public:
      * the independent ledger mutex, so Java may recycle an outgoing identity as soon as its own
      * bit is false without waiting for unrelated frames, uploads, or compositor evidence.
      */
-    void bitmapReferenceMask(
+    bool bitmapReferenceMask(
             const jint* identities, std::size_t count, jboolean* result) noexcept {
-        if (identities == nullptr || result == nullptr) return;
-        std::lock_guard<std::mutex> lock(bitmapReferenceMutex_);
+        if (identities == nullptr || result == nullptr) return false;
+        // Retirement is opportunistic maintenance. It may run while the display owner is
+        // releasing the previous command, so never wait behind that owner and never put the next
+        // physical frame behind a retirement query. A null JNI result tells Kotlin to preserve
+        // every hold and retry at the next bounded maintenance edge.
+        std::unique_lock<std::mutex> lock(bitmapReferenceMutex_, std::try_to_lock);
+        if (!lock.owns_lock()) return false;
         for (std::size_t index = 0; index < count; ++index) {
             result[index] = bitmapReferenceLedger_.references(identities[index])
                 ? JNI_TRUE
                 : JNI_FALSE;
         }
+        return true;
     }
 
     /**
@@ -2906,10 +3077,15 @@ private:
                   static_cast<unsigned long long>(submittedFrames_),
                   static_cast<long long>((event.callbackObservedNanos - event.latchNanos) / 1000));
         }
+        // The Java clock conversion subtracts every delay between the native evidence timestamp
+        // and this JNI ingress. Use the actual hand-off instant, not the earlier Binder callback
+        // instant, so time spent waiting in the renderer event queue cannot masquerade as a
+        // compositor presentation interval.
+        const std::int64_t javaHandoffNanos = nowNanos();
         env->CallVoidMethod(
             callback_, latchedMethod_, static_cast<jlong>(event.identity.ntkFrameId),
             static_cast<jlong>(event.latchNanos),
-            static_cast<jlong>(event.callbackObservedNanos),
+            static_cast<jlong>(javaHandoffNanos),
             static_cast<jint>(1));
         if (env->ExceptionCheck()) env->ExceptionClear();
     }
@@ -3021,25 +3197,40 @@ private:
                     presentationCallbacks_[static_cast<std::size_t>(
                         read % kWindowPresentationCallbackCapacity)];
                 const std::int64_t callbackBeginNanos = nowNanos();
+                // completedNanos is immutable physical evidence. observedNanos must describe the
+                // JNI hand-off, otherwise time queued on ReaderNativeProof is added to the
+                // converted presentation timestamp and creates false 25-35 ms cadence gaps.
                 env->CallVoidMethod(
                     callback_, latchedMethod_, static_cast<jlong>(callback.token),
                     static_cast<jlong>(callback.completedNanos),
-                    static_cast<jlong>(callback.observedNanos),
+                    static_cast<jlong>(callbackBeginNanos),
                     static_cast<jint>(callback.presentationKind));
                 if (env->ExceptionCheck()) env->ExceptionClear();
                 const std::int64_t callbackElapsedUs =
                     (nowNanos() - callbackBeginNanos) / 1000;
+                const std::int64_t callbackQueueUs = callback.completedNanos > 0
+                    ? std::max<std::int64_t>(
+                        0, (callbackBeginNanos - callback.completedNanos) / 1000)
+                    : 0;
                 if (callbackElapsedUs >= 16'000) {
                     const std::uint64_t slowOrdinal = ++slowWindowPresentationCallbacks_;
                     if (slowOrdinal == 1 || slowOrdinal % 90 == 0 ||
-                        callbackElapsedUs >= 500'000) {
+                        callbackElapsedUs >= 50'000 || callbackQueueUs >= 50'000) {
                         RLOGI(
-                            "window presentation callback slow ordinal=%llu token=%llu kind=%d elapsedUs=%lld",
+                            "window presentation callback slow ordinal=%llu token=%llu kind=%d queueUs=%lld elapsedUs=%lld",
                             static_cast<unsigned long long>(slowOrdinal),
                             static_cast<unsigned long long>(callback.token),
                             callback.presentationKind,
+                            static_cast<long long>(callbackQueueUs),
                             static_cast<long long>(callbackElapsedUs));
                     }
+                } else if (callbackQueueUs >= 50'000) {
+                    RLOGI(
+                        "window presentation callback queued token=%llu kind=%d queueUs=%lld elapsedUs=%lld",
+                        static_cast<unsigned long long>(callback.token),
+                        callback.presentationKind,
+                        static_cast<long long>(callbackQueueUs),
+                        static_cast<long long>(callbackElapsedUs));
                 }
                 presentationCallbackRead_.store(read + 1U, std::memory_order_release);
                 presentationCallbackSpaceCondition_.notify_one();
@@ -5639,6 +5830,18 @@ private:
         }
     }
 
+    bool detachDirectTilePresenterAfterEvidenceDrained(JNIEnv* env) noexcept {
+        // Transaction callbacks run on Binder threads. One can enqueue its final completion in
+        // the tiny gap between drainBackendEvidence() observing idle and detach() rechecking it.
+        // No producer frame can enter while the renderer owns a lifecycle command, so simply
+        // drain that late evidence and retry until the presenter atomically accepts detach.
+        while (directTilePresenter_.attached()) {
+            if (!drainBackendEvidence(env)) return false;
+            if (directTilePresenter_.detach()) return true;
+        }
+        return true;
+    }
+
     void resetBackendAttachmentState() noexcept {
         backendAttached_ = false;
         hostCpuWindowAttached_ = false;
@@ -5794,15 +5997,11 @@ private:
             RLOGI("rolling BufferQueue retired after parent replacement");
             return true;
         }
-        if (display_ == EGL_NO_DISPLAY || context_ == EGL_NO_CONTEXT ||
-            !drainBackendEvidence(env)) {
-            return false;
-        }
         // A new SurfaceView attach means the old parent may already have left SurfaceFlinger.
         // Reparenting its child to null can then produce no completion callback. Once all exact
         // transaction/fence evidence is drained, retire the app-owned chain head locally and let
         // destroy() release the obsolete child and parent handles.
-        if (!directTilePresenter_.detach()) return false;
+        if (!detachDirectTilePresenterAfterEvidenceDrained(env)) return false;
         if (backend_.prepared() &&
             (!backend_.retireAfterParentLifecycleEvidenceDrained() || !backend_.destroy())) {
             return false;
@@ -5836,14 +6035,16 @@ private:
         const bool profileValid = ntk::present::validFixedTransportProfile(profile_);
         const int destinationWidth = ANativeWindow_getWidth(command.window);
         const int destinationHeight = ANativeWindow_getHeight(command.window);
-        const bool directTilesAttached = profileValid && destinationWidth > 0 &&
-            destinationHeight > 0 && directTilePresenter_.attach(
+        bool directTilesAttached = false;
+        if (profileValid && destinationWidth > 0 && destinationHeight > 0) {
+            directTilesAttached = directTilePresenter_.attach(
                 command.window,
                 static_cast<std::uint32_t>(destinationWidth),
                 static_cast<std::uint32_t>(destinationHeight),
                 1'000'000'000.0F / static_cast<float>(refreshPeriod),
                 &RollingRenderer::wake,
                 this);
+        }
         bool attached = directTilesAttached;
         if (directTilesAttached) {
             // The per-tile presenter is the complete host-emulator transport. Do not allocate the
@@ -6020,17 +6221,17 @@ private:
             RLOGI("BufferQueue attach cancelled by newer lifecycle command before allocation");
             return true;
         }
-        if (eglMakeCurrent(display_, pbuffer_, pbuffer_, context_) != EGL_TRUE) {
-            ANativeWindow_release(command.window);
-            releaseProvidedAttachSurfaces(command);
-            return false;
-        }
         // Both GLES swaps and CPU lock/post serialize on the host SurfaceView BufferQueue after
         // sustained physical scrolling. Keep viewport motion out of that queue: publish one exact
         // rolling AHardwareBuffer through the app-owned SurfaceControl and advance ordinary input
         // with crop-only transactions. Physical devices retain the asynchronous GLES queue below.
         if (hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire)) {
             return attachHostGpuDirectBackend(env, std::move(command));
+        }
+        if (eglMakeCurrent(display_, pbuffer_, pbuffer_, context_) != EGL_TRUE) {
+            ANativeWindow_release(command.window);
+            releaseProvidedAttachSurfaces(command);
+            return false;
         }
         releaseProvidedAttachSurfaces(command);
         if (backend_.prepared() && !backend_.destroy()) {
@@ -6225,7 +6426,6 @@ private:
 
     bool detachBackend(JNIEnv* env) noexcept {
         if (!backendAttached_) return true;
-        if (display_ == EGL_NO_DISPLAY || context_ == EGL_NO_CONTEXT) return false;
         if (hostCpuWindowAttached_) {
             if (nativeWindow_ != nullptr) {
                 ANativeWindow_release(nativeWindow_);
@@ -6253,8 +6453,7 @@ private:
             return true;
         }
         // Drain exact OnCommit/OnComplete/acquire/release evidence before unparenting the layer.
-        if (!drainBackendEvidence(env)) return false;
-        if (!directTilePresenter_.detach()) return false;
+        if (!detachDirectTilePresenterAfterEvidenceDrained(env)) return false;
         if (backend_.prepared() &&
             (!backend_.detachAfterEvidenceDrained() || !backend_.destroy())) return false;
         resetBackendAttachmentState();
@@ -7032,8 +7231,13 @@ private:
         return result;
     }
 
-    bool buildDirectTileInputs(const FrameCommand& frame) noexcept {
-        directTileInputs_.clear();
+    bool collectDirectTileInputs(
+            const FrameCommand& frame,
+            std::vector<ntk::present::DirectTileLayerInput>* output,
+            bool* mirrorPending) noexcept {
+        if (output == nullptr || mirrorPending == nullptr) return false;
+        output->clear();
+        *mirrorPending = false;
         if (!directTilePresenter_.attached() || frame.tileView().empty() ||
             frame.viewportSourceTop < 0 || frame.viewportSourceHeight <= 0 ||
             frame.viewportSourceTop > frame.height - frame.viewportSourceHeight) return false;
@@ -7046,9 +7250,16 @@ private:
                     tile.exactCpuBuffer,
                     tile.sourceWidth,
                     tile.sourceBottom - tile.sourceTop);
-            if (!cpuContent || tile.exactCpuBuffer->hardwareBuffer == nullptr ||
+            const bool mirrorReady = cpuContent &&
+                tile.exactCpuBuffer->hardwareMirrorReady.load(std::memory_order_acquire);
+            if (!cpuContent || tile.exactCpuBuffer->hardwareBuffer == nullptr || !mirrorReady ||
                 tile.contentIdentity == 0) {
                 if (!visible) continue;
+                if (cpuContent && tile.exactCpuBuffer->hardwareBuffer != nullptr &&
+                    !mirrorReady && tile.contentIdentity != 0) {
+                    *mirrorPending = true;
+                    return false;
+                }
                 RLOGE(
                     "direct tile source unavailable token=%llu epoch=%lld page=%d slot=%d "
                     "cpu=%d hardware=%d cpuValid=%d mirror=%d content=%llu source=%dx%d+%d..%d",
@@ -7058,14 +7269,16 @@ private:
                     tile.cpuBufferResource ? 1 : 0,
                     tile.hardwareBufferResource ? 1 : 0,
                     cpuContent ? 1 : 0,
-                    cpuContent && tile.exactCpuBuffer->hardwareBuffer != nullptr ? 1 : 0,
+                    mirrorReady ? 1 : 0,
                     static_cast<unsigned long long>(tile.contentIdentity),
                     tile.sourceWidth, tile.sourceHeight,
                     tile.sourceTop, tile.sourceBottom);
                 return false;
             }
-            directTileInputs_.push_back({
+            output->push_back({
                 .buffer = tile.exactCpuBuffer->hardwareBuffer,
+                .acquireFenceFd = tile.exactCpuBuffer->hardwareWriteFenceFd.load(
+                    std::memory_order_acquire),
                 .contentIdentity = tile.contentIdentity,
                 .structureEpoch = tile.key.structureEpoch,
                 .page = tile.key.page,
@@ -7079,7 +7292,36 @@ private:
                 .pageHeight = tile.pageHeight,
             });
         }
-        return !directTileInputs_.empty();
+        return !output->empty();
+    }
+
+    bool buildDirectTileInputs(const FrameCommand& frame) noexcept {
+        return collectDirectTileInputs(
+            frame, &directTileInputs_, &directTileMirrorPending_);
+    }
+
+    bool frameHasVisiblePendingDirectTileMirror(const FrameCommand& frame) const noexcept {
+        if (frame.tileView().empty() || frame.viewportSourceTop < 0 ||
+            frame.viewportSourceHeight <= 0 ||
+            frame.viewportSourceTop > frame.height - frame.viewportSourceHeight) {
+            return false;
+        }
+        const double cropTop = static_cast<double>(frame.viewportSourceTop);
+        const double cropBottom = cropTop + frame.viewportSourceHeight;
+        for (const auto& tile : frame.tileView()) {
+            if (!tile.cpuBufferResource ||
+                !tileIntersectsSourceCrop(tile, cropTop, cropBottom)) continue;
+            const auto* storage = tile.exactCpuBuffer;
+            if (exactCpuTileHasContent(
+                    storage,
+                    tile.sourceWidth,
+                    tile.sourceBottom - tile.sourceTop) &&
+                storage->hardwareBuffer != nullptr &&
+                !storage->hardwareMirrorReady.load(std::memory_order_acquire)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool directTileFrameEligible(const FrameCommand& frame) noexcept {
@@ -7092,7 +7334,7 @@ private:
         if (failureStage != nullptr) *failureStage = "direct-tile-entry";
         if (!buildDirectTileInputs(frame)) {
             if (failureStage != nullptr) *failureStage = "direct-tile-source";
-            return directTilePresentationActivated_
+            return directTilePresentationActivated_ && !directTileMirrorPending_
                 ? PresentResult::FAILED
                 : PresentResult::TRANSIENT_BACKPRESSURE;
         }
@@ -7117,6 +7359,9 @@ private:
             return PresentResult::TRANSIENT_BACKPRESSURE;
         }
         const std::int64_t end = nowNanos();
+        const std::int64_t queueWaitNanos = frame.enqueuedNanos > 0
+            ? std::max<std::int64_t>(0, begin - frame.enqueuedNanos)
+            : 0;
         directTilePresentationActivated_ = true;
         ++frameSequence_;
         ++submittedFrames_;
@@ -7126,15 +7371,18 @@ private:
         // line for every slow host-compositor call made logd part of the following frame. Exact
         // counters and callback proofs remain unchanged; enable the timing stream explicitly.
         const bool timingDiagnosticsEnabled = rollingTimingDiagnosticsEnabled();
-        if (timingDiagnosticsEnabled &&
-            (submittedFrames_ == 1 || submittedFrames_ % 120 == 0 ||
-             end - begin >= 16'000'000)) {
+        if ((queueWaitNanos >= 50'000'000 || end - begin >= 50'000'000) ||
+            (timingDiagnosticsEnabled &&
+             (submittedFrames_ == 1 || submittedFrames_ % 120 == 0 ||
+              end - begin >= 16'000'000))) {
             RLOGI(
-                "direct tile present submitted=%llu token=%llu tiles=%zu applyUs=%lld",
+                "direct tile present submitted=%llu token=%llu tiles=%zu queueUs=%lld applyUs=%lld geometryOnly=%d",
                 static_cast<unsigned long long>(submittedFrames_),
                 static_cast<unsigned long long>(frame.token),
                 directTileInputs_.size(),
-                static_cast<long long>((end - begin) / 1000));
+                static_cast<long long>(queueWaitNanos / 1000),
+                static_cast<long long>((end - begin) / 1000),
+                frame.producerSceneGeometryOnly ? 1 : 0);
         }
         if (failureStage != nullptr) *failureStage = "direct-tile-applied";
         return PresentResult::APPLIED;
@@ -7586,9 +7834,13 @@ private:
                 lastVisibleQueueBlockedLogNanos_ = now;
                 const auto snapshot = backend_.conservationSnapshot();
                 RLOGE(
-                    "quiescence blocked by visible queue frames=%zu prepared=%d attached=%d free=%u outstanding=%u commitPending=%u completePending=%u releaseDepth=%u acquireDepth=%u appFds=%u logical=%u awaitingLatch=%d pendingEvent=%d prewarm=%zu runnablePrewarm=%d debtNames=%zu",
+                    "quiescence blocked by visible queue frames=%zu prepared=%d attached=%d directCanPresent=%d directFailure=%u directEvents=%zu free=%u outstanding=%u commitPending=%u completePending=%u releaseDepth=%u acquireDepth=%u appFds=%u logical=%u awaitingLatch=%d pendingEvent=%d prewarm=%zu runnablePrewarm=%d debtNames=%zu",
                     frames_.size(), pendingDirectFrame_.occupied ? 1 : 0,
-                    backendAttached_ ? 1 : 0, snapshot.freeReusableCount,
+                    backendAttached_ ? 1 : 0,
+                    directTilePresenter_.canPresent() ? 1 : 0,
+                    directTilePresenter_.failureReason(),
+                    directTilePresenter_.queuedEventCount(),
+                    snapshot.freeReusableCount,
                     snapshot.outstandingSubmissionCount,
                     snapshot.commitProofPendingNow,
                     snapshot.completeProofPendingNow,
@@ -7609,10 +7861,16 @@ private:
     void run() noexcept {
         requestRollingConsumerPriority();
         JNIEnv* env = attachEnv();
-        const bool eglReady = env != nullptr && initializeEgl();
-        if (!eglReady) {
+        const bool directTileOnly =
+            hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire);
+        const bool rendererReady = env != nullptr && (directTileOnly || initializeEgl());
+        if (!rendererReady) {
             fatal(env, "cold-egl-initialize");
-        } else while (!stopped_.load(std::memory_order_acquire)) {
+        } else {
+            if (directTileOnly) {
+                RLOGI("cold direct-tile renderer ready without EGL");
+            }
+            while (!stopped_.load(std::memory_order_acquire)) {
             if (!consumeHostFrontBufferProof(env, false)) {
                 fatal(env, "shared-front-proof-consume");
                 break;
@@ -7954,6 +8212,14 @@ private:
                         callbackDropped(env, superseded.token, kDropReasonMailboxSuperseded);
                         releaseFrame(env, superseded);
                         ++supersededFrames_;
+                    } else if (directTileMirrorPending_) {
+                        // The dedicated publisher cannot signal this renderer's private condition.
+                        // Avoid a hot retry loop while gfxstream finishes the next visible tile.
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        condition_.wait_for(lock, std::chrono::milliseconds(8), [&] {
+                            return stopped_.load(std::memory_order_acquire) ||
+                                detachPending_ || attachPending_ || backend_.hasPendingEvent();
+                        });
                     }
                 } else if (result != PresentResult::PREPARED_WAITING) {
                     if (result == PresentResult::FAILED) {
@@ -8036,6 +8302,7 @@ private:
                                 (prewarmEndNanos - prewarmBeginNanos) / 1'000));
                     }
                 }
+            }
             }
         }
 
@@ -8261,6 +8528,7 @@ private:
     std::atomic<bool> cpuExactStorageProfile_{false};
 
     ntk::present::DirectTileSurfacePresenter directTilePresenter_{};
+    bool directTileMirrorPending_ = false;
     std::vector<ntk::present::DirectTileLayerInput> directTileInputs_;
     bool directTilePresentationActivated_ = false;
     ntk::present::SurfaceControlPresentBackend backend_{};
@@ -8275,7 +8543,7 @@ private:
     std::int64_t refreshPeriodNanos_ = kDefaultRefreshPeriodNanos;
     std::int64_t lastGeometryDesiredPresentNanos_ = 0;
     std::uint64_t frameSequence_ = 0;
-    std::uint64_t submittedFrames_ = 0;
+    std::atomic<std::uint64_t> submittedFrames_{0};
     bool submissionAwaitingLatch_ = false;
     std::uint64_t presentationFailures_ = 0;
     std::uint32_t consecutivePresentFailures_ = 0;
@@ -8339,9 +8607,14 @@ void quarantineRenderer(std::shared_ptr<RollingRenderer> value) noexcept {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeCreate(
-        JNIEnv* env, jobject, jobject callback, jlong creationGeneration) {
+        JNIEnv* env, jobject, jobject callback, jlong creationGeneration,
+        jboolean directWifiTextureProfile, jboolean hostGpuEmulator) {
     auto value = std::shared_ptr<RollingRenderer>(new (std::nothrow) RollingRenderer(
-        env, callback, static_cast<std::int64_t>(creationGeneration)));
+        env,
+        callback,
+        static_cast<std::int64_t>(creationGeneration),
+        directWifiTextureProfile == JNI_TRUE,
+        hostGpuEmulator == JNI_TRUE));
     if (!value || !value->valid() || !registerRenderer(value)) {
         return 0;
     }
@@ -8406,6 +8679,7 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeReleaseExactHardware
         static_cast<std::uintptr_t>(nativeHandle));
     if (!validExactCpuTile(storage)) return;
     storage->magic = 0;
+    closeExactHardwareWriteFence(storage);
     if (storage->hardwareBuffer != nullptr) {
         const auto& hardwareSymbols = exactHardwareBufferSymbols();
         if (hardwareSymbols.release != nullptr) {
@@ -8416,6 +8690,58 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeReleaseExactHardware
     std::free(storage->pixels);
     storage->pixels = nullptr;
     delete storage;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativePublishExactHardwareTile(
+        JNIEnv*, jobject, jlong nativeHandle) {
+    auto* storage = reinterpret_cast<ExactCpuTileStorage*>(
+        static_cast<std::uintptr_t>(nativeHandle));
+    if (!validExactCpuTile(storage) || storage->hardwareBuffer == nullptr ||
+        storage->contentWidth == 0U || storage->contentHeight == 0U) {
+        return JNI_FALSE;
+    }
+    return refreshExactCpuTileHardwareMirror(storage) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeDecodeExactSingleJpegFileToHardwareTile(
+        JNIEnv* env, jobject, jstring encodedPath, jlong nativeHandle,
+        jint sourceWidth, jint sourceHeight) {
+    if (env == nullptr || encodedPath == nullptr || nativeHandle == 0 ||
+        sourceWidth <= 0 || sourceHeight <= 0) {
+        return JNI_FALSE;
+    }
+    auto* storage = reinterpret_cast<ExactCpuTileStorage*>(
+        static_cast<std::uintptr_t>(nativeHandle));
+    if (!ensureExactCpuTilePixels(storage) ||
+        storage->width < static_cast<std::uint32_t>(sourceWidth) ||
+        storage->height < static_cast<std::uint32_t>(sourceHeight)) {
+        return JNI_FALSE;
+    }
+    storage->hardwareMirrorReady.store(false, std::memory_order_release);
+    const char* rawPath = env->GetStringUTFChars(encodedPath, nullptr);
+    if (rawPath == nullptr) return JNI_FALSE;
+    const int fd = open(rawPath, O_RDONLY | O_CLOEXEC);
+    env->ReleaseStringUTFChars(encodedPath, rawPath);
+    if (fd < 0) return JNI_FALSE;
+
+    const bool valid = hasJpegSignature(fd) &&
+        decodeExactJpegFileToStridedTile(
+            fd,
+            sourceWidth,
+            sourceHeight,
+            storage->pixels,
+            storage->strideBytes,
+            storage->allocationBytes);
+    close(fd);
+    if (!valid) return JNI_FALSE;
+
+    storage->contentWidth = static_cast<std::uint32_t>(sourceWidth);
+    storage->contentHeight = static_cast<std::uint32_t>(sourceHeight);
+    storage->logicalWidth = static_cast<std::uint32_t>(sourceWidth);
+    storage->logicalHeight = static_cast<std::uint32_t>(sourceHeight);
+    return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -8507,6 +8833,7 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeDecodeExactFileToHar
         auto* storage = reinterpret_cast<ExactCpuTileStorage*>(
             static_cast<std::uintptr_t>(handle));
         if (!ensureExactCpuTilePixels(storage)) return JNI_FALSE;
+        storage->hardwareMirrorReady.store(false, std::memory_order_release);
     }
 
     const char* rawPath = env->GetStringUTFChars(encodedPath, nullptr);
@@ -8708,12 +9035,6 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeDecodeExactFileToHar
     if (scaledDecoder != nullptr) symbols.destroy(scaledDecoder);
     if (scaledFd >= 0) close(scaledFd);
     if (scaledDecodeValid) {
-        for (jsize index = 0; index < bufferCount; ++index) {
-            refreshExactCpuTileHardwareMirror(
-                reinterpret_cast<ExactCpuTileStorage*>(
-                    static_cast<std::uintptr_t>(
-                        handles[static_cast<std::size_t>(index)])));
-        }
         static std::atomic<std::uint64_t> scaledDecodeOrdinal{0};
         const std::uint64_t ordinal = scaledDecodeOrdinal.fetch_add(
             1, std::memory_order_relaxed) + 1;
@@ -8866,14 +9187,6 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeDecodeExactFileToHar
             static_cast<double>(totalStorageCopyNanos) / 1'000'000.0,
             static_cast<double>(maximumStorageCopyNanos) / 1'000'000.0);
     }
-    if (valid) {
-        for (jsize index = 0; index < bufferCount; ++index) {
-            refreshExactCpuTileHardwareMirror(
-                reinterpret_cast<ExactCpuTileStorage*>(
-                    static_cast<std::uintptr_t>(
-                        handles[static_cast<std::size_t>(index)])));
-        }
-    }
     if (decoder != nullptr) symbols.destroy(decoder);
     close(fd);
     return valid ? JNI_TRUE : JNI_FALSE;
@@ -8919,6 +9232,9 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeCopyExactBitmapToHar
 
     auto* storage = reinterpret_cast<ExactCpuTileStorage*>(
         static_cast<std::uintptr_t>(nativeHandle));
+    if (validExactCpuTile(storage)) {
+        storage->hardwareMirrorReady.store(false, std::memory_order_release);
+    }
     const jint displayHeight = static_cast<jint>(
         (static_cast<std::int64_t>(sourceHeight) * displayWidth + sourceWidth - 1LL) /
         sourceWidth);
@@ -8942,7 +9258,6 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeCopyExactBitmapToHar
             storage->contentHeight = static_cast<std::uint32_t>(displayHeight);
             storage->logicalWidth = static_cast<std::uint32_t>(sourceWidth);
             storage->logicalHeight = static_cast<std::uint32_t>(sourceHeight);
-            refreshExactCpuTileHardwareMirror(storage);
         }
     }
     if (AndroidBitmap_unlockPixels(env, bitmap) != ANDROID_BITMAP_RESULT_SUCCESS) {
@@ -9143,9 +9458,10 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeBitmapReferenceMask(
     }
     std::fill_n(mask.get(), static_cast<std::size_t>(count), JNI_FALSE);
     auto value = renderer(handle);
-    if (value != nullptr) {
-        value->bitmapReferenceMask(
-            identities, static_cast<std::size_t>(count), mask.get());
+    if (value == nullptr || !value->bitmapReferenceMask(
+            identities, static_cast<std::size_t>(count), mask.get())) {
+        env->ReleaseIntArrayElements(bitmapIdentities, identities, JNI_ABORT);
+        return nullptr;
     }
     env->ReleaseIntArrayElements(bitmapIdentities, identities, JNI_ABORT);
     env->SetBooleanArrayRegion(result, 0, count, mask.get());

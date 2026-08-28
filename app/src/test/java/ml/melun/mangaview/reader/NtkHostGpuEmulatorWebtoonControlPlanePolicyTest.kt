@@ -33,6 +33,38 @@ class NtkHostGpuEmulatorWebtoonControlPlanePolicyTest {
         assertFalse(eligible(initialPageIndex = 0))
     }
 
+    @Test
+    fun coldCurrentSelectsHttp2WithoutChangingItsCanonicalResponseShape() {
+        assertTrue(
+            NtkHostGpuEmulatorWebtoonControlPlanePolicy.shouldForceHttp2(
+                directWebtoon = true,
+                emulatorRuntime = true,
+                directWifiAdjacent = false,
+                directWifiCurrent = true,
+                rollingAdmission = true,
+            )
+        )
+        assertFalse(eligible(initialPageIndex = 0))
+        assertFalse(
+            NtkHostGpuEmulatorWebtoonControlPlanePolicy.shouldForceHttp2(
+                directWebtoon = true,
+                emulatorRuntime = false,
+                directWifiAdjacent = false,
+                directWifiCurrent = true,
+                rollingAdmission = true,
+            )
+        )
+        assertFalse(
+            NtkHostGpuEmulatorWebtoonControlPlanePolicy.shouldForceHttp2(
+                directWebtoon = true,
+                emulatorRuntime = true,
+                directWifiAdjacent = false,
+                directWifiCurrent = true,
+                rollingAdmission = false,
+            )
+        )
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun rejectsNegativeResumeIndex() {
         eligible(initialPageIndex = -1)

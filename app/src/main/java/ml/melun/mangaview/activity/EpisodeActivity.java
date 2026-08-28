@@ -61,6 +61,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.EpisodeLoadResult;
+import ml.melun.mangaview.ntkack.NtkAckBrowserClient;
 import ml.melun.mangaview.reader.ReaderImageCache;
 import ml.melun.mangaview.reader.NtkInlineReaderController;
 import ml.melun.mangaview.reader.ReaderPreparedStore;
@@ -5202,6 +5203,7 @@ public class EpisodeActivity extends AppCompatActivity {
         if(ntkEpisodeShellFrameCommitted) return;
         ntkEpisodeShellFrameCommitNanos = System.nanoTime();
         ntkEpisodeShellFrameCommitted = true;
+        warmNtkAckServiceAfterEpisodeShellFrameCommit();
         NtkInlineReaderController controller = ntkInlineReaderController;
         if(controller != null) {
             controller.onEpisodeShellFrameCommitted(ntkEpisodeShellFrameCommitNanos);
@@ -5212,6 +5214,17 @@ public class EpisodeActivity extends AppCompatActivity {
                 + ",setContentNs=" + ntkSetContentViewNanos
                 + ",firstDrawNs=" + ntkEpisodeShellFirstDrawNanos
                 + ",frameCommitNs=" + ntkEpisodeShellFrameCommitNanos);
+    }
+
+    /**
+     * Starts only the isolated ACK service after the visible episode shell has reached the
+     * compositor. The warm RPC carries no origin, episode path, cookie, or image request and the
+     * service answers it without creating a WebView. Exact authority and all content I/O remain
+     * exclusively owned by the later committed episode click.
+     */
+    private void warmNtkAckServiceAfterEpisodeShellFrameCommit() {
+        if(destroyed || isFinishing() || !online || !isNtkTitle()) return;
+        NtkAckBrowserClient.get(getApplicationContext()).bindAndWarm();
     }
 
     @Override

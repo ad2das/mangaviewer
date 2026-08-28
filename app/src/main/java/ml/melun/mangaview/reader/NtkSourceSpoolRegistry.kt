@@ -506,12 +506,20 @@ object NtkSourceSpoolRegistry {
             val directWifiBootstrap = !cellularResilientBootstrap && runCatching {
                 MainApplication.getHttpClient().isNtkWifiTransportActive()
             }.getOrDefault(false)
+            val adjacentGrantBootstrap =
+                ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(path)
             val deferDirectWifiAdjacentBootstrap =
                 NtkDirectWifiAdjacentExecutionTopology.shouldDeferBootstrap(
                     episodePath = path,
                     rollingAdmission = rollingAdmission,
-                    adjacentGrant =
-                        ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(path),
+                    adjacentGrant = adjacentGrantBootstrap,
+                    directWifiTransport = directWifiBootstrap,
+                    cellularResilientTransport = cellularResilientBootstrap,
+                )
+            val deferDirectWifiRollingBootstrap =
+                NtkDirectWifiRollingBootstrapTopology.shouldDeferBootstrap(
+                    episodePath = path,
+                    rollingAdmission = rollingAdmission,
                     directWifiTransport = directWifiBootstrap,
                     cellularResilientTransport = cellularResilientBootstrap,
                 )
@@ -521,13 +529,14 @@ object NtkSourceSpoolRegistry {
                     NtkStrictSourceExecutionBootstrap(
                         deferWorkerLanes =
                             path.startsWith("/manhwa/", ignoreCase = true) ||
-                                deferDirectWifiAdjacentBootstrap,
+                                deferDirectWifiRollingBootstrap,
                         shareDeferredWorkerLanes = deferDirectWifiAdjacentBootstrap,
                     ).also { bootstrap ->
                         Log.d(
                             "ViewerPerf",
                             "reader_source_execution_bootstrap_ready path=$path," +
                                 "generation=${lease.generation.value}," +
+                                "rollingDeferred=$deferDirectWifiRollingBootstrap," +
                                 "adjacentFinite=$deferDirectWifiAdjacentBootstrap," +
                                 "threads=${bootstrap.startedThreadCount()}," +
                                 "elapsedMs=${SystemClock.elapsedRealtime() - bootstrapStartedAt}"
@@ -2239,6 +2248,9 @@ object NtkSourceSpoolRegistry {
 
         override fun onForegroundIdleCompletionRequested(episode: NtkEpisodeToken) =
             transport.onForegroundIdleCompletionRequested(episode)
+
+        override fun onPhysicalBlockedPageRequested(episode: NtkEpisodeToken, pageIndex: Int) =
+            transport.onPhysicalBlockedPageRequested(episode, pageIndex)
 
         override fun requestPreparationDrain(
             episode: NtkEpisodeToken,

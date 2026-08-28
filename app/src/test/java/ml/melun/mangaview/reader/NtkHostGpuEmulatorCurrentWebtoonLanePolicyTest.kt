@@ -4,6 +4,18 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
+    @Test
+    fun pixelRunwayStopsAtTheFirstUxTargetWhileTransportKeepsTheFullOpeningProof() {
+        assertEquals(
+            9,
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES,
+        )
+        assertEquals(
+            6,
+            NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_SCROLL_RUNWAY_BODIES,
+        )
+    }
+
     private fun cap(
         progressiveLaneCount: Int = 60,
         emulatorRuntime: Boolean = true,
@@ -18,6 +30,9 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
         contiguousForwardBodyCount: Int =
             NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES,
         healthyBulkExpansion: Boolean = false,
+        fragmentedTlsRecoveryQualified: Boolean = false,
+        quicRecoveryQualified: Boolean = false,
+        wellProvenQuicRecoveryQualified: Boolean = false,
     ): Int = NtkHostGpuEmulatorCurrentWebtoonLanePolicy.cap(
         progressiveLaneCount,
         emulatorRuntime,
@@ -31,12 +46,22 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
         anchorBodyPublished,
         contiguousForwardBodyCount,
         healthyBulkExpansion,
+        fragmentedTlsRecoveryQualified,
+        quicRecoveryQualified,
+        wellProvenQuicRecoveryQualified,
     )
 
     @Test
     fun capsOnlyPostAnchorHostEmulatorCurrentWebtoonResume() {
-        assertEquals(6, cap(progressiveLaneCount = 60))
+        assertEquals(9, cap(progressiveLaneCount = 60))
         assertEquals(8, cap(progressiveLaneCount = 64, healthyBulkExpansion = true))
+        assertEquals(8, cap(fragmentedTlsRecoveryQualified = true))
+        assertEquals(8, cap(quicRecoveryQualified = true))
+        assertEquals(8, cap(wellProvenQuicRecoveryQualified = true))
+        assertEquals(8, cap(
+            progressiveLaneCount = 18,
+            fragmentedTlsRecoveryQualified = true,
+        ))
         assertEquals(8, cap(progressiveLaneCount = 18, healthyBulkExpansion = true))
         assertEquals(5, cap(progressiveLaneCount = 5))
 
@@ -45,28 +70,48 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
         assertEquals(60, cap(cellularResilientTransport = true))
         assertEquals(60, cap(webtoon = false))
         assertEquals(60, cap(rollingAdmission = false))
-        assertEquals(60, cap(initialPageIndex = 0))
+        assertEquals(9, cap(initialPageIndex = 0))
         assertEquals(60, cap(currentForegroundEpisode = false))
         assertEquals(60, cap(adjacentPrefetch = true))
         assertEquals(60, cap(anchorBodyPublished = false))
     }
 
     @Test
-    fun preservesTheNineLaneVisibleRunwayThenUsesTheBoundedEightLaneWave() {
-        assertEquals(9, cap(contiguousForwardBodyCount = 0))
-        assertEquals(9, cap(contiguousForwardBodyCount = 5))
+    fun givesTheFiniteOpeningRunwayFourLanesThenUsesTheBoundedWave() {
+        assertEquals(4, cap(contiguousForwardBodyCount = 0))
+        assertEquals(4, cap(contiguousForwardBodyCount = 8))
+        assertEquals(4, cap(
+            contiguousForwardBodyCount = 8,
+            fragmentedTlsRecoveryQualified = true,
+        ))
+        assertEquals(4, cap(
+            contiguousForwardBodyCount = 8,
+            quicRecoveryQualified = true,
+        ))
+        assertEquals(4, cap(
+            contiguousForwardBodyCount = 8,
+            wellProvenQuicRecoveryQualified = true,
+        ))
         assertEquals(
-            8,
+            4,
             cap(progressiveLaneCount = 8, contiguousForwardBodyCount = 0),
         )
-        assertEquals(6, cap(contiguousForwardBodyCount = 6))
+        assertEquals(
+            4,
+            cap(progressiveLaneCount = 1, contiguousForwardBodyCount = 0),
+        )
+        assertEquals(9, cap(contiguousForwardBodyCount = 9))
         assertEquals(8, cap(
-            contiguousForwardBodyCount = 6,
+            contiguousForwardBodyCount = 9,
             healthyBulkExpansion = true,
         ))
         assertEquals(8, cap(
             contiguousForwardBodyCount = 20,
             healthyBulkExpansion = true,
+        ))
+        assertEquals(8, cap(
+            contiguousForwardBodyCount = 9,
+            fragmentedTlsRecoveryQualified = true,
         ))
 
         // The runway stage is fenced by the same exact profile as the one-body-per-pool cap.
@@ -78,6 +123,26 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
             adjacentPrefetch = true,
             contiguousForwardBodyCount = 0,
         ))
+    }
+
+    @Test
+    fun keepsTheQuicProofPageAheadOfOffscreenColdCohorts() {
+        assertEquals(true, NtkHostGpuEmulatorCurrentWebtoonLanePolicy
+            .openingProofIncomplete(8))
+        assertEquals(false, NtkHostGpuEmulatorCurrentWebtoonLanePolicy
+            .openingProofIncomplete(9))
+    }
+
+    @Test
+    fun widensOnlyTheIncompleteFinalWellProvenQuicBatch() {
+        assertEquals(8, NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(8, 17, true))
+        assertEquals(12, NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(8, 16, true))
+        assertEquals(12, NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(8, 13, true))
+        assertEquals(12, NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(8, 12, true))
+        assertEquals(9, NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(8, 9, true))
+        assertEquals(8, NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(8, 8, true))
+        assertEquals(8, NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(8, 12, false))
+        assertEquals(6, NtkHostGpuEmulatorCurrentWebtoonLanePolicy.finalWaveCap(6, 10, true))
     }
 
     @Test
@@ -133,7 +198,7 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
                 openingWaveIncomplete = true,
                 pageInOpeningWave = true,
             )
-        assertEquals(2, limit)
+        assertEquals(4, limit)
         assertEquals(1, NtkHostGpuEmulatorCurrentWebtoonLanePolicy
             .openingWaveAnchorPoolOperationLimit(1, false, true, true))
         assertEquals(1, NtkHostGpuEmulatorCurrentWebtoonLanePolicy

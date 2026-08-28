@@ -51,6 +51,24 @@ class NtkDeferredAdjacentRedriveArchitectureTest {
         assertTrue(testGate.contains("hasCanonicalDrawableCompletion(page)"))
     }
 
+    @Test
+    fun residentExactP0ParksOnPhysicalIdleInsteadOfFrameRatePolling() {
+        val schedule = functionBody("private fun scheduleInitialAdjacentRunwayAppendRetry(")
+        val idle = functionBody(
+            "private fun scheduleParkedInitialAdjacentRunwayWakeAfterPhysicalIdle(",
+        )
+        val wake = functionBody("private fun wakeParkedInitialAdjacentRunwayRetries(")
+
+        assertTrue(schedule.contains("parkedInitialAdjacentRunwayRetries[exactP0WakePath] = retry"))
+        assertTrue(schedule.contains("NTK_INITIAL_ADJACENT_EVENT_WAIT_WATCHDOG_MS"))
+        assertTrue(schedule.contains("liveness insurance for a lost Android lifecycle edge"))
+        assertTrue(idle.contains("parkedInitialAdjacentIdleWakePosted.compareAndSet(false, true)"))
+        assertTrue(idle.contains("!viewportBusy.get()"))
+        assertTrue(idle.contains("wakeParkedInitialAdjacentRunwayRetries()"))
+        assertTrue(wake.contains("main.removeCallbacks(retry)"))
+        assertTrue(wake.contains("retry.run()"))
+    }
+
     private fun functionBody(signature: String): String {
         val start = source.indexOf(signature)
         check(start >= 0) { "Missing function: $signature" }

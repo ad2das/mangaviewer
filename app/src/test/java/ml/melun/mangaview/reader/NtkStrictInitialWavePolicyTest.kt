@@ -8,6 +8,63 @@ import org.junit.Test
 class NtkStrictInitialWavePolicyTest {
 
     @Test
+    fun generationOwnedWifiResumeAnchorKeepsTheWireUntilItsEof() {
+        fun exclusive(
+            rolling: Boolean = true,
+            directWifi: Boolean = true,
+            cellular: Boolean = false,
+            generation: Long = 41L,
+            adjacent: Boolean = false,
+            initialPage: Int = 11,
+        ) = NtkForwardResumeAnchorWirePolicy.isExclusive(
+            rollingAdmission = rolling,
+            directWifiTransport = directWifi,
+            cellularResilientTransport = cellular,
+            currentForegroundViewerGeneration = generation,
+            adjacentPrefetch = adjacent,
+            initialPageIndex = initialPage,
+        )
+
+        assertTrue(exclusive())
+        assertEquals(
+            1,
+            NtkForwardResumeAnchorWirePolicy.usableLaneCount(12, true, false),
+        )
+        assertEquals(
+            12,
+            NtkForwardResumeAnchorWirePolicy.usableLaneCount(12, true, true),
+        )
+        assertFalse(exclusive(rolling = false))
+        assertFalse(exclusive(directWifi = false))
+        assertFalse(exclusive(cellular = true))
+        assertFalse(exclusive(generation = 0L))
+        assertFalse(exclusive(adjacent = true))
+        assertFalse(exclusive(initialPage = 0))
+    }
+
+    @Test
+    fun adjacentControlBorrowsAnExistingSameGenerationNetworkOwner() {
+        assertTrue(
+            NtkAdjacentForegroundNetworkAdmissionPolicy.shouldBorrowCurrentOwner(
+                adjacentPredecessorGate = true,
+                sameGenerationOwnerActive = true,
+            ),
+        )
+        assertFalse(
+            NtkAdjacentForegroundNetworkAdmissionPolicy.shouldBorrowCurrentOwner(
+                adjacentPredecessorGate = false,
+                sameGenerationOwnerActive = true,
+            ),
+        )
+        assertFalse(
+            NtkAdjacentForegroundNetworkAdmissionPolicy.shouldBorrowCurrentOwner(
+                adjacentPredecessorGate = true,
+                sameGenerationOwnerActive = false,
+            ),
+        )
+    }
+
+    @Test
     fun forwardResumeFloorRequiresTheSameCurrentDirectWifiGeneration() {
         fun decide(
             directWifi: Boolean = true,
@@ -266,7 +323,19 @@ class NtkStrictInitialWavePolicyTest {
                 cohortCount = 16,
                 cellularResilientTransport = false,
                 episodePageCount = 16,
+                directWifiTransport = true,
                 directWifiCurrentEpisode = true,
+            ),
+        )
+        assertEquals(
+            5,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 24,
+                cellularResilientTransport = false,
+                episodePageCount = 86,
+                directWifiTransport = true,
+                directWifiCurrentEpisode = true,
+                hostGpuEmulatorRuntime = true,
             ),
         )
         assertEquals(
@@ -275,6 +344,7 @@ class NtkStrictInitialWavePolicyTest {
                 cohortCount = 17,
                 cellularResilientTransport = false,
                 episodePageCount = 17,
+                directWifiTransport = true,
                 directWifiCurrentEpisode = true,
             ),
         )
@@ -701,7 +771,7 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
-    fun hostGpuDirectWifiAdjacentAdmissionIncludesP0ThroughP4Only() {
+    fun hostGpuDirectWifiAdjacentAdmissionIncludesP0ThroughP4WithTwoActiveBodies() {
         val count = NtkStrictInitialWavePolicy.adjacentInitialRunwayBodyCount(
             emulatorRuntime = true,
             directWifiTransport = true,

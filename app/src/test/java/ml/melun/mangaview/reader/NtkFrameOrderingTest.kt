@@ -9,6 +9,14 @@ import org.junit.Test
 
 class NtkFrameOrderingTest {
     @Test
+    fun onlyAnExplicitLiveMotionHandoffBridgesGestureCadence() {
+        assertTrue(isContinuousNativeCadenceGesturePair(7L, 8L, 7L, 8L))
+        assertFalse(isContinuousNativeCadenceGesturePair(7L, 8L, 0L, 0L))
+        assertFalse(isContinuousNativeCadenceGesturePair(7L, 9L, 7L, 8L))
+        assertFalse(isContinuousNativeCadenceGesturePair(0L, 8L, 0L, 8L))
+    }
+
+    @Test
     fun frameIdentityAndSubmissionPairsRemainStrictlyOrdered() {
         val ordered = TreeMap<NtkFrameOrderKey, String>()
         ordered[NtkFrameOrderKey(3L, 12L)] = "twelve"
