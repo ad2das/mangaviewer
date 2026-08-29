@@ -66,6 +66,24 @@ class NtkAdjacentExactDecodeMotionPolicyTest {
     @Test
     fun physicalRequestRedrivesARegisteredOwnerWithNoWorkerOrWakeEdge() {
         assertTrue(
+            NtkAdjacentExactRehydrateLivenessPolicy.isExactPhysicalIntent(
+                reportedPhysicalWindowContainsPage = false,
+                exactBlockedForwardPage = true,
+            ),
+        )
+        assertTrue(
+            NtkAdjacentExactRehydrateLivenessPolicy.isExactPhysicalIntent(
+                reportedPhysicalWindowContainsPage = true,
+                exactBlockedForwardPage = false,
+            ),
+        )
+        assertFalse(
+            NtkAdjacentExactRehydrateLivenessPolicy.isExactPhysicalIntent(
+                reportedPhysicalWindowContainsPage = false,
+                exactBlockedForwardPage = false,
+            ),
+        )
+        assertTrue(
             NtkAdjacentExactRehydrateLivenessPolicy.shouldRedriveIdleOwner(
                 exactPhysicalIntent = true,
                 parked = false,

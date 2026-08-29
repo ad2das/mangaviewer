@@ -20,6 +20,11 @@ internal object NtkAdjacentExactDecodeMotionPolicy {
  * edge. The caller's atomic scheduling CAS still guarantees one decoder.
  */
 internal object NtkAdjacentExactRehydrateLivenessPolicy {
+    fun isExactPhysicalIntent(
+        reportedPhysicalWindowContainsPage: Boolean,
+        exactBlockedForwardPage: Boolean,
+    ): Boolean = reportedPhysicalWindowContainsPage || exactBlockedForwardPage
+
     fun shouldRedriveIdleOwner(
         exactPhysicalIntent: Boolean,
         parked: Boolean,

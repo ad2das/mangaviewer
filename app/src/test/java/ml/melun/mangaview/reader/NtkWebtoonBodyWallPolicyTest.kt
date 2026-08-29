@@ -70,16 +70,9 @@ class NtkWebtoonBodyWallPolicyTest {
 
 
     @Test
-    fun hostEmulatorCurrentQuicUsesOnePostRunwayProbeBeforeBulk() {
+    fun hostEmulatorCurrentQuicUsesOneAnchorProbeBeforeOpeningFollowers() {
         val probe = NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE
-        assertEquals(5, probe)
-        assertFalse(
-            NtkWebtoonReplicaHeaderPolicy.shouldProbeHostEmulatorCurrentQuic(
-                currentHostEmulatorRecovery = true,
-                pageIndex = probe - 1,
-                episodePageCount = 86,
-            ),
-        )
+        assertEquals(0, probe)
         assertTrue(
             NtkWebtoonReplicaHeaderPolicy.shouldProbeHostEmulatorCurrentQuic(
                 currentHostEmulatorRecovery = true,
@@ -108,17 +101,35 @@ class NtkWebtoonBodyWallPolicyTest {
                 qualified = true,
             ),
         )
-        repeat(probe + 1) { openingPage ->
-            assertFalse(
-                NtkWebtoonReplicaHeaderPolicy.shouldUseQualifiedHostEmulatorCurrentQuic(
-                    currentHostEmulatorRecovery = true,
-                    pageIndex = openingPage,
-                    qualified = true,
-                ),
-            )
-        }
         assertTrue(NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_BULK_ENABLED)
         assertEquals(5, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_OPENING_PAGES)
+        assertEquals(
+            1_500L,
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_CURRENT_ANCHOR_QUIC_TIMEOUT_MS,
+        )
+        assertEquals(
+            1_500L,
+            NtkWebtoonReplicaHeaderPolicy
+                .WIFI_DIRECT_CURRENT_OPENING_QUIC_QUALIFICATION_WAIT_MS,
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAwaitHostEmulatorOpeningQuicQualification(
+                currentHostEmulatorRecovery = true,
+                pageIndex = 0,
+            ),
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.shouldAwaitHostEmulatorOpeningQuicQualification(
+                currentHostEmulatorRecovery = true,
+                pageIndex = 4,
+            ),
+        )
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy.shouldAwaitHostEmulatorOpeningQuicQualification(
+                currentHostEmulatorRecovery = true,
+                pageIndex = 5,
+            ),
+        )
         assertFalse(
             NtkWebtoonReplicaHeaderPolicy.shouldUseQualifiedHostEmulatorCurrentQuic(
                 currentHostEmulatorRecovery = true,
@@ -129,7 +140,7 @@ class NtkWebtoonBodyWallPolicyTest {
     }
 
     @Test
-    fun contentFreeQuicPreconnectStillRequiresThePageFiveExactBodyProbe() {
+    fun contentFreeQuicPreconnectStillRequiresTheAnchorExactBodyProbe() {
         val health = ReaderImageCache.HostEmulatorWebtoonQuicHealth()
 
         health.recordPreconnectSuccess()
@@ -138,6 +149,22 @@ class NtkWebtoonBodyWallPolicyTest {
         assertFalse(health.tryBeginProbe())
         health.finishProbe(succeeded = true)
         assertTrue(health.isQualified())
+        assertTrue(
+            health.awaitQualification(
+                timeoutMs = 0L,
+                admissionCheck = java.util.function.BooleanSupplier { true },
+            )
+        )
+
+        val rejected = ReaderImageCache.HostEmulatorWebtoonQuicHealth()
+        assertTrue(rejected.tryBeginProbe())
+        rejected.finishProbe(succeeded = false)
+        assertFalse(
+            rejected.awaitQualification(
+                timeoutMs = 0L,
+                admissionCheck = java.util.function.BooleanSupplier { true },
+            )
+        )
     }
 
     @Test
@@ -1250,8 +1277,16 @@ class NtkWebtoonBodyWallPolicyTest {
         assertFalse(
             NtkWebtoonBodyWallPolicy.shouldResume(
                 elapsedMs = NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
-                deliveredBytes = 100_000L,
+                deliveredBytes = 125_000L,
                 expectedLength = 300_000L,
+                segmentWallMs = NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
+            )
+        )
+        assertTrue(
+            NtkWebtoonBodyWallPolicy.shouldResume(
+                elapsedMs = 1_742L,
+                deliveredBytes = 122_411L,
+                expectedLength = 203_536L,
                 segmentWallMs = NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
             )
         )

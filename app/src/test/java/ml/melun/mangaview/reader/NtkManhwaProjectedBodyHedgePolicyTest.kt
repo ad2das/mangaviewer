@@ -408,6 +408,36 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
     }
 
     @Test
+    fun physicallyBlockedBodyCanUseTheSameBoundedUntouchedSuffixHedgeBeforeWaveEnd() {
+        val wave = NtkManhwaWaveRecoveryState(
+            maximumPageCount = 13,
+            viewerClickAtNanos = 1L,
+        )
+        wave.armExactAuthority(13)
+        wave.markValidatedBody(0)
+        wave.markPhysicalBlockedBody(12)
+
+        assertTrue(wave.isPhysicalBlockedBody(12))
+        assertTrue(
+            NtkManhwaProjectedBodyHedgePolicy.shouldStartFinalBodyTail(
+                wave,
+                pageIndex = 12,
+                sessionElapsedMs = 8_000L,
+                bodyElapsedMs = 6_000L,
+                deliveredBytes = 196_608L,
+                expectedLength = 6_041_886L,
+            ),
+        )
+        assertFalse(wave.tryClaimFinalTail(12))
+        assertTrue(wave.tryClaimPhysicalBlockedTail(12))
+        assertFalse(wave.tryClaimPhysicalBlockedTail(12))
+        wave.releaseUnstartedPhysicalBlockedTailClaim(12)
+        assertTrue(wave.tryClaimPhysicalBlockedTail(12))
+        wave.markValidatedBody(12)
+        assertFalse(wave.isPhysicalBlockedBody(12))
+    }
+
+    @Test
     fun closedWaveCannotLaunchOrAccumulateDuplicateCompletions() {
         val wave = NtkManhwaWaveRecoveryState(2, 1L)
         wave.armExactAuthority(2)

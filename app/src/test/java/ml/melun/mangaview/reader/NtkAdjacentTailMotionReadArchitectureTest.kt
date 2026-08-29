@@ -95,6 +95,9 @@ class NtkAdjacentTailMotionReadArchitectureTest {
         val session = File(
             "src/main/java/ml/melun/mangaview/reader/ReaderSession.kt",
         ).readText()
+        val cache = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt",
+        ).readText()
         val activity = File(
             "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt",
         ).readText()
@@ -168,6 +171,9 @@ class NtkAdjacentTailMotionReadArchitectureTest {
         val session = File(
             "src/main/java/ml/melun/mangaview/reader/ReaderSession.kt",
         ).readText()
+        val cache = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt",
+        ).readText()
 
         assertTrue(contract.contains("fun onPhysicalBlockedPageRequested("))
         assertTrue(session.contains("claim.transport.onPhysicalBlockedPageRequested("))
@@ -188,8 +194,12 @@ class NtkAdjacentTailMotionReadArchitectureTest {
         assertTrue(start >= 0 && end > start)
         val redrive = strict.substring(start, end)
         assertTrue(redrive.contains("rollingAdmittedPages = rollingAdmittedPages + pageIndex"))
+        assertTrue(redrive.contains("manhwaWaveRecoveryState?.markPhysicalBlockedBody(pageIndex)"))
         assertTrue(redrive.contains("prepareFallbackRouteForStreamedPage(pageIndex)"))
         assertTrue(redrive.contains("refillLanesActor()"))
         assertTrue(redrive.contains("PHYSICAL_BLOCKED_SOURCE_REDRIVE_MIN_INTERVAL_MS"))
+        assertTrue(cache.contains("ntkManhwaPhysicalBlockedTailPermits"))
+        assertTrue(cache.contains("waveRecoveryState?.isPhysicalBlockedBody(pageIndex) == true"))
+        assertTrue(cache.contains("tryClaimPhysicalBlockedTail(pageIndex)"))
     }
 }

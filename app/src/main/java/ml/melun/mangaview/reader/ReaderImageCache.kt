@@ -68,6 +68,7 @@ import java.util.concurrent.Callable
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorCompletionService
@@ -478,7 +479,9 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         deliveredBytes: Long,
         expectedLength: Long,
     ): Boolean {
-        if (!wave.isOnlyCanonicalBodyRemaining(pageIndex)) return false
+        if (!wave.isOnlyCanonicalBodyRemaining(pageIndex) &&
+            !wave.isPhysicalBlockedBody(pageIndex)
+        ) return false
         if (sessionElapsedMs < FINAL_BODY_MIN_SESSION_MS) return false
         if (deliveredBytes <= 0L || deliveredBytes >= expectedLength) return false
         if (expectedLength - deliveredBytes < FINAL_BODY_MIN_SUFFIX_BYTES) return false
@@ -507,6 +510,8 @@ class NtkManhwaWaveRecoveryState(
     private val exactArmed = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val finalTailClaimed = AtomicBoolean(false)
+    private val physicalBlockedTailClaimedPage = AtomicInteger(-1)
+    private val physicalBlocked = AtomicIntegerArray(maximumPageCount)
 
     init {
         require(maximumPageCount > 0)
@@ -525,7 +530,25 @@ class NtkManhwaWaveRecoveryState(
     fun markValidatedBody(pageIndex: Int) {
         val pageCount = exactPageCount.get()
         if (!exactArmed.get() || closed.get() || pageIndex !in 0 until pageCount) return
+        physicalBlocked.set(pageIndex, 0)
+        physicalBlockedTailClaimedPage.compareAndSet(pageIndex, -1)
         if (completed.compareAndSet(pageIndex, 0, 1)) completedCount.incrementAndGet()
+    }
+
+    /**
+     * Marks the exact body that currently bounds a real forward gesture. The flag is shared with
+     * an already-running spool: merely re-enqueuing the PageState cannot accelerate a primary HTTP
+     * call which started before the viewport reached it.
+     */
+    fun markPhysicalBlockedBody(pageIndex: Int) {
+        if (closed.get() || pageIndex !in 0 until physicalBlocked.length()) return
+        physicalBlocked.set(pageIndex, 1)
+    }
+
+    fun isPhysicalBlockedBody(pageIndex: Int): Boolean {
+        val pageCount = exactPageCount.get()
+        return exactArmed.get() && !closed.get() && pageIndex in 0 until pageCount &&
+            completed.get(pageIndex) == 0 && physicalBlocked.get(pageIndex) != 0
     }
 
     fun isOnlyCanonicalBodyRemaining(pageIndex: Int): Boolean {
@@ -556,6 +579,21 @@ class NtkManhwaWaveRecoveryState(
             return false
         }
         return true
+    }
+
+    fun tryClaimPhysicalBlockedTail(pageIndex: Int): Boolean {
+        if (!isPhysicalBlockedBody(pageIndex) ||
+            !physicalBlockedTailClaimedPage.compareAndSet(-1, pageIndex)
+        ) return false
+        if (!isPhysicalBlockedBody(pageIndex)) {
+            physicalBlockedTailClaimedPage.compareAndSet(pageIndex, -1)
+            return false
+        }
+        return true
+    }
+
+    fun releaseUnstartedPhysicalBlockedTailClaim(pageIndex: Int) {
+        physicalBlockedTailClaimedPage.compareAndSet(pageIndex, -1)
     }
 
     fun releaseUnstartedFinalTailClaim() {
@@ -756,6 +794,13 @@ internal object NtkWebtoonBodyWallPolicy {
     const val DIRECT_WIFI_SHORT_CURRENT_MAX_PAGES = 8
     const val DIRECT_WIFI_GIANT_BODY_BYTES = 2L * 1024L * 1024L
     const val TAIL_GRACE_BYTES = 64L * 1024L
+    // Entry pixels have to finish early enough to leave real time for decode, Surface install and
+    // the user's already-running gesture. Treating a projected 2.9 s page-zero completion as
+    // healthy deferred the exact suffix handoff until the generic 3 s wall; the first pixels then
+    // arrived near 3.8 s and a four-second opening gesture could reach only p2. This projection
+    // bound changes only which immutable replica owns the untouched suffix. Accepted bytes,
+    // validators and the tail-grace rule remain unchanged.
+    const val ENTRY_VIEWPORT_HEALTHY_PROJECTED_COMPLETION_MS = 2_400L
     // A continuously advancing body that projects to finish inside the ordinary direct-Wi-Fi
     // body wall is healthier than a new Range request whose TLS/headers can consume another full
     // second. This is derived from accepted bytes, not elapsed time alone, so a real low-rate drip
@@ -819,10 +864,12 @@ internal object NtkWebtoonBodyWallPolicy {
                     if (weighted % deliveredBytes == 0L) 0L else 1L
             }
         }
-        return projectedCompletionMs > maxOf(
-            segmentWallMs,
-            HEALTHY_PROJECTED_COMPLETION_MS,
-        )
+        val healthyProjectionMs = if (segmentWallMs <= ENTRY_VIEWPORT_SEGMENT_WALL_MS) {
+            ENTRY_VIEWPORT_HEALTHY_PROJECTED_COMPLETION_MS
+        } else {
+            HEALTHY_PROJECTED_COMPLETION_MS
+        }
+        return projectedCompletionMs > maxOf(segmentWallMs, healthyProjectionMs)
     }
 }
 
@@ -1480,10 +1527,12 @@ internal object NtkWebtoonReplicaHeaderPolicy {
     // instead of opening competing H2 bodies; measured mixed waves reduced aggregate completion.
     const val WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_LEASE_WAIT_MS = 3_000L
     const val WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_BULK_ENABLED = true
-    // p0..p4 remain on the measured fragmented-H2 runway. Page five is the first body that is
-    // not needed to satisfy the immediate physical-scroll contract and is also the exact
-    // contiguous proof that precedes the bulk suffix, so it is the only safe H3 health probe.
-    const val WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE = 5
+    // The content-free click preconnect already prepares this exact H3 engine. Page zero is the
+    // strict predecessor of every visible page, so let its complete exact body qualify that
+    // engine instead of waiting until p5 after the physical-scroll deadline has already passed.
+    const val WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE = 0
+    const val WIFI_DIRECT_CURRENT_ANCHOR_QUIC_TIMEOUT_MS = 1_500L
+    const val WIFI_DIRECT_CURRENT_OPENING_QUIC_QUALIFICATION_WAIT_MS = 1_500L
     const val WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_TIMEOUT_MS = 5_000L
     // Eight independent H2 connections match the reset-safe ordinary current-episode wave. Wider
     // admission makes the translated edge divide each body into timeout-prone drips and completes
@@ -1640,6 +1689,12 @@ internal object NtkWebtoonReplicaHeaderPolicy {
     ): Boolean = WIFI_DIRECT_CURRENT_QUALIFIED_QUIC_BULK_ENABLED &&
         currentHostEmulatorRecovery && qualified &&
         pageIndex > WIFI_DIRECT_CURRENT_QUIC_PROBE_PAGE
+
+    fun shouldAwaitHostEmulatorOpeningQuicQualification(
+        currentHostEmulatorRecovery: Boolean,
+        pageIndex: Int,
+    ): Boolean = currentHostEmulatorRecovery &&
+        pageIndex in 1 until WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_OPENING_PAGES
 
     fun hostEmulatorDirectWifiH2SourceSessionId(
         strictSessionId: Long?,
@@ -2751,6 +2806,7 @@ object ReaderImageCache {
         }
 
         private val state = AtomicInteger(UNKNOWN)
+        private val probeCompleted = CountDownLatch(1)
         fun tryBeginProbe(): Boolean {
             while (true) {
                 val observed = state.get()
@@ -2765,9 +2821,38 @@ object ReaderImageCache {
 
         fun finishProbe(succeeded: Boolean) {
             state.compareAndSet(PROBING, if (succeeded) QUALIFIED else REJECTED)
+            probeCompleted.countDown()
         }
 
         fun isQualified(): Boolean = state.get() == QUALIFIED
+
+        fun awaitQualification(
+            timeoutMs: Long,
+            admissionCheck: java.util.function.BooleanSupplier,
+        ): Boolean {
+            require(timeoutMs >= 0L)
+            when (state.get()) {
+                QUALIFIED -> return true
+                REJECTED -> return false
+            }
+            if (timeoutMs == 0L) return false
+            val deadlineAtMs = SystemClock.elapsedRealtime() + timeoutMs
+            while (true) {
+                when (state.get()) {
+                    QUALIFIED -> return true
+                    REJECTED -> return false
+                }
+                if (!admissionCheck.asBoolean) return false
+                val remainingMs = deadlineAtMs - SystemClock.elapsedRealtime()
+                if (remainingMs <= 0L) return state.get() == QUALIFIED
+                try {
+                    probeCompleted.await(minOf(remainingMs, 50L), TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+            }
+        }
     }
     private val ntkHostEmulatorWebtoonQuicHealth =
         ConcurrentHashMap<
@@ -2890,6 +2975,9 @@ object ReaderImageCache {
         NTK_MANHWA_MAX_CONCURRENT_EARLY_PROJECTED_CONTINUATIONS,
         true,
     )
+    // Background projected tails may consume every ordinary permit during a long chapter. Keep
+    // one process-wide lane exclusively for the exact body which is visibly stopping real input.
+    private val ntkManhwaPhysicalBlockedTailPermits = Semaphore(1, true)
     private val ntkManhwaSessionFirstCallAtNanos = ConcurrentHashMap<String, AtomicLong>()
     private val ntkManhwaSessionProjectedStarts =
         ConcurrentHashMap<String, NtkManhwaProjectedBodyHedgePolicy.SessionStarts>()
@@ -6357,20 +6445,47 @@ data class NtkResolvedSourceRoute(
                 )
                 val health = ReaderImageCache.ntkHostEmulatorWebtoonQuicHealth
                     .computeIfAbsent(healthKey) { HostEmulatorWebtoonQuicHealth() }
-                // A content-free preconnect proves only route availability. It cannot move any
-                // p0..p4 runway body onto H3; the prepared session is consumed by the sole p5
-                // exact-body probe below.
+                fun qualifiedQuicAdmissionValid(): Boolean {
+                    if (cancelled.get()) return false
+                    val liveClient = getHttpClient()
+                    val sameDirectWifiNetwork = runCatching {
+                        liveClient.getNtkDirectWifiNetwork()?.networkHandle ==
+                            capturedDirectWifiNetworkHandle
+                    }.getOrDefault(false)
+                    return !liveClient.isNtkCellularResilientTransportActive() &&
+                        liveClient.isNtkWifiTransportActive() &&
+                        sameDirectWifiNetwork &&
+                        ViewerTelemetry.activeGeneration() == viewerGeneration &&
+                        MainApplication.isNtkForegroundViewerPath(episodePath)
+                }
+                // The content-free preconnect proves only route availability. P0 consumes that
+                // prepared engine as the one exact-body probe. Opening followers wait only for
+                // this bounded proof; rejection or expiry falls through to their original H2
+                // sockets without ever racing the same page on two transports.
                 val probe = NtkWebtoonReplicaHeaderPolicy
                     .shouldProbeHostEmulatorCurrentQuic(
                         currentHostEmulatorRecovery = true,
                         pageIndex = requestPageIndex,
                         episodePageCount = episodePageCount,
                     ) && health.tryBeginProbe()
+                val waitForOpeningQualification = NtkWebtoonReplicaHeaderPolicy
+                    .shouldAwaitHostEmulatorOpeningQuicQualification(
+                        currentHostEmulatorRecovery = true,
+                        pageIndex = requestPageIndex,
+                    )
+                val qualified = health.isQualified() ||
+                    (waitForOpeningQualification && health.awaitQualification(
+                        NtkWebtoonReplicaHeaderPolicy
+                            .WIFI_DIRECT_CURRENT_OPENING_QUIC_QUALIFICATION_WAIT_MS,
+                        java.util.function.BooleanSupplier {
+                            qualifiedQuicAdmissionValid()
+                        },
+                    ))
                 val qualifiedBulk = NtkWebtoonReplicaHeaderPolicy
                     .shouldUseQualifiedHostEmulatorCurrentQuic(
                         currentHostEmulatorRecovery = true,
                         pageIndex = requestPageIndex,
-                        qualified = health.isQualified(),
+                        qualified = qualified,
                     )
                 if (!probe && !qualifiedBulk) return null
                 val canonicalQuicCandidates = NTK_WEBTOON_IMAGE_REPLICA_HOSTS.mapNotNull { host ->
@@ -6390,22 +6505,16 @@ data class NtkResolvedSourceRoute(
                 val candidateByHost = canonicalQuicCandidates.associateBy {
                     it.url.host.lowercase(Locale.ROOT)
                 }
-                fun qualifiedQuicAdmissionValid(): Boolean {
-                    if (cancelled.get()) return false
-                    val liveClient = getHttpClient()
-                    val sameDirectWifiNetwork = runCatching {
-                        liveClient.getNtkDirectWifiNetwork()?.networkHandle ==
-                            capturedDirectWifiNetworkHandle
-                    }.getOrDefault(false)
-                    return !liveClient.isNtkCellularResilientTransportActive() &&
-                        liveClient.isNtkWifiTransportActive() &&
-                        sameDirectWifiNetwork &&
-                        ViewerTelemetry.activeGeneration() == viewerGeneration &&
-                        MainApplication.isNtkForegroundViewerPath(episodePath)
-                }
+                val openingQualifiedFollower = !probe &&
+                    requestPageIndex in 1 until NtkWebtoonReplicaHeaderPolicy
+                        .WIFI_DIRECT_CURRENT_FRAGMENTED_TLS_OPENING_PAGES
                 val leaseWaitStartedAtMs = SystemClock.elapsedRealtime()
-                val quicLease = if (probe) {
-                    probeCandidate?.let { candidate ->
+                val quicLease = if (probe || openingQualifiedFollower) {
+                    val openingCandidate = probeCandidate ?: candidateByHost[
+                        NtkWebtoonReplicaHeaderPolicy
+                            .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_HOST
+                    ]
+                    openingCandidate?.let { candidate ->
                         wifiExactQuicSessionPool?.leaseOpeningSession(
                             candidate.url.host,
                             callbackThreadCount =
@@ -6454,6 +6563,7 @@ data class NtkResolvedSourceRoute(
                     TAG,
                     "reader_strict_direct_wifi_current_quic_${when {
                         probe -> "probe"
+                        openingQualifiedFollower -> "opening"
                         else -> "bulk"
                     }}_start " +
                         "path=$episodePath,page=$requestPageIndex,host=${quicCandidate.url.host}",
@@ -6464,8 +6574,13 @@ data class NtkResolvedSourceRoute(
                         java.net.SocketException(
                             "Host-emulator direct Wi-Fi qualified QUIC transport",
                         ),
-                        NtkWebtoonReplicaHeaderPolicy
-                            .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_TIMEOUT_MS,
+                        if (probe) {
+                            NtkWebtoonReplicaHeaderPolicy
+                                .WIFI_DIRECT_CURRENT_ANCHOR_QUIC_TIMEOUT_MS
+                        } else {
+                            NtkWebtoonReplicaHeaderPolicy
+                                .WIFI_DIRECT_CURRENT_SOCKET_EXHAUSTED_QUIC_TIMEOUT_MS
+                        },
                         NtkExactQuicPartialResumePolicy.WIFI_WEBTOON_PRIMARY_SCOPE,
                         quicSession,
                         sharedSessionPool = wifiExactQuicSessionPool,
@@ -6493,10 +6608,9 @@ data class NtkResolvedSourceRoute(
                 }
                 return response
             }
-            // Keep the physical p0..p4 runway on independently preconnected fragmented-H2 shards.
-            // p5 alone probes H3; only a complete exact result qualifies QUIC for p6+. An
-            // unavailable probe falls through to H2 sequentially, never racing or downloading a
-            // body twice.
+            // P0 probes the click-preconnected H3 engine. P1..p4 briefly await that exact EOF and
+            // reuse the same multiplexed connection; an unavailable probe falls through to H2
+            // sequentially, never racing or downloading a body twice.
             val primaryFragmentedFailure = java.net.SocketException(
                 "Host-emulator direct Wi-Fi fragmented primary",
             )
@@ -8486,6 +8600,8 @@ data class NtkResolvedSourceRoute(
         private var manhwaRangeContinuationPermitsHeld = 0
         private var manhwaProjectedContinuationPermitHeld = false
         private var manhwaEarlyProjectedContinuationPermitHeld = false
+        private var manhwaPhysicalBlockedTailPermitHeld = false
+        private var manhwaPhysicalBlockedTailClaimed = false
         private val directWifiCurrentShortWebtoonTailLeaseOwner = AtomicReference<
             NtkDirectWifiWebtoonTailLeaseOwner?
         >(null)
@@ -8851,6 +8967,8 @@ data class NtkResolvedSourceRoute(
             if (remainingTailSlots <= 0) return false
             val directWifiWebtoonTail = directWifiShortWebtoonTail ||
                 directWifiAdjacentWebtoonTail
+            val physicalBlockedTail = finalBodyTail &&
+                waveRecoveryState?.isPhysicalBlockedBody(pageIndex) == true
             val tailSegmentSlots = NtkManhwaProjectedBodyHedgePolicy.projectedTailSegmentSlots(
                 remainingContinuationSlots = remainingTailSlots,
                 finalBodyTail = finalBodyTail,
@@ -8963,26 +9081,37 @@ data class NtkResolvedSourceRoute(
                     sessionElapsedMs,
                     elapsedMs,
                 )
-                if (!finalBodyTail && !lateAdmission) {
+                if (physicalBlockedTail) {
+                    if (!ntkManhwaPhysicalBlockedTailPermits.tryAcquire()) return false
+                    manhwaPhysicalBlockedTailPermitHeld = true
+                } else if (!finalBodyTail && !lateAdmission) {
                     if (!ntkManhwaEarlyProjectedContinuationPermits.tryAcquire()) return false
                     manhwaEarlyProjectedContinuationPermitHeld = true
                 }
-                val projectedPermitAcquired =
-                    ntkManhwaProjectedContinuationPermits.tryAcquire().also { acquired ->
-                        manhwaProjectedContinuationPermitHeld = acquired
+                if (!physicalBlockedTail) {
+                    val projectedPermitAcquired =
+                        ntkManhwaProjectedContinuationPermits.tryAcquire().also { acquired ->
+                            manhwaProjectedContinuationPermitHeld = acquired
+                        }
+                    if (!projectedPermitAcquired) {
+                        releaseManhwaEarlyProjectedContinuationPermit()
+                        return false
                     }
-                if (!projectedPermitAcquired) {
-                    releaseManhwaEarlyProjectedContinuationPermit()
-                    return false
+                    if (!ntkManhwaRangeContinuationPermits.tryAcquire(ranges.size)) {
+                        releaseManhwaProjectedContinuationPermit()
+                        releaseManhwaEarlyProjectedContinuationPermit()
+                        return false
+                    }
+                    manhwaRangeContinuationPermitsHeld = ranges.size
                 }
-                if (!ntkManhwaRangeContinuationPermits.tryAcquire(ranges.size)) {
-                    releaseManhwaProjectedContinuationPermit()
-                    releaseManhwaEarlyProjectedContinuationPermit()
-                    return false
-                }
-                manhwaRangeContinuationPermitsHeld = ranges.size
                 if (finalBodyTail) {
-                    waveRecoveryState?.tryClaimFinalTail(pageIndex) == true
+                    if (physicalBlockedTail) {
+                        (waveRecoveryState?.tryClaimPhysicalBlockedTail(pageIndex) == true).also {
+                            manhwaPhysicalBlockedTailClaimed = it
+                        }
+                    } else {
+                        waveRecoveryState?.tryClaimFinalTail(pageIndex) == true
+                    }
                 } else {
                     val projectedStarts = sessionProjectedStartCount
                     projectedStarts != null &&
@@ -9053,13 +9182,16 @@ data class NtkResolvedSourceRoute(
                         "offset=$observedBytes,split=$split,total=$expectedLength," +
                         "segments=${segments.size},attempt=$firstPhysicalAttempt," +
                         "finalBody=$finalBodyTail,entryViewport=$entryViewportTail," +
+                        "physicalBlocked=$physicalBlockedTail," +
                         "shortWebtoon=$directWifiShortWebtoonTail," +
                         "adjacentWebtoon=$directWifiAdjacentWebtoonTail",
                 )
                 true
             } catch (failure: RejectedExecutionException) {
                 projectedTail = null
-                if (finalBodyTail) waveRecoveryState?.releaseUnstartedFinalTailClaim()
+                if (finalBodyTail && !physicalBlockedTail) {
+                    waveRecoveryState?.releaseUnstartedFinalTailClaim()
+                }
                 segments.forEach(::cancelProjectedTailSegment)
                 releaseManhwaRangeContinuationPermit()
                 false
@@ -9449,6 +9581,14 @@ data class NtkResolvedSourceRoute(
             if (manhwaProjectedContinuationPermitHeld) {
                 manhwaProjectedContinuationPermitHeld = false
                 ntkManhwaProjectedContinuationPermits.release()
+            }
+            if (manhwaPhysicalBlockedTailPermitHeld) {
+                manhwaPhysicalBlockedTailPermitHeld = false
+                ntkManhwaPhysicalBlockedTailPermits.release()
+            }
+            if (manhwaPhysicalBlockedTailClaimed) {
+                manhwaPhysicalBlockedTailClaimed = false
+                waveRecoveryState?.releaseUnstartedPhysicalBlockedTailClaim(pageIndex)
             }
             releaseManhwaEarlyProjectedContinuationPermit()
             releaseDirectWifiWebtoonTailPermit()

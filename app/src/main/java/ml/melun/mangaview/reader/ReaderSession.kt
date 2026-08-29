@@ -23028,6 +23028,23 @@ class ReaderSession(
             }
         } else {
             latestPhysicalForwardIntentPage.set(page)
+            if (shouldLogRateLimitedDiagnostic(
+                    "blocked_forward_route|$normalizedPath|${page.sourceIndex}",
+                    1_000L,
+                )
+            ) {
+                val existingFlight = adjacentIdentity?.let(strictAdjacentRehydrateFlights::get)
+                Log.d(
+                    TAG,
+                    "reader_blocked_forward_route page=$index source=${page.sourceIndex} " +
+                        "flight=${existingFlight != null}/${existingFlight?.parked?.get()}/" +
+                        "${existingFlight?.ownerScheduledOrRunning?.get()}/" +
+                        "${existingFlight?.motionDeferred?.get()}/" +
+                        "${existingFlight?.exactAdjacentPhysicalIntent?.get()} " +
+                        "descriptor=${strictAdjacentBodyDescriptor(page) != null} " +
+                        "published=${strictAdjacentPublishedBody(page) != null}",
+                )
+            }
             // This callback already runs on the Activity's main turn and the rehydrate router is
             // an identity-bound single-flight scheduler. Do not enqueue this urgent blocker behind
             // ReaderControl's rolling-window/retirement backlog: under continuous input that queue
@@ -25127,9 +25144,17 @@ class ReaderSession(
         }
         val pressureClaim = claimHostPressureRetiredExactPageForRehydrate(index, page)
         if (pressureClaim == HostPressureRehydrateClaim.BLOCKED) return true
+        // deliverWindowRequest intentionally emits the exact blocker before onWindowChanged.
+        // Therefore the reported physical window can still end on the preceding clean page in
+        // this turn. The identity pointer was set directly by that blocker callback and is the
+        // stronger same-PageRef proof needed to wake an already-parked rehydrate owner.
         val exactAdjacentPhysicalIntent =
             pressureClaim == HostPressureRehydrateClaim.CLAIMED ||
-                isStrictAdjacentPageInReportedPhysicalIntent(index, page)
+                NtkAdjacentExactRehydrateLivenessPolicy.isExactPhysicalIntent(
+                    reportedPhysicalWindowContainsPage =
+                        isStrictAdjacentPageInReportedPhysicalIntent(index, page),
+                    exactBlockedForwardPage = latestPhysicalForwardIntentPage.get() === page,
+                )
         // A strict-launch bitmap snapshot intentionally fails closed after the physical viewport
         // enters an appended episode: that window has no launch sources from which to publish a
         // new launch admission. A pressure marker, however, was created from this exact PageRef

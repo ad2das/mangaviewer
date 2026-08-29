@@ -4264,6 +4264,11 @@ internal class NtkStrictSourceSession(
      */
     fun onPhysicalBlockedPageRequested(episode: NtkEpisodeToken, pageIndex: Int) {
         if (closeRequested.get() || pageIndex < 0) return
+        // This signal must reach an already-running large body before the actor observes its
+        // PageState. Re-enqueueing/refilling alone cannot reprioritize a primary call which is
+        // continuously making slow progress, so publish the identity-bound urgency directly to
+        // the request-shared wave state. Its spool will hedge only the untouched suffix.
+        manhwaWaveRecoveryState?.markPhysicalBlockedBody(pageIndex)
         executeActor {
             if (!acceptsEpisode(episode) || !adjacentPrefetch ||
                 !NtkReaderTransferPacer.isPhysicalForegroundEpisode(

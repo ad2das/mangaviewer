@@ -43,4 +43,28 @@ class ReaderDeferredInitialExactDrawableSafetyArchitectureTest {
         )
         assertTrue(repair.contains("drawableViewportCleanAtScrollLocked(scrollOffset)"))
     }
+
+    @Test
+    fun nativeForwardFenceStopsBeforeTheRepairToleranceInsteadOfBacksteppingLater() {
+        val forwardLimit = source.substring(
+            source.indexOf("private fun forwardScrollLimitLocked("),
+            source.indexOf("private fun hasSealedInitialExactStructureLocked(",
+                source.indexOf("private fun forwardScrollLimitLocked(")),
+        )
+        assertTrue(
+            forwardLimit.contains(
+                "val forwardStabilityInsetPx = COVERAGE_EDGE_FILL_PX",
+            ),
+        )
+        assertTrue(
+            forwardLimit.contains(
+                "adjacentPrefixBottom - height + edgeFillPx - forwardStabilityInsetPx",
+            ),
+        )
+        assertTrue(
+            forwardLimit.contains(
+                "missingTop - height + edgeFillPx - forwardStabilityInsetPx",
+            ),
+        )
+    }
 }

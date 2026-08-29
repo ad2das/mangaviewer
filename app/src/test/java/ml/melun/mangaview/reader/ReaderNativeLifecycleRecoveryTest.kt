@@ -1073,6 +1073,20 @@ class ReaderNativeLifecycleRecoveryTest {
         assertTrue(detach.indexOf("mainHandler.removeCallbacksAndMessages(null)") <
             detach.indexOf("invalidateFrameStatsFinalizeDeadlineLocked()"))
 
+        val reset = slice(
+            surface,
+            "private fun resetCanceledMainCallbackOwnershipLocked()",
+            "private fun shouldFinishScrollerAtInputEdgeLocked(",
+        )
+        assertTrue(detach.indexOf("mainHandler.removeCallbacksAndMessages(null)") <
+            detach.indexOf("resetCanceledMainCallbackOwnershipLocked()"))
+        assertTrue(reset.contains("pendingWindowRequest = null"))
+        assertTrue(reset.contains("windowDispatchPosted = false"))
+        assertTrue(reset.contains("pendingBlockedForwardRequest = null"))
+        assertTrue(reset.contains("blockedForwardDispatchPosted = false"))
+        assertTrue(reset.contains("lastBlockedForwardPage = -1"))
+        assertTrue(reset.contains("clearBlockedForwardIntentLocked()"))
+
         val invalidation = slice(
             surface,
             "private fun invalidateFrameStatsFinalizeDeadlineLocked()",

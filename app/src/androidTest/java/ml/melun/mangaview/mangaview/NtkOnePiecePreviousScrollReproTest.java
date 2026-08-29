@@ -1058,10 +1058,95 @@ public class NtkOnePiecePreviousScrollReproTest {
         }
         assertTrue("One Piece 1187 did not become fully ready",
                 reader.testHasFullyReadyEpisode(current));
+        ViewerTelemetry.NativeFrameStatsSnapshot before =
+                ViewerTelemetry.nativeFrameStatsSnapshot();
+        assertNotNull("Expected native telemetry before focused 1187 traversal", before);
         String transitioned = scrollEntireEpisodePhysicallyIntoNext(
                 device, reader, current, 90000L);
         assertEquals("Physical 1187 tail did not enter exact 1188",
                 next.getNtkEpisodePath(), transitioned);
+        ViewerTelemetry.NativeFrameStatsSnapshot after =
+                ViewerTelemetry.nativeFrameStatsSnapshot();
+        assertNotNull("Expected native telemetry after focused 1187 traversal", after);
+        assertEquals("Native telemetry generation changed during focused 1187 traversal",
+                before.getGeneration(), after.getGeneration());
+        long intervals = after.getScrollIntervals() - before.getScrollIntervals();
+        long intervalNanos = after.getScrollIntervalNanos() - before.getScrollIntervalNanos();
+        assertTrue("Focused 1187 traversal lacks native cadence evidence; intervals=" + intervals,
+                intervals >= 100L && intervalNanos > 0L);
+        Log.i(TAG, "focused1187NativeCadence intervals=" + intervals
+                + ",fps=" + (intervals * 1_000_000_000.0 / intervalNanos)
+                + ",slow=" + (after.getSlowIntervals() - before.getSlowIntervals())
+                + ",details=" + after.getSlowIntervalDetails());
+    }
+
+    @Test
+    public void onePiece1186TenHomeRoundTripsDoNotDegradeNativeCadence() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchOnePieceEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = findEpisodeRowByDescription(device, "1186화", 90000L);
+        assertNotNull("Expected One Piece 1186 episode row", episodeRow);
+        episodeRow.click();
+        assertNotNull("Expected NTK One Piece reader surface",
+                device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L));
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed One Piece reader", reader);
+        Manga current = reader.testEpisodeInCurrentSequence("1186화");
+        if (current == null) current = reader.testEpisode("1186화");
+        assertNotNull("Expected exact One Piece 1186 metadata", current);
+
+        long readyDeadline = SystemClock.elapsedRealtime() + 90000L;
+        while (SystemClock.elapsedRealtime() < readyDeadline &&
+                !reader.testHasFullyReadyEpisode(current)) {
+            SystemClock.sleep(16L);
+        }
+        assertTrue("One Piece 1186 did not become fully ready",
+                reader.testHasFullyReadyEpisode(current));
+        waitForLongSessionPhaseIdle(reader, 10000L);
+        ReaderV2Activity.CleanPhysicalSourceSnapshot physical =
+                waitForCleanPhysicalEpisode(reader, current.getNtkEpisodePath(), 0L, 15000L);
+        assertNotNull("One Piece 1186 never produced a clean initial frame", physical);
+
+        double firstCadenceSum = 0.0;
+        double lastCadenceSum = 0.0;
+        for (int round = 0; round < 10; round++) {
+            ViewerTelemetry.NativeFrameStatsSnapshot before =
+                    ViewerTelemetry.nativeFrameStatsSnapshot();
+            assertNotNull("Missing native cadence before HOME round " + round, before);
+            physical = performStrictHomeRoundTrip(
+                    device,
+                    reader,
+                    current,
+                    118600 + round,
+                    physical.getPresentedUptimeNanos());
+            ViewerTelemetry.NativeFrameStatsSnapshot after =
+                    ViewerTelemetry.nativeFrameStatsSnapshot();
+            assertNotNull("Missing native cadence after HOME round " + round, after);
+            assertEquals("Native generation changed during HOME round " + round,
+                    before.getGeneration(), after.getGeneration());
+            long intervals = after.getScrollIntervals() - before.getScrollIntervals();
+            long intervalNanos = after.getScrollIntervalNanos()
+                    - before.getScrollIntervalNanos();
+            assertTrue("HOME round lacks native cadence evidence; round=" + round
+                            + ",intervals=" + intervals,
+                    intervals >= 20L && intervalNanos > 0L);
+            double fps = intervals * 1_000_000_000.0 / intervalNanos;
+            if (round < 3) firstCadenceSum += fps;
+            if (round >= 7) lastCadenceSum += fps;
+            Log.i(TAG, "repeatedHomeCadence round=" + round
+                    + ",intervals=" + intervals
+                    + ",fps=" + fps
+                    + ",path=" + reader.testCurrentNtkEpisodePath());
+        }
+        double firstFps = firstCadenceSum / 3.0;
+        double lastFps = lastCadenceSum / 3.0;
+        Log.i(TAG, "repeatedHomeCadenceSummary firstFps=" + firstFps
+                + ",lastFps=" + lastFps);
+        assertTrue("Ten HOME round-trips degraded same-episode native cadence; firstFps="
+                        + firstFps + ",lastFps=" + lastFps,
+                lastFps >= firstFps * 0.85);
     }
 
     @Test
@@ -1120,6 +1205,97 @@ public class NtkOnePiecePreviousScrollReproTest {
         assertTrue("Focused physical 1181 traversal contained a 100ms native frame; worstMs="
                         + (worst / 1_000_000.0),
                 worst < 100_000_000L);
+    }
+
+    @Test
+    public void onePiece1181And1182PhysicalTailsNeverStallOrRollBack() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchOnePieceEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = findEpisodeRowByDescription(device, "1181화", 90000L);
+        assertNotNull("Expected One Piece 1181 episode row", episodeRow);
+        episodeRow.click();
+        assertNotNull("Expected NTK One Piece reader surface",
+                device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L));
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed One Piece reader", reader);
+        Manga first = reader.testEpisodeInCurrentSequence("1181화");
+        if (first == null) first = reader.testEpisode("1181화");
+        Manga second = reader.testEpisodeInCurrentSequence("1182화");
+        if (second == null) second = reader.testEpisode("1182화");
+        Manga third = reader.testEpisodeInCurrentSequence("1183화");
+        if (third == null) third = reader.testEpisode("1183화");
+        assertNotNull("Expected exact One Piece 1181 metadata", first);
+        assertNotNull("Expected exact One Piece 1182 metadata", second);
+        assertNotNull("Expected exact One Piece 1183 metadata", third);
+
+        long readyDeadline = SystemClock.elapsedRealtime() + 90000L;
+        while (SystemClock.elapsedRealtime() < readyDeadline &&
+                !reader.testHasFullyReadyEpisode(first)) {
+            SystemClock.sleep(16L);
+        }
+        assertTrue("One Piece 1181 did not become fully ready",
+                reader.testHasFullyReadyEpisode(first));
+        String enteredSecond = scrollEntireEpisodePhysicallyIntoNext(
+                device, reader, first, 90000L, SUSTAINED_READING_SWIPE_STEPS);
+        assertEquals("Physical 1181 tail did not enter exact 1182",
+                second.getNtkEpisodePath(), enteredSecond);
+        String enteredThird = scrollEntireEpisodePhysicallyIntoNext(
+                device, reader, second, 120000L, SUSTAINED_READING_SWIPE_STEPS);
+        assertEquals("Physical 1182 tail did not enter exact 1183",
+                third.getNtkEpisodePath(), enteredThird);
+    }
+
+    @Test
+    public void appended1185ContinuesImmediatelyAfterHomeRoundTrip() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchOnePieceEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = findEpisodeRowByDescription(device, "1184화", 90000L);
+        assertNotNull("Expected One Piece 1184 episode row", episodeRow);
+        episodeRow.click();
+        assertNotNull("Expected NTK One Piece reader surface",
+                device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L));
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed One Piece reader", reader);
+        Manga chapter1184 = reader.testEpisodeInCurrentSequence("1184화");
+        if (chapter1184 == null) chapter1184 = reader.testEpisode("1184화");
+        Manga chapter1185 = reader.testEpisodeInCurrentSequence("1185화");
+        if (chapter1185 == null) chapter1185 = reader.testEpisode("1185화");
+        Manga chapter1186 = reader.testEpisodeInCurrentSequence("1186화");
+        if (chapter1186 == null) chapter1186 = reader.testEpisode("1186화");
+        assertNotNull("Expected exact One Piece 1184 metadata", chapter1184);
+        assertNotNull("Expected exact One Piece 1185 metadata", chapter1185);
+        assertNotNull("Expected exact One Piece 1186 metadata", chapter1186);
+
+        long readyDeadline = SystemClock.elapsedRealtime() + 90000L;
+        while (SystemClock.elapsedRealtime() < readyDeadline &&
+                !reader.testHasFullyReadyEpisode(chapter1184)) {
+            SystemClock.sleep(16L);
+        }
+        assertTrue("One Piece 1184 did not become fully ready",
+                reader.testHasFullyReadyEpisode(chapter1184));
+        assertEquals(chapter1185.getNtkEpisodePath(),
+                scrollEntireEpisodePhysicallyIntoNext(
+                        device, reader, chapter1184, 90000L, SUSTAINED_READING_SWIPE_STEPS));
+        ReaderV2Activity.CleanPhysicalSourceSnapshot entered1185 =
+                scrollIntoCleanPhysicalEpisode(
+                        device, reader, chapter1185.getNtkEpisodePath(), 0L, 30000L);
+        assertNotNull("Appended One Piece 1185 never committed clean pixels; pipeline="
+                + reader.testRenderPipelineDiagnosticSnapshot(), entered1185);
+        performStrictHomeRoundTrip(
+                device,
+                reader,
+                chapter1185,
+                1185,
+                entered1185.getPresentedUptimeNanos());
+
+        assertEquals("Appended physical 1185 tail stalled after HOME",
+                chapter1186.getNtkEpisodePath(),
+                scrollEntireEpisodePhysicallyIntoNext(
+                        device, reader, chapter1185, 90000L, SUSTAINED_READING_SWIPE_STEPS));
     }
 
     @Test
@@ -3038,7 +3214,7 @@ public class NtkOnePiecePreviousScrollReproTest {
             ReaderV2Activity reader,
             String previousPath,
             long timeoutMs
-    ) throws Exception {
+    ) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
         String currentPath = previousPath;
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -3064,7 +3240,7 @@ public class NtkOnePiecePreviousScrollReproTest {
             ReaderV2Activity reader,
             String previousPath,
             long timeoutMs
-    ) {
+    ) throws Exception {
         return scrollPhysicallyForwardUntilEpisodeChanges(
                 device,
                 reader,
@@ -3574,7 +3750,15 @@ public class NtkOnePiecePreviousScrollReproTest {
                     + currentPath + ",swipe=" + swipes, beforeGesture);
             assertTrue("Physical full-episode swipe injection failed; path=" + currentPath
                             + ",swipe=" + swipes + ",tail=" + approachingTail,
-                    device.swipe(x, fromY, x, gestureToY, gestureSteps));
+                    performMonitoredForwardSwipe(
+                            device,
+                            reader,
+                            x,
+                            fromY,
+                            gestureToY,
+                            gestureSteps,
+                            currentPath,
+                            swipes));
             ReaderSurfaceView.LifecycleViewportAnchorSnapshot afterGesture =
                     reader.testCurrentCommittedViewportAnchorSnapshot();
             assertNotNull("Physical forward gesture lost its committed viewport anchor; path="
@@ -3603,7 +3787,10 @@ public class NtkOnePiecePreviousScrollReproTest {
                 + ",sourceCount=" + expectedSourceCount
                 + ",largestCleanSource=" + largestCleanSource
                 + ",cleanTailPresented=" + cleanTailPresented
-                + ",swipes=" + swipes);
+                + ",swipes=" + swipes
+                + ",scroll=" + reader.testCurrentScrollPositionSnapshot()
+                + ",readiness=" + reader.testPageReadinessSnapshot()
+                + ",pipeline=" + reader.testRenderPipelineDiagnosticSnapshot());
     }
 
     private ReaderV2Activity.CleanPhysicalSourceSnapshot
@@ -4267,6 +4454,102 @@ public class NtkOnePiecePreviousScrollReproTest {
                             + ",before=" + before + ",after=" + after,
                     after.getPageTopInViewportPx() <= before.getPageTopInViewportPx() + 0.5f);
         }
+    }
+
+    /**
+     * UiDevice.swipe is synchronous, so the old before/after assertion could miss a compositor
+     * rollback that happened between injected MOVE samples and was corrected before swipe()
+     * returned. Inject on a worker while the instrumentation thread samples the exact committed
+     * source identity and page top. A forward gesture may advance to a new source/episode, but a
+     * source already on screen may never move downward and an episode already left may not return.
+     */
+    private boolean performMonitoredForwardSwipe(
+            UiDevice device,
+            ReaderV2Activity reader,
+            int x,
+            int fromY,
+            int toY,
+            int steps,
+            String expectedStartPath,
+            int swipe
+    ) {
+        AtomicBoolean finished = new AtomicBoolean(false);
+        AtomicBoolean injected = new AtomicBoolean(false);
+        AtomicReference<Throwable> injectionFailure = new AtomicReference<>();
+        Thread injector = new Thread(() -> {
+            try {
+                injected.set(device.swipe(x, fromY, x, toY, steps));
+            } catch (Throwable failure) {
+                injectionFailure.set(failure);
+            } finally {
+                finished.set(true);
+            }
+        }, "reader-monitored-forward-swipe");
+
+        ReaderSurfaceView.LifecycleViewportAnchorSnapshot previous =
+                reader.testCurrentCommittedViewportAnchorSnapshot();
+        assertNotNull("Monitored forward swipe has no starting committed anchor; path="
+                + expectedStartPath + ",swipe=" + swipe, previous);
+        String activePath = previous.getIdentity().getNormalizedEpisodePath();
+        assertEquals("Monitored forward swipe started from the wrong episode; swipe=" + swipe,
+                expectedStartPath, activePath);
+        LinkedHashSet<String> leftPaths = new LinkedHashSet<>();
+        injector.start();
+        long deadline = SystemClock.elapsedRealtime() + 10000L;
+        int samples = 0;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            ReaderSurfaceView.LifecycleViewportAnchorSnapshot current =
+                    reader.testCurrentCommittedViewportAnchorSnapshot();
+            if (current != null) {
+                String currentPath = current.getIdentity().getNormalizedEpisodePath();
+                if (!currentPath.equals(activePath)) {
+                    leftPaths.add(activePath);
+                    assertFalse("Forward gesture returned to an episode it already left; swipe="
+                                    + swipe + ",left=" + leftPaths + ",current=" + current,
+                            leftPaths.contains(currentPath));
+                    activePath = currentPath;
+                    previous = current;
+                } else {
+                    ReaderSurfaceView.CommittedPageIdentity beforeIdentity = previous.getIdentity();
+                    ReaderSurfaceView.CommittedPageIdentity afterIdentity = current.getIdentity();
+                    // This public lifecycle snapshot deliberately combines the newest
+                    // Activity-delivered stable identity with the live layout coordinate. During
+                    // a busy frame, listener delivery can replace p11 with p10 while the numeric
+                    // viewport remains exactly unchanged. That is metadata convergence, not
+                    // visible motion. Qualify movement only while the same physical source owns
+                    // both samples; this is the condition that caught the real 8px backstep.
+                    if (afterIdentity.getSourcePageIndex()
+                            == beforeIdentity.getSourcePageIndex()) {
+                        assertTrue("Forward gesture rolled back between MOVE frames; swipe=" + swipe
+                                        + ",sample=" + samples + ",before=" + previous
+                                        + ",after=" + current,
+                                current.getPageTopInViewportPx()
+                                        <= previous.getPageTopInViewportPx() + 0.5f);
+                    }
+                    previous = current;
+                }
+            }
+            samples++;
+            if (finished.get()) {
+                ReaderSurfaceView.ScrollPositionSnapshot position =
+                        reader.testCurrentScrollPositionSnapshot();
+                if (position == null || !position.getBusy()) break;
+            }
+            SystemClock.sleep(4L);
+        }
+        try {
+            injector.join(1000L);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Interrupted while monitoring forward swipe", interrupted);
+        }
+        Throwable failure = injectionFailure.get();
+        if (failure != null) throw new AssertionError("Forward swipe injection crashed", failure);
+        assertTrue("Monitored forward swipe did not finish; swipe=" + swipe, finished.get());
+        assertTrue("Monitored forward swipe produced too few samples; swipe=" + swipe
+                        + ",samples=" + samples,
+                samples >= 2);
+        return injected.get();
     }
 
     private void launchNeighborEpisodes() {

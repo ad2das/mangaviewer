@@ -7974,6 +7974,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun stopRenderingAndClearPages() {
         mainHandler.removeCallbacksAndMessages(null)
         synchronized(stateLock) {
+            resetCanceledMainCallbackOwnershipLocked()
             // removeCallbacksAndMessages also removed a posted native-retirement drain. Reset its
             // latch before the clears below add holds, otherwise no later call can re-arm it.
             rollingAuthoritativeRecyclePosted = false
@@ -10250,6 +10251,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var nativeHandleToDestroy = 0L
         var nativeDestroyPosted = false
         val retiringThread = synchronized(stateLock) {
+            resetCanceledMainCallbackOwnershipLocked()
             rollingAuthoritativeRecyclePosted = false
             invalidateFrameStatsFinalizeDeadlineLocked()
             deferredSurfaceIdentityActivated = false
@@ -17234,6 +17236,32 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * [Handler.removeCallbacksAndMessages] cancels callbacks without running their `finally`
+     * ownership release. Every coalesced main-queue latch therefore has to be retired at the same
+     * lifecycle boundary. In particular, retaining [blockedForwardDispatchPosted] after HOME makes
+     * every later drawable-prefix request look already posted even though no Runnable exists; the
+     * exact body in front of the user then remains parked forever.
+     *
+     * Caller holds [stateLock] after the main queue has been cleared.
+     */
+    private fun resetCanceledMainCallbackOwnershipLocked() {
+        check(Thread.holdsLock(stateLock))
+        pendingWindowRequest = null
+        windowDispatchPosted = false
+        pendingReverseWindowFirstPageHint = -1
+        pendingBlockedForwardRequest = null
+        blockedForwardDispatchPosted = false
+        lastBlockedForwardPage = -1
+        lastBlockedForwardRequestAtMs = 0L
+        clearBlockedForwardIntentLocked()
+        pendingResolveRetryPosted = false
+        visibleLoadingHoldRetryPosted = false
+        surfaceRevealPosted = false
+        noStateRetryPosted = false
+        noStateRetryGeneration += 1L
+    }
+
     private fun shouldFinishScrollerAtInputEdgeLocked(direction: Int, rawNext: Float): Boolean {
         if (direction == 0 || pages.isEmpty() || height <= 0) return false
         return when (direction) {
@@ -19524,6 +19552,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             start++
         }
         val edgeFillPx = if (inlineRealPixelsOnly) 0 else COVERAGE_EDGE_FILL_PX
+        // A native exact-prefix boundary and the coverage oracle deliberately differ by the
+        // compositor's edge tolerance. Reaching the mathematical prefix end can therefore expose
+        // an 8px sliver, which repairUnsafeDrawableViewportLocked later removes as a structural
+        // backstep. Stop before that tolerance from the outset. The blocked-page request below
+        // still includes the first incomplete page even though it is just outside the viewport,
+        // so loading speed and forward progress are unchanged while motion stays monotonic.
+        val forwardStabilityInsetPx = COVERAGE_EDGE_FILL_PX
         for (index in start..pages.lastIndex) {
             val adjacentPrefixBottom = adjacentExactPrefixBottomLocked(index)
             if (adjacentPrefixBottom != null &&
@@ -19532,13 +19567,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 if (scheduleBlocked) scheduleBlockedForwardWindowRequestLocked()
                 return min(
                     fullMaxScroll,
-                    adjacentPrefixBottom - height + edgeFillPx,
+                    adjacentPrefixBottom - height + edgeFillPx - forwardStabilityInsetPx,
                 ).coerceAtLeast(0f)
             }
             if (!pageHasDrawableContentLocked(index)) {
                 if (scheduleBlocked) scheduleBlockedForwardWindowRequestLocked()
                 val missingTop = pageTopOrElseLocked(index, fullMaxScroll + height)
-                return min(fullMaxScroll, missingTop - height + edgeFillPx)
+                return min(
+                    fullMaxScroll,
+                    missingTop - height + edgeFillPx - forwardStabilityInsetPx,
+                )
                     .coerceAtLeast(0f)
             }
         }
