@@ -1,6 +1,7 @@
 package ml.melun.mangaview.reader
 
 import java.io.File
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -191,7 +192,7 @@ class NtkDirectWifiAdjacentDrawableRunwayReleaseArchitectureTest {
         )
 
         assertTrue(route.contains("listener.isPageAuthoritativeDrawableCurrentlyInstalled(index)"))
-        assertTrue(
+        assertFalse(
             route.contains(
                 "hasDeliveredBitmap(index) && listener.isPageDrawableInstalled(index)",
             ),

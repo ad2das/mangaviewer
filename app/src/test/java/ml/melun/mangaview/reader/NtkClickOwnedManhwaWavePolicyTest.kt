@@ -24,7 +24,7 @@ class NtkClickOwnedManhwaWavePolicyTest {
         )
         assertEquals(
             24,
-            NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_RESTORED_BULK_BODY_TRANSFERS,
+            NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_BULK_BODY_TRANSFERS,
         )
         assertEquals(6, NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_BULK_INITIAL_TRANSFERS)
         assertEquals(
@@ -43,8 +43,9 @@ class NtkClickOwnedManhwaWavePolicyTest {
             4,
             NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_EXECUTOR_LANES,
         )
-        assertEquals(8, NtkClickOwnedManhwaWavePolicy.MIXED_UNCOMMON_BODY_TRANSFERS)
+        assertEquals(4, NtkClickOwnedManhwaWavePolicy.MIXED_UNCOMMON_BODY_TRANSFERS)
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)
+        assertEquals(1, NtkClickOwnedManhwaWavePolicy.FOREGROUND_RUNWAY_BODY_COUNT)
         assertEquals(12, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_SPECULATION_PAGES)
         assertEquals(12_000L, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_RELEASE_TIMEOUT_MS)
         assertEquals(4, NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES)
@@ -83,6 +84,15 @@ class NtkClickOwnedManhwaWavePolicyTest {
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
         assertTrue(NtkClickOwnedManhwaWavePolicy.BODY_LANES <=
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
+    }
+
+    @Test
+    fun everyTransportKeepsOnlyTheCurrentAnchorAheadOfTheOwnedSuffix() {
+        assertTrue(NtkClickOwnedManhwaWavePolicy.isForegroundRunwayBody(0, 0, 13))
+        assertTrue(!NtkClickOwnedManhwaWavePolicy.isForegroundRunwayBody(1, 0, 13))
+        assertTrue(!NtkClickOwnedManhwaWavePolicy.isForegroundRunwayBody(4, 0, 13))
+        assertTrue(NtkClickOwnedManhwaWavePolicy.isForegroundRunwayBody(120, 120, 123))
+        assertTrue(!NtkClickOwnedManhwaWavePolicy.isForegroundRunwayBody(122, 120, 123))
     }
 
     @Test
@@ -141,6 +151,30 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertTrue(NtkClickOwnedManhwaWavePolicy.isHostGpuCurrentRestoredViewportBody(23, 20, 83))
         assertTrue(!NtkClickOwnedManhwaWavePolicy.isHostGpuCurrentRestoredViewportBody(24, 20, 83))
         assertTrue(NtkClickOwnedManhwaWavePolicy.isHostGpuCurrentRestoredViewportBody(82, 82, 83))
+    }
+
+    @Test
+    fun adaptiveCurrentBulkIncludesColdPageZeroButExcludesAdjacentAndHandoffs() {
+        fun enabled(
+            hostGpu: Boolean = true,
+            adjacent: Boolean = false,
+            wifi: Boolean = true,
+            cellular: Boolean = false,
+            handle: Long? = 100L,
+        ) = NtkClickOwnedManhwaWavePolicy.shouldAdaptHostGpuCurrentBulkBodies(
+            hostGpuEmulatorRuntime = hostGpu,
+            directWifiAdjacentOwned = adjacent,
+            wifiTransport = wifi,
+            cellularResilientTransport = cellular,
+            capturedNetworkHandle = handle,
+        )
+
+        assertTrue(enabled())
+        assertTrue(!enabled(hostGpu = false))
+        assertTrue(!enabled(adjacent = true))
+        assertTrue(!enabled(wifi = false))
+        assertTrue(!enabled(cellular = true))
+        assertTrue(!enabled(handle = null))
     }
 
     @Test

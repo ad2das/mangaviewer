@@ -1070,8 +1070,8 @@ class NtkClickOwnedExactBodyStreamTest {
             "awaitHostGpuCurrentRestoredViewportBodyAdmission("
         )
         val adjacentFence = admission.indexOf("awaitAdjacentPhysicalAdmission(")
-        val restoredBulk = admission.indexOf(
-            "acquireHostGpuCurrentRestoredBulkBodyTransferLease("
+        val currentBulk = admission.indexOf(
+            "acquireHostGpuCurrentBulkBodyTransferLease("
         )
         val mixedUncommon = admission.indexOf(
             "acquireMixedUncommonTransferLease("
@@ -1083,13 +1083,15 @@ class NtkClickOwnedExactBodyStreamTest {
 
         assertTrue(viewportFence >= 0)
         assertTrue(viewportFence < adjacentFence)
-        assertTrue(adjacentFence < restoredBulk)
-        assertTrue(restoredBulk < mixedUncommon)
+        assertTrue(adjacentFence < currentBulk)
+        assertTrue(currentBulk < mixedUncommon)
         assertTrue(mixedUncommon < ordinaryWifi)
         assertTrue(ordinaryWifi < physicalPermit)
         assertTrue(admission.contains("mixedUncommonLease?.close()"))
-        assertTrue(admission.contains("currentRestoredBulkOwner?.abandonAdaptive()"))
-        assertTrue(admission.contains("currentRestoredBulkOutcome = null"))
+        assertTrue(quarantine.contains("java.net.URI.create(candidate).path"))
+        assertTrue(quarantine.contains("plannedExtension.equals(\"png\""))
+        assertTrue(admission.contains("currentBulkOwner?.abandonAdaptive()"))
+        assertTrue(admission.contains("currentBulkOutcome = null"))
         val beforeAdmission = quarantine.substring(0, admissionStart)
         assertFalse(beforeAdmission.contains("mixedUncommonLease = acquireMixedUncommonTransferLease("))
         assertTrue(
@@ -1102,21 +1104,21 @@ class NtkClickOwnedExactBodyStreamTest {
                 "if (!isCapturedDirectWifiTransportLive()) return"
             )
         )
-        val restoredHelperStart = quarantine.indexOf(
-            "private fun acquireHostGpuCurrentRestoredBulkBodyTransferLease("
+        val currentHelperStart = quarantine.indexOf(
+            "private fun acquireHostGpuCurrentBulkBodyTransferLease("
         )
-        val restoredHelperEnd = quarantine.indexOf(
+        val currentHelperEnd = quarantine.indexOf(
             "private fun acquireOrdinaryDirectWifiTransferLease(",
-            restoredHelperStart,
+            currentHelperStart,
         )
-        val restoredHelper = quarantine.substring(restoredHelperStart, restoredHelperEnd)
+        val currentHelper = quarantine.substring(currentHelperStart, currentHelperEnd)
         assertTrue(
-            restoredHelper.indexOf("hostGpuCurrentRestoredTotalBulkBodyTransferPermits.tryAcquire(") <
-                restoredHelper.indexOf("hostGpuCurrentRestoredBulkAdmission.tryAcquire(")
+            currentHelper.indexOf("hostGpuCurrentTotalBulkBodyTransferPermits.tryAcquire(") <
+                currentHelper.indexOf("hostGpuCurrentBulkAdmission.tryAcquire(")
         )
-        assertTrue(restoredHelper.contains("isLiveOrdinaryDirectWifiCandidate("))
+        assertTrue(currentHelper.contains("isLiveOrdinaryDirectWifiCandidate("))
         assertTrue(quarantine.contains("val stillComparableOrdinaryBody ="))
-        val wrapperStart = quarantine.indexOf("private class CurrentRestoredBulkBodyLease(")
+        val wrapperStart = quarantine.indexOf("private class CurrentBulkBodyLease(")
         val wrapperEnd = quarantine.indexOf(
             "/** Purely local request material",
             wrapperStart,
@@ -1125,7 +1127,7 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(wrapper.contains("adaptive.getAndSet(null)?.aborted()"))
         assertTrue(wrapper.contains("totalLease.close()"))
         assertFalse(wrapper.contains("adaptive.getAndSet(null)?.close()"))
-        assertTrue(quarantine.contains("currentRestoredBulkOutcome?.close()"))
+        assertTrue(quarantine.contains("currentBulkOutcome?.close()"))
     }
 
     @Test

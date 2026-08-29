@@ -15,6 +15,8 @@ class HostExactCompatibleRetirementGraceArchitectureTest {
     @Test
     fun compatibleRetirementWaitsOnlyForExplicitlyScheduledIdleDrain() {
         val acquire = functionBody("private fun acquireSlots(")
+        val fileDecode = functionBody("fun decodePage(\n        encodedFile: File")
+        val byteDecode = functionBody("private fun decodePageWithDecoder(")
 
         assertTrue(source.contains("private const val COMPATIBLE_RETIREMENT_GRACE_MS = 5_000L"))
         assertTrue(acquire.contains("pendingCompatibleSlotCount"))
@@ -22,6 +24,25 @@ class HostExactCompatibleRetirementGraceArchitectureTest {
         assertTrue(acquire.contains("physicalMotionActive = physicalMotionActive"))
         assertTrue(acquire.contains("signalPressureLocked(newBytes.coerceAtLeast(requiredBytes))"))
         assertTrue(acquire.contains("lock.wait(remainingGrace.coerceAtMost(32L))"))
+        assertTrue(acquire.contains("compatibleRetirementRequiredNow?.invoke() != true"))
+        assertTrue(fileDecode.contains(
+            "compatibleRetirementRequiredNow = mirrorPublicationRequiredNow",
+        ))
+        assertTrue(byteDecode.contains(
+            "compatibleRetirementRequiredNow = mirrorPublicationRequiredNow",
+        ))
+    }
+
+    @Test
+    fun physicalForwardWarmIdentityCanInterruptAnExistingRetirementWait() {
+        val requiredNow = functionBody(
+            "private fun isStrictExactMirrorPublicationRequiredNow(",
+            session,
+        )
+
+        assertTrue(requiredNow.contains(
+            "latestStrictExactPhysicalForwardWarmPage.get() === page",
+        ))
     }
 
     @Test

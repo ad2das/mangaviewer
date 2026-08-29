@@ -19,6 +19,69 @@ class ReaderNativeLifecycleRecoveryTest {
     private val textureHeadroomPlanner = File(
         "src/main/cpp/RollingTextureHeadroomPlanner.h",
     ).readText()
+    private val activity = File(
+        "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt",
+    ).readText()
+    private val session = File(
+        "src/main/java/ml/melun/mangaview/reader/ReaderSession.kt",
+    ).readText()
+    private val hostExactPool = File(
+        "src/main/java/ml/melun/mangaview/reader/HostExactHardwareTilePool.kt",
+    ).readText()
+
+    @Test
+    fun transientNativeMailboxBackpressureIsRetriedWithoutManufacturingPresentFailure() {
+        assertTrue(NtkNativeSubmitResultPolicy.isTransientBackpressure(-2L))
+        assertFalse(NtkNativeSubmitResultPolicy.isTerminalFailure(-2L))
+        assertTrue(NtkNativeSubmitResultPolicy.isTerminalFailure(-1L))
+        assertFalse(NtkNativeSubmitResultPolicy.isTerminalFailure(0L))
+
+        val deferredScene = slice(
+            surface,
+            "private fun executeDeferredNativeSceneSubmission(",
+            "private fun finishDeferredNativeSceneSubmission(",
+        )
+        val deferredGeometry = slice(
+            surface,
+            "private fun executeDeferredNativeGeometrySubmission(",
+            "private fun retryDeferredNativeSubmissionAfterTransientBackpressure(",
+        )
+        val retry = slice(
+            surface,
+            "private fun retryDeferredNativeSubmissionAfterTransientBackpressure(",
+            "private fun retireDeferredNativeGeometryAsSuperseded(",
+        )
+        assertTrue(deferredScene.contains("isTransientBackpressure(result)"))
+        assertTrue(deferredScene.contains(
+            "retryDeferredNativeSubmissionAfterTransientBackpressure(terminalToken)",
+        ))
+        assertTrue(deferredGeometry.contains("isTransientBackpressure(result)"))
+        assertTrue(deferredGeometry.contains(
+            "retryDeferredNativeSubmissionAfterTransientBackpressure(submission.token)",
+        ))
+        assertTrue(retry.contains("pendingFrameCommits.remove(token)"))
+        assertTrue(retry.contains("renderRequested = true"))
+        assertTrue(retry.contains("scheduleNoStateRetryLocked()"))
+        assertFalse(retry.contains("nativePresentFailedRetirements++"))
+    }
+
+    @Test
+    fun hwuiBitmapPreparationNeverRunsInsideTheDirectFrameProducer() {
+        val schedule = slice(
+            surface,
+            "private fun scheduleHwuiForwardRunwayPreparationLocked()",
+            "/** Must be called with [stateLock] held. */",
+        )
+        val prepare = slice(
+            surface,
+            "private fun prepareRenderWork(",
+            "private fun finishRenderedFrame(",
+        )
+        assertTrue(schedule.contains("HWUI_FORWARD_PREPARE_EXECUTOR.execute"))
+        assertTrue(schedule.contains("bitmap.prepareToDraw()"))
+        assertTrue(prepare.contains("scheduleHwuiForwardRunwayPreparationLocked()"))
+        assertFalse(prepare.contains("bitmap.prepareToDraw()"))
+    }
 
     @Test
     fun lifecycleCommandsCloseSubmissionBeforeWakingTheWorker() {
@@ -83,10 +146,123 @@ class ReaderNativeLifecycleRecoveryTest {
         assertTrue(pause.contains("nativeSurfaceView.visibility = View.GONE"))
         assertTrue(pause.contains("NtkRollingNativeBridge.nativeDetach(handle, epoch)"))
         assertTrue(pause.contains("nativeSurfaceRevealAfterFirstHwuiCommitPending = true"))
+        assertTrue(pause.contains("lifecycleEnterAnimationPending = true"))
+        assertTrue(surface.contains("fun completeLifecycleEnterAnimationForNativeReveal("))
+        assertTrue(activity.contains("override fun onEnterAnimationComplete()"))
+        assertTrue(activity.contains("HOST_ENTER_ANIMATION_FALLBACK_MS"))
         assertTrue(surface.contains("publishWindowRequest: Boolean = true"))
         assertTrue(surface.contains(
             "request = if (publishWindowRequest) windowRequestLocked(false) else null",
         ))
+    }
+
+    @Test
+    fun homeKeepsBodiesButFencesInvisiblePixelsAndOptionalSuccessorWork() {
+        val activityPause = slice(
+            activity,
+            "override fun onPause()",
+            "override fun onSaveInstanceState(",
+        )
+        assertTrue(activityPause.contains("session?.onHostPaused()"))
+        assertTrue(
+            activityPause.indexOf("session?.onHostPaused()") <
+                activityPause.indexOf("renderView.pauseNativePresentationForLifecycle()"),
+        )
+
+        val activityResume = slice(
+            activity,
+            "override fun onResume()",
+            "override fun onEnterAnimationComplete()",
+        )
+        assertTrue(activityResume.contains("session?.onHostResumed()"))
+        assertTrue(activityResume.contains("schedulePostResumeOptionalAdjacentIdleFallback()"))
+
+        val byteDecode = slice(
+            session,
+            "private fun decodeStrictExactPageBytes(",
+            "private fun decodeStrictExactPageFile(",
+        )
+        val fileDecode = slice(
+            session,
+            "private fun decodeStrictExactPageFile(",
+            "private fun awaitStrictExactDecodeMotionAdmission()",
+        )
+        assertTrue(byteDecode.contains("awaitHostLifecyclePixelDecodeAdmission()"))
+        assertTrue(fileDecode.contains("awaitHostLifecyclePixelDecodeAdmission()"))
+        assertTrue(session.contains("fun onHostPaused()"))
+        assertTrue(session.contains("hostLifecyclePixelLock.notifyAll()"))
+
+        val historyTrim = slice(
+            session,
+            "private fun trimConsumedForwardHistory(",
+            "private fun retireConsumedStrictSources(",
+        )
+        assertTrue(historyTrim.contains("if (!hostLifecycleResumed)"))
+        assertTrue(historyTrim.contains("\"host_paused\""))
+        assertTrue(historyTrim.contains("synchronized(hostLifecyclePixelLock)"))
+        val hostResume = slice(
+            session,
+            "fun onHostResumed()",
+            "fun onHostPaused()",
+        )
+        assertTrue(hostResume.contains("scheduleForwardReadingDrain()"))
+
+        val discovery = slice(
+            activity,
+            "private fun postAdjacentExactManifestForGeneration(",
+            "private fun isCurrentNtkReader()",
+        )
+        assertTrue(discovery.contains("isPhysicalBoundaryDemandingForwardAdjacent(manga)"))
+        assertTrue(discovery.contains("postResumeOptionalAdjacentDelayMs("))
+        assertTrue(discovery.contains("!replacementRecoveryCurrent && !physicalBoundaryDemand"))
+        assertTrue(activity.contains("releasePostResumeOptionalAdjacentGateAfterInput(deliveredAtMs)"))
+
+        val compaction = slice(
+            hostExactPool,
+            "private fun drainIdleCompactionAfterQuiet()",
+            "private fun compactIdleSlotsToTarget()",
+        )
+        assertTrue(compaction.contains("hostResumeCompactionProtectedUntilMs"))
+        assertTrue(compaction.contains("NtkReaderTransferPacer.isPhysicalInputPriorityActive()"))
+        assertTrue(hostExactPool.contains("fun notePhysicalReaderHostResumed()"))
+        assertTrue(hostExactPool.contains("hostResumeCompactionProtectedUntilMs = 0L"))
+    }
+
+    @Test
+    fun immediatePhysicalFollowerOwnsOneBoundedWarmLaneOutsideTheSceneFifo() {
+        assertTrue(session.contains("private val strictExactForwardWarmDecode"))
+        assertTrue(session.contains("Process.THREAD_PRIORITY_BACKGROUND"))
+        assertTrue(session.contains("latestStrictExactPhysicalForwardWarmPage"))
+        assertTrue(session.contains(
+            "val physicalForwardWarm = index == directWifiForwardWarmPage",
+        ))
+        assertTrue(session.contains(
+            "if (!physicallyVisible && !physicalForwardWarm) continue",
+        ))
+        assertTrue(session.contains(
+            "physicalForwardWarmIntent = physicalForwardWarm",
+        ))
+        val request = slice(
+            session,
+            "private fun requestStrictExactSourcePage(",
+            "private fun promoteQueuedStrictExactViewportBlocker(",
+        )
+        assertTrue(request.contains("physicalForwardWarmIntent: Boolean = false"))
+        assertTrue(request.contains("isPhysicalForwardWarmNow()"))
+        assertTrue(request.contains("promoteQueuedStrictExactPhysicalForwardWarm(index, page)"))
+        assertTrue(request.contains("!isPhysicalForwardWarmNow()"))
+        assertTrue(request.contains(
+            "if (!exactViewportBlockerBeforeInitialRunwayTurn &&\n" +
+                "                        !isPhysicalForwardWarmNow()",
+        ))
+        val promotion = slice(
+            session,
+            "private fun promoteQueuedStrictExactPhysicalForwardWarm(",
+            "private fun releaseStrictExactDecodeClaim(",
+        )
+        assertTrue(promotion.contains("strictExactRollingDecode.removeQueued(task)"))
+        assertTrue(promotion.contains("strictExactForwardWarmDecode.execute(task)"))
+        assertTrue(session.contains("strictExactForwardWarmDecode.shutdownNow()"))
     }
 
     @Test

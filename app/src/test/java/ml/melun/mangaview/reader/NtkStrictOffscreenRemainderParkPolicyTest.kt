@@ -157,6 +157,14 @@ class NtkStrictOffscreenRemainderParkPolicyTest {
         assertFalse("offscreen p0 may fill after motion retires", deferred(false, 0))
         assertTrue("offscreen p1 stays encoded even during apparent idle", deferred(false, 1))
         assertTrue("offscreen p2+ stays encoded", deferred(false, 2))
+        assertFalse(
+            "an installed physical p0 lets its exact p1 blocker cross the ownership handoff",
+            deferred(false, 1, 0, physical = true, moving = true),
+        )
+        assertTrue(
+            "an offscreen physical intent still cannot skip beyond its installed predecessor",
+            deferred(false, 2, 0, physical = true, moving = true),
+        )
         assertFalse("the next real Surface blocker bypasses motion deferral", deferred(true, 2, 1, true, true))
         assertTrue("a distant placeholder intent cannot jump the source frontier", deferred(true, 5, 1, true, true))
         assertTrue("near-forward work waits during motion", deferred(true, 3, 1, moving = true))

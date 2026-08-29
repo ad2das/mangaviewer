@@ -694,7 +694,7 @@ class NtkAdaptiveManhwaBulkAdmissionTest {
         assertTrue(gate.snapshot().closed)
         assertEquals(0, gate.snapshot().activeLeases)
         assertFalse(gate.snapshot().targetLimit >
-            NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_RESTORED_BULK_BODY_TRANSFERS)
+            NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_BULK_BODY_TRANSFERS)
     }
 
     private fun completeStage(

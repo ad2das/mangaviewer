@@ -930,7 +930,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         val predecodedOriginal: NtkStrictPredecodedOriginal? = null,
     )
 
-    private class CurrentRestoredBulkBodyLease(
+    private class CurrentBulkBodyLease(
         private val totalLease: Closeable,
         adaptiveOutcome: NtkAdaptiveManhwaBulkAdmission.Lease?,
     ) : Closeable {
@@ -1034,6 +1034,14 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             capturedNetworkHandle = capturedDirectWifiNetworkHandle,
             forwardFirstPage = forwardFirstPage,
         )
+    private val hostGpuCurrentAdaptiveBulkEnabled =
+        NtkClickOwnedManhwaWavePolicy.shouldAdaptHostGpuCurrentBulkBodies(
+            hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+            directWifiAdjacentOwned = directWifiAdjacentOwned,
+            wifiTransport = wifiEntryPriorityMode,
+            cellularResilientTransport = !directWifiEarlyUncommonEnabled,
+            capturedNetworkHandle = capturedDirectWifiNetworkHandle,
+        )
     private val physicalExtensionRecordingEligible = viewerGeneration > 0L &&
         wifiEntryPriorityMode && directWifiEarlyUncommonEnabled
     private val initialSpeculationPages = minOf(
@@ -1126,7 +1134,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS,
         true,
     )
-    private val hostGpuCurrentRestoredBulkAdmission = NtkAdaptiveManhwaBulkAdmission(
+    private val hostGpuCurrentBulkAdmission = NtkAdaptiveManhwaBulkAdmission(
         eligibleBodyCount = (
             plan.pageCount - minOf(
                 plan.pageCount,
@@ -1147,8 +1155,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     )
     // This remains the common outer ceiling across ordinary, mixed and unresolved bodies.
     // Ordinary JPEGs add the adaptive inner gate; mixed PNGs still add their independent C8 gate.
-    private val hostGpuCurrentRestoredTotalBulkBodyTransferPermits = Semaphore(
-        NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_RESTORED_BULK_BODY_TRANSFERS,
+    private val hostGpuCurrentTotalBulkBodyTransferPermits = Semaphore(
+        NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_BULK_BODY_TRANSFERS,
         true,
     )
     // One of the unchanged forty direct-Wi-Fi transfers belongs to the current viewport. Page zero
@@ -1179,6 +1187,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         if (!directWifiAdjacentOwned) release.complete(Unit)
     }
     private val firstActualFramePresented = CompletableFuture<Unit>()
+    // All transport profiles give the visible p0-p4 runway sole body bandwidth until it is
+    // terminal. Suffix futures are already finite and click-owned; they wait before Call creation
+    // and retain their exact page identities, then resume without a second producer.
+    private val foregroundRunwayBodyRelease = CompletableFuture<Unit>()
     // Only a host-GPU direct-Wi-Fi resumed *current* manhwa waits here. The four viewport bodies
     // bypass this future; every other body waits before Call creation, owning neither a socket nor
     // transfer permit. Once the four logical body futures are terminal, the unchanged forty-wide
@@ -1401,13 +1413,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_RESTORED_VIEWPORT_BODIES,
             )
         ).coerceAtLeast(0)
-        if (hostGpuCurrentRestoredViewportPriority) {
-            hostGpuCurrentRestoredBulkAdmission
+        if (hostGpuCurrentAdaptiveBulkEnabled) {
+            hostGpuCurrentBulkAdmission
                 .settleForFiniteBodyCount(finiteBulkBodies)
                 ?.let { admission ->
                     Log.d(
                         TAG,
-                        "click_current_restored_bulk_admission " +
+                        "click_current_bulk_admission " +
                             "path=${plan.normalizedEpisodePath},target=${admission.targetLimit}," +
                             "best=${admission.bestLimit},active=${admission.activeLeases}," +
                             "settled=${admission.settled},frozen=${admission.frozen}," +
@@ -2011,6 +2023,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 "formatVerifiedBodies=$FORMAT_VERIFIED_SPECULATIVE_PAGES," +
                 "pipelined=true",
         )
+        armForegroundRunwayBodyRelease(initialBodies)
         armHostGpuCurrentRestoredViewportBodyRelease(initialBodies)
         return Wave(initialBodies)
     }
@@ -3182,10 +3195,17 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         candidate: String,
         callCancellation: ReaderImageCache.Cancellation,
     ): Closeable? {
-        val uncommonExtension =
+        if (!directWifiEarlyUncommonEnabled) return null
+        val plannedExtension = runCatching {
+            java.net.URI.create(candidate).path.orEmpty().substringAfterLast('.', "")
+        }.getOrDefault(
+            candidate.substringBefore('?').substringBefore('#').substringAfterLast('.', ""),
+        )
+        val rememberedExtension =
             ReaderImageCache.directWifiMixedManhwaSpeculativeUncommonExtension(candidate)
-                ?: return null
-        if (!candidate.substringAfterLast('.').equals(uncommonExtension, ignoreCase = true)) {
+        if (!plannedExtension.equals("png", ignoreCase = true) &&
+            !plannedExtension.equals(rememberedExtension, ignoreCase = true)
+        ) {
             return null
         }
         while (!closed.get()) {
@@ -3269,6 +3289,60 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         }
     }
 
+    private fun armForegroundRunwayBodyRelease(
+        bodyFutures: Map<Int, CompletableFuture<HeldBody?>>,
+    ) {
+        if (foregroundRunwayBodyRelease.isDone) return
+        val runwayFutures = bodyFutures.entries
+            .asSequence()
+            .filter { (pageIndex, _) ->
+                NtkClickOwnedManhwaWavePolicy.isForegroundRunwayBody(
+                    pageIndex = pageIndex,
+                    forwardFirstPage = forwardFirstPage,
+                    pageCount = plan.pageCount,
+                )
+            }
+            .sortedBy { it.key }
+            .map { it.value }
+            .toList()
+        check(runwayFutures.isNotEmpty()) { "Foreground body runway has no owned pages" }
+        CompletableFuture.allOf(*runwayFutures.toTypedArray()).whenComplete { _, _ ->
+            if (!closed.get() && foregroundRunwayBodyRelease.complete(Unit)) {
+                Log.d(
+                    TAG,
+                    "click_foreground_runway_bodies_terminal " +
+                        "path=${plan.normalizedEpisodePath},first=$forwardFirstPage," +
+                        "count=${runwayFutures.size}",
+                )
+            }
+        }
+    }
+
+    private fun awaitForegroundRunwayBodyAdmission(
+        pageIndex: Int,
+        callCancellation: ReaderImageCache.Cancellation,
+    ) {
+        if (NtkClickOwnedManhwaWavePolicy.isForegroundRunwayBody(
+                pageIndex = pageIndex,
+                forwardFirstPage = forwardFirstPage,
+                pageCount = plan.pageCount,
+            )
+        ) return
+        while (!closed.get() && !foregroundRunwayBodyRelease.isDone) {
+            callCancellation.throwIfCancelled()
+            try {
+                foregroundRunwayBodyRelease.get(
+                    BODY_TRANSFER_PERMIT_POLL_MS,
+                    TimeUnit.MILLISECONDS,
+                )
+            } catch (_: java.util.concurrent.TimeoutException) {
+                // Poll only for cancellation; the body owns no Call or transfer permit here.
+            }
+        }
+        if (closed.get()) throw java.util.concurrent.CancellationException("quarantine closed")
+        callCancellation.throwIfCancelled()
+    }
+
     private fun awaitHostGpuCurrentRestoredViewportBodyAdmission(
         pageIndex: Int,
         callCancellation: ReaderImageCache.Cancellation,
@@ -3298,14 +3372,14 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         callCancellation.throwIfCancelled()
     }
 
-    private fun acquireHostGpuCurrentRestoredBulkBodyTransferLease(
+    private fun acquireHostGpuCurrentBulkBodyTransferLease(
         pageIndex: Int,
         candidate: String,
         callCancellation: ReaderImageCache.Cancellation,
         predecessorProvenOrdinaryDirectWifi: Boolean,
         restoredAnchorOrdinaryDirectWifi: Boolean,
-    ): CurrentRestoredBulkBodyLease? {
-        if (!hostGpuCurrentRestoredViewportPriority ||
+    ): CurrentBulkBodyLease? {
+        if (!hostGpuCurrentAdaptiveBulkEnabled ||
             NtkClickOwnedManhwaWavePolicy.isHostGpuCurrentRestoredViewportBody(
                 pageIndex = pageIndex,
                 forwardFirstPage = forwardFirstPage,
@@ -3316,12 +3390,12 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         while (!closed.get()) {
             callCancellation.throwIfCancelled()
             if (!isCapturedDirectWifiTransportLive()) {
-                hostGpuCurrentRestoredBulkAdmission.freeze(
+                hostGpuCurrentBulkAdmission.freeze(
                     "profile_changed_before_outer_admission",
                 )
                 return null
             }
-            if (hostGpuCurrentRestoredTotalBulkBodyTransferPermits.tryAcquire(
+            if (hostGpuCurrentTotalBulkBodyTransferPermits.tryAcquire(
                     BODY_TRANSFER_PERMIT_POLL_MS,
                     TimeUnit.MILLISECONDS,
                 )
@@ -3329,7 +3403,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 val released = AtomicBoolean(false)
                 totalLease = Closeable {
                     if (released.compareAndSet(false, true)) {
-                        hostGpuCurrentRestoredTotalBulkBodyTransferPermits.release()
+                        hostGpuCurrentTotalBulkBodyTransferPermits.release()
                     }
                 }
                 break
@@ -3342,7 +3416,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             while (!closed.get()) {
                 callCancellation.throwIfCancelled()
                 if (!isCapturedDirectWifiTransportLive()) {
-                    hostGpuCurrentRestoredBulkAdmission.freeze(
+                    hostGpuCurrentBulkAdmission.freeze(
                         "profile_changed_before_adaptive_admission",
                     )
                     ownedTotal.close()
@@ -3355,12 +3429,12 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     restoredAnchorOrdinaryDirectWifi,
                 )
                 if (!adaptive) {
-                    hostGpuCurrentRestoredBulkAdmission.freeze(
+                    hostGpuCurrentBulkAdmission.freeze(
                         "ordinary_classification_changed_before_admission",
                     )
-                    return CurrentRestoredBulkBodyLease(ownedTotal, null)
+                    return CurrentBulkBodyLease(ownedTotal, null)
                 }
-                val lease = hostGpuCurrentRestoredBulkAdmission.tryAcquire(
+                val lease = hostGpuCurrentBulkAdmission.tryAcquire(
                     BODY_TRANSFER_PERMIT_POLL_MS,
                     TimeUnit.MILLISECONDS,
                 ) ?: continue
@@ -3385,9 +3459,9 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         ownedTotal.close()
                         return null
                     }
-                    return CurrentRestoredBulkBodyLease(ownedTotal, null)
+                    return CurrentBulkBodyLease(ownedTotal, null)
                 }
-                val wrapper = CurrentRestoredBulkBodyLease(ownedTotal, lease)
+                val wrapper = CurrentBulkBodyLease(ownedTotal, lease)
                 pendingAdaptive = null
                 return wrapper
             }
@@ -3859,11 +3933,11 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         preferredOrdinaryDirectWifiReplicaHost: String?,
     ): HeldBody? {
         var stage = "create_identity"
-        var currentRestoredBulkOutcome: NtkAdaptiveManhwaBulkAdmission.Lease? = null
-        var currentRestoredBulkOwner: CurrentRestoredBulkBodyLease? = null
-        var currentRestoredPhysicalEvidence:
+        var currentBulkOutcome: NtkAdaptiveManhwaBulkAdmission.Lease? = null
+        var currentBulkOwner: CurrentBulkBodyLease? = null
+        var currentBulkPhysicalEvidence:
             ReaderImageCache.NtkStrictPhysicalBodyEvidence? = null
-        var currentRestoredExactJpeg = false
+        var currentBulkExactJpeg = false
         val expectedPlannedReplicaHost = (
             preferredOrdinaryDirectWifiReplicaHost?.trim()?.takeIf { it.isNotEmpty() }
                 ?: runCatching { java.net.URI.create(candidateAsset).host.orEmpty() }
@@ -3921,17 +3995,17 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     onValidImageHeaders()
                 },
                 exactImageHeaderSink = { exactHeader ->
-                    currentRestoredExactJpeg = exactHeader.format.equals(
+                    currentBulkExactJpeg = exactHeader.format.equals(
                         NtkExactImageHeaderParser.FORMAT_JPEG,
                         ignoreCase = true,
                     )
-                    if (!currentRestoredExactJpeg && hostGpuCurrentRestoredViewportPriority) {
+                    if (!currentBulkExactJpeg && hostGpuCurrentAdaptiveBulkEnabled) {
                         // Exact bytes, not the filename suffix, are the final format signal. This
                         // page continues through the mixed path, but it may never qualify a wider
                         // ordinary-JPEG wave for the rest of the session. A bulk Call keeps its
                         // slot until EOF so a downshift cannot temporarily exceed its cap; a
                         // viewport proof freezes the controller before the suffix fence opens.
-                        hostGpuCurrentRestoredBulkAdmission.freeze("mixed_exact_format")
+                        hostGpuCurrentBulkAdmission.freeze("mixed_exact_format")
                     }
                     if (directWifiEarlyUncommonEnabled) {
                         val exactExtension = candidateAsset.substringAfterLast('.', "")
@@ -3953,37 +4027,39 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 },
                 metadataSink = { },
                 bodyReadAdmission = {
+                    awaitForegroundRunwayBodyAdmission(pageIndex, callCancellation)
                     awaitHostGpuCurrentRestoredViewportBodyAdmission(
                         pageIndex,
                         callCancellation,
                     )
                     awaitAdjacentPhysicalAdmission(pageIndex, callCancellation)
-                    var currentRestoredBulkLease: CurrentRestoredBulkBodyLease? = null
+                    var currentBulkLease: CurrentBulkBodyLease? = null
                     var adjacentTailLease: Closeable? = null
                     var mixedUncommonLease: Closeable? = null
                     var ordinaryWifiLease: Closeable? = null
                     try {
-                        currentRestoredBulkLease =
-                            acquireHostGpuCurrentRestoredBulkBodyTransferLease(
+                        currentBulkLease =
+                            acquireHostGpuCurrentBulkBodyTransferLease(
                                 pageIndex,
                                 candidateAsset,
                                 callCancellation,
                                 predecessorProvenOrdinaryDirectWifi,
                                 restoredAnchorOrdinaryDirectWifi,
                             )
-                        currentRestoredBulkOutcome = currentRestoredBulkLease?.adaptiveOutcome
-                        currentRestoredBulkOwner = currentRestoredBulkLease
+                        currentBulkOutcome = currentBulkLease?.adaptiveOutcome
+                        currentBulkOwner = currentBulkLease
                         // This lease is acquired before the ordinary 40-call ring and before Call
                         // creation in spoolQuarantinedEncodedOriginal(). Waiting suffix pages own no
-                        // socket, response body, or decode work while p0-p4 remain unaffected.
+                        // socket, response body, or decode work while the current anchor remains
+                        // unaffected.
                         adjacentTailLease = acquireHostGpuAdjacentTailBodyTransferLease(
                             pageIndex,
                             callCancellation,
                         )
                         // Never own a scarce mixed-PNG permit while parked behind either
-                        // viewport gate. Offscreen PNG workers could otherwise consume all eight
-                        // permits, wait for the four-body restored viewport, and prevent its last
-                        // body from acquiring the permit that completes that very gate.
+                        // viewport gate. Admission happens before Call creation, so use the
+                        // authority document's canonical path (without query/fragment) as the
+                        // scheduling hint; exact header bytes still decide final image identity.
                         mixedUncommonLease = acquireMixedUncommonTransferLease(
                             candidateAsset,
                             callCancellation,
@@ -3997,18 +4073,18 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                             restoredAnchorOrdinaryDirectWifi,
                             preferredOrdinaryDirectWifiReplicaHost,
                         )
-                        if (currentRestoredBulkOutcome != null && ordinaryWifiLease == null) {
+                        if (currentBulkOutcome != null && ordinaryWifiLease == null) {
                             // Classification/transport changed between the two gates. Freeze the
                             // session-local experiment before returning the common outer permit.
-                            hostGpuCurrentRestoredBulkAdmission.freeze(
+                            hostGpuCurrentBulkAdmission.freeze(
                                 if (!isCapturedDirectWifiTransportLive()) {
                                     "profile_changed_between_body_gates"
                                 } else {
                                     "ordinary_classification_changed_between_body_gates"
                                 },
                             )
-                            currentRestoredBulkOwner?.abandonAdaptive()
-                            currentRestoredBulkOutcome = null
+                            currentBulkOwner?.abandonAdaptive()
+                            currentBulkOutcome = null
                         }
                         val baseLease =
                             if (ordinaryWifiLease != null && pageIndex != forwardFirstPage) {
@@ -4021,20 +4097,20 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                             ordinaryWifiLease?.close()
                             mixedUncommonLease?.close()
                             adjacentTailLease?.close()
-                            currentRestoredBulkLease?.close()
+                            currentBulkLease?.close()
                         }
                     } catch (failure: Throwable) {
                         ordinaryWifiLease?.close()
                         mixedUncommonLease?.close()
                         adjacentTailLease?.close()
-                        currentRestoredBulkLease?.close()
+                        currentBulkLease?.close()
                         throw failure
                     }
                 },
                 onPhysicalBodyProven = { evidence ->
                     // The spool emits this synchronously only after exact length + SHA at EOF.
                     // Keep it local to this one operation; it never enters body identity state.
-                    currentRestoredPhysicalEvidence = evidence
+                    currentBulkPhysicalEvidence = evidence
                 },
                 preferFileBackedBody =
                     NtkAdjacentBodyStoragePolicy.useFileBackedQuarantine(
@@ -4063,11 +4139,11 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     predecessorProvenOrdinaryDirectWifi,
                     restoredAnchorOrdinaryDirectWifi,
                 )
-            val stillComparableOrdinaryBody = currentRestoredBulkOutcome != null &&
-                currentRestoredPhysicalEvidence != null &&
+            val stillComparableOrdinaryBody = currentBulkOutcome != null &&
+                currentBulkPhysicalEvidence != null &&
                 expectedPlannedReplicaHost.isNotBlank()
-            val completedAdmission = currentRestoredBulkOutcome?.let { outcome ->
-                val evidence = currentRestoredPhysicalEvidence
+            val completedAdmission = currentBulkOutcome?.let { outcome ->
+                val evidence = currentBulkPhysicalEvidence
                 if (!stillComparableOrdinaryBody || evidence == null) {
                     outcome.disqualified("missing_physical_eof_proof")
                 } else {
@@ -4079,7 +4155,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                             expectedResponseHost = expectedPlannedReplicaHost,
                             capturedProfileLive = capturedProfileLive,
                             ordinaryClassificationLive = ordinaryClassificationLive,
-                            exactOrdinaryJpeg = currentRestoredExactJpeg,
+                            exactOrdinaryJpeg = currentBulkExactJpeg,
                             evidence = evidence,
                         ),
                     )
@@ -4088,7 +4164,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             completedAdmission?.let { admission ->
                 Log.d(
                     TAG,
-                    "click_current_restored_bulk_admission " +
+                    "click_current_bulk_admission " +
                         "path=${binding.episodePath},target=${admission.targetLimit}," +
                         "best=${admission.bestLimit},active=${admission.activeLeases}," +
                         "settled=${admission.settled},frozen=${admission.frozen}," +
@@ -4107,19 +4183,19 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 held
             }
         } catch (failure: Throwable) {
-            val congestionFailure = currentRestoredBulkOutcome != null &&
+            val congestionFailure = currentBulkOutcome != null &&
                 isAdaptiveBulkTransportFailure(failure, stage, callCancellation)
             val admission = when {
-                congestionFailure -> currentRestoredBulkOutcome?.failed()
-                currentRestoredBulkOutcome != null &&
+                congestionFailure -> currentBulkOutcome?.failed()
+                currentBulkOutcome != null &&
                     !isCapturedDirectWifiTransportLive() ->
-                    currentRestoredBulkOutcome?.disqualified("profile_changed_after_body_failure")
-                else -> currentRestoredBulkOutcome?.aborted()
+                    currentBulkOutcome?.disqualified("profile_changed_after_body_failure")
+                else -> currentBulkOutcome?.aborted()
             }
             if (admission != null) {
                 Log.d(
                     TAG,
-                    "click_current_restored_bulk_admission " +
+                    "click_current_bulk_admission " +
                         "path=${binding.episodePath},target=${admission.targetLimit}," +
                         "best=${admission.bestLimit},active=${admission.activeLeases}," +
                         "settled=${admission.settled},frozen=${admission.frozen}," +
@@ -4138,7 +4214,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         } finally {
             // Fail closed if a future branch exits without classifying the adaptive body. Normal
             // success/failure paths have already completed this lease, making close a no-op.
-            currentRestoredBulkOutcome?.close()
+            currentBulkOutcome?.close()
             operationLease.close()
         }
     }
@@ -4158,7 +4234,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        hostGpuCurrentRestoredBulkAdmission.close()
+        foregroundRunwayBodyRelease.complete(Unit)
+        hostGpuCurrentBulkAdmission.close()
         cancellation.cancel()
         pageCancellations.values.forEach(ReaderImageCache.Cancellation::cancel)
         fallbackCancellations.values.forEach(ReaderImageCache.Cancellation::cancel)

@@ -1361,10 +1361,8 @@ public class EpisodeActivity extends AppCompatActivity {
             episodeViewModel.cancelActiveLoad();
         noteNtkForegroundViewer(selected);
 
-        // The immutable native strip can only activate after sealing the whole episode.  Exact
-        // cold launches therefore use ReaderV2's production rolling ReaderSurfaceView session:
-        // the Activity transition happens immediately and no prepared key/image collection is
-        // consulted before it owns the foreground.
+        // ReaderV2 starts immediately, but keeps its native surface deferred until real pixels.
+        // ReaderSurfaceView still owns semantic navigation over the sealed initial geometry.
         boolean launched = ml.melun.mangaview.Utils.openColdExactNtkViewer(
                 context, selected, 0, title);
         Log.d("ViewerPerf", "ntk_cold_rolling_reader_enter path=" + path

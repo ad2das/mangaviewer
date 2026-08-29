@@ -1014,7 +1014,8 @@ public final class NtkStrictFreshArchitectureTest {
                 "private final class NtkDemandBoundExactImageCall",
                 "public OkHttpClient ntkForegroundImageFastClient()");
         assertTrue(exactCall.contains("implements Call, NtkQuicFetcher.RequestOwner"));
-        assertTrue(exactCall.contains("getOrCreateNtkQuicEngine(baseUrl)"));
+        assertTrue(exactCall.contains(
+                "getOrCreateNtkQuicEngine(baseUrl, rangeEngineStripe)"));
         assertTrue(exactCall.contains("fetchWithEngineExactOwned("));
         assertTrue(exactCall.contains("removeHeader(NTK_NO_QUIC_HEADER)"));
         assertTrue(client.contains("ntkDemandBoundExactImageFallbackClient ="));
@@ -1022,7 +1023,8 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(client.contains(".followRedirects(false)"));
         assertFalse(exactCall.contains("fetchNtkForegroundImageRace("));
         assertFalse(exactCall.contains("anchorHedge"));
-        int engineSelection = exactCall.indexOf("getOrCreateNtkQuicEngine(baseUrl)");
+        int engineSelection = exactCall.indexOf(
+                "getOrCreateNtkQuicEngine(baseUrl, rangeEngineStripe)");
         int fallbackSelection = exactCall.indexOf("if(engine == null || executor == null)");
         int engineStart = exactCall.indexOf("fetchWithEngineExactOwned(");
         assertTrue(engineSelection >= 0 && fallbackSelection > engineSelection);

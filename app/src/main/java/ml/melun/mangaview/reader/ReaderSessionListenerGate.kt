@@ -589,6 +589,43 @@ class ReaderSessionListenerGate(
         )
     }
 
+    override fun isPageAuthoritativeDrawableCurrentlyInstalled(index: Int): Boolean {
+        if (!active() ||
+            adopted.policy != AdoptedDrawableRegistry.Policy.FIRST_VALID_FULL_QUALITY_TILE
+        ) {
+            return false
+        }
+        // The adopted registry is an immutable identity proof, not a physical-lifetime proof.
+        // Forward the explicitly current query all the way to the renderer so a retained software
+        // original cannot masquerade as a pressure-retired HostExact presenter resource.
+        return adopted.entry(index)?.identity?.kind ==
+            AdoptedDrawableIdentity.Kind.FULL_QUALITY_TILES &&
+            downstream.isPageAuthoritativeDrawableCurrentlyInstalled(index)
+    }
+
+    override fun isPageAuthoritativeDrawableCurrentlyInstalled(
+        index: Int,
+        pageWidth: Int,
+        pageHeight: Int,
+        tiles: List<ReaderTile>,
+    ): Boolean {
+        if (!active() ||
+            adopted.policy != AdoptedDrawableRegistry.Policy.FIRST_VALID_FULL_QUALITY_TILE
+        ) {
+            return false
+        }
+        val candidate = AdoptedDrawableIdentity.fullQualityTiles(pageWidth, pageHeight, tiles)
+            ?: return false
+        val entry = adopted.entry(index) ?: return false
+        if (!entry.identity.sameAs(candidate)) return false
+        return downstream.isPageAuthoritativeDrawableCurrentlyInstalled(
+            index,
+            pageWidth,
+            pageHeight,
+            tiles,
+        )
+    }
+
     override fun areAllAuthoritativeDrawablesInstalled(pageCount: Int): Boolean {
         if (!active() || pageCount <= 0 ||
             adopted.policy != AdoptedDrawableRegistry.Policy.FIRST_VALID_FULL_QUALITY_TILE

@@ -679,6 +679,7 @@ public class CustomHttpClient {
     private static final long NTK_API_DIRECT_TIMEOUT_MS = 2_500L;
     private static final long EXTERNAL_VIEWER_PAGE_FAST_TIMEOUT_MS = 2_200L;
     private static final long EXTERNAL_VIEWER_IMAGE_FAST_TIMEOUT_MS = 3_000L;
+    private static final long NTK_EXACT_IMAGE_RANGE_HTTP_ENGINE_TIMEOUT_MS = 3_600L;
     private static final long NTK_QUIC_GET_TIMEOUT_MS = 4_500L;
     private static final long NTK_QUIC_IMAGE_TIMEOUT_MS = 3_000L;
     private static final long NTK_CARRIER_IMAGE_QUIC_PREFERENCE_TTL_MS = 2 * 60 * 1000L;
@@ -754,6 +755,13 @@ public class CustomHttpClient {
     private static final int MAX_IMAGE_HTTP_REQUESTS_PER_HOST = 8;
     private static final int MAX_NTK_FOREGROUND_IMAGE_HEDGES = 2;
     private static final int NTK_QUIC_CALLBACK_THREADS_PER_HOST = MAX_IMAGE_HTTP_REQUESTS_PER_HOST;
+    /**
+     * A projected exact Range body is independently validated before publication. Give those
+     * disjoint pieces six bounded transport sessions per origin so one slow multiplexed session
+     * cannot serialize the opening viewport, while canonical full-body requests retain the single
+     * shared engine and all sessions still share one callback executor per host.
+     */
+    private static final int NTK_EXACT_IMAGE_RANGE_ENGINE_STRIPES_PER_HOST = 6;
     private static final boolean DUMP_NTK_ACK_DEBUG_ARTIFACTS = false;
     private static final long NTK_ACK_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_VIEWER_IMAGE_URL_CACHE_TTL_MS = 5 * 60 * 1000L;
@@ -1942,6 +1950,8 @@ public class CustomHttpClient {
     private final Map<String, HttpEngine> ntkQuicEngines = new HashMap<>();
     private final Map<String, FutureTask<HttpEngine>> ntkQuicEngineTasks = new HashMap<>();
     private final Map<String, ExecutorService> ntkQuicExecutors = new HashMap<>();
+    private final Map<String, AtomicLong> ntkExactImageRangeEngineOrdinals =
+            new java.util.concurrent.ConcurrentHashMap<>();
     /** A navigation-visible transport failure must not be inherited by the viewer deadline. */
     private final Map<String, Long> ntkQuicStrictUnhealthyUntil = new HashMap<>();
     /**
@@ -2608,11 +2618,18 @@ public class CustomHttpClient {
                         + ",dns=network_resilient"
                         + ",tls=fragmented");
             }
+            NtkExactImagePhysicalAttempt physicalAttempt =
+                    originalRequest.tag(NtkExactImagePhysicalAttempt.class);
+            boolean exactRangeRequest = wireRequest.header("Range") != null
+                    && physicalAttempt != null;
             boolean useHttpEngine = explicitCarrierQuicRecovery
                     || learnedCarrierQuicRoute
                     || shouldUseNtkExactImageHttpEngine(forceHttp2, cellularResilientTransport);
+            int rangeEngineStripe = exactRangeRequest
+                    ? nextNtkExactImageRangeEngineStripe(wireRequest.url().host())
+                    : -1;
             HttpEngine engine = useHttpEngine
-                    ? getOrCreateNtkQuicEngine(baseUrl)
+                    ? getOrCreateNtkQuicEngine(baseUrl, rangeEngineStripe)
                     : null;
             ExecutorService executor = engine == null ? null : getOrCreateNtkQuicExecutor(baseUrl);
             if(engine == null && (explicitCarrierQuicRecovery || learnedCarrierQuicRoute)) {
@@ -2677,7 +2694,7 @@ public class CustomHttpClient {
                         headers,
                         "GET",
                         null,
-                        EXTERNAL_VIEWER_IMAGE_FAST_TIMEOUT_MS,
+                        ntkExactImageHttpEngineTimeoutMs(exactRangeRequest),
                         this
                 );
             } catch(InterruptedException interrupted) {
@@ -3091,6 +3108,29 @@ public class CustomHttpClient {
         mixed *= 0x846ca68b;
         mixed ^= mixed >>> 16;
         return Math.floorMod(mixed, shardCount);
+    }
+
+    static int ntkExactImageRangeEngineStripe(long hostLocalSequence, int stripeCount) {
+        if(hostLocalSequence < 0L)
+            throw new IllegalArgumentException("Host-local Range sequence must be non-negative");
+        if(stripeCount <= 0)
+            throw new IllegalArgumentException("Exact Range engine stripe count must be positive");
+        return (int) Math.floorMod(hostLocalSequence, (long) stripeCount);
+    }
+
+    private int nextNtkExactImageRangeEngineStripe(String host) {
+        String normalized = host == null ? "" : host.toLowerCase(Locale.ROOT);
+        AtomicLong sequence = ntkExactImageRangeEngineOrdinals.computeIfAbsent(
+                normalized, ignored -> new AtomicLong());
+        long ordinal = sequence.getAndUpdate(value -> value == Long.MAX_VALUE ? 0L : value + 1L);
+        return ntkExactImageRangeEngineStripe(
+                ordinal, NTK_EXACT_IMAGE_RANGE_ENGINE_STRIPES_PER_HOST);
+    }
+
+    static long ntkExactImageHttpEngineTimeoutMs(boolean exactRangeRequest) {
+        return exactRangeRequest
+                ? NTK_EXACT_IMAGE_RANGE_HTTP_ENGINE_TIMEOUT_MS
+                : EXTERNAL_VIEWER_IMAGE_FAST_TIMEOUT_MS;
     }
 
     private static boolean shouldUseNtkExactImageHttpEngine(boolean forceHttp2,
@@ -12046,23 +12086,28 @@ public class CustomHttpClient {
     }
 
     private HttpEngine getOrCreateNtkQuicEngine(String baseUrl) {
+        return getOrCreateNtkQuicEngine(baseUrl, -1);
+    }
+
+    private HttpEngine getOrCreateNtkQuicEngine(String baseUrl, int exactRangeStripe) {
         if(context == null || !NtkQuicFetcher.isAvailable() || baseUrl == null || baseUrl.length() == 0)
             return null;
         try {
             String host = URI.create(baseUrl).getHost();
             if(host == null || host.length() == 0)
                 return null;
+            String cacheKey = ntkQuicEngineCacheKey(host, exactRangeStripe);
             FutureTask<HttpEngine> task;
             boolean owner = false;
             synchronized (ntkQuicEngineLock) {
-                HttpEngine cached = ntkQuicEngines.get(host);
+                HttpEngine cached = ntkQuicEngines.get(cacheKey);
                 if(cached != null)
                     return cached;
-                task = ntkQuicEngineTasks.get(host);
+                task = ntkQuicEngineTasks.get(cacheKey);
                 if(task == null) {
                     String engineHost = host;
                     task = new FutureTask<>(() -> buildNtkQuicEngine(engineHost));
-                    ntkQuicEngineTasks.put(host, task);
+                    ntkQuicEngineTasks.put(cacheKey, task);
                     owner = true;
                 }
             }
@@ -12070,12 +12115,12 @@ public class CustomHttpClient {
                 task.run();
             HttpEngine created = task.get();
             synchronized (ntkQuicEngineLock) {
-                HttpEngine cached = ntkQuicEngines.get(host);
+                HttpEngine cached = ntkQuicEngines.get(cacheKey);
                 if(cached != null)
                     return cached;
                 if(created != null)
-                    ntkQuicEngines.put(host, created);
-                ntkQuicEngineTasks.remove(host);
+                    ntkQuicEngines.put(cacheKey, created);
+                ntkQuicEngineTasks.remove(cacheKey);
                 return created;
             }
         } catch (Exception e) {
@@ -12083,13 +12128,20 @@ public class CustomHttpClient {
                 String host = URI.create(baseUrl).getHost();
                 if(host != null && host.length() > 0) {
                     synchronized (ntkQuicEngineLock) {
-                        ntkQuicEngineTasks.remove(host);
+                        ntkQuicEngineTasks.remove(
+                                ntkQuicEngineCacheKey(host, exactRangeStripe));
                     }
                 }
             } catch (Exception ignored) {
             }
             return null;
         }
+    }
+
+    private static String ntkQuicEngineCacheKey(String host, int exactRangeStripe) {
+        return exactRangeStripe < 0
+                ? host
+                : host + "#exact-range-" + exactRangeStripe;
     }
 
     private static boolean isNtkImageOriginHost(String host) {
@@ -12245,6 +12297,7 @@ public class CustomHttpClient {
             ntkQuicEngines.clear();
             ntkQuicEngineTasks.clear();
             ntkQuicExecutors.clear();
+            ntkExactImageRangeEngineOrdinals.clear();
             ntkWasmWarmCache.clear();
         }
         for(HttpEngine engine : engines) {

@@ -249,6 +249,14 @@ class NtkStrictSourceRouteOwnershipTest {
             body.indexOf("throw IOException(\"Webtoon replica response body closed\")") <
                 body.indexOf("check(!closed) { \"closed\" }")
         )
+        assertTrue(body.contains("private fun readCurrentSource("))
+        assertTrue(body.contains("catch (failure: IllegalStateException)"))
+        assertTrue(
+            body.contains(
+                "if (closed || cancelled.get() || failure.message != \"closed\") throw failure"
+            )
+        )
+        assertTrue(body.contains("Replica response source closed before EOF"))
     }
 
     @Test

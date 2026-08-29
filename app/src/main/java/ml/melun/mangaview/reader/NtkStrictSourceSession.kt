@@ -1930,6 +1930,33 @@ internal object NtkStrictInitialWavePolicy {
     private const val WIFI_ADJACENT_ANCHOR_GATE_OPERATIONS = 1
 
     /**
+     * A current manga page is the sole body that can remove the physical forward-scroll cap.
+     * Opening one cold-cohort leader per remaining page before that body reaches EOF divides the
+     * same bearer among an entire short chapter. Keep p0 exclusive only for the current viewport;
+     * adjacent preparation and non-foreground work retain their finite cohort topology, and the
+     * actor releases the complete post-anchor ring immediately after the body publication.
+     */
+    fun manhwaPreAnchorGateOperations(
+        cohortCount: Int,
+        currentForegroundEpisode: Boolean,
+    ): Int {
+        require(cohortCount >= 0)
+        return if (currentForegroundEpisode) minOf(1, cohortCount) else cohortCount
+    }
+
+    fun allowsCurrentManhwaPreAnchorPage(
+        pageIndex: Int,
+        pageCount: Int,
+        initialPageIndex: Int,
+        currentForegroundEpisode: Boolean,
+        anchorBodyPublished: Boolean,
+    ): Boolean {
+        require(pageIndex in 0 until pageCount)
+        require(initialPageIndex in 0 until pageCount)
+        return !currentForegroundEpisode || anchorBodyPublished || pageIndex == initialPageIndex
+    }
+
+    /**
      * Carrier transport needs one actual demanded body to establish each finite host/pool cohort.
      * Opening only one body per origin left fifteen of eighteen pools idle until page zero EOF,
      * then made leaders and followers compete for brand-new connections. Wi-Fi retains its
@@ -3240,7 +3267,11 @@ internal class NtkStrictSourceSession(
         hostGpuAdjacentManhwaHeadInstall -> 1
         planBinding.episodePath.startsWith("/webtoon/") ->
             webtoonPreAnchorGateOperations
-        else -> coldConnectionCohortLeaders.size
+        else -> NtkStrictInitialWavePolicy.manhwaPreAnchorGateOperations(
+            cohortCount = coldConnectionCohortLeaders.size,
+            currentForegroundEpisode = currentForegroundViewerGeneration > 0L &&
+                !adjacentPrefetch,
+        )
     }
     private var geometryDigest = ""
     private var exactStagePageIndexes: Set<Int> = emptySet()
@@ -4021,17 +4052,12 @@ internal class NtkStrictSourceSession(
             postPromotionStarted,
             installed.snapshot.physicalCallCount,
             installed.snapshot.duplicatePhysicalCallCount,
-            // A zero-wave session has no session-owned pre-exact Call to time: its exact body is
-            // transferred from the click-owned quarantine ledger, while plan reservation still
-            // precedes this actor command by construction. Requiring a positive *millisecond*
-            // gap makes fast process-restores fail nondeterministically when both ordered events
-            // share one clock tick. A real multi-call session-owned wave retains the strict
-            // positive gap. The already-bounded adjacent path and the generation-qualified
-            // one-call resume anchor are actor-ordered and can validly share that tick.
-            sameMillisecondSeededExactAllowed = initialWaveCount == 0 ||
-                (adjacentPrefetch && directWifiTransport &&
-                    !cellularResilientTransport && hostGpuEmulatorRuntime) ||
-                forwardResumeAnchorWireExclusive,
+            // recordSubmissionActor(), preparePromotionActor(), and this activation all execute
+            // on the same source actor. A fast foreground reopen can therefore submit its entire
+            // real quarantine wave and seal it within one elapsedRealtime millisecond. The actor
+            // order is the proof; wall-clock resolution must not turn that valid ordering into a
+            // nondeterministic source-promotion failure.
+            sameMillisecondActorOrderProven = true,
         )
         logOverlapProofActor()
     }
@@ -5577,6 +5603,16 @@ internal class NtkStrictSourceSession(
      */
     private fun allowsCurrentOpeningScrollRunwayActor(pageIndex: Int): Boolean {
         assertActorThread()
+        val currentForegroundManhwa = planBinding.episodePath.startsWith("/manhwa/") &&
+            currentForegroundViewerGeneration > 0L && !adjacentPrefetch
+        if (!NtkStrictInitialWavePolicy.allowsCurrentManhwaPreAnchorPage(
+                pageIndex = pageIndex,
+                pageCount = pages.size,
+                initialPageIndex = initialPageIndex,
+                currentForegroundEpisode = currentForegroundManhwa,
+                anchorBodyPublished = anchorBodyPublishedActor(),
+            )
+        ) return false
         if (!hostGpuCurrentWebtoonPreferredPhysicalCohorts) return true
         if (!NtkHostGpuEmulatorCurrentWebtoonLanePolicy.openingProofIncomplete(
                 contiguousForwardPublishedBodyCountActor(),

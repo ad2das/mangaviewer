@@ -490,6 +490,20 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
+    public void everyPhysicalPositionOwnerSuppressesRestore() {
+        assertFalse(ReaderSurfaceView.physicalInputOwnsViewportForTest(
+                false, false, false, false, false, true, false));
+        for(int owner = 0; owner < 7; owner++) {
+            boolean[] state = {false, false, false, false, false, true, false};
+            if(owner == 5) state[5] = false;
+            else state[owner] = true;
+            assertTrue("Physical owner " + owner + " must suppress restore",
+                    ReaderSurfaceView.physicalInputOwnsViewportForTest(
+                            state[0], state[1], state[2], state[3], state[4], state[5], state[6]));
+        }
+    }
+
+    @Test
     public void preparedAutoCutOnlySplitsWideSpreadPages() {
         assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, true, 720, 1600));
         assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, false, 1600, 1200));

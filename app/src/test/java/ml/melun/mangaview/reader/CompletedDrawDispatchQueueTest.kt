@@ -7,10 +7,58 @@ import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CompletedDrawDispatchQueueTest {
+
+    @Test
+    fun committedProofAdvancesOnlyAfterAcceptedActivityDelivery() {
+        val queue = queue()
+        val first = proof(1L, "/manhwa/1/one", 0, 0)
+        val second = proof(2L, "/manhwa/1/two", 0, 1)
+
+        assertTrue(queue.offer(first, false, 0L).shouldPost)
+        assertTrue(queue.beginRun())
+        assertEquals(first, queue.pollReady(0L)?.proof)
+        assertNull(queue.latestDeliveredProof())
+        queue.recordDeliveryResult(true, first)
+        queue.finishRun(0L)
+        assertEquals(first, queue.latestDeliveredProof())
+        assertEquals(first, queue.latestDeliveredStableViewportProof())
+
+        assertTrue(queue.offer(second, false, 20_000_000L).shouldPost)
+        assertTrue(queue.beginRun())
+        assertEquals(second, queue.pollReady(20_000_000L)?.proof)
+        queue.recordDeliveryResult(false, second)
+        queue.finishRun(20_000_000L)
+        assertEquals(first, queue.latestDeliveredProof())
+        assertEquals(first, queue.latestDeliveredStableViewportProof())
+
+        queue.clearAfterScheduledCallbackRemoval()
+        assertNull(queue.latestDeliveredProof())
+        assertNull(queue.latestDeliveredStableViewportProof())
+    }
+
+    @Test
+    fun acceptedSparseProofCannotReplaceStableCommittedViewport() {
+        val queue = queue()
+        val stable = proof(1L, "episode-a", 3, 3)
+        val sparse = proof(
+            2L,
+            "episode-a",
+            4,
+            4,
+            coverage = stable.coverage.copy(missingPx = 40, drawablePx = 60),
+        )
+
+        queue.recordDeliveryResult(true, stable)
+        queue.recordDeliveryResult(true, sparse)
+
+        assertEquals(sparse, queue.latestDeliveredProof())
+        assertEquals(stable, queue.latestDeliveredStableViewportProof())
+    }
     @Test
     fun tenThousandSameIdentityOffersReserveOneRunnerAndDeliverLatest() {
         val queue = queue()
@@ -390,6 +438,8 @@ class CompletedDrawDispatchQueueTest {
             surfaceLifecycleEpoch = lifecycle,
             presentedUptimeNanos = sequence + 1L,
             scrollOffsetPx = scrollOffset,
+            firstVisiblePageTopPx = 0f,
+            visiblePageTopPx = floatArrayOf(0f),
         )
     }
 

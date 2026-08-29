@@ -307,6 +307,38 @@ class ReaderSessionListenerGateTest {
     }
 
     @Test
+    fun currentAuthoritativeQueryDoesNotFallBackToHistoricalAdoption() {
+        val identity = AdoptedDrawableIdentity.validatedFullQualityTileResources(
+            pageWidth = 100,
+            pageHeight = 512,
+            geometry = intArrayOf(0, 512, 100, 512),
+            resources = arrayOf(Any()),
+        )
+        val registry = AdoptedDrawableRegistry().apply {
+            adopt(2, DrawableOrigin.READER_SESSION, identity)
+        }
+        var physicallyCurrent = false
+        val downstream = object : RecordingListener() {
+            override fun isPageAuthoritativeDrawableInstalled(index: Int): Boolean = index == 2
+
+            override fun isPageAuthoritativeDrawableCurrentlyInstalled(index: Int): Boolean =
+                physicallyCurrent && index == 2
+        }
+        val gate = ReaderSessionListenerGate(
+            generation = 1,
+            isActive = { true },
+            adopted = registry,
+            installed = InstalledDrawableQuery { it == 2 },
+            downstream = downstream,
+        )
+
+        assertTrue(gate.isPageAuthoritativeDrawableInstalled(2))
+        assertFalse(gate.isPageAuthoritativeDrawableCurrentlyInstalled(2))
+        physicallyCurrent = true
+        assertTrue(gate.isPageAuthoritativeDrawableCurrentlyInstalled(2))
+    }
+
+    @Test
     fun generationBoundAuthoritativeInstallQueueOwnsDeliveryBeforePhysicalBatchCommit() {
         val identity = AdoptedDrawableIdentity.validatedFullQualityTileResources(
             pageWidth = 100,

@@ -333,7 +333,7 @@ class NtkAdjacentExactP0ArchitectureTest {
     }
 
     @Test
-    fun residentManhwaP0WakesTheSameRaceSafeInitialAppendRegistry() {
+    fun residentManhwaRunwayBodyWakesTheSameRaceSafeInitialAppendRegistry() {
         val bind = block("private fun ensureAdjacentStrictSourceClaim(", reader)
         val install = block("private fun acceptAdjacentStrictBodyDescriptor(", reader)
         val wake = block("private fun wakeInitialAdjacentManhwaRunwayAppend(", reader)
@@ -345,7 +345,7 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(wake.contains("path.startsWith(\"/manhwa/\")"))
         assertTrue(wake.contains("isDirectWifiStrictAdjacentRunwayProfile(episodePath = path)"))
         assertTrue(wake.contains("minOf(initialAdjacentRunwayPageLimit(path), pageCount)"))
-        assertTrue(wake.contains("requiredRunwayPages <= 0 || sourceIndex != 0"))
+        assertTrue(wake.contains("sourceIndex !in 0 until requiredRunwayPages"))
         assertTrue(wake.contains("adjacentStrictBodyDescriptorKey(path, manifestDigest, 0)"))
         assertFalse(wake.contains("(0 until requiredRunwayPages).all"))
         assertTrue(wake.contains("adjacentStrictBodyDescriptors.containsKey("))
@@ -599,6 +599,44 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(install.contains("usableAuthoritativeOriginalTilePage("))
         assertFalse(install.contains("stripAuthorityToken != 0L"))
         assertFalse(commit.contains("listener.onPageTilesReady"))
+    }
+
+    @Test
+    fun pixelRetirementCannotReleaseDeferredDocumentGeometry() {
+        val pixelClear = block("private fun clearPendingResolveLocked(", surface)
+        val geometryClear = block("private fun clearDeferredLayoutGeometryLocked(", surface)
+        val retirement = block("private fun clearPageBitmap(", surface)
+        val idleResolve = block("private fun applyPendingPageResolvesLocked(", surface)
+
+        assertFalse(pixelClear.contains("frozenLayoutRatio"))
+        assertFalse(pixelClear.contains("deferredLayoutGeometryPages.remove"))
+        assertTrue(geometryClear.contains("page.frozenLayoutRatio = Float.NaN"))
+        assertTrue(geometryClear.contains("deferredLayoutGeometryPages.remove(page)"))
+        assertTrue(retirement.contains("clearPendingResolveLocked(page)"))
+        assertFalse(retirement.contains("clearDeferredLayoutGeometryLocked(page)"))
+        assertTrue(idleResolve.contains("clearDeferredLayoutGeometryLocked(page)"))
+        assertTrue(
+            idleResolve.indexOf("clearDeferredLayoutGeometryLocked(page)") <
+                idleResolve.indexOf("restoreViewportAnchorLocked(viewportAnchor")
+        )
+    }
+
+    @Test
+    fun everyReplicaSuccessRetainsStallAwareBodyRecovery() {
+        val factory = block("private class NtkReplicaFailoverCallFactory(", imageCache)
+        val replicaCall = block("private class NtkReplicaFailoverCall(", imageCache)
+
+        assertTrue(factory.contains("NtkReplicaFailoverCall(delegate, request)"))
+        assertTrue(factory.contains("strictOwnedKnownReplica"))
+        assertTrue(factory.contains("NtkQuarantineSourceCallIdentity::class.java"))
+        assertFalse(imageCache.contains("NtkDirectWifiManhwaSuccessCall"))
+        assertTrue(imageCache.contains("identitySafeRangeReplicaCount >= 2"))
+        assertTrue(replicaCall.contains("maybeWrapStalledReplicaBody("))
+        assertTrue(replicaCall.contains("NtkStalledReplicaResponseBody("))
+        assertTrue(replicaCall.contains("strictOwnedManhwaRangeCandidates("))
+        assertTrue(replicaCall.contains("val strictOwned ="))
+        assertTrue(replicaCall.contains("NTK_MANHWA_RANGE_REPLICA_HOSTS.forEach"))
+        assertTrue(replicaCall.contains("exact total, strong validator, identity encoding"))
     }
 
     private fun source(name: String): String = File(

@@ -110,6 +110,20 @@ public final class NtkExactImageShardPolicyTest {
     }
 
     @Test
+    public void exactRangeAttemptsUseSixHostLocalRoundRobinEngineStripes() {
+        assertEquals(0, CustomHttpClient.ntkExactImageRangeEngineStripe(0L, 6));
+        assertEquals(1, CustomHttpClient.ntkExactImageRangeEngineStripe(1L, 6));
+        assertEquals(5, CustomHttpClient.ntkExactImageRangeEngineStripe(5L, 6));
+        assertEquals(0, CustomHttpClient.ntkExactImageRangeEngineStripe(6L, 6));
+    }
+
+    @Test
+    public void exactRangeEngineUsesTheOuterProgressWallWithoutChangingCanonicalCalls() {
+        assertEquals(3_600L, CustomHttpClient.ntkExactImageHttpEngineTimeoutMs(true));
+        assertEquals(3_000L, CustomHttpClient.ntkExactImageHttpEngineTimeoutMs(false));
+    }
+
+    @Test
     public void directWifiLogicalRetriesRotateWhileCarrierKeepsItsRoute() {
         assertEquals(1, CustomHttpClient.ntkWebtoonRoutePhysicalAttemptOrdinal(
                 1, 9, false));
@@ -142,6 +156,16 @@ public final class NtkExactImageShardPolicyTest {
     @Test(expected = IllegalArgumentException.class)
     public void rejectsEmptyConnectionTopology() {
         CustomHttpClient.ntkExactImageShardIndex(0, 0);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void exactRangeEnginePolicyRejectsEmptyTopology() {
+        CustomHttpClient.ntkExactImageRangeEngineStripe(0L, 0);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void exactRangeEnginePolicyRejectsNegativeAttempt() {
+        CustomHttpClient.ntkExactImageRangeEngineStripe(-1L, 6);
     }
 
     @Test(expected = IllegalArgumentException.class)

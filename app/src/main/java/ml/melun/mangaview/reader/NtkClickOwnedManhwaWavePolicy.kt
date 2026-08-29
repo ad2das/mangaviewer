@@ -65,7 +65,7 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // Probe a session-local ladder after the four visible bodies are resident and keep a wider
     // stage only when its byte-weighted wall throughput materially improves. This remains current-
     // resume/emulator only and does not reduce the physical-device or adjacent production ring.
-    const val HOST_GPU_CURRENT_RESTORED_BULK_BODY_TRANSFERS = CONNECTION_SHARDS
+    const val HOST_GPU_CURRENT_BULK_BODY_TRANSFERS = CONNECTION_SHARDS
     const val HOST_GPU_CURRENT_BULK_INITIAL_TRANSFERS = 6
     // A 27-body restored suffix would spend most of its useful work benchmarking itself. Keep the
     // measured C6 optimum directly for finite chapters and probe wider only when enough untouched
@@ -85,12 +85,22 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // viewport/drawable release gate.
     const val HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS = 4
     const val HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_EXECUTOR_LANES = 4
-    const val MIXED_UNCOMMON_BODY_TRANSFERS = 8
+    // Mixed PNG pages are multi-megabyte full comic leaves rather than the small ordinary
+    // webtoon slices served by the wide body ring. Eight simultaneous bodies divided the same
+    // three replicas until each stream repeatedly hit the body-stall recovery path. Four keeps
+    // the complete physical viewport in flight while preserving the higher aggregate throughput
+    // of each connection; every remaining exact page stays queued in the same owned session.
+    const val MIXED_UNCOMMON_BODY_TRANSFERS = 4
     // Keep the authority document's cold QUIC request alive: starting 32 bodies before exact-count
     // proof saturated the emulator and made that independent request time out at 3.5 seconds.
     // Eight bodies still cover the entry viewport; the bounded full-page wave is released after
     // authority and the first visible body, so this never drops a canonical page.
     const val SPECULATION_DEBT_LIMIT = 8
+    // Only the exact current anchor can remove the physical forward-scroll cap. Letting p1-p4
+    // transfer concurrently still divides the same three CDN authorities while p0 clamps motion
+    // at zero. This gate changes scheduling only: every exact page remains in the same owned wave
+    // and the complete suffix is released immediately when the anchor future becomes terminal.
+    const val FOREGROUND_RUNWAY_BODY_COUNT = 1
     // Wi-Fi can expose forty body streams without the cellular SNI path, but doing so before the
     // entry viewport reaches EOF lets one visible image compete with the whole volume. Twelve
     // images cover the measured active-fling prefix: after an eight-page seed, the first unprotected
@@ -143,6 +153,19 @@ internal object NtkClickOwnedManhwaWavePolicy {
     fun initialSpeculationPages(wifiTransport: Boolean): Int =
         if (wifiTransport) WIFI_ENTRY_SPECULATION_PAGES else SPECULATION_DEBT_LIMIT
 
+    fun isForegroundRunwayBody(
+        pageIndex: Int,
+        forwardFirstPage: Int,
+        pageCount: Int,
+    ): Boolean {
+        require(pageIndex >= 0)
+        require(forwardFirstPage in 0 until pageCount)
+        return pageIndex in forwardFirstPage until minOf(
+            pageCount,
+            forwardFirstPage + FOREGROUND_RUNWAY_BODY_COUNT,
+        )
+    }
+
     fun shouldUseWifiEntryFallbackLane(
         wifiTransport: Boolean,
         pageIndex: Int,
@@ -184,6 +207,28 @@ internal object NtkClickOwnedManhwaWavePolicy {
             capturedNetworkHandle != null &&
             forwardFirstPage > 0
     }
+
+    /**
+     * Applies congestion-controlled body admission to the offscreen portion of every current
+     * direct-Wi-Fi manhwa on the host-GPU emulator, including a cold page-zero launch.
+     *
+     * The old gate covered only restored bookmarks. A cold launch therefore released forty
+     * remote image bodies at once after p0, which could overload the same three replica edges and
+     * turn otherwise short responses into a retry/cancellation storm. The adaptive controller is
+     * transport and device-profile policy, not content or test policy: adjacent episodes retain
+     * their separate bounded runway and a network handoff immediately leaves this profile.
+     */
+    fun shouldAdaptHostGpuCurrentBulkBodies(
+        hostGpuEmulatorRuntime: Boolean,
+        directWifiAdjacentOwned: Boolean,
+        wifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        capturedNetworkHandle: Long?,
+    ): Boolean = hostGpuEmulatorRuntime &&
+        !directWifiAdjacentOwned &&
+        wifiTransport &&
+        !cellularResilientTransport &&
+        capturedNetworkHandle != null
 
     fun isHostGpuCurrentRestoredViewportBody(
         pageIndex: Int,

@@ -1599,7 +1599,7 @@ data class NtkSourceOverlapProof(
     val postPromotionStarted: Int,
     val physicalCallCount: Int,
     val duplicatePhysicalCallCount: Int,
-    val sameMillisecondSeededExactAllowed: Boolean = false,
+    val sameMillisecondActorOrderProven: Boolean = false,
 ) {
     init {
         require(planReservedAtMs >= 0L)
@@ -1607,12 +1607,12 @@ data class NtkSourceOverlapProof(
         require(initialQuarantineWaveSubmittedAtMs >= firstQuarantineSubmittedAtMs)
         // A fully click-owned exact body set legitimately needs no second physical source wave.
         require(initialWaveCount >= 0)
-        // A host-emulator direct-Wi-Fi adjacent session is actor-ordered: its quarantine
-        // submission is recorded before exact installation, although both events can share the
-        // same millisecond clock tick. Every other session must still prove a positive millisecond
-        // gap; relaxing those paths would hide a discovery/source ordering regression.
+        // Millisecond timestamps cannot distinguish two commands which ran in order on the same
+        // source actor. Equality is valid only when the producer supplies that structural ordering
+        // proof; a reversed clock remains invalid and unproven callers still require a positive
+        // timestamp gap.
         require(
-            if (sameMillisecondSeededExactAllowed) {
+            if (sameMillisecondActorOrderProven) {
                 exactSealAtMs >= firstQuarantineSubmittedAtMs
             } else {
                 exactSealAtMs > firstQuarantineSubmittedAtMs

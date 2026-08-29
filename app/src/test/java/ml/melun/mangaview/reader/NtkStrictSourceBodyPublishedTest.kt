@@ -88,7 +88,7 @@ class NtkStrictSourceBodyPublishedTest {
             postPromotionStarted = 0,
             physicalCallCount = 0,
             duplicatePhysicalCallCount = 0,
-            sameMillisecondSeededExactAllowed = true,
+            sameMillisecondActorOrderProven = true,
         )
 
         assertEquals(0L, proof.overlapBeforeExactMs)
@@ -111,7 +111,7 @@ class NtkStrictSourceBodyPublishedTest {
                 postPromotionStarted = 0,
                 physicalCallCount = 0,
                 duplicatePhysicalCallCount = 0,
-                sameMillisecondSeededExactAllowed = true,
+                sameMillisecondActorOrderProven = true,
             )
         }
     }
@@ -131,7 +131,7 @@ class NtkStrictSourceBodyPublishedTest {
             postPromotionStarted = 0,
             physicalCallCount = 1,
             duplicatePhysicalCallCount = 0,
-            sameMillisecondSeededExactAllowed = true,
+            sameMillisecondActorOrderProven = true,
         )
 
         assertEquals(0L, proof.overlapBeforeExactMs)
@@ -139,23 +139,24 @@ class NtkStrictSourceBodyPublishedTest {
     }
 
     @Test
-    fun physicalQuarantineWaveStillRequiresPositivePreExactOverlap() {
-        assertRejected {
-            NtkSourceOverlapProof(
-                planReservedAtMs = 100L,
-                firstQuarantineSubmittedAtMs = 104L,
-                initialQuarantineWaveSubmittedAtMs = 104L,
-                initialWaveCount = 1,
-                exactSealAtMs = 104L,
-                ownerClaimedAtMs = 104L,
-                completedAtPromotion = 0,
-                activeAtPromotion = 1,
-                queuedAtPromotion = 0,
-                postPromotionStarted = 0,
-                physicalCallCount = 1,
-                duplicatePhysicalCallCount = 0,
-            )
-        }
+    fun actorOrderedPhysicalQuarantineWaveMaySealInTheSubmissionMillisecond() {
+        val proof = NtkSourceOverlapProof(
+            planReservedAtMs = 100L,
+            firstQuarantineSubmittedAtMs = 104L,
+            initialQuarantineWaveSubmittedAtMs = 104L,
+            initialWaveCount = 1,
+            exactSealAtMs = 104L,
+            ownerClaimedAtMs = 104L,
+            completedAtPromotion = 0,
+            activeAtPromotion = 1,
+            queuedAtPromotion = 0,
+            postPromotionStarted = 0,
+            physicalCallCount = 1,
+            duplicatePhysicalCallCount = 0,
+            sameMillisecondActorOrderProven = true,
+        )
+
+        assertEquals(0L, proof.overlapBeforeExactMs)
     }
 
     @Test

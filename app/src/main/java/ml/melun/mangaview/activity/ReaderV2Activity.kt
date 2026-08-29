@@ -73,6 +73,7 @@ import ml.melun.mangaview.reader.NtkStrictEpisodeDiscoveryCoordinator
 import ml.melun.mangaview.reader.NtkStripDigests
 import ml.melun.mangaview.reader.NtkValidatedNetworkRedriveGate
 import ml.melun.mangaview.reader.NtkVisibleIdentityPolicy
+import ml.melun.mangaview.reader.NtkCommittedViewportProofPolicy
 import ml.melun.mangaview.reader.HostExactHardwareTilePool
 import ml.melun.mangaview.reader.ReaderPreparedStore
 import ml.melun.mangaview.reader.ReaderPipelinePolicy
@@ -90,6 +91,19 @@ import ml.melun.mangaview.runtime.AppDispatchers
 import ml.melun.mangaview.runtime.PerformanceMonitor
 import ml.melun.mangaview.runtime.ViewerTelemetry
 import kotlin.math.abs
+
+/** Selects the same 35%-viewport reading owner used by ReaderSurfaceView progress. */
+internal object NtkCompletedDrawEpisodeOwnershipPolicy {
+    fun readingIdentityIndex(
+        visiblePageTopPx: FloatArray,
+        physicalViewportPx: Int,
+        identityCount: Int,
+    ): Int = NtkCommittedViewportProofPolicy.readingIdentityIndex(
+        visiblePageTopPx,
+        physicalViewportPx,
+        identityCount,
+    )
+}
 
 class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.WindowListener {
     data class TouchDeliverySnapshot(
@@ -233,6 +247,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         ConcurrentHashMap<AdjacentExactDiscoveryRetryKey, Long>()
     private val adjacentExactDiscoveryRetryRunnables =
         ConcurrentHashMap<AdjacentExactDiscoveryRetryKey, Runnable>()
+    /**
+     * HOME can return an existing reader while its next-episode manifest retry is parked. That
+     * work is optional until the Surface reports the predecessor's real tail. Releasing every
+     * parked retry from onResume makes JSON/crypto/source reservation and the first native body
+     * allocation overlap the user's first touch. Long sessions then stutter even though the
+     * restored current episode is already clean. Long.MAX_VALUE means that the first post-resume
+     * gesture has not finished yet; a bounded no-input fallback preserves idle prefetch.
+     */
+    private var postResumeOptionalAdjacentGateUntilMs = 0L
+    private var postResumeOptionalAdjacentGateGeneration = 0L
     @Volatile private var strictExactLaunchSeal: StrictExactLaunchSeal? = null
     @Volatile private var strictReaderSessionGeneration = -1
     @Volatile private var strictWorkerHandoffGeneration = -1
@@ -368,7 +392,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     // publication. Volatile visibility avoids a blocking native progress read on every completed
     // opening page while continuous input owns the renderer transaction.
     @Volatile private var currentPage = 0
-    private var currentManga: Manga? = null
+    @Volatile private var currentManga: Manga? = null
     private var currentEpisodeAnchorPage = -1
     private var currentTitle: Title? = null
     private var resultIntent: Intent? = null
@@ -1603,7 +1627,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPause() {
         readerHostResumed = false
         readerHostResumeRedrawGeneration++
+        armPostResumeOptionalAdjacentGate()
         pauseStrictNtkValidatedNetworkRedrive(hostPause = true)
+        session?.onHostPaused()
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT)
         freezePhysicalViewportForLifecycle()
         if (::renderView.isInitialized) {
@@ -1650,6 +1676,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onResume() {
         super.onResume()
         readerHostResumed = true
+        schedulePostResumeOptionalAdjacentIdleFallback()
         resumeStrictNtkValidatedNetworkRedrive()
         readerHostResumeRedrawGeneration++
         val resumeRedrawGeneration = readerHostResumeRedrawGeneration
@@ -1687,6 +1714,69 @@ if (firstResumeArmedUptimeNanos == 0L) {
         }
         session?.onHostResumed()
         scheduleReaderHostResumeRedraw(resumeRedrawGeneration)
+        criticalUiHandler.postDelayed({
+            if (readerHostResumed && resumeRedrawGeneration == readerHostResumeRedrawGeneration &&
+                !destroyed && !isFinishing && !isDestroyed && ::renderView.isInitialized
+            ) {
+                renderView.completeLifecycleEnterAnimationForNativeReveal(
+                    "bounded_framework_fallback",
+                )
+            }
+        }, HOST_ENTER_ANIMATION_FALLBACK_MS)
+    }
+
+    override fun onEnterAnimationComplete() {
+        super.onEnterAnimationComplete()
+        if (readerHostResumed && ::renderView.isInitialized) {
+            renderView.completeLifecycleEnterAnimationForNativeReveal("framework_callback")
+        }
+    }
+
+    private fun armPostResumeOptionalAdjacentGate() {
+        postResumeOptionalAdjacentGateGeneration++
+        postResumeOptionalAdjacentGateUntilMs = if (isCurrentNtkReader() && session != null) {
+            Long.MAX_VALUE
+        } else {
+            0L
+        }
+    }
+
+    private fun schedulePostResumeOptionalAdjacentIdleFallback() {
+        if (postResumeOptionalAdjacentGateUntilMs != Long.MAX_VALUE) return
+        val generation = postResumeOptionalAdjacentGateGeneration
+        statusHandler.postDelayed({
+            if (!readerHostResumed || generation != postResumeOptionalAdjacentGateGeneration ||
+                postResumeOptionalAdjacentGateUntilMs != Long.MAX_VALUE
+            ) return@postDelayed
+            postResumeOptionalAdjacentGateUntilMs = 0L
+            repostAdjacentExactDiscoveryRetryRunnables()
+        }, POST_RESUME_OPTIONAL_ADJACENT_NO_INPUT_FALLBACK_MS)
+    }
+
+    private fun releasePostResumeOptionalAdjacentGateAfterInput(eventTimeMs: Long) {
+        if (postResumeOptionalAdjacentGateUntilMs != Long.MAX_VALUE) return
+        postResumeOptionalAdjacentGateGeneration++
+        val generation = postResumeOptionalAdjacentGateGeneration
+        val deadline = eventTimeMs + POST_RESUME_OPTIONAL_ADJACENT_INPUT_QUIET_MS
+        postResumeOptionalAdjacentGateUntilMs = deadline
+        statusHandler.postDelayed({
+            if (!readerHostResumed || generation != postResumeOptionalAdjacentGateGeneration ||
+                postResumeOptionalAdjacentGateUntilMs != deadline
+            ) return@postDelayed
+            postResumeOptionalAdjacentGateUntilMs = 0L
+            repostAdjacentExactDiscoveryRetryRunnables()
+        }, POST_RESUME_OPTIONAL_ADJACENT_INPUT_QUIET_MS)
+    }
+
+    /** Null means admitted; Long.MAX_VALUE waits for the first gesture to finish. */
+    private fun postResumeOptionalAdjacentDelayMs(nowMs: Long): Long? {
+        val deadline = postResumeOptionalAdjacentGateUntilMs
+        if (deadline == 0L) return null
+        if (deadline == Long.MAX_VALUE) return Long.MAX_VALUE
+        val remaining = deadline - nowMs
+        if (remaining > 0L) return remaining
+        postResumeOptionalAdjacentGateUntilMs = 0L
+        return null
     }
 
     private fun capturePausedPhysicalViewportAnchor() {
@@ -2330,6 +2420,11 @@ if (firstResumeArmedUptimeNanos == 0L) {
     private fun shouldClampNtkPartialTailProgress(count: Int): Boolean {
         if (!isCurrentNtkReader()) return false
         if (count <= NTK_ACK_INITIAL_CONTINUOUS_PAGES) return false
+        // The Surface page table can receive its complete immutable manifest before the image
+        // cache publishes the legacy ACK-count hint. That exact identity proof owns navigation;
+        // clamping it to count - ACK_WINDOW rolls the toolbar and decode anchor backwards while
+        // the user's physical viewport continues forward.
+        if (::renderView.isInitialized && renderView.hasSealedInitialExactStructure()) return false
         val path = currentManga?.ntkEpisodePath?.trim().orEmpty()
         if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return false
         val minCreatedAt = SystemClock.elapsedRealtime() - 30_000L
@@ -3717,6 +3812,21 @@ if (firstResumeArmedUptimeNanos == 0L) {
         seal: StrictExactLaunchSeal,
         index: Int
     ) {
+        val canonicalRecorded = session?.markStrictAuthoritativeDrawableInstalled(
+            episodePath = seal.normalizedEpisodePath,
+            discoveryGeneration = seal.discoveryGeneration,
+            manifestDigest = seal.manifestDigest,
+            manifestPageCount = seal.pageCount,
+            index = index,
+        ) == true
+        if (!canonicalRecorded) {
+            Log.e(
+                TAG,
+                "reader_authoritative_scene_progress_reject generation=$generation," +
+                    "page=$index,reason=session_canonical_ack",
+            )
+            return
+        }
         val requiredFirstPage = strictForwardReadyFirstPage.coerceIn(0, seal.pageCount - 1)
         val requiredPageCount = seal.pageCount - requiredFirstPage
         val state = synchronized(strictRenderReadyLock) {
@@ -3942,7 +4052,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
 
     override fun isPageAuthoritativeDrawableCurrentlyInstalled(index: Int): Boolean {
         return if (strictExactLaunchSeal != null) {
-            renderView.hasAuthoritativeOriginalPage(index)
+            renderView.hasAuthoritativeOriginalPageCurrentlyDrawable(index)
         } else {
             renderView.hasPageDrawable(index)
         }
@@ -6367,6 +6477,30 @@ if (firstResumeArmedUptimeNanos == 0L) {
                         "window_changed_initial_restore_retry progress=$progressPage," +
                             "offset=$progressOffset,target=$restorePage,targetOffset=$restoreOffset"
                     )
+                } else {
+                    // Surface owns the restored coordinate and will retry it when exact geometry
+                    // resolves, but Session must still receive this authoritative busy -> idle
+                    // edge. Dropping the callback here leaves viewportBusy and the process-wide
+                    // transfer pacer active after Surface has already stopped; the remaining exact
+                    // pages then wait forever for motion which no longer exists. Forward the raw
+                    // Surface window only. This does not relock, move, or otherwise rewrite the
+                    // viewport, and the session's latest-only ingress gate deduplicates it.
+                    MainThreadStallMonitor.trace("reader_restore_surface_motion_async") {
+                        activeSession?.requestWindowAsync(
+                            firstPage,
+                            lastPage,
+                            anchorPage,
+                            false,
+                            directionHint,
+                            physicalFirstPage,
+                            physicalLastPage,
+                        )
+                    }
+                    Log.d(
+                        TAG,
+                        "window_changed_initial_restore_surface_motion_forward " +
+                            "progress=$progressPage,target=$restorePage,busy=false",
+                    )
                 }
                 return@trace
             }
@@ -6622,6 +6756,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
         } else if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
             progressMovedInGesture = false
             session?.notePhysicalTouch(false)
+            releasePostResumeOptionalAdjacentGateAfterInput(deliveredAtMs)
         } else if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             progressMovedInGesture = false
             // A lifecycle anchor protects only a stationary HOME return. Release it before the
@@ -7952,6 +8087,7 @@ if (!renderView.isShown ||
         physicalEpisodePath: String,
         viewportDefectReasons: String,
     ) {
+        adoptCompletedDrawEpisodeOwnership(proof, coverage, identities)
         for (identity in identities) {
             if (identity.normalizedEpisodePath == launchSeal.normalizedEpisodePath) {
                 strictTelemetryObservedSources[identity.sourcePageIndex] = true
@@ -8380,6 +8516,42 @@ if (!renderView.isShown ||
                 )
             }
         }
+    }
+
+    /**
+     * Commits the episode metadata owner before ReaderSurfaceView publishes this completed proof.
+     *
+     * The ordinary window callback may remain frame-coalesced for decode/retirement throughput,
+     * but a physically presented successor must never be externally observable while
+     * [currentManga] still names its predecessor. This one-per-episode edge performs no progress
+     * persistence; the normal idle window callback retains that maintenance ownership.
+     */
+    private fun adoptCompletedDrawEpisodeOwnership(
+        proof: ReaderSurfaceView.CompletedDrawProof,
+        coverage: ReaderSurfaceView.VisibleCoverageSnapshot,
+        identities: List<ReaderSurfaceView.CommittedPageIdentity>,
+    ) {
+        val ownerIndex = NtkCompletedDrawEpisodeOwnershipPolicy.readingIdentityIndex(
+            visiblePageTopPx = proof.visiblePageTopPx,
+            physicalViewportPx = coverage.physicalViewportPx,
+            identityCount = identities.size,
+        )
+        val owner = identities.getOrNull(ownerIndex) ?: return
+        val targetPath = NtkStripDigests.normalizeEpisodePath(owner.normalizedEpisodePath)
+        val currentPath = NtkStripDigests.normalizeEpisodePath(
+            currentManga?.ntkEpisodePath.orEmpty(),
+        )
+        if (targetPath.isEmpty() || targetPath == currentPath) return
+        val pageTop = proof.visiblePageTopPx.getOrNull(ownerIndex)
+            ?.takeIf(Float::isFinite)
+            ?: proof.firstVisiblePageTopPx.takeIf(Float::isFinite)
+            ?: 0f
+        updateCurrentEpisode(
+            anchorPage = owner.displayPageIndex,
+            anchorOffset = pageTop.toInt(),
+            saveProgress = false,
+            physicallyPresentedAdjacentPath = targetPath,
+        )
     }
 
     /**
@@ -8931,6 +9103,7 @@ if (!renderView.isShown ||
 
     private fun repostAdjacentExactDiscoveryRetryRunnables() {
         if (!readerHostResumed) return
+        if (postResumeOptionalAdjacentGateUntilMs == Long.MAX_VALUE) return
         adjacentExactDiscoveryRetryRunnables.forEach { (key, runnable) ->
             statusHandler.removeCallbacks(runnable)
             if (adjacentExactDiscoveryRetryTokens.containsKey(key)) {
@@ -9550,6 +9723,23 @@ if (!renderView.isShown ||
                             capturedTargetPath,
                         ) != null
                     ) return
+                    val physicalBoundaryDemand =
+                        ownerSession.isPhysicalBoundaryDemandingForwardAdjacent(manga)
+                    if (!replacementRecoveryCurrent && !physicalBoundaryDemand) {
+                        val lifecycleDelay = postResumeOptionalAdjacentDelayMs(
+                            SystemClock.uptimeMillis(),
+                        )
+                        if (lifecycleDelay != null) {
+                            retainedForNextTurn = true
+                            if (lifecycleDelay != Long.MAX_VALUE) {
+                                retainedForNextTurn = statusHandler.postDelayed(
+                                    this,
+                                    lifecycleDelay.coerceAtLeast(1L),
+                                )
+                            }
+                            return
+                        }
+                    }
                     val launchPath = strictExactLaunchSeal?.normalizedEpisodePath.orEmpty()
                     val predecessorDrawableReady =
                         ownerSession.canPrepareForwardAdjacentNow(capturedPredecessorPath)
@@ -14020,6 +14210,13 @@ if (!renderView.isShown ||
         return renderView.currentScrollPositionSnapshot()
     }
 
+    /** Immutable source identity plus page-local viewport coordinate for movement assertions. */
+    fun testCurrentCommittedViewportAnchorSnapshot():
+        ReaderSurfaceView.LifecycleViewportAnchorSnapshot? {
+        if (hybridNtkBrowserActive) return null
+        return renderView.currentCommittedViewportAnchorSnapshot()
+    }
+
     fun testScrollByPixels(deltaPx: Float) {
         if (hybridNtkBrowserActive) {
             val view = hybridNtkWebView ?: return
@@ -14467,6 +14664,7 @@ if (!renderView.isShown ||
         private const val HOST_RESUME_REDRAW_FINAL_DELAY_MS = 480L
         private const val HOST_RESUME_REDRAW_PENDING_RETRY_MS = 250L
         private const val HOST_RESUME_REDRAW_PENDING_BUDGET_MS = 45_000L
+        private const val HOST_ENTER_ANIMATION_FALLBACK_MS = 8_000L
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
         private const val BOUNDARY_APPEND_QUIET_MS = 1600L
         private const val NTK_APPEND_PUBLISH_INPUT_QUIET_MS = 900L
@@ -14497,6 +14695,8 @@ if (!renderView.isShown ||
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
         private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val NTK_ADJACENT_EXACT_DISCOVERY_RETRY_MS = 250L
+        private const val POST_RESUME_OPTIONAL_ADJACENT_NO_INPUT_FALLBACK_MS = 4_000L
+        private const val POST_RESUME_OPTIONAL_ADJACENT_INPUT_QUIET_MS = 1_200L
         private const val NTK_ADJACENT_EXACT_DISCOVERY_MAX_LAUNCHES = 4
         private const val NTK_ADJACENT_VALIDATED_FLIGHT_STALL_MS = 30_000L
         private const val NTK_VALIDATED_NETWORK_REDRIVE_RECHECK_MS = 500L

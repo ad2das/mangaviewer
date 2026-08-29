@@ -1511,7 +1511,9 @@ class NtkStripSurfaceView private constructor(
             compositorTemporarilyHiddenForSurfaceLoss = false
             val desired = compositorAlpha
             if (alpha != desired) super.setAlpha(desired)
-            if (!applyPublishedCompositorAlphaApi29(desired)) {
+            val alphaApplied = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                applyPublishedCompositorAlphaApi29(desired)
+            if (!alphaApplied) {
                 terminalSurfaceFailure(
                     SurfaceFailureEvent(
                         requestedIdentity.engineGeneration,

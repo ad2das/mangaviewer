@@ -298,7 +298,7 @@ class NtkDirectWifiAdjacentRunwayTailHandoffTest {
         assertTrue(initial.contains("requireStrictDescriptor = strictExactDescriptorOnly"))
         assertTrue(initial.contains("val remainingRefs = refs.drop(runwayCount)"))
         assertTrue(initial.contains("target,\n                            remainingRefs,"))
-        assertTrue(p0Wake.contains("requiredRunwayPages <= 0 || sourceIndex != 0"))
+        assertTrue(p0Wake.contains("sourceIndex !in 0 until requiredRunwayPages"))
         assertFalse(p0Wake.contains("(0 until requiredRunwayPages).all"))
         assertTrue(publish.contains("readyCount < atomicTailReadyRefCount"))
         assertTrue(publish.contains("val nextSourceRefCount ="))

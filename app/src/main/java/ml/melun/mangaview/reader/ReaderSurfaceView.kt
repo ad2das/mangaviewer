@@ -508,6 +508,47 @@ internal object NtkNativeBandCachePolicy {
     }
 }
 
+/**
+ * Selects a page owner only from a defect-free committed frame which actually spans the reading
+ * probe. A sparse frame whose first real page begins below the probe cannot claim that later page
+ * as the user's position; doing so makes the public anchor jump backwards when the missing
+ * predecessor is installed in the next frame.
+ */
+internal object NtkCommittedViewportProofPolicy {
+    private const val PROGRESS_PROBE_RATIO = 0.35f
+
+    fun readingIdentityIndex(
+        visiblePageTopPx: FloatArray,
+        physicalViewportPx: Int,
+        identityCount: Int,
+    ): Int {
+        if (identityCount <= 0 || physicalViewportPx <= 0 ||
+            visiblePageTopPx.size != identityCount
+        ) return -1
+        val probe = physicalViewportPx * PROGRESS_PROBE_RATIO
+        var owner = -1
+        for (index in visiblePageTopPx.indices) {
+            val top = visiblePageTopPx[index]
+            if (!top.isFinite()) return -1
+            if (top > probe) break
+            owner = index
+        }
+        return owner
+    }
+
+    fun isStable(proof: ReaderSurfaceView.CompletedDrawProof): Boolean {
+        val coverage = proof.coverage
+        return coverage.drawablePx > 0 && coverage.missingPx == 0 &&
+            coverage.placeholderPx == 0 && coverage.visibleLoading == 0 &&
+            coverage.visibleErrors == 0 &&
+            readingIdentityIndex(
+                proof.visiblePageTopPx,
+                coverage.physicalViewportPx,
+                proof.visiblePageIdentities.size,
+            ) >= 0
+    }
+}
+
 internal object NtkNativeSurfaceFrameRatePolicy {
     const val FORCE_HWUI_SYSTEM_PROPERTY = "mangaview.reader.force_hwui_for_test"
 
@@ -971,6 +1012,8 @@ internal class CompletedDrawDispatchQueue(
     private val semanticTransitions = ArrayDeque<Entry>()
     private var ordinary: Entry? = null
     private var lastSelectedProof: ReaderSurfaceView.CompletedDrawProof? = null
+    private var lastDeliveredProof: ReaderSurfaceView.CompletedDrawProof? = null
+    private var lastDeliveredStableViewportProof: ReaderSurfaceView.CompletedDrawProof? = null
     private var lastSelectedAtNanos = Long.MIN_VALUE
     private var runnerScheduled = false
     private var runnerRunning = false
@@ -1124,9 +1167,36 @@ internal class CompletedDrawDispatchQueue(
     }
 
     @Synchronized
-    fun recordDeliveryResult(accepted: Boolean) {
-        if (accepted) delivered++ else staleDropped++
+    fun recordDeliveryResult(
+        accepted: Boolean,
+        proof: ReaderSurfaceView.CompletedDrawProof? = null,
+    ) {
+        if (accepted) {
+            delivered++
+            if (proof != null &&
+                (lastDeliveredProof == null || proof.frameToken > lastDeliveredProof!!.frameToken)
+            ) {
+                lastDeliveredProof = proof
+            }
+            if (proof != null && NtkCommittedViewportProofPolicy.isStable(proof) &&
+                (lastDeliveredStableViewportProof == null ||
+                    proof.frameToken > lastDeliveredStableViewportProof!!.frameToken)
+            ) {
+                lastDeliveredStableViewportProof = proof
+            }
+        } else {
+            staleDropped++
+        }
     }
+
+    /** Last physical proof whose Activity listener completed successfully. */
+    @Synchronized
+    fun latestDeliveredProof(): ReaderSurfaceView.CompletedDrawProof? = lastDeliveredProof
+
+    /** Last defect-free Activity-processed proof whose identities span the reading probe. */
+    @Synchronized
+    fun latestDeliveredStableViewportProof(): ReaderSurfaceView.CompletedDrawProof? =
+        lastDeliveredStableViewportProof
 
     /** Releases a Handler reservation when post/postDelayed rejects during Looper teardown. */
     @Synchronized
@@ -1144,6 +1214,8 @@ internal class CompletedDrawDispatchQueue(
         semanticTransitions.clear()
         ordinary = null
         lastSelectedProof = null
+        lastDeliveredProof = null
+        lastDeliveredStableViewportProof = null
         lastSelectedAtNanos = Long.MIN_VALUE
         runnerScheduled = false
         clears++
@@ -1434,6 +1506,16 @@ internal class NativeSurfaceRevealDispatchGate {
     )
 }
 
+/** Native submit contract shared by synchronous and deferred Kotlin ownership paths. */
+internal object NtkNativeSubmitResultPolicy {
+    private const val TRANSIENT_BACKPRESSURE = -2L
+
+    fun isTransientBackpressure(result: Long): Boolean = result == TRANSIENT_BACKPRESSURE
+
+    fun isTerminalFailure(result: Long): Boolean =
+        result < 0L && !isTransientBackpressure(result)
+}
+
 class ReaderSurfaceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
@@ -1441,6 +1523,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
     data class ProgressPosition(
         val page: Int,
         val offset: Int
+    )
+
+    /**
+     * Exact physical location of a document page inside the viewport.
+     *
+     * ProgressPosition deliberately remains integer-based because it is persisted as a bookmark
+     * and crosses the Java listener boundary. Geometry mutations must not reuse that lossy value:
+     * dropping even a fraction of a pixel on every late image-height resolve accumulates into a
+     * visible idle jump. This private anchor owns the full-precision compositor coordinate.
+     */
+    private data class ViewportAnchor(
+        val page: Int,
+        val pageTopInViewportPx: Float,
     )
 
     data class PrepareStats @JvmOverloads constructor(
@@ -1891,6 +1986,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         pendingTiles: List<ReaderTile> = emptyList(),
         var pendingWidth: Int = 0,
         var pendingHeight: Int = 0,
+        /**
+         * Temporary display geometry used while real input owns the viewport. Source dimensions
+         * and proof stay authoritative; only layout uses this ratio until input fully settles.
+         */
+        var frozenLayoutRatio: Float = Float.NaN,
         var placeholderRatio: Float = DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO,
         var stripAuthority: Long = 0L,
         var stripEpisode: Long = 0L,
@@ -2008,6 +2108,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pendingTiles = pendingTiles,
             pendingWidth = pendingWidth,
             pendingHeight = pendingHeight,
+            frozenLayoutRatio = frozenLayoutRatio,
             placeholderRatio = placeholderRatio,
             stripAuthority = stripAuthority,
             stripEpisode = stripEpisode,
@@ -2582,6 +2683,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
      */
     private val pendingResolvePages: MutableSet<Page> =
         Collections.newSetFromMap(IdentityHashMap<Page, Boolean>())
+    /**
+     * Pages whose exact pixels and source proof are already usable but whose document footprint
+     * remains frozen for an active gesture. This is intentionally separate from
+     * [pendingResolvePages]: geometry-only work must never make a drawable page look missing or
+     * trigger another download/decode admission.
+     */
+    private val deferredLayoutGeometryPages: MutableSet<Page> =
+        Collections.newSetFromMap(IdentityHashMap<Page, Boolean>())
     private val pages = ArrayList<Page>()
     /**
      * Published only by page-table mutations under [stateLock]. Input reads this one-bit snapshot
@@ -3023,6 +3132,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lockedRestoreOffset = 0
     private var lockedRestoreUntilMs = 0L
     private var lifecycleRestoreInputPending = false
+    /**
+     * Immutable content coordinate owned by HOME/Recents until the next real ACTION_DOWN.
+     *
+     * Keeping only [scrollOffset] is insufficient: authoritative dimensions may arrive after
+     * resume and change every prefix height while leaving that absolute number untouched. The
+     * viewport would then silently show a different source page. Retain the compositor-proven
+     * identity and its physical top so every later structural reflow can reproject the same
+     * pixels before publishing another frame.
+     */
+    private var lifecycleViewportAnchorIdentity: CommittedPageIdentity? = null
+    private var lifecycleViewportAnchorPageTopPx = Float.NaN
     private var lifecycleFirstGestureProbeArmed = false
     private var pendingPreparedStartPage = -1
     private var pendingPreparedStartOffset = 0
@@ -3197,6 +3317,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var surfaceAttachmentDeferredUntilActualPixels = false
     private var surfaceRevealPosted = false
     private var nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+    private var lifecycleEnterAnimationPending = false
+    private var lifecycleCleanHwuiRevealReady = false
     /** Host exact tokens have no HWUI pixels; only their native latch may prove presentation. */
     private var nativeOnlyExactSurfaceRevealPending = false
     private var nativeSurfaceRevealAfterPrepareEpoch = 0L
@@ -3859,6 +3981,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             surfaceAttachmentDeferredUntilActualPixels = enabled
             surfaceRevealPosted = false
             nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+            lifecycleEnterAnimationPending = false
+            lifecycleCleanHwuiRevealReady = false
             nativeOnlyExactSurfaceRevealPending = false
             nativeSurfaceRevealAfterPrepareEpoch = 0L
             deferredSurfaceIdentityActivated = !enabled
@@ -3961,7 +4085,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             if (pages.isNotEmpty() && nextCount > 0) {
                 rebuildLayoutLocked()
-                val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
                 val oldCount = pages.size
                 this.deferInitialEmptyDraw = deferInitialEmptyDraw
                 when {
@@ -3991,7 +4115,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 if (viewportAnchor != null && viewportAnchor.page in pages.indices) {
                     structuralScrollAdjustUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
                     setStructuralScrollOffsetLocked(
-                        pageTopOrElseLocked(viewportAnchor.page, 0f) - viewportAnchor.offset,
+                        pageTopOrElseLocked(viewportAnchor.page, 0f) -
+                            viewportAnchor.pageTopInViewportPx,
                     )
                 }
                 clampScrollLocked()
@@ -4269,7 +4394,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val wasAtEnd = height > 0 &&
                 scrollOffset >= maxScrollLocked() - BOUNDARY_EPSILON_PX
             rebuildLayoutLocked()
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             pages.subList(startIndex, endExclusive).forEach { removedPage ->
                 retireCurrentPageDrawableLocked(removedPage)
                 retirePendingPageDrawableLocked(removedPage)
@@ -4340,7 +4465,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         viewportAnchor.copy(page = viewportAnchor.page - (endExclusive - startIndex))
                     }
                     viewportAnchor.page >= startIndex -> {
-                        viewportAnchor.copy(page = startIndex.coerceAtMost(pages.lastIndex), offset = 0)
+                        viewportAnchor.copy(
+                            page = startIndex.coerceAtMost(pages.lastIndex),
+                            pageTopInViewportPx = 0f,
+                        )
                     }
                     else -> viewportAnchor
                 }
@@ -4352,13 +4480,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     // owner so an in-flight forward gesture cannot clamp the required rebase and
                     // strand the viewport beyond the new content end.
                     setStructuralScrollOffsetLocked(
-                        pageTopOrElseLocked(adjustedAnchor.page, 0f) - adjustedAnchor.offset,
+                        pageTopOrElseLocked(adjustedAnchor.page, 0f) -
+                            adjustedAnchor.pageTopInViewportPx,
                     )
                     Log.d(
                         TAG,
                         "reader_remove_anchor_restore start=$startIndex removed=${endExclusive - startIndex} " +
-                            "anchor=${viewportAnchor?.page}:${viewportAnchor?.offset} " +
-                            "adjusted=${adjustedAnchor.page}:${adjustedAnchor.offset} " +
+                            "anchor=${viewportAnchor?.page}:${viewportAnchor?.pageTopInViewportPx} " +
+                            "adjusted=${adjustedAnchor.page}:${adjustedAnchor.pageTopInViewportPx} " +
                             "from=${before.toInt()} to=${scrollOffset.toInt()}"
                     )
                 }
@@ -5317,7 +5446,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             val newHeight = resolvedPageDrawHeightLocked(layoutWidth, layoutHeight)
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
             if (!forceImmediateGeometry &&
@@ -5431,14 +5560,24 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.width = layoutWidth
             page.height = layoutHeight
             clearPendingResolveLocked(page)
+            // This is the immediate geometry branch. Do not leave a display-only freeze armed
+            // after the authoritative dimensions have taken ownership.
+            clearDeferredLayoutGeometryLocked(page)
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
             page.errorText = null
             deferInitialEmptyDraw = false
             markBlockedDrawableResolvedLocked(index)
-            applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
-            restoreViewportAnchorLocked(viewportAnchor, "page_bitmap", index, oldHeight, newHeight)
+            val appliedNewHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(index, oldTop, oldHeight, appliedNewHeight - oldHeight)
+            restoreViewportAnchorLocked(
+                viewportAnchor,
+                "page_bitmap",
+                index,
+                oldHeight,
+                appliedNewHeight,
+            )
             maybeReleasePrependedReadyHoldLocked(index)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -5801,7 +5940,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(pageIndex, 0f)
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
+            val targetWidth = max(1, plan.sourceWidth)
+            val targetHeight = max(1, plan.sourceHeight)
+            val targetDrawHeight = resolvedPageDrawHeightLocked(targetWidth, targetHeight)
+            val hadDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            val freezeLayoutForPhysicalInput =
+                shouldFreezeGeometryForNextBoundaryLocked(
+                    pageIndex,
+                    oldTop,
+                    oldHeight,
+                    targetDrawHeight,
+                ) || shouldDeferHeightChangingResolveLocked(
+                    oldTop,
+                    oldHeight,
+                    targetDrawHeight,
+                    hadDrawable,
+                ) || shouldDeferInitialDrawableSizeLocked(
+                    oldTop,
+                    oldHeight,
+                    targetDrawHeight,
+                    hadDrawable,
+                )
             page.adjacentExactOwner = owner
             page.adjacentExactPlan = plan
             page.adjacentExactSlots = workingSlots.toList()
@@ -5812,24 +5972,37 @@ class ReaderSurfaceView @JvmOverloads constructor(
             )
             page.bitmap = null
             page.tiles = workingSlots.filterNotNull()
-            page.width = plan.sourceWidth
-            page.height = plan.sourceHeight
+            page.width = targetWidth
+            page.height = targetHeight
             page.originalProof = delta.proof
             page.loading = false
             page.cardText = null
             page.errorText = null
             clearPendingResolveLocked(page)
+            if (freezeLayoutForPhysicalInput) {
+                freezeAuthoritativeLayoutUntilInputSettlesLocked(
+                    page,
+                    oldHeight,
+                )
+            } else {
+                clearDeferredLayoutGeometryLocked(page)
+            }
             invalidateRetainedPageNodeStateLocked(pageIndex)
             postNativeTexturePrewarmLocked(pageIndex, delta.installs.map { it.tile })
             noteResolvedPageAspectLocked(page.width, page.height)
-            val newHeight = resolvedPageDrawHeightLocked(page.width, page.height)
-            applyPageHeightChangeLocked(pageIndex, oldTop, oldHeight, newHeight - oldHeight)
+            val appliedNewHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(
+                pageIndex,
+                oldTop,
+                oldHeight,
+                appliedNewHeight - oldHeight,
+            )
             restoreViewportAnchorLocked(
                 viewportAnchor,
                 "adjacent_exact_p0_${if (full) "tail" else "head"}",
                 pageIndex,
                 oldHeight,
-                newHeight,
+                appliedNewHeight,
             )
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -5918,7 +6091,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
             invalidatePreparedRenderSceneStateLocked()
             rebuildLayoutLocked()
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             var firstChangedIndex = -1
             var firstOldHeight = 0f
             var firstNewHeight = 0f
@@ -5930,11 +6103,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val targetWidth = max(1, command.pageWidth)
                 val targetHeight = max(1, command.pageHeight)
                 val newHeight = resolvedPageDrawHeightLocked(targetWidth, targetHeight)
-                if (firstChangedIndex < 0) {
-                    firstChangedIndex = index
-                    firstOldHeight = oldHeight
-                    firstNewHeight = newHeight
-                }
+                val freezeLayoutForPhysicalInput =
+                    shouldFreezeGeometryForNextBoundaryLocked(
+                        index,
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                    ) || shouldDeferInitialDrawableSizeLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        false,
+                    )
                 postNativeTexturePrewarmLocked(index, command.tiles)
                 invalidateRetainedPageNodeIfTilesChanged(index, page, command.tiles)
                 retireCurrentPageDrawableLocked(
@@ -5949,13 +6129,32 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.height = targetHeight
                 page.originalProof = command.proof
                 clearPendingResolveLocked(page)
+                if (freezeLayoutForPhysicalInput) {
+                    freezeAuthoritativeLayoutUntilInputSettlesLocked(
+                        page,
+                        oldHeight,
+                    )
+                } else {
+                    clearDeferredLayoutGeometryLocked(page)
+                }
                 noteResolvedPageAspectLocked(page.width, page.height)
                 page.loading = false
                 page.cardText = null
                 page.errorText = null
                 deferInitialEmptyDraw = false
                 markBlockedDrawableResolvedLocked(index)
-                applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+                val appliedNewHeight = pageDrawHeightLocked(page)
+                if (firstChangedIndex < 0) {
+                    firstChangedIndex = index
+                    firstOldHeight = oldHeight
+                    firstNewHeight = appliedNewHeight
+                }
+                applyPageHeightChangeLocked(
+                    index,
+                    oldTop,
+                    oldHeight,
+                    appliedNewHeight - oldHeight,
+                )
                 maybeReleasePrependedReadyHoldLocked(index)
                 installed += index
             }
@@ -6008,7 +6207,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             if (!emptyTail) return@synchronized null
             rebuildLayoutLocked()
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             tail.forEach { page ->
                 retireCurrentPageDrawableLocked(page)
                 retirePendingPageDrawableLocked(page)
@@ -6019,7 +6218,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             if (viewportAnchor != null && viewportAnchor.page in pages.indices) {
                 setScrollOffsetLocked(
-                    pageTopOrElseLocked(viewportAnchor.page, 0f) - viewportAnchor.offset,
+                    pageTopOrElseLocked(viewportAnchor.page, 0f) -
+                        viewportAnchor.pageTopInViewportPx,
                 )
             }
             clampScrollLocked()
@@ -6676,13 +6876,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return fresh
     }
 
-    /** A hint only: it never gates input, performs I/O, or substitutes a lower-quality asset. */
-    private fun prepareHwuiForwardRunwayLocked() {
+    /**
+     * Enqueues a hint only: it never gates input, performs I/O, or substitutes a lower-quality
+     * asset. Bitmap.prepareToDraw() may synchronously spend tens of milliseconds in the emulator
+     * graphics driver, so the direct-frame producer must only select immutable targets here. The
+     * single background lane preserves bounded ordering without holding [stateLock] or delaying a
+     * physical frame.
+     */
+    private fun scheduleHwuiForwardRunwayPreparationLocked() {
         if (rollingNativeHandle != 0L) return
         rebuildLayoutLocked()
-        for (bitmap in collectUnpreparedHwuiRunwayLocked(HWUI_FORWARD_PREPARE_VIEWPORTS)) {
-            if (!bitmap.isRecycled && !bitmap.isHardwareConfigCompat()) {
-                runCatching { bitmap.prepareToDraw() }
+        val bitmaps = collectUnpreparedHwuiRunwayLocked(HWUI_FORWARD_PREPARE_VIEWPORTS)
+        if (bitmaps.isEmpty()) return
+        HWUI_FORWARD_PREPARE_EXECUTOR.execute {
+            for (bitmap in bitmaps) {
+                if (!bitmap.isRecycled && !bitmap.isHardwareConfigCompat()) {
+                    runCatching { bitmap.prepareToDraw() }
+                }
             }
         }
     }
@@ -6735,6 +6945,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.tiles,
                 page.originalProof
             )
+        }
+    }
+
+    /**
+     * Current physical-readiness authority for the exact renderer. Software original tiles can
+     * legitimately outlive their pressure-retired HostExact presenter resources; that retained
+     * decode proof must not suppress the native rehydrate requested by a real forward blocker.
+     */
+    fun hasAuthoritativeOriginalPageCurrentlyDrawable(index: Int): Boolean {
+        return synchronized(stateLock) {
+            val page = pages.getOrNull(index) ?: return@synchronized false
+            usableAuthoritativeOriginalTilePage(
+                page.width,
+                page.height,
+                page.tiles,
+                page.originalProof,
+            ) && pageHasDirectPresenterResourcesLocked(page)
         }
     }
 
@@ -6839,6 +7066,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (bitmap.isRecycled) return
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTopOrElseLocked(index, 0f)
+            val viewportAnchor = viewportAnchorLocked()
             val layoutBounds = layoutBoundsForDrawableLocked(
                 page,
                 max(1, bitmap.width),
@@ -6853,6 +7082,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
             ) {
                 return@synchronized null
             }
+            val newHeight = resolvedPageDrawHeightLocked(layoutBounds.first, layoutBounds.second)
+            val hadDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            val freezeLayoutForPhysicalInput =
+                shouldFreezeGeometryForNextBoundaryLocked(index, oldTop, oldHeight, newHeight) ||
+                    shouldDeferHeightChangingResolveLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        hadDrawable,
+                    ) || shouldDeferInitialDrawableSizeLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        hadDrawable,
+                    )
             invalidateRetainedPageNodeIfBitmapChanged(index, page, bitmap)
             retireCurrentPageDrawableLocked(page, listOf(bitmap))
             page.bitmap = bitmap
@@ -6860,6 +7104,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.width = layoutBounds.first
             page.height = layoutBounds.second
             clearPendingResolveLocked(page)
+            if (freezeLayoutForPhysicalInput) {
+                freezeAuthoritativeLayoutUntilInputSettlesLocked(
+                    page,
+                    oldHeight,
+                )
+            } else {
+                clearDeferredLayoutGeometryLocked(page)
+            }
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
@@ -6867,8 +7119,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             deferInitialEmptyDraw = false
             maybeReleasePrependedReadyHoldLocked(index)
             markBlockedDrawableResolvedLocked(index)
-            val newHeight = pageDrawHeightLocked(page)
-            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+            val appliedNewHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(index, oldTop, oldHeight, appliedNewHeight - oldHeight)
+            restoreViewportAnchorLocked(
+                viewportAnchor,
+                "initial_continuous_bitmap",
+                index,
+                oldHeight,
+                appliedNewHeight,
+            )
             if (shouldRenderPageResolveNowLocked(index)) {
                 refreshVisibleCoverageAfterDrawableLocked(index)
                 renderRequested = true
@@ -6958,6 +7217,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (tiles.isEmpty() || tiles.any { it.bitmap.isRecycled }) return
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTopOrElseLocked(index, 0f)
+            val viewportAnchor = viewportAnchorLocked()
             val layoutBounds = layoutBoundsForDrawableLocked(
                 page,
                 max(1, pageWidth),
@@ -6972,6 +7233,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
             ) {
                 return@synchronized null
             }
+            val newHeight = resolvedPageDrawHeightLocked(layoutBounds.first, layoutBounds.second)
+            val hadDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            val freezeLayoutForPhysicalInput =
+                shouldFreezeGeometryForNextBoundaryLocked(index, oldTop, oldHeight, newHeight) ||
+                    shouldDeferHeightChangingResolveLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        hadDrawable,
+                    ) || shouldDeferInitialDrawableSizeLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        hadDrawable,
+                    )
             invalidateRetainedPageNodeIfTilesChanged(index, page, tiles)
             val incomingBitmaps = tiles.map(ReaderTile::bitmap)
             retireCurrentPageDrawableLocked(page, incomingBitmaps)
@@ -6980,6 +7256,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.width = layoutBounds.first
             page.height = layoutBounds.second
             clearPendingResolveLocked(page)
+            if (freezeLayoutForPhysicalInput) {
+                freezeAuthoritativeLayoutUntilInputSettlesLocked(
+                    page,
+                    oldHeight,
+                )
+            } else {
+                clearDeferredLayoutGeometryLocked(page)
+            }
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
@@ -6987,8 +7271,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             deferInitialEmptyDraw = false
             maybeReleasePrependedReadyHoldLocked(index)
             markBlockedDrawableResolvedLocked(index)
-            val newHeight = pageDrawHeightLocked(page)
-            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+            val appliedNewHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(index, oldTop, oldHeight, appliedNewHeight - oldHeight)
+            restoreViewportAnchorLocked(
+                viewportAnchor,
+                "initial_continuous_tiles",
+                index,
+                oldHeight,
+                appliedNewHeight,
+            )
             if (shouldRenderPageResolveNowLocked(index)) {
                 refreshVisibleCoverageAfterDrawableLocked(index)
                 renderRequested = true
@@ -7093,8 +7384,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             val newHeight = resolvedPageDrawHeightLocked(targetWidth, targetHeight)
+            val hadDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            val freezeLayoutForPhysicalInput =
+                shouldFreezeGeometryForNextBoundaryLocked(index, oldTop, oldHeight, newHeight) ||
+                    shouldDeferHeightChangingResolveLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        hadDrawable,
+                    ) ||
+                    shouldDeferInitialDrawableSizeLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        hadDrawable,
+                    )
             invalidateRetainedPageNodeIfTilesChanged(index, page, tiles)
             retireCurrentPageDrawableLocked(page, incomingBitmaps)
             page.bitmap = null
@@ -7104,19 +7410,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.originalProof = proof
             if (installGeneration > 0) page.authoritativeInstallGeneration = installGeneration
             clearPendingResolveLocked(page)
+            if (freezeLayoutForPhysicalInput) {
+                freezeAuthoritativeLayoutUntilInputSettlesLocked(
+                    page,
+                    oldHeight,
+                )
+            } else {
+                clearDeferredLayoutGeometryLocked(page)
+            }
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
             page.errorText = null
             deferInitialEmptyDraw = false
             markBlockedDrawableResolvedLocked(index)
-            applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            val appliedNewHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(index, oldTop, oldHeight, appliedNewHeight - oldHeight)
             restoreViewportAnchorLocked(
                 viewportAnchor,
                 "page_authoritative_original_tiles",
                 index,
                 oldHeight,
-                newHeight
+                appliedNewHeight
             )
             maybeReleasePrependedReadyHoldLocked(index)
             applyLockedRestorePositionLocked()
@@ -7193,7 +7508,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return@synchronized null
             }
             rebuildLayoutLocked()
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             var firstChangedIndex = -1
             var firstOldHeight = 0f
             var firstNewHeight = 0f
@@ -7259,11 +7574,24 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val oldHeight = pageDrawHeightLocked(page)
                 val oldTop = pageTopOrElseLocked(command.index, 0f)
                 val newHeight = resolvedPageDrawHeightLocked(targetWidth, targetHeight)
-                if (firstChangedIndex < 0) {
-                    firstChangedIndex = command.index
-                    firstOldHeight = oldHeight
-                    firstNewHeight = newHeight
-                }
+                val hadDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+                val freezeLayoutForPhysicalInput =
+                    shouldFreezeGeometryForNextBoundaryLocked(
+                        command.index,
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                    ) || shouldDeferHeightChangingResolveLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        hadDrawable,
+                    ) || shouldDeferInitialDrawableSizeLocked(
+                        oldTop,
+                        oldHeight,
+                        newHeight,
+                        hadDrawable,
+                    )
                 invalidateRetainedPageNodeIfTilesChanged(command.index, page, command.tiles)
                 retireCurrentPageDrawableLocked(
                     page,
@@ -7278,13 +7606,32 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     page.authoritativeInstallGeneration = command.installGeneration
                 }
                 clearPendingResolveLocked(page)
+                if (freezeLayoutForPhysicalInput) {
+                    freezeAuthoritativeLayoutUntilInputSettlesLocked(
+                        page,
+                        oldHeight,
+                    )
+                } else {
+                    clearDeferredLayoutGeometryLocked(page)
+                }
                 noteResolvedPageAspectLocked(page.width, page.height)
                 page.loading = false
                 page.cardText = null
                 page.errorText = null
                 deferInitialEmptyDraw = false
                 markBlockedDrawableResolvedLocked(command.index)
-                applyPageHeightChangeLocked(command.index, oldTop, oldHeight, newHeight - oldHeight)
+                val appliedNewHeight = pageDrawHeightLocked(page)
+                if (firstChangedIndex < 0) {
+                    firstChangedIndex = command.index
+                    firstOldHeight = oldHeight
+                    firstNewHeight = appliedNewHeight
+                }
+                applyPageHeightChangeLocked(
+                    command.index,
+                    oldTop,
+                    oldHeight,
+                    appliedNewHeight - oldHeight,
+                )
                 maybeReleasePrependedReadyHoldLocked(command.index)
                 installed.add(command.index)
             }
@@ -7364,7 +7711,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
             if (!forceImmediateGeometry && !hasCurrentDrawable &&
@@ -7494,14 +7841,24 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.width = targetWidth
             page.height = targetHeight
             clearPendingResolveLocked(page)
+            // This path was not deferred, so exact source geometry replaces any prior temporary
+            // footprint now rather than being applied a second time by the idle resolver.
+            clearDeferredLayoutGeometryLocked(page)
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
             page.errorText = null
             deferInitialEmptyDraw = false
             markBlockedDrawableResolvedLocked(index)
-            applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
-            restoreViewportAnchorLocked(viewportAnchor, "page_tiles", index, oldHeight, newHeight)
+            val appliedNewHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(index, oldTop, oldHeight, appliedNewHeight - oldHeight)
+            restoreViewportAnchorLocked(
+                viewportAnchor,
+                "page_tiles",
+                index,
+                oldHeight,
+                appliedNewHeight,
+            )
             maybeReleasePrependedReadyHoldLocked(index)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -7549,7 +7906,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             retireCurrentPageDrawableLocked(page)
             page.bitmap = null
             page.tiles = emptyList()
@@ -7599,6 +7956,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.cardText = null
                 page.errorText = null
                 clearPendingResolveLocked(page)
+                clearDeferredLayoutGeometryLocked(page)
             }
             hasDrawnContentFrame = false
             pendingBlockedForwardRequest = null
@@ -7638,6 +7996,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.cardText = null
                 page.errorText = null
                 clearPendingResolveLocked(page)
+                clearDeferredLayoutGeometryLocked(page)
             }
             hasDrawnContentFrame = false
             pendingBlockedForwardRequest = null
@@ -7656,6 +8015,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         identities: List<CommittedPageIdentity?>
     ) {
         if (startIndex < 0 || identities.isEmpty()) return
+        var deferredInputRequest: WindowRequest? = null
         synchronized(stateLock) {
             var identityChanged = false
             identities.forEachIndexed { offset, identity ->
@@ -7691,7 +8051,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 "identity",
                 startIndex + identities.lastIndex,
             )
+            if (hasLiveBlockedForwardIntentLocked()) {
+                // A sealed manifest proves identity and geometry, not pixels. Keep the user's
+                // destination alive, request the first exact missing body, and let the ordinary
+                // drawable-prefix resume advance only through complete clean viewports. Jumping
+                // directly to this coordinate exposed a blank p7..p12 before their install ACKs.
+                scheduleBlockedForwardWindowRequestLocked()
+                scheduleBlockedForwardIntentResumeLocked()
+                deferredInputRequest = windowRequestLocked(
+                    busy = lastBusy,
+                    forceDispatch = true,
+                )
+            }
         }
+        dispatchWindowRequest(deferredInputRequest, fromInput = true)
     }
 
     fun setPageBounds(index: Int, pageWidth: Int, pageHeight: Int) {
@@ -7702,7 +8075,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
             if (hasCurrentDrawable && abs(newHeight - oldHeight) <= ACTIVE_DRAWABLE_BOUNDS_DELTA_SUPPRESS_PX) {
@@ -7744,6 +8117,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             invalidatePreparedRenderSceneStateLocked()
             page.width = max(1, pageWidth)
             page.height = max(1, pageHeight)
+            // A bounds callback can arrive in the quiet interval before the deferred resolver.
+            // This immediate branch owns geometry, so cancel the old display-only footprint.
+            clearDeferredLayoutGeometryLocked(page)
             if (page.pendingResolveType == PENDING_BOUNDS || page.pendingResolveType == PENDING_SIZE) {
                 clearPendingResolveLocked(page)
             } else if (page.pendingResolveType == PENDING_BITMAP || page.pendingResolveType == PENDING_TILES) {
@@ -7886,7 +8262,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             val cardWidth = max(1, width)
             val cardHeight = TRANSITION_CARD_PAGE_HEIGHT_PX.roundToInt()
             // The rolling native Surface renderer submits only Bitmap-backed items. Keep that
@@ -7917,6 +8293,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.cardText = title
             page.errorText = null
             clearPendingResolveLocked(page)
+            clearDeferredLayoutGeometryLocked(page)
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
@@ -8061,7 +8438,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
-            val viewportAnchor = progressPositionLocked()
+            val viewportAnchor = viewportAnchorLocked()
             page.bitmap = null
             page.tiles = emptyList()
             page.width = width
@@ -8070,6 +8447,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.cardText = null
             page.errorText = message
             clearPendingResolveLocked(page)
+            clearDeferredLayoutGeometryLocked(page)
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
@@ -8107,6 +8485,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun lockRestoredPageOffset(index: Int, offset: Int) {
         val request = synchronized(stateLock) {
             if (index !in 0 until pages.size) return
+            if (physicalInputOwnsViewportLocked()) {
+                // Discovery can finish after a real swipe has already moved or become a blocked
+                // target. Re-arming the bookmark here used to pull 1743px back to 389px when p0
+                // arrived, and could do the same after a normal edge-limited gesture.
+                clearLockedRestorePositionLocked()
+                clearDirectWifiForwardOnlyInitialResumeContractLocked()
+                Log.i(
+                    TAG,
+                    "reader_restore_lock_skipped_physical_input index=$index " +
+                        "pending=${preContentForwardIntentPx.toInt()} " +
+                        "blocked=${if (blockedForwardIntentTarget.isFinite()) blockedForwardIntentTarget.toInt() else -1}",
+                )
+                return@synchronized windowRequestLocked(lastBusy)
+            }
             val forwardOnlyResume = directWifiForwardOnlyInitialResumeEnabled &&
                 surfaceAttachmentDeferredUntilActualPixels && !hasDrawnContentFrame
             if (forwardOnlyResume) {
@@ -8180,17 +8572,49 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     /** Identity and local reading coordinate captured from one current layout-lock epoch. */
     fun currentCommittedViewportAnchorSnapshot(): LifecycleViewportAnchorSnapshot? {
+        // A native buffer can become physically current before its main-thread completed-draw
+        // listener adopts the matching episode metadata. Exposing the live layout identity in
+        // that interval let callers observe "new pixels + old Reader episode". Anchor public
+        // committed state to the last proof the Activity actually processed, then rebase that
+        // immutable identity through the current page table so prefix compaction remains safe.
+        val deliveredProof = completedDrawDispatchQueue.latestDeliveredStableViewportProof()
         return synchronized(stateLock) {
-            val progress = progressPositionLocked() ?: return@synchronized null
-            val page = pages.getOrNull(progress.page) ?: return@synchronized null
+            val progressPage = progressPositionLocked()?.page
+            // Preserve the page that owns the reading probe, not merely a predecessor whose last
+            // few pixels happen to touch the viewport top. If that predecessor's authoritative
+            // height resolves during HOME, preserving its top moves the dominant next page even
+            // though the first-page identity itself appears stable.
+            val deliveredOwner = deliveredProof?.let { proof ->
+                NtkCommittedViewportProofPolicy.readingIdentityIndex(
+                    proof.visiblePageTopPx,
+                    proof.coverage.physicalViewportPx,
+                    proof.visiblePageIdentities.size,
+                )
+            } ?: -1
+            val deliveredIdentity = deliveredProof?.visiblePageIdentities
+                ?.getOrNull(deliveredOwner)
+            val committedPage = deliveredIdentity?.let { proofIdentity ->
+                pages.indexOfFirst { page ->
+                    val current = page.committedIdentity
+                    current != null &&
+                        current.normalizedEpisodePath == proofIdentity.normalizedEpisodePath &&
+                        current.sourcePageIndex == proofIdentity.sourcePageIndex &&
+                        current.canonicalAsset == proofIdentity.canonicalAsset &&
+                        current.manifestDigest == proofIdentity.manifestDigest &&
+                        current.manifestPageCount == proofIdentity.manifestPageCount
+                }.takeIf { it >= 0 }
+            }
+            val pageIndex = committedPage ?: progressPage
+                ?: return@synchronized null
+            val page = pages.getOrNull(pageIndex) ?: return@synchronized null
             val identity = page.committedIdentity ?: return@synchronized null
-            val pageTop = pageTopOrElseLocked(progress.page, Float.NaN)
+            val pageTop = pageTopOrElseLocked(pageIndex, Float.NaN)
             if (!pageTop.isFinite()) return@synchronized null
             LifecycleViewportAnchorSnapshot(
                 identity = identity,
                 pageTopInViewportPx = pageTop - scrollOffset,
                 scrollOffsetPx = scrollOffset,
-                page = progress.page,
+                page = pageIndex,
                 busy = isScrollBusyAfterSample(
                     pointerDown = pointerDown,
                     dragging = dragging,
@@ -8227,6 +8651,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 request = null
                 false
             } else {
+                lifecycleViewportAnchorIdentity = identity
+                lifecycleViewportAnchorPageTopPx = pageTopInViewportPx
+                lifecycleRestoreInputPending = true
                 rebuildLayoutLocked()
                 val before = scrollOffset
                 structuralScrollAdjustUntilMs = maxOf(
@@ -8237,7 +8664,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     pageTopOrElseLocked(target, 0f) - pageTopInViewportPx,
                 )
                 clampScrollLocked()
-                lifecycleRestoreInputPending = true
                 lastAnchor = -1
                 renderRequested = true
                 scheduleFrameLocked()
@@ -8296,6 +8722,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (renderRunning && pages.isNotEmpty()) {
                 nativeSurfaceRevealAfterFirstHwuiCommitPending = true
                 nativeSurfaceRevealAfterPrepareEpoch = 0L
+                // Keep the already-proven HWUI viewport as the visible owner until Android says
+                // that the task-enter animation has finished. Creating a host-GPU Surface while
+                // Launcher still owns that transition can stall both BufferQueues for seconds.
+                lifecycleEnterAnimationPending = true
+                lifecycleCleanHwuiRevealReady = false
             }
             stateLock.notifyAll()
         }
@@ -8305,6 +8736,37 @@ class ReaderSurfaceView @JvmOverloads constructor(
         detach?.let { (handle, epoch) ->
             NtkRollingNativeBridge.nativeDetach(handle, epoch)
         }
+    }
+
+    /** Opens a paused native reveal only after the task-enter compositor transition is finished. */
+    fun completeLifecycleEnterAnimationForNativeReveal(reason: String): Boolean {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        var revealEpoch = 0L
+        val completed = synchronized(stateLock) {
+            if (!lifecycleEnterAnimationPending) return@synchronized false
+            lifecycleEnterAnimationPending = false
+            if (nativeSurfaceRevealAfterFirstHwuiCommitPending &&
+                lifecycleCleanHwuiRevealReady
+            ) {
+                nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+                lifecycleCleanHwuiRevealReady = false
+                revealEpoch = lifecycleEpoch
+            }
+            stateLock.notifyAll()
+            true
+        }
+        if (!completed) return false
+        if (revealEpoch > 0L) {
+            revealNativeSurfaceAfterFirstHwuiCommit(revealEpoch)
+        } else {
+            requestPendingNativeSurfaceHwuiCommit()
+        }
+        Log.d(
+            TAG,
+            "reader_lifecycle_enter_animation_complete reason=$reason," +
+                "reveal=${revealEpoch > 0L},epoch=$revealEpoch",
+        )
+        return true
     }
 
     /**
@@ -9792,6 +10254,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             invalidateFrameStatsFinalizeDeadlineLocked()
             deferredSurfaceIdentityActivated = false
             nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+            lifecycleEnterAnimationPending = false
+            lifecycleCleanHwuiRevealReady = false
             nativeOnlyExactSurfaceRevealPending = false
             nativeSurfaceRevealAfterPrepareEpoch = 0L
             noStateRetryPosted = false
@@ -10036,9 +10500,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     /** Releases only Java's wrapper reference; native retains its own ASurfaceControl reference. */
     private fun releaseRollingJavaChildSurfaceControlLocked() {
-        rollingJavaChildSurfaceControl?.release()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            rollingJavaChildSurfaceControl?.release()
+            rollingJavaGeometrySurfaceControl?.release()
+        }
         rollingJavaChildSurfaceControl = null
-        rollingJavaGeometrySurfaceControl?.release()
         rollingJavaGeometrySurfaceControl = null
     }
 
@@ -10394,6 +10860,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val scrollbarRequest = synchronized(stateLock) {
                     if (lifecycleRestoreInputPending) {
                         lifecycleRestoreInputPending = false
+                        lifecycleViewportAnchorIdentity = null
+                        lifecycleViewportAnchorPageTopPx = Float.NaN
                         lifecycleFirstGestureProbeArmed = true
                         // Lifecycle coordinates may remain protected across late exact-size
                         // reflow, but a real DOWN is the ownership boundary. No restore fence may
@@ -10413,6 +10881,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     setNativeTexturePrewarmPausedLocked(true)
                     if (startScrollbarDragLocked(event.x, event.y)) {
                         // The scrollbar is an absolute seek, not another relative reading swipe.
+                        clearLockedRestorePositionLocked()
                         clearBlockedForwardIntentLocked()
                         clearDirectWifiForwardOnlyInitialResumeContractLocked()
                         noteInputLocked(event)
@@ -10661,6 +11130,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     tap = wasTap
                     pointerDown = false
                     dragging = false
+                    // A blocked drag target is valid only while this physical gesture owns the
+                    // viewport. Once UP/CANCEL arrives, later image publication must not restart
+                    // motion from that stale absolute coordinate.
+                    clearBlockedForwardIntentLocked()
                     val dragDistance = abs(event.y - downY)
                     val cancelledBoundaryDrag = event.actionMasked == MotionEvent.ACTION_CANCEL &&
                         shouldDispatchCancelledBoundaryLocked(dragDistance)
@@ -10848,6 +11321,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         preContentGestureForwardTravel,
                         preContentGestureDownY - event.y,
                     )
+                    if (preContentGestureForwardTravel > touchSlop) {
+                        // A real pre-content drag now owns the viewport. Discovery and restore
+                        // callbacks can race this gesture, so neither the current nor a later
+                        // launch bookmark may pull the physical target back to the start.
+                        clearLockedRestorePositionLocked()
+                        clearDirectWifiForwardOnlyInitialResumeContractLocked()
+                    }
                     val gestureDurationMs = (event.eventTime - preContentGestureDownTimeMs)
                         .coerceAtLeast(1L)
                     val distanceVelocity = (
@@ -10885,6 +11365,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         releaseDistanceVelocity,
                     )
                     if (preContentGestureForwardTravel > touchSlop) {
+                        clearLockedRestorePositionLocked()
+                        clearDirectWifiForwardOnlyInitialResumeContractLocked()
                         val viewport = max(1, height).toFloat()
                         preContentForwardIntentPx = (
                             preContentForwardIntentPx + preContentGestureForwardTravel
@@ -11163,9 +11645,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         resolvesReadyNs = System.nanoTime()
         // Every original is already decoded. Keep only a bounded forward HWUI upload runway
-        // moving with the latest downward viewport so page-boundary frames never pay first-
-        // use bitmap preparation and the RenderThread is never flooded by the whole episode.
-        prepareHwuiForwardRunwayLocked()
+        // moving with the latest downward viewport so page-boundary frames never pay first-use
+        // bitmap preparation. The producer only enqueues immutable targets; driver work belongs
+        // to the background lane and can never hold this physical frame or [stateLock].
+        scheduleHwuiForwardRunwayPreparationLocked()
         runwayReadyNs = System.nanoTime()
         // A drag advances only when a real MOVE changes scrollOffset; that MOVE already sets
         // renderRequested and schedules its presentation frame. Treating the mere
@@ -11743,6 +12226,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
         }
         val terminalProducerSceneId = submission.producerSceneId
+        val transientBackpressure =
+            NtkNativeSubmitResultPolicy.isTransientBackpressure(result)
         if (overtaken) {
             directRenderHandler?.post {
                 clearNativeProducerScene(terminalProducerSceneId)
@@ -11754,12 +12239,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     recycledResources++
                 }
             }
-            Log.e(
-                TAG,
-                "reader_deferred_native_scene_rejected token=${submission.token}," +
-                    "attach=${submission.attachEpoch},tiles=$bitmapCount," +
-                    "recycled=$recycledResources",
-            )
+            val message =
+                "reader_deferred_native_scene_${if (transientBackpressure) {
+                    "backpressured"
+                } else {
+                    "rejected"
+                }} token=${submission.token},attach=${submission.attachEpoch}," +
+                    "tiles=$bitmapCount,recycled=$recycledResources"
+            if (transientBackpressure) Log.d(TAG, message) else Log.e(TAG, message)
             directRenderHandler?.post {
                 clearNativeProducerScene(terminalProducerSceneId)
             }
@@ -11770,7 +12257,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         releaseDeferredNativeScenePacket(packet, bitmapCount)
         if (overtaken) {
             retireDeferredNativeGeometryAsSuperseded(terminalToken)
-        } else if (result < 0L) {
+        } else if (transientBackpressure) {
+            retryDeferredNativeSubmissionAfterTransientBackpressure(terminalToken)
+        } else if (NtkNativeSubmitResultPolicy.isTerminalFailure(result)) {
             onNtkRollingFrameDropped(terminalToken, NATIVE_FRAME_DROP_PRESENT_FAILED)
         } else if (result > 0L) {
             retireDeferredNativeGeometryAsSuperseded(result)
@@ -11846,12 +12335,39 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         if (overtaken) {
             retireDeferredNativeGeometryAsSuperseded(submission.token)
-        } else if (result < 0L) {
+        } else if (NtkNativeSubmitResultPolicy.isTransientBackpressure(result)) {
+            retryDeferredNativeSubmissionAfterTransientBackpressure(submission.token)
+        } else if (NtkNativeSubmitResultPolicy.isTerminalFailure(result)) {
             onNtkRollingFrameDropped(submission.token, NATIVE_FRAME_DROP_PRESENT_FAILED)
         } else if (result > 0L) {
             retireDeferredNativeGeometryAsSuperseded(result)
         } else {
             noteFirstNativeSubmitAccepted(submission.token)
+        }
+    }
+
+    /**
+     * A -2 result means native accepted no frame and retained the preceding visible buffer. The
+     * immutable Kotlin proof therefore owns no presentation failure; retire only that unsubmitted
+     * token and preserve its dirty version for the ordinary bounded retry after mailbox capacity
+     * returns. This is the deferred equivalent of finishRenderedFrame's synchronous rejection
+     * branch.
+     */
+    private fun retryDeferredNativeSubmissionAfterTransientBackpressure(token: Long) {
+        if (token <= 0L) return
+        synchronized(stateLock) {
+            val rejected = pendingFrameCommits.remove(token) ?: return
+            earlyNativeOutcomes.remove(token)
+            earlyFrameSyncedGeometryRequests.remove(token)
+            frameSyncedGeometryInFlightTokens.remove(token)
+            frameSyncedGeometrySubmissionOrder.remove(token)
+            directActiveBandNativeFollowupTokens.remove(token)
+            drawnVersion = latestSubmittedVersionLocked()
+            if (rejected.frameEpoch == lifecycleEpoch && pages.isNotEmpty()) {
+                renderRequested = true
+                scheduleNoStateRetryLocked()
+            }
+            stateLock.notifyAll()
         }
     }
 
@@ -16259,8 +16775,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                                 pending.coverage.directWifiForwardOnlyInitialResume) &&
                             pending.coverage.lowResolutionItems == 0
                     if (cleanCommittedHwuiActualPixels) {
-                        nativeSurfaceRevealAfterFirstHwuiCommitPending = false
-                        revealNativeSurfaceAfterCompletedHwui = true
+                        if (lifecycleEnterAnimationPending) {
+                            lifecycleCleanHwuiRevealReady = true
+                        } else {
+                            nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+                            revealNativeSurfaceAfterCompletedHwui = true
+                        }
                     }
                 } finally {
                     Trace.endSection()
@@ -16494,6 +17014,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 } finally {
                     completedDrawDispatchQueue.recordDeliveryResult(
                         lifecycleAndStructureCurrent,
+                        proof,
                     )
                 }
                 deliveries++
@@ -16736,6 +17257,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * Creating this lane only after the View is attached keeps cold-entry work demand-bound while
      * preventing RenderThread/BLAST backpressure from blocking input delivery on the main thread.
      */
+    private fun createAsyncHandlerCompat(looper: Looper): Handler =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Handler.createAsync(looper)
+        } else {
+            Handler(looper)
+        }
+
     private fun startRenderThreadLocked() {
         if (directRenderThread != null) return
         primeDeferredNativeSceneSubmissionPool()
@@ -16756,7 +17284,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         // cadence-watchdog messages are precisely what must run when that pulse is lost; a normal
         // Handler leaves them trapped behind the barrier indefinitely. The producer owns no UI
         // ordering contract, so make all of its control messages asynchronous.
-        val handler = Handler.createAsync(thread.looper)
+        val handler = createAsyncHandlerCompat(thread.looper)
         directRenderThread = thread
         directRenderHandler = handler
         val commitThread = HandlerThread(
@@ -16769,7 +17297,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             Process.THREAD_PRIORITY_URGENT_DISPLAY,
         ).apply { start() }
         frameSyncedGeometryCommitThread = commitThread
-        frameSyncedGeometryCommitHandler = Handler.createAsync(commitThread.looper)
+        frameSyncedGeometryCommitHandler = createAsyncHandlerCompat(commitThread.looper)
         val ackThread = HandlerThread(
             "ReaderSurfaceLatch",
             // This lane performs no rendering or JNI work. It only retires an already-committed
@@ -16778,13 +17306,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             Process.THREAD_PRIORITY_URGENT_DISPLAY,
         ).apply { start() }
         frameSyncedGeometryAckThread = ackThread
-        frameSyncedGeometryAckHandler = Handler.createAsync(ackThread.looper)
+        frameSyncedGeometryAckHandler = createAsyncHandlerCompat(ackThread.looper)
         val prewarmThread = HandlerThread(
             "ReaderSurfacePrewarm",
             Process.THREAD_PRIORITY_BACKGROUND,
         ).apply { start() }
         nativeTexturePrewarmThread = prewarmThread
-        nativeTexturePrewarmHandler = Handler.createAsync(prewarmThread.looper)
+        nativeTexturePrewarmHandler = createAsyncHandlerCompat(prewarmThread.looper)
         handler.post {
             synchronized(stateLock) {
                 if (directRenderThread !== thread) return@synchronized
@@ -18521,35 +19049,76 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun deliverWindowRequest(latest: WindowRequest) {
+        val current = synchronized(stateLock) {
+            refreshWindowRequestViewportLocked(latest)
+        }
         val currentListener = listener ?: return
-        if (latest.blockedForwardPage >= 0) {
-            currentListener.onBlockedForwardPageRequested(latest.blockedForwardPage)
+        if (current.blockedForwardPage >= 0) {
+            currentListener.onBlockedForwardPageRequested(current.blockedForwardPage)
         }
         currentListener.onWindowChanged(
-            latest.firstPage,
-            latest.lastPage,
-            latest.anchorPage,
-            latest.physicalFirstPage,
-            latest.physicalLastPage,
-            latest.progressPage,
-            latest.progressOffset,
-            latest.busy,
-            latest.directionHint,
-            latest.reverseFirstPageHint,
+            current.firstPage,
+            current.lastPage,
+            current.anchorPage,
+            current.physicalFirstPage,
+            current.physicalLastPage,
+            current.progressPage,
+            current.progressOffset,
+            current.busy,
+            current.directionHint,
+            current.reverseFirstPageHint,
         )
-        if (latest.visibleLoadingRedrive) {
+        if (current.visibleLoadingRedrive) {
             currentListener.onVisibleLoadingWindowRequested(
-                latest.firstPage,
-                latest.lastPage,
-                latest.anchorPage,
-                latest.physicalFirstPage,
-                latest.physicalLastPage,
-                latest.busy,
-                latest.directionHint,
+                current.firstPage,
+                current.lastPage,
+                current.anchorPage,
+                current.physicalFirstPage,
+                current.physicalLastPage,
+                current.busy,
+                current.directionHint,
             )
         }
-        if (latest.notifyNearStart) currentListener.onNearBoundary(DIRECTION_PREVIOUS, latest.anchorPage)
-        if (latest.notifyNearEnd) currentListener.onNearBoundary(DIRECTION_NEXT, latest.anchorPage)
+        if (current.notifyNearStart) currentListener.onNearBoundary(DIRECTION_PREVIOUS, current.anchorPage)
+        if (current.notifyNearEnd) currentListener.onNearBoundary(DIRECTION_NEXT, current.anchorPage)
+    }
+
+    /** Must be called with [stateLock] held immediately before a main-thread delivery. */
+    private fun refreshWindowRequestViewportLocked(request: WindowRequest): WindowRequest {
+        if (pages.isEmpty() || width <= 0 || height <= 0) return request
+        // A request may be captured by input and delivered one frame later. Pixel/geometry actors
+        // can enqueue another request in that interval, so the payload is an invalid place to own
+        // the toolbar page or decode anchor. Re-sample the one authoritative Surface coordinate at
+        // delivery while retaining the accumulated direction/boundary evidence.
+        val busy = lastBusy
+        val anchor = anchorPageLocked()
+        val first = max(0, anchor - ReaderPipelinePolicy.windowBefore(busy))
+        val last = min(pages.lastIndex, anchor + ReaderPipelinePolicy.windowAfter(busy))
+        val physicalFirst = firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
+        val physicalLast = firstVisiblePageLocked(
+            (scrollOffset + height.toFloat() - 1f).coerceAtLeast(scrollOffset),
+        ).coerceIn(physicalFirst, pages.lastIndex)
+        val progress = progressPositionLocked() ?: return request
+        val boundaryPx = height * NEAR_BOUNDARY_SCREENFULS
+        val nearStart = scrollOffset <= boundaryPx ||
+            anchor <= NEAR_BOUNDARY_PAGE_THRESHOLD
+        val remainingPx = contentHeight - (scrollOffset + height)
+        val nearEnd = remainingPx <= boundaryPx ||
+            anchor >= pages.size - NEAR_BOUNDARY_PAGE_THRESHOLD
+        return request.copy(
+            firstPage = first,
+            lastPage = last,
+            anchorPage = anchor,
+            physicalFirstPage = physicalFirst,
+            physicalLastPage = physicalLast,
+            progressPage = progress.page,
+            progressOffset = progress.offset,
+            busy = busy,
+            nearStart = nearStart,
+            nearEnd = nearEnd,
+            notifyNearStart = request.notifyNearStart && nearStart,
+            notifyNearEnd = request.notifyNearEnd && nearEnd,
+        )
     }
 
     private fun dispatchBoundaryRequest(request: BoundaryRequest?) {
@@ -18574,6 +19143,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun applyLockedRestorePositionLocked() {
         val target = lockedRestorePage
         if (target !in 0 until pages.size) return
+        if (physicalInputOwnsViewportLocked()) {
+            // Restore is launch/lifecycle state. It can never overwrite a coordinate already
+            // owned by touch, fling, or a retained edge-limited physical destination.
+            clearLockedRestorePositionLocked()
+            clearDirectWifiForwardOnlyInitialResumeContractLocked()
+            return
+        }
         val preserveForwardOnlyUntilPhysicalReveal =
             directWifiForwardOnlyInitialResumeEnabled &&
                 directWifiForwardOnlyInitialResumePage == target &&
@@ -18617,12 +19193,39 @@ class ReaderSurfaceView @JvmOverloads constructor(
         lockedRestoreUntilMs = 0L
     }
 
+    private fun physicalInputOwnsViewportLocked(): Boolean = physicalInputOwnsViewport(
+        preContentGestureActive = preContentGestureActive,
+        preContentForwardIntentPending =
+            preContentForwardIntentPx > SCROLL_OFFSET_EPSILON_PX,
+        blockedForwardIntentPending = blockedForwardIntentTarget.isFinite(),
+        pointerDown = pointerDown,
+        dragging = dragging,
+        scrollerFinished = scroller.isFinished,
+        recentScrollSettling = isRecentScrollSettlingLocked(),
+    )
+
     /** Ends the one-shot cold-resume classifier without disabling the episode texture profile. */
     private fun clearDirectWifiForwardOnlyInitialResumeContractLocked() {
         directWifiForwardOnlyInitialResumePage = -1
         directWifiForwardOnlyInitialResumeOffset = 0
         directWifiForwardOnlyInitialResumeRevealQualified = false
         directWifiForwardOnlyTerminalTailRevealQualified = false
+    }
+
+    private fun viewportAnchorLocked(): ViewportAnchor? {
+        if (pages.isEmpty() || width <= 0 || height <= 0) return null
+        rebuildLayoutLocked()
+        val maxScroll = maxScrollLocked()
+        val page = if (maxScroll > 0f && scrollOffset >= maxScroll - BOUNDARY_EPSILON_PX) {
+            pages.lastIndex
+        } else {
+            firstVisiblePageLocked(scrollOffset + height * PROGRESS_PAGE_PROBE_SCREEN_RATIO)
+                .coerceIn(0, pages.lastIndex)
+        }
+        return ViewportAnchor(
+            page = page,
+            pageTopInViewportPx = pageTopOrElseLocked(page, 0f) - scrollOffset,
+        )
     }
 
     private fun progressPositionLocked(): ProgressPosition? {
@@ -18639,53 +19242,75 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun restoreViewportAnchorLocked(
-        anchor: ProgressPosition?,
+        anchor: ViewportAnchor?,
         reason: String,
         index: Int = -1,
         oldHeight: Float = 0f,
         newHeight: Float = 0f
     ) {
+        if (restoreLifecycleViewportAnchorAfterGeometryLocked(reason, index, oldHeight, newHeight)) {
+            return
+        }
         val target = anchor?.page ?: return
         if (target !in pages.indices) return
-        val now = SystemClock.uptimeMillis()
-        val recentScrollSettling = lastScrollInteractionMs > 0L &&
-            now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
-        if (!shouldRestoreAnchorAfterPendingResolves(
-                lastBusy = lastBusy,
-                pointerDown = pointerDown,
-                dragging = dragging,
-                scrollerFinished = scroller.isFinished,
-                recentScrollSettling = recentScrollSettling
-            )
-        ) {
-            return
-        }
         rebuildLayoutLocked()
         val before = scrollOffset
-        val desired = pageTopOrElseLocked(target, 0f) - anchor.offset
-        if (
-            recentScrollSettling &&
-            desired < before - height * HEIGHT_CHANGE_RESTORE_BACKSTEP_SCREEN_LIMIT
-        ) {
-            Log.d(
-                TAG,
-                "reader_viewport_anchor_restore_skip_backstep reason=$reason index=$index " +
-                    "anchor=$target anchorOffset=${anchor.offset} from=${before.toInt()} " +
-                    "to=${desired.toInt()} old=${oldHeight.toInt()} new=${newHeight.toInt()} " +
-                    "lastBusy=$lastBusy"
-            )
-            return
-        }
-        setScrollOffsetLocked(desired)
+        val desired = pageTopOrElseLocked(target, 0f) - anchor.pageTopInViewportPx
+        // A height/bounds mutation changes the document coordinate beneath the user's finger or
+        // OverScroller; it is not user motion. Refusing this rebase while input is active keeps the
+        // numeric offset stable but visibly replaces the current source page with a predecessor.
+        // Structural ownership rebases the active input origins below, so the next MOVE/tick
+        // continues from the same physical pixels without a jump or a velocity reset.
+        setStructuralScrollOffsetLocked(desired)
         clampScrollLocked()
         if (abs(scrollOffset - before) > HEIGHT_CHANGE_EPSILON_PX) {
             Log.d(
                 TAG,
                 "reader_viewport_anchor_restore reason=$reason index=$index anchor=$target " +
-                    "anchorOffset=${anchor.offset} old=${oldHeight.toInt()} new=${newHeight.toInt()} " +
+                    "anchorOffset=${anchor.pageTopInViewportPx} " +
+                    "old=${oldHeight.toInt()} new=${newHeight.toInt()} " +
                     "from=${before.toInt()} to=${scrollOffset.toInt()} lastBusy=$lastBusy"
             )
         }
+    }
+
+    /** Reprojects the HOME-owned content identity before any numeric page anchor may take over. */
+    private fun restoreLifecycleViewportAnchorAfterGeometryLocked(
+        reason: String,
+        index: Int,
+        oldHeight: Float,
+        newHeight: Float,
+    ): Boolean {
+        if (!lifecycleRestoreInputPending ||
+            !lifecycleViewportAnchorPageTopPx.isFinite()
+        ) return false
+        val identity = lifecycleViewportAnchorIdentity ?: return false
+        val target = pages.indexOfFirst { page ->
+            val current = page.committedIdentity
+            current != null &&
+                current.normalizedEpisodePath == identity.normalizedEpisodePath &&
+                current.sourcePageIndex == identity.sourcePageIndex &&
+                current.canonicalAsset == identity.canonicalAsset &&
+                current.manifestDigest == identity.manifestDigest &&
+                current.manifestPageCount == identity.manifestPageCount
+        }
+        if (target < 0) return false
+        rebuildLayoutLocked()
+        val before = scrollOffset
+        val desired = pageTopOrElseLocked(target, 0f) - lifecycleViewportAnchorPageTopPx
+        setStructuralScrollOffsetLocked(desired)
+        clampScrollLocked()
+        if (abs(scrollOffset - before) > HEIGHT_CHANGE_EPSILON_PX) {
+            Log.d(
+                TAG,
+                "reader_lifecycle_geometry_anchor_restore reason=$reason index=$index " +
+                    "path=${identity.normalizedEpisodePath},source=${identity.sourcePageIndex}," +
+                    "page=$target,top=$lifecycleViewportAnchorPageTopPx," +
+                    "old=${oldHeight.toInt()},new=${newHeight.toInt()}," +
+                    "from=${before.toInt()},to=${scrollOffset.toInt()}",
+            )
+        }
+        return true
     }
 
     private fun clampScrollLocked() {
@@ -18920,6 +19545,37 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return fullMaxScroll
     }
 
+    /** Must be called with [stateLock] held. */
+    private fun hasSealedInitialExactStructureLocked(): Boolean {
+        val firstIdentity = pages.firstOrNull()?.committedIdentity ?: return false
+        val episodePath = firstIdentity.normalizedEpisodePath
+        val manifestDigest = firstIdentity.manifestDigest
+        val manifestPageCount = firstIdentity.manifestPageCount
+        if (episodePath.isBlank() || manifestDigest.isBlank() ||
+            manifestPageCount <= 0 || manifestPageCount != pages.size
+        ) return false
+        for (index in pages.indices) {
+            val page = pages[index]
+            val identity = page.committedIdentity ?: return false
+            if (page.cardText != null || page.errorText != null ||
+                identity.displayPageIndex != index || identity.sourcePageIndex != index ||
+                identity.normalizedEpisodePath != episodePath ||
+                identity.manifestDigest != manifestDigest ||
+                identity.manifestPageCount != manifestPageCount ||
+                identity.canonicalAsset.isBlank()
+            ) return false
+        }
+        return true
+    }
+
+    /**
+     * Read-only exact-manifest proof for the Activity's progress owner. A fully identity-bound
+     * table is not the legacy partial ACK runway and must not be clamped to its prefix.
+     */
+    fun hasSealedInitialExactStructure(): Boolean = synchronized(stateLock) {
+        hasSealedInitialExactStructureLocked()
+    }
+
     private fun capForwardInputScrollLocked(
         rawNext: Float,
         direction: Int,
@@ -18958,7 +19614,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val boundedPhysicalIntent = tailLimit?.let {
             min(physicalGestureTarget, it)
         } ?: physicalGestureTarget
-        rememberBlockedForwardIntentLocked(boundedPhysicalIntent)
+        if (pointerDown || dragging) {
+            rememberBlockedForwardIntentLocked(boundedPhysicalIntent)
+        } else {
+            // Reaching a missing drawable after finger-up terminates the kinetic segment at this
+            // exact clean cap. Pixels arriving later may widen the next gesture's range, but must
+            // never manufacture a fresh autonomous scroll segment.
+            clearBlockedForwardIntentLocked()
+        }
         scheduleBlockedForwardWindowRequestLocked()
         if (shouldLogForwardCapLocked()) {
             val blockedForward = blockedForwardTargetPageLocked()
@@ -19846,6 +20509,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val viewWidth = max(1, viewportWidth)
         if (page.cardText != null) return TRANSITION_CARD_PAGE_HEIGHT_PX
         if (page.errorText != null) return TRANSITION_CARD_PAGE_HEIGHT_PX
+        if (page.frozenLayoutRatio.isFinite() && page.frozenLayoutRatio > 0f) {
+            return max(1f, viewWidth * page.frozenLayoutRatio)
+        }
         if (page.width > 0 && page.height > 0) {
             val drawWidth = viewWidth
             return max(1f, drawWidth * (page.height / page.width.toFloat()))
@@ -19902,6 +20568,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun addPageLocked(page: Page) {
         page.attachDrawableReferences(pageBitmapReferences, pendingResolvePages)
         pages.add(page)
+        if (page.frozenLayoutRatio.isFinite()) deferredLayoutGeometryPages.add(page)
         pagesAvailableForInput = true
     }
 
@@ -19909,12 +20576,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun addPageLocked(index: Int, page: Page) {
         page.attachDrawableReferences(pageBitmapReferences, pendingResolvePages)
         pages.add(index, page)
+        if (page.frozenLayoutRatio.isFinite()) deferredLayoutGeometryPages.add(page)
         pagesAvailableForInput = true
     }
 
     /** Page-table mutations own [pageBitmapReferences] and must execute under [stateLock]. */
     private fun removePageAtLocked(index: Int): Page {
         val removed = pages.removeAt(index)
+        deferredLayoutGeometryPages.remove(removed)
         removed.detachDrawableReferences()
         pagesAvailableForInput = pages.isNotEmpty()
         return removed
@@ -19922,7 +20591,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     /** Page-table mutations own [pageBitmapReferences] and must execute under [stateLock]. */
     private fun removePageRangeLocked(startIndex: Int, endExclusive: Int) {
-        pages.subList(startIndex, endExclusive).forEach(Page::detachDrawableReferences)
+        pages.subList(startIndex, endExclusive).forEach { page ->
+            deferredLayoutGeometryPages.remove(page)
+            page.detachDrawableReferences()
+        }
         pages.subList(startIndex, endExclusive).clear()
         pagesAvailableForInput = pages.isNotEmpty()
     }
@@ -19931,6 +20603,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun clearPagesLocked() {
         pages.forEach(Page::detachDrawableReferences)
         pages.clear()
+        deferredLayoutGeometryPages.clear()
+        lifecycleRestoreInputPending = false
+        lifecycleViewportAnchorIdentity = null
+        lifecycleViewportAnchorPageTopPx = Float.NaN
         pagesAvailableForInput = false
     }
 
@@ -20111,6 +20787,46 @@ class ReaderSurfaceView @JvmOverloads constructor(
         page.pendingHeight = 0
     }
 
+    /** Pixel/request lifecycle is independent from the document-layout lifetime. */
+    private fun clearDeferredLayoutGeometryLocked(page: Page) {
+        page.frozenLayoutRatio = Float.NaN
+        deferredLayoutGeometryPages.remove(page)
+    }
+
+    /**
+     * Freezes only document layout while source dimensions and original proof remain exact.
+     * The ordinary pending-resolve pass removes this ratio after all physical motion settles.
+     */
+    private fun freezeAuthoritativeLayoutUntilInputSettlesLocked(
+        page: Page,
+        oldDrawHeight: Float,
+    ) {
+        val viewWidth = max(1, if (width > 0) width else pendingPreparedViewportWidth)
+        page.frozenLayoutRatio =
+            (oldDrawHeight / viewWidth.toFloat()).coerceAtLeast(1f / viewWidth)
+        // Width/height and proof already describe the authoritative source. Register only the
+        // deferred document geometry; pixel readiness and forward traversal remain immediate.
+        deferredLayoutGeometryPages.add(page)
+        schedulePendingResolveRetryLocked(markLayoutDirty = false)
+    }
+
+    private fun hasDeferredLayoutGeometryLocked(): Boolean =
+        deferredLayoutGeometryPages.isNotEmpty()
+
+    private fun hasAnyDeferredGeometryWorkLocked(): Boolean =
+        hasPendingPageResolvesLocked() || hasDeferredLayoutGeometryLocked()
+
+    private fun deferredLayoutGeometryIndexesLocked(): List<Int> {
+        if (deferredLayoutGeometryPages.isEmpty()) return emptyList()
+        val indexes = ArrayList<Int>(deferredLayoutGeometryPages.size)
+        for (page in deferredLayoutGeometryPages) {
+            val index = pages.indexOf(page)
+            if (index >= 0) indexes.add(index)
+        }
+        indexes.sort()
+        return indexes
+    }
+
     private fun hasPendingPageResolvesLocked(): Boolean {
         return pendingResolvePages.isNotEmpty()
     }
@@ -20149,7 +20865,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         mainHandler.postDelayed({
             synchronized(stateLock) {
                 pendingResolveRetryPosted = false
-                if (!hasPendingPageResolvesLocked()) return@synchronized
+                if (!hasAnyDeferredGeometryWorkLocked()) return@synchronized
                 renderRequested = true
                 scheduleFrameLocked()
                 stateLock.notifyAll()
@@ -20158,16 +20874,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun applyPendingPageResolvesLocked(): Boolean {
-        if (pages.isEmpty() || pendingResolvePages.isEmpty()) return false
+        if (pages.isEmpty() || !hasAnyDeferredGeometryWorkLocked()) return false
         if (isNextBoundaryGeometryHeldLocked()) {
-            if (hasPendingPageResolvesLocked()) schedulePendingResolveRetryLocked(markLayoutDirty = false)
+            if (hasAnyDeferredGeometryWorkLocked()) {
+                schedulePendingResolveRetryLocked(markLayoutDirty = false)
+            }
             return false
         }
         rebuildLayoutLocked()
-        val viewportAnchor = progressPositionLocked() ?: return false
+        val viewportAnchor = viewportAnchorLocked() ?: return false
         val recentScrollSettling = isRecentScrollSettlingLocked()
         if (recentScrollSettling) {
-            if (hasPendingPageResolvesLocked()) schedulePendingResolveRetryLocked(markLayoutDirty = false)
+            if (hasAnyDeferredGeometryWorkLocked()) {
+                schedulePendingResolveRetryLocked(markLayoutDirty = false)
+            }
             return false
         }
         if (!shouldRestoreAnchorAfterPendingResolves(
@@ -20178,10 +20898,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 recentScrollSettling = recentScrollSettling
             )
         ) {
-            if (hasPendingPageResolvesLocked()) schedulePendingResolveRetryLocked(markLayoutDirty = false)
+            if (hasAnyDeferredGeometryWorkLocked()) {
+                schedulePendingResolveRetryLocked(markLayoutDirty = false)
+            }
             return false
         }
         var appliedCount = 0
+        for (index in deferredLayoutGeometryIndexesLocked()) {
+            val page = pages.getOrNull(index) ?: continue
+            val oldHeight = pageDrawHeightLocked(page)
+            clearDeferredLayoutGeometryLocked(page)
+            val newHeight = pageDrawHeightLocked(page)
+            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+            appliedCount++
+        }
         for (index in pendingResolveIndexesLocked()) {
             if (!shouldApplyPendingPageResolveLocked(index)) continue
             if (applyPendingPageResolveLocked(index)) appliedCount++
@@ -20196,7 +20926,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             Log.d(
                 TAG,
                 "reader_pending_resolve_restore applied=$appliedCount anchor=${viewportAnchor.page} " +
-                    "anchorOffset=${viewportAnchor.offset} from=${beforeRestore.toInt()} to=${scrollOffset.toInt()} " +
+                    "anchorOffset=${viewportAnchor.pageTopInViewportPx} " +
+                    "from=${beforeRestore.toInt()} to=${scrollOffset.toInt()} " +
                     "lastBusy=$lastBusy pointerDown=$pointerDown dragging=$dragging " +
                     "scrollerFinished=${scroller.isFinished} recentSettling=$recentScrollSettling"
             )
@@ -20216,7 +20947,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return false
         }
         rebuildLayoutLocked()
-        val viewportAnchor = progressPositionLocked() ?: return false
+        val viewportAnchor = viewportAnchorLocked() ?: return false
         if (isRecentScrollSettlingLocked() && !hasVisiblePendingDrawable) {
             if (hasPendingPageResolvesLocked()) schedulePendingResolveRetryLocked(markLayoutDirty = false)
             return false
@@ -20239,7 +20970,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         Log.d(
             TAG,
             "reader_visible_pending_resolve_restore applied=$appliedCount anchor=${viewportAnchor.page} " +
-                "anchorOffset=${viewportAnchor.offset} from=${beforeRestore.toInt()} to=${scrollOffset.toInt()}"
+                "anchorOffset=${viewportAnchor.pageTopInViewportPx} " +
+                    "from=${beforeRestore.toInt()} to=${scrollOffset.toInt()}"
         )
         return true
     }
@@ -20546,10 +21278,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * an active forward gesture.
      */
     private fun setStructuralScrollOffsetLocked(requested: Float) {
+        val before = scrollOffset
         setScrollOffsetLocked(
             requested,
             allowStructuralCoordinateCorrection = true,
         )
+        val appliedDelta = scrollOffset - before
+        if (abs(appliedDelta) <= SCROLL_OFFSET_EPSILON_PX) return
+        // Every live input target is expressed in the same document coordinate as scrollOffset.
+        // Rebase all of them atomically with a geometry change; otherwise the next finger sample
+        // or scroller tick restores the obsolete coordinate and creates the very jump this method
+        // is meant to prevent.
+        if (pointerDown || dragging) {
+            dragOriginScrollOffset += appliedDelta
+        }
+        if (!scroller.isFinished) {
+            activeScrollerOffsetShift += appliedDelta
+        }
+        if (blockedForwardIntentTarget.isFinite()) {
+            blockedForwardIntentTarget += appliedDelta
+        }
+        if (blockedForwardIntentGestureCarryTarget.isFinite()) {
+            blockedForwardIntentGestureCarryTarget += appliedDelta
+        }
     }
 
     private fun setScrollOffsetLocked(
@@ -20697,6 +21448,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         )
         val direction = directionForDelta(requestedOffset - scrollOffset)
         if (direction == 0) return false
+        // Physical intent owns the viewport even when the drawable/document edge prevents this
+        // sample from moving a pixel. Late discovery or image delivery must not restore over it.
+        clearLockedRestorePositionLocked()
+        clearDirectWifiForwardOnlyInitialResumeContractLocked()
         // Record the physical intent before the edge check. A restored rolling reader commonly
         // starts at local scroll offset zero even though earlier source images exist outside the
         // admitted window. Returning here without reverse evidence made that saved floor
@@ -20737,8 +21492,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             return false
         }
-        clearLockedRestorePositionLocked()
-        clearDirectWifiForwardOnlyInitialResumeContractLocked()
         if (!dragging) dragging = true
         setBusyLocked(true)
         lastScrollInteractionMs = (eventTimeNs / NANOS_PER_MILLISECOND)
@@ -21109,7 +21862,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val suppressed = suppressedPixelMutationGapLogs
         suppressedPixelMutationGapLogs = 0L
         lastPixelMutationGapLogMs = nowMs
-        if (Log.isLoggable("ReaderFrameGaps", Log.DEBUG)) {
+        if (Log.isLoggable(TAG, Log.DEBUG)) {
             Log.d(
                 TAG,
                 "reader_scroll_callback_gap ms=${fmt(ageMs)} cause=pixel_mutation phase=$phase " +
@@ -22378,6 +23131,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     "reader-card-native",
                 ).apply { isDaemon = true }
             }
+        private val HWUI_FORWARD_PREPARE_EXECUTOR =
+            Executors.newSingleThreadExecutor { task ->
+                Thread(
+                    {
+                        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
+                        task.run()
+                    },
+                    "ReaderHwuiForwardPrepare",
+                ).apply { isDaemon = true }
+            }
         private const val NATIVE_PRESENTATION_NONE = 0
         private const val NATIVE_PRESENTATION_SURFACE_CONTROL = 1
         private const val NATIVE_PRESENTATION_BUFFER_QUEUE = 2
@@ -22687,9 +23450,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 recentScrollSettling,
                 oldBottom,
                 scrollOffset
-            )
-        }
-
+                )
+            }
         @JvmStatic
         fun shouldRestoreAnchorAfterPendingResolvesForTest(
             lastBusy: Boolean,
@@ -22706,5 +23468,41 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 recentScrollSettling
             )
         }
+
+        private fun physicalInputOwnsViewport(
+            preContentGestureActive: Boolean,
+            preContentForwardIntentPending: Boolean,
+            blockedForwardIntentPending: Boolean,
+            pointerDown: Boolean,
+            dragging: Boolean,
+            scrollerFinished: Boolean,
+            recentScrollSettling: Boolean,
+        ): Boolean =
+            preContentGestureActive ||
+                preContentForwardIntentPending ||
+                blockedForwardIntentPending ||
+                pointerDown ||
+                dragging ||
+                !scrollerFinished ||
+                recentScrollSettling
+
+        @JvmStatic
+        fun physicalInputOwnsViewportForTest(
+            preContentGestureActive: Boolean,
+            preContentForwardIntentPending: Boolean,
+            blockedForwardIntentPending: Boolean,
+            pointerDown: Boolean,
+            dragging: Boolean,
+            scrollerFinished: Boolean,
+            recentScrollSettling: Boolean,
+        ): Boolean = physicalInputOwnsViewport(
+            preContentGestureActive,
+            preContentForwardIntentPending,
+            blockedForwardIntentPending,
+            pointerDown,
+            dragging,
+            scrollerFinished,
+            recentScrollSettling,
+        )
     }
 }

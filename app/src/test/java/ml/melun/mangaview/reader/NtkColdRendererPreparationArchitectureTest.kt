@@ -2724,8 +2724,24 @@ class NtkColdRendererPreparationArchitectureTest {
                 "private const val NTK_MANHWA_PAGE_ZERO_SEGMENTED_TRANSPORT_ENABLED = true"
             )
         )
+        assertTrue(
+            imageCacheSource.contains(
+                "private const val NTK_MANHWA_RANGE_PREFIX_BYTES = 32L * 1024L"
+            )
+        )
+        assertTrue(
+            imageCacheSource.contains(
+                "private const val NTK_MANHWA_RANGE_SEGMENT_BYTES = 256L * 1024L"
+            )
+        )
+        assertTrue(
+            imageCacheSource.contains(
+                "private const val NTK_MANHWA_ANCHOR_SEGMENT_EXECUTOR_LANES = 24"
+            )
+        )
         assertTrue(execute.contains("strictPageIndex == 0"))
         assertTrue(execute.contains("manhwaRangeReplica"))
+        assertTrue(execute.contains("identitySafeRangeReplicaCount >= 2"))
         assertTrue(execute.contains("executeSegmentedManhwa(candidates)"))
     }
 
@@ -3092,6 +3108,8 @@ class NtkColdRendererPreparationArchitectureTest {
         )
 
         assertTrue(markReady.contains("strictAllImagesReadyQueueScheduled = true"))
+        assertTrue(markReady.contains("session?.markStrictAuthoritativeDrawableInstalled("))
+        assertTrue(markReady.contains("reason=session_canonical_ack"))
         assertFalse(markReady.contains("strictAllImagesReadyPublished = true"))
         assertTrue(queueReady.contains("strictAllImagesReadyPublished = true"))
         assertTrue(queueReady.contains("renderView.queueResidentAuthoritativeTextureRunway("))
@@ -3132,6 +3150,26 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(listedRestore.contains("adjacentEpisodeFastPrepared("))
         assertFalse(listedRestore.contains("fetchEpisodesForeground("))
         assertFalse(listedRestore.contains("startStrictNtkDiscovery("))
+    }
+
+    @Test
+    fun surfaceInstallAckReleasesTheInitialExactDecodeRunway() {
+        val canonicalAck = functionBody(
+            "fun markStrictAuthoritativeDrawableInstalled(",
+            sessionSource,
+        )
+
+        assertTrue(canonicalAck.contains("markCanonicalDrawableCompletion(index, page)"))
+        assertTrue(
+            canonicalAck.contains(
+                "installedInitialAnchor = completed && index == currentStartPage()"
+            )
+        )
+        assertTrue(canonicalAck.contains("strictExactInitialAnchorPixelsInstalled.countDown()"))
+        assertTrue(
+            canonicalAck.indexOf("markCanonicalDrawableCompletion(index, page)") <
+                canonicalAck.indexOf("strictExactInitialAnchorPixelsInstalled.countDown()")
+        )
     }
 
     @Test
@@ -3750,7 +3788,7 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(promotion.contains("isCurrentLaunchBlockedForwardPage(index, page)"))
         assertTrue(promotion.contains("strictExactRollingDecode.removeQueued(task)"))
         assertTrue(promotion.contains("strictExactRollingQueuedDecodes.remove(index, task)"))
-        assertTrue(promotion.contains("anchorDecode.execute(task)"))
+        assertTrue(promotion.contains("strictExactViewportBlockerDecode.execute(task)"))
         assertFalse(promotion.contains("requestStrictExactSourcePage("))
         assertTrue(lazyExecutor.contains("pool.queue.remove(command)"))
     }
@@ -3850,6 +3888,16 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(directWifiGate >= 0)
         assertTrue(relock > directWifiGate)
         assertTrue(rerequest > directWifiGate)
+        val restoreStart = window.indexOf("activeInitialRestorePage >= 0")
+        val restoreEnd = window.indexOf("if (activeInitialRestorePage >= 0)", restoreStart + 1)
+        val restoreBranch = window.substring(restoreStart, restoreEnd)
+        assertTrue(
+            restoreBranch.windowed("activeSession?.requestWindowAsync(".length)
+                .count { it == "activeSession?.requestWindowAsync(" } == 2,
+        )
+        assertTrue(restoreBranch.contains("reader_restore_surface_motion_async"))
+        assertTrue(restoreBranch.contains("physicalFirstPage"))
+        assertTrue(restoreBranch.contains("physicalLastPage"))
 
         val gate = functionBody(
             "private fun directWifiStrictEpisodeRestoreOwnedBySurface()",
@@ -3933,6 +3981,8 @@ class NtkColdRendererPreparationArchitectureTest {
         val surfaceTouch = functionBody("override fun onTouchEvent(")
         val surfaceDown = surfaceTouch.substringBefore("MotionEvent.ACTION_MOVE ->")
         assertTrue(surfaceDown.contains("if (lifecycleRestoreInputPending)"))
+        assertTrue(surfaceDown.contains("lifecycleViewportAnchorIdentity = null"))
+        assertTrue(surfaceDown.contains("lifecycleViewportAnchorPageTopPx = Float.NaN"))
         assertTrue(surfaceDown.contains("clearLockedRestorePositionLocked()"))
         assertTrue(surfaceDown.contains("structuralScrollAdjustUntilMs = 0L"))
         assertTrue(surfaceDown.contains("clearDirectWifiForwardOnlyInitialResumeContractLocked()"))
@@ -3944,6 +3994,20 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(lifecycleRestore.contains("current.sourcePageIndex == identity.sourcePageIndex"))
         assertTrue(lifecycleRestore.contains("pageTopOrElseLocked(target, 0f) - pageTopInViewportPx"))
         assertTrue(lifecycleRestore.contains("lifecycleRestoreInputPending = true"))
+        assertTrue(lifecycleRestore.contains("lifecycleViewportAnchorIdentity = identity"))
+        assertTrue(lifecycleRestore.contains("lifecycleViewportAnchorPageTopPx = pageTopInViewportPx"))
+
+        val geometryRestore = functionBody(
+            "private fun restoreLifecycleViewportAnchorAfterGeometryLocked(",
+        )
+        assertTrue(geometryRestore.contains("current.sourcePageIndex == identity.sourcePageIndex"))
+        assertTrue(geometryRestore.contains("pageTopOrElseLocked(target, 0f) - lifecycleViewportAnchorPageTopPx"))
+        assertTrue(geometryRestore.contains("setStructuralScrollOffsetLocked(desired)"))
+        val ordinaryRestore = functionBody("private fun restoreViewportAnchorLocked(")
+        assertTrue(
+            ordinaryRestore.indexOf("restoreLifecycleViewportAnchorAfterGeometryLocked(") <
+                ordinaryRestore.indexOf("val target = anchor?.page"),
+        )
 
         val physicalPosition = functionBody("fun currentScrollPositionSnapshot()")
         assertTrue(physicalPosition.contains("blockedForwardIntentPending = false"))
@@ -3951,6 +4015,10 @@ class NtkColdRendererPreparationArchitectureTest {
         val liveAnchor = functionBody("fun currentCommittedViewportAnchorSnapshot()")
         assertTrue(liveAnchor.contains("pageTop - scrollOffset"))
         assertTrue(liveAnchor.contains("page.committedIdentity"))
+        assertTrue(liveAnchor.contains("val progressPage = progressPositionLocked()?.page"))
+        assertTrue(liveAnchor.contains("latestDeliveredStableViewportProof()"))
+        assertTrue(liveAnchor.contains("NtkCommittedViewportProofPolicy.readingIdentityIndex("))
+        assertFalse(liveAnchor.contains("visiblePageIdentities?.firstOrNull()"))
 
         val pause = functionBody("override fun onPause()", activitySource)
         assertTrue(pause.indexOf("freezePhysicalViewportForLifecycle()") < pause.indexOf("saveCurrentReadingProgress()"))
@@ -3970,6 +4038,9 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(homeRoundTrip.contains("isCurrentCommittedViewport(evidence)"))
         assertTrue(homeRoundTrip.contains("beforePhysical.getFirstVisibleSourcePage()"))
         assertTrue(homeRoundTrip.contains("resumedPhysical.getFirstVisibleSourcePage()"))
+        assertTrue(homeRoundTrip.contains("device.swipe(x, fromY, x, toY, 60)"))
+        assertTrue(homeRoundTrip.contains("candidateCommittedAnchor.getPageTopInViewportPx()"))
+        assertTrue(homeRoundTrip.contains("evidence.coverage.getMissingPx() == 0"))
     }
 
     @Test

@@ -362,6 +362,67 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
+    fun currentManhwaKeepsTheOnlyDrawableAnchorExclusiveUntilPublication() {
+        assertEquals(
+            1,
+            NtkStrictInitialWavePolicy.manhwaPreAnchorGateOperations(
+                cohortCount = 13,
+                currentForegroundEpisode = true,
+            ),
+        )
+        assertEquals(
+            13,
+            NtkStrictInitialWavePolicy.manhwaPreAnchorGateOperations(
+                cohortCount = 13,
+                currentForegroundEpisode = false,
+            ),
+        )
+        assertEquals(
+            0,
+            NtkStrictInitialWavePolicy.manhwaPreAnchorGateOperations(
+                cohortCount = 0,
+                currentForegroundEpisode = true,
+            ),
+        )
+        assertTrue(
+            NtkStrictInitialWavePolicy.allowsCurrentManhwaPreAnchorPage(
+                pageIndex = 0,
+                pageCount = 13,
+                initialPageIndex = 0,
+                currentForegroundEpisode = true,
+                anchorBodyPublished = false,
+            ),
+        )
+        assertFalse(
+            NtkStrictInitialWavePolicy.allowsCurrentManhwaPreAnchorPage(
+                pageIndex = 1,
+                pageCount = 13,
+                initialPageIndex = 0,
+                currentForegroundEpisode = true,
+                anchorBodyPublished = false,
+            ),
+        )
+        assertTrue(
+            NtkStrictInitialWavePolicy.allowsCurrentManhwaPreAnchorPage(
+                pageIndex = 12,
+                pageCount = 13,
+                initialPageIndex = 0,
+                currentForegroundEpisode = true,
+                anchorBodyPublished = true,
+            ),
+        )
+        assertTrue(
+            NtkStrictInitialWavePolicy.allowsCurrentManhwaPreAnchorPage(
+                pageIndex = 12,
+                pageCount = 13,
+                initialPageIndex = 0,
+                currentForegroundEpisode = false,
+                anchorBodyPublished = false,
+            ),
+        )
+    }
+
+    @Test
     fun manhwaColdLeadersCoverTwentyFourActualConnectionShards() {
         val leaders = NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             episodePath = "/manhwa/work/episode",

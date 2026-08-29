@@ -408,7 +408,8 @@ class BitmapNativeRetirementArchitectureTest {
         assertTrue(retry.contains("val retryHandler = if ("))
         assertTrue(retry.contains("directRenderHandler"))
         assertTrue(retry.contains("retryHandler.postDelayed("))
-        assertTrue(surface.contains("Handler.createAsync(thread.looper)"))
+        assertTrue(surface.contains("createAsyncHandlerCompat(thread.looper)"))
+        assertTrue(surface.contains("Handler.createAsync(looper)"))
     }
 
     @Test
@@ -797,7 +798,7 @@ class BitmapNativeRetirementArchitectureTest {
         )
         assertTrue(windowRequest.contains("hostExactPoolPressureRetiredPages.contains(index)"))
         assertTrue(windowRequest.contains("isPhysicalRehydrateEligible("))
-        assertTrue(windowRequest.contains("if (!physicallyVisible) continue"))
+        assertTrue(windowRequest.contains("if (!isStrictExactColdPageDemanded(index))"))
         assertTrue(
             windowRequest.indexOf("listener.isPageAuthoritativeDrawableInstalled(index)") <
                 windowRequest.indexOf("hostExactPoolPressureRetiredPages.remove(index)"),
@@ -828,8 +829,14 @@ class BitmapNativeRetirementArchitectureTest {
             "override fun isPageAuthoritativeDrawableCurrentlyInstalled(index: Int): Boolean",
         ))
         assertTrue(activity.contains(
-            "renderView.hasAuthoritativeOriginalPage(index)",
+            "renderView.hasAuthoritativeOriginalPageCurrentlyDrawable(index)",
         ))
+        val currentDrawable = surface.section(
+            "fun hasAuthoritativeOriginalPageCurrentlyDrawable(index: Int): Boolean",
+            "fun hasAuthoritativeOriginalTiles(",
+        )
+        assertTrue(currentDrawable.contains("usableAuthoritativeOriginalTilePage("))
+        assertTrue(currentDrawable.contains("pageHasDirectPresenterResourcesLocked(page)"))
         val rehydrateWindow = session.section(
             "private fun reportedHostPressureRehydrateWindowLocked(",
             "private fun offerWindowAsync(",
@@ -840,6 +847,16 @@ class BitmapNativeRetirementArchitectureTest {
             "private fun shouldKeepHostPressureRetiredExactPageParked(",
             "private fun scheduleStrictAdjacentExactRehydrate(",
         )
+        val pressurePark = session.section(
+            "private fun shouldKeepHostPressureRetiredExactPageParked(",
+            "private fun canAccessAppendOnlyStablePrefix(",
+        )
+        assertTrue(pressurePark.contains(
+            "listener.isPageAuthoritativeDrawableCurrentlyInstalled(retiredState.first)",
+        ))
+        assertFalse(pressurePark.contains(
+            "listener.isPageAuthoritativeDrawableInstalled(retiredState.first)",
+        ))
         val pressureParkAt = exactRehydrate.indexOf(
             "shouldKeepHostPressureRetiredExactPageParked(index, page)",
         )
@@ -878,7 +895,7 @@ class BitmapNativeRetirementArchitectureTest {
         assertFalse(workerHandoff.contains("hostExactPoolPressureRetiredPages.remove("))
         assertFalse(mainDelivery.contains("hostExactPoolPressureRetiredPages.remove("))
         assertEquals(
-            3,
+            4,
             Regex("hostExactPoolPressureRetiredPages\\.remove\\(").findAll(session).count(),
         )
         val surfaceWindow = surface.section(

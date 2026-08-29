@@ -235,6 +235,15 @@ internal object ReaderImageCacheTrimAdmissionPolicy {
 
 /** Pure admission rule for a disjoint manhwa suffix continuation. */
 internal object NtkManhwaProjectedBodyHedgePolicy {
+    const val BODY_RATE_SAMPLE_MS = 1_000L
+    const val OPENING_PAGE_RATE_SAMPLE_MS = 100L
+    const val OPENING_PAGE_PROGRESS_DEADLINE_MS = 500L
+
+    fun bodyRateSampleMs(pageIndex: Int): Long =
+        if (pageIndex == 0) OPENING_PAGE_RATE_SAMPLE_MS else BODY_RATE_SAMPLE_MS
+
+    fun bodyProgressDeadlineMs(pageIndex: Int, defaultMs: Long): Long =
+        if (pageIndex == 0) OPENING_PAGE_PROGRESS_DEADLINE_MS else defaultMs
     // Do not turn an ordinary cold connection ramp into recovery traffic. A 112-page wave showed
     // that projecting from the first one-second sample abandoned responsive streams and opened
     // 173 Range calls, 82 of which were rejected by the already-loaded H2 origins. Real no-byte
@@ -242,15 +251,25 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
     // reserved for a small tail that remains slow after the primary wave has had time to settle.
     const val MIN_PROJECTED_HEDGE_SESSION_MS = 5_000L
     const val PROJECTED_SESSION_HEDGE_MS = 12_000L
-    // A portrait comic page does not cover the whole reader viewport by itself. Page one is part
-    // of the first clean frame, so a slowly dripping p002 body must not share the bulk tail's
-    // five-second recovery threshold. This remains one bounded, disjoint suffix: the original
-    // prefix is retained, no byte is downloaded twice, and pages outside the entry viewport keep
-    // the conservative production threshold above.
+    // The first two portrait comic pages form the entry viewport. A slowly dripping p0 or p1 body
+    // must not share the bulk tail's five-second recovery threshold. This remains one bounded,
+    // disjoint suffix: the original prefix is retained, no byte is downloaded twice, and pages
+    // outside the entry viewport keep the conservative production threshold above.
     const val ENTRY_VIEWPORT_LAST_PAGE = 1
+    // Page zero is the only pixel authority that can clamp every physical forward gesture to
+    // offset zero. Once its measured body rate already projects past the entry SLA, waiting for
+    // the episode-wide conservative admission age merely converts the same exact suffix into a
+    // slower serial timeout recovery. Page one retains the settled-wave delay below.
+    const val OPENING_PAGE_MIN_SESSION_MS = 0L
     const val ENTRY_VIEWPORT_MIN_SESSION_MS = 1_500L
     const val ENTRY_VIEWPORT_PROJECTED_COMPLETION_MS = 3_200L
+    // HttpEngine returns an exact Range only after its complete body is buffered. Keep p0 pieces
+    // around 256 KiB so a slow replica cannot consume the whole entry wall, using no more than the
+    // existing twelve global Range workers. Page one keeps the smaller six-piece budget.
+    const val OPENING_PAGE_MAX_CONTINUATIONS = 12
+    const val ENTRY_VIEWPORT_MAX_CONTINUATIONS = 6
     private const val TAIL_HEAD_START_MS = 300L
+    private const val OPENING_PAGE_TAIL_LEAD_BYTES = 16L * 1024L
     private const val MIN_TAIL_LEAD_BYTES = 24L * 1024L
     // The best hard-112 cold run (r75) used one 24 KiB disjoint lead. Increasing this to 64 KiB
     // left more work on the already-slow original and regressed repeated cold runs, so preserve
@@ -261,6 +280,7 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
     // entire untouched suffix behind one slow HTTP/2 stream when three immutable mirrors are
     // available. Split only large entry-view suffixes into a bounded set of balanced, disjoint
     // ranges. Small images and all offscreen pages keep the proven single-range path.
+    private const val OPENING_PAGE_PARALLEL_SEGMENT_BYTES = 256L * 1024L
     private const val ENTRY_VIEWPORT_PARALLEL_SEGMENT_BYTES = 512L * 1024L
     private const val LATE_ADMISSION_BEFORE_BODY_MS = 1_800L
     private const val MAX_PROJECTED_STARTS_PER_SESSION = 6
@@ -335,8 +355,13 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         deliveredBytes: Long,
         expectedLength: Long,
     ): Boolean {
-        if (pageIndex !in 1..ENTRY_VIEWPORT_LAST_PAGE ||
-            sessionElapsedMs < ENTRY_VIEWPORT_MIN_SESSION_MS
+        val minimumSessionMs = if (pageIndex == 0) {
+            OPENING_PAGE_MIN_SESSION_MS
+        } else {
+            ENTRY_VIEWPORT_MIN_SESSION_MS
+        }
+        if (pageIndex !in 0..ENTRY_VIEWPORT_LAST_PAGE ||
+            sessionElapsedMs < minimumSessionMs
         ) {
             return false
         }
@@ -355,7 +380,7 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         maximumContinuations: Int,
     ): Boolean {
         if (continuationCount < 0 || maximumContinuations <= 0) return false
-        return pageIndex in 1..ENTRY_VIEWPORT_LAST_PAGE &&
+        return pageIndex in 0..ENTRY_VIEWPORT_LAST_PAGE &&
             continuationCount < maximumContinuations
     }
 
@@ -363,6 +388,7 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         bodyElapsedMs: Long,
         deliveredBytes: Long,
         expectedLength: Long,
+        pageIndex: Int = -1,
     ): Long? {
         if (bodyElapsedMs <= 0L || deliveredBytes <= 0L ||
             expectedLength <= deliveredBytes
@@ -371,7 +397,14 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         }
         val rateMatchedLead = deliveredBytes * TAIL_HEAD_START_MS /
             bodyElapsedMs.coerceAtLeast(1L)
-        val leadBytes = rateMatchedLead.coerceIn(MIN_TAIL_LEAD_BYTES, MAX_TAIL_LEAD_BYTES)
+        val leadBytes = if (pageIndex == 0) {
+            // Two Okio segments keep the suffix beyond any bytes already prefetched by the
+            // canonical BufferedSource, while avoiding a tiny gap request that can discard the
+            // entire running p0 suffix when the separate serial permit ring is busy.
+            OPENING_PAGE_TAIL_LEAD_BYTES
+        } else {
+            rateMatchedLead.coerceIn(MIN_TAIL_LEAD_BYTES, MAX_TAIL_LEAD_BYTES)
+        }
         val split = (deliveredBytes + leadBytes).coerceAtMost(expectedLength - 1L)
         return split.takeIf { expectedLength - it >= MIN_TAIL_BYTES }
     }
@@ -386,11 +419,17 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         start: Long,
         expectedLength: Long,
         maximumSegments: Int,
+        pageIndex: Int = 1,
     ): List<LongRange> {
         if (start < 0L || expectedLength <= start || maximumSegments <= 0) return emptyList()
         val remaining = expectedLength - start
-        val desiredSegments = ((remaining + ENTRY_VIEWPORT_PARALLEL_SEGMENT_BYTES - 1L) /
-            ENTRY_VIEWPORT_PARALLEL_SEGMENT_BYTES).toInt()
+        val targetSegmentBytes = if (pageIndex == 0) {
+            OPENING_PAGE_PARALLEL_SEGMENT_BYTES
+        } else {
+            ENTRY_VIEWPORT_PARALLEL_SEGMENT_BYTES
+        }
+        val desiredSegments = ((remaining + targetSegmentBytes - 1L) /
+            targetSegmentBytes).toInt()
         val segmentCount = desiredSegments.coerceIn(1, maximumSegments)
         val baseLength = remaining / segmentCount
         val extraBytes = remaining % segmentCount
@@ -401,6 +440,22 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
             cursor = range.last + 1L
             range
         }
+    }
+
+    fun entryViewportMaximumContinuations(pageIndex: Int): Int =
+        if (pageIndex == 0) OPENING_PAGE_MAX_CONTINUATIONS else ENTRY_VIEWPORT_MAX_CONTINUATIONS
+
+    fun projectedTailSegmentSlots(
+        remainingContinuationSlots: Int,
+        finalBodyTail: Boolean,
+        directWifiWebtoonTail: Boolean,
+    ): Int {
+        if (remainingContinuationSlots <= 0) return 0
+        // A measured tail starts beyond the bytes already handed to the consumer. Keep one
+        // physical slot for that exact gap if the canonical prefix stalls before the split;
+        // otherwise the suffix can consume the whole ring and cancel itself trying to recover.
+        val gapReserve = if (!finalBodyTail && !directWifiWebtoonTail) 1 else 0
+        return (remainingContinuationSlots - gapReserve).coerceAtLeast(0)
     }
 
     fun projectedFirstCandidateIndex(physicalAttempt: Int, candidateCount: Int): Int {
@@ -537,8 +592,12 @@ internal object NtkManhwaRangeResumePolicy {
     // admitted the hedge. executeManhwaRangeSegment retains every accepted byte and asks the next
     // mirror only for the untouched suffix, so this changes transport ownership without
     // redownloading or weakening exact Content-Range/validator checks.
-    const val ENTRY_VIEWPORT_BODY_WALL_MS =
-        NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_PROJECTED_COMPLETION_MS
+    // Keep the 3.2 s projection/SLA threshold above unchanged. Once an exact segment has already
+    // made progress, however, cancelling it at that same instant repeatedly replaced an almost
+    // complete 280 KiB body with a new DNS/TLS request. A separate 3.6 s physical wall leaves a
+    // bounded 400 ms completion margin while still finishing before the external opening gesture
+    // window; it changes no accepted byte, validator check, or user-visible test threshold.
+    const val ENTRY_VIEWPORT_BODY_WALL_MS = 3_600L
     // A page-one suffix can make substantial progress and then lose its final data frame. On a
     // congested three-replica route, two passes have been observed to leave each disjoint segment
     // only 1.6-132 KiB short; abandoning those accepted bytes makes the slower primary download
@@ -556,20 +615,26 @@ internal object NtkManhwaRangeResumePolicy {
             BODY_IDLE_MS
         }
 
-    fun projectedHeaderDeadlineMs(pageIndex: Int): Long =
+    fun projectedHeaderDeadlineMs(
+        pageIndex: Int,
+        bufferedResponseBody: Boolean = false,
+    ): Long =
         if (pageIndex in 0..ENTRY_VIEWPORT_LAST_PAGE) {
-            ENTRY_VIEWPORT_HEADER_MS
+            // HttpEngine completes an exact Range body before Call.execute() returns its synthetic
+            // response. Its header clock is therefore also the complete-segment clock; give that
+            // bounded buffer the same wall already enforced for this entry suffix.
+            if (bufferedResponseBody) ENTRY_VIEWPORT_BODY_WALL_MS else ENTRY_VIEWPORT_HEADER_MS
         } else {
             HEADER_MS
         }
 
     fun projectedBodyWallMs(pageIndex: Int): Long? =
         ENTRY_VIEWPORT_BODY_WALL_MS.takeIf {
-            pageIndex in 1..NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_LAST_PAGE
+            pageIndex in 0..NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_LAST_PAGE
         }
 
     fun maximumProgressRounds(pageIndex: Int): Int =
-        if (pageIndex in 1..NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_LAST_PAGE) {
+        if (pageIndex in 0..NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_LAST_PAGE) {
             ENTRY_VIEWPORT_MAX_PROGRESS_ROUNDS
         } else {
             1
@@ -2795,7 +2860,6 @@ object ReaderImageCache {
     // untouched suffix from a Range-capable Cloudflare mirror.
     // r20 used no rate-predicted suffix. Only a real first-byte/progress timeout may preserve the
     // delivered prefix and resume its untouched suffix from a Range-capable mirror.
-    private const val NTK_MANHWA_BODY_WALL_MS = 1_000L
     // A per-stream wall timer previously moved nearly every AWS body to the same three
     // Cloudflare replicas at once. NtkManhwaProjectedBodyHedgePolicy admits only a measured slow
     // drip; the independent idle deadlines continue to recover a genuinely stopped source.
@@ -2809,6 +2873,10 @@ object ReaderImageCache {
     // are available to the initial measured-slow cohort.
     private const val NTK_MANHWA_MAX_CONCURRENT_PROJECTED_CONTINUATIONS = 4
     private const val NTK_MANHWA_MAX_CONCURRENT_EARLY_PROJECTED_CONTINUATIONS = 4
+    // Only the anchor can enter the complete segmented route. Run its first 24 exact 128 KiB
+    // pieces in one bounded wave; ordinary projected/idle continuations still own at most the
+    // unchanged twelve permits below and therefore cannot expand to this executor width.
+    private const val NTK_MANHWA_ANCHOR_SEGMENT_EXECUTOR_LANES = 24
     private const val NTK_MANHWA_PROJECTED_BODY_RECHECK_MS = 400L
     private val ntkManhwaRangeContinuationPermits = Semaphore(
         NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS,
@@ -2856,10 +2924,11 @@ object ReaderImageCache {
         "booktoki8.org",
         "mana.apihost93.com",
     )
-    // A 160 KiB prefix plus one concurrent suffix covers the common 220-320 KiB page with two
-    // disjoint requests on different mirrors. 128 KiB produced a queued third segment for most
-    // pages and lost the gain to another header turn; 160 KiB keeps the first tail wave finite.
-    private const val NTK_MANHWA_RANGE_SEGMENT_BYTES = 128L * 1024L
+    // The prefix needs only enough immutable bytes to prove the validator and exact image header.
+    // Keep it small so the disjoint body wave can start without waiting for a full tail-sized
+    // block; subsequent ranges retain the measured 128 KiB unit and never overlap the prefix.
+    private const val NTK_MANHWA_RANGE_PREFIX_BYTES = 32L * 1024L
+    private const val NTK_MANHWA_RANGE_SEGMENT_BYTES = 256L * 1024L
     private const val NTK_MANHWA_RANGE_HEADER_DEADLINE_MS = 3_000L
     // Keep all-page segmentation off: in the current cold environment its extra range headers
     // increased completion from 18.094 s to 25.110 s. Page zero retains the validator-safe
@@ -3322,7 +3391,7 @@ object ReaderImageCache {
     // complete-body segmented route. Queued disjoint ranges remain lossless and normally finish
     // faster because the replica is no longer flooded with competing streams.
     private val strictManhwaRangeExecutor = Executors.newFixedThreadPool(
-        NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS,
+        NTK_MANHWA_ANCHOR_SEGMENT_EXECUTOR_LANES,
     ) { runnable ->
         Thread(
             {
@@ -3973,7 +4042,13 @@ data class NtkResolvedSourceRoute(
                 !liveDirectWifiAdjacentQuarantineRoute &&
                 (NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED ||
                     (NTK_MANHWA_PAGE_ZERO_SEGMENTED_TRANSPORT_ENABLED && strictPageIndex == 0))
-            if (segmentedTransportEnabled && manhwaRangeReplica) {
+            val identitySafeRangeReplicaCount = strictOwnedManhwaRangeCandidates(
+                candidates,
+                originalRequest.url.host.lowercase(Locale.ROOT),
+            ).size
+            if (segmentedTransportEnabled && manhwaRangeReplica &&
+                identitySafeRangeReplicaCount >= 2
+            ) {
                 return executeSegmentedManhwa(candidates)
             }
             // Carrier SNI recovery retains the measured four bounded physical cycles. Wi-Fi first
@@ -7067,36 +7142,157 @@ data class NtkResolvedSourceRoute(
             }
         }
 
-        private fun executeSegmentedManhwa(candidates: List<Request>): Response {
-            val rangeCandidates = candidates.filter {
-                it.url.host.lowercase(Locale.ROOT) in NTK_MANHWA_RANGE_REPLICA_HOSTS
-            }
-            var lastFailure: IOException? = null
+        /**
+         * The immutable CDN ring exposes identical strong validators and byte ranges. Race only
+         * the 32 KiB identity prefix so a cold or queued authority cannot consume half of the
+         * user's first scroll window before the disjoint body wave begins. Exactly one accepted
+         * response remains owned; all other physical calls are cancelled and closed before any
+         * suffix is admitted, so this never duplicates a complete page transfer.
+         */
+        private fun raceSegmentedManhwaPrefix(
+            rangeCandidates: List<Request>,
+        ): NtkManhwaPrefixRaceWinner {
+            require(rangeCandidates.isNotEmpty())
+            val completion =
+                ExecutorCompletionService<NtkManhwaPrefixRaceWinner?>(strictManhwaRangeExecutor)
+            val winnerClaimed = AtomicBoolean(false)
+            val prefixCalls = CopyOnWriteArrayList<Call>()
+            val prefixFutures = ArrayList<Future<NtkManhwaPrefixRaceWinner?>>()
+            val lastFailure = AtomicReference<IOException?>()
+
             rangeCandidates.forEachIndexed { candidateIndex, candidate ->
-                if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
-                val prefixRequest = candidate.newBuilder()
-                    .header("Accept-Encoding", "identity")
-                    .header("Range", "bytes=0-${NTK_MANHWA_RANGE_SEGMENT_BYTES - 1L}")
-                    .tag(
-                        CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
-                        CustomHttpClient.NtkExactImagePhysicalAttempt(candidateIndex),
-                    )
-                    .build()
-                val prefixCall = delegateFactory.newCall(prefixRequest)
-                segmentedPhysicalCalls.add(prefixCall)
-                active.set(prefixCall)
-                val headerResolved = AtomicBoolean(false)
-                val headerDeadline = strictReplicaHeaderDeadlineScheduler.schedule({
-                    if (headerResolved.compareAndSet(false, true)) prefixCall.cancel()
-                }, NTK_MANHWA_RANGE_HEADER_DEADLINE_MS, TimeUnit.MILLISECONDS)
-                try {
-                    val response = prefixCall.execute()
-                    if (!headerResolved.compareAndSet(false, true)) {
-                        response.close()
-                        throw java.net.SocketTimeoutException(
-                            "Manhwa prefix headers exceeded ${NTK_MANHWA_RANGE_HEADER_DEADLINE_MS}ms"
+                prefixFutures += completion.submit(Callable {
+                    if (cancelled.get() || winnerClaimed.get()) return@Callable null
+                    val prefixRequest = candidate.newBuilder()
+                        .header("Accept-Encoding", "identity")
+                        .header("Range", "bytes=0-${NTK_MANHWA_RANGE_PREFIX_BYTES - 1L}")
+                        .tag(
+                            CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
+                            CustomHttpClient.NtkExactImagePhysicalAttempt(candidateIndex),
                         )
+                        .build()
+                    val prefixCall = delegateFactory.newCall(prefixRequest)
+                    prefixCalls += prefixCall
+                    segmentedPhysicalCalls.add(prefixCall)
+                    active.set(prefixCall)
+                    val headerResolved = AtomicBoolean(false)
+                    val headerDeadline = strictReplicaHeaderDeadlineScheduler.schedule({
+                        if (headerResolved.compareAndSet(false, true)) prefixCall.cancel()
+                    }, NTK_MANHWA_RANGE_HEADER_DEADLINE_MS, TimeUnit.MILLISECONDS)
+                    var handedOff = false
+                    try {
+                        val response = prefixCall.execute()
+                        if (!headerResolved.compareAndSet(false, true)) {
+                            response.close()
+                            throw java.net.SocketTimeoutException(
+                                "Manhwa prefix headers exceeded " +
+                                    "${NTK_MANHWA_RANGE_HEADER_DEADLINE_MS}ms"
+                            )
+                        }
+                        val body = response.body
+                        val range = parseStrictContentRange(response.header("Content-Range"))
+                        val validator = strictStrongValidator(response)
+                        val identityEncoding = response.header("Content-Encoding")
+                            ?.trim()
+                            ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } !=
+                            false
+                        val expectedPrefixEnd = range?.third?.let {
+                            minOf(NTK_MANHWA_RANGE_PREFIX_BYTES - 1L, it - 1L)
+                        } ?: -1L
+                        val rangeAccepted = response.code == 206 && body != null && range != null &&
+                            range.first == 0L && range.second == expectedPrefixEnd &&
+                            range.third > 0L && body.contentLength() == range.second + 1L &&
+                            validator.isNotBlank() && identityEncoding &&
+                            body.contentType()?.type.equals("image", ignoreCase = true)
+                        val completeAccepted = response.code == 200 && body != null &&
+                            body.contentLength() > 0L &&
+                            body.contentType()?.type.equals("image", ignoreCase = true)
+                        if (!rangeAccepted && !completeAccepted) {
+                            response.close()
+                            lastFailure.set(
+                                IOException(
+                                    "Rejected raced manhwa prefix code=${response.code} " +
+                                        "host=${candidate.url.host}"
+                                )
+                            )
+                            return@Callable null
+                        }
+                        if (!winnerClaimed.compareAndSet(false, true)) {
+                            response.close()
+                            return@Callable null
+                        }
+                        handedOff = true
+                        NtkManhwaPrefixRaceWinner(
+                            candidateIndex,
+                            candidate,
+                            prefixCall,
+                            response,
+                        )
+                    } catch (failure: IOException) {
+                        if (!cancelled.get()) lastFailure.set(failure)
+                        null
+                    } finally {
+                        headerResolved.set(true)
+                        headerDeadline.cancel(false)
+                        if (!handedOff) segmentedPhysicalCalls.remove(prefixCall)
                     }
+                })
+            }
+
+            var winner: NtkManhwaPrefixRaceWinner? = null
+            try {
+                for (ignored in rangeCandidates.indices) {
+                    val completed = try {
+                        completion.take().get()
+                    } catch (failure: ExecutionException) {
+                        val cause = failure.cause
+                        if (cause is IOException) lastFailure.set(cause)
+                        null
+                    }
+                    if (completed != null) {
+                        winner = completed
+                        break
+                    }
+                }
+            } catch (failure: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException("Interrupted waiting for manhwa prefix race").also {
+                    it.initCause(failure)
+                }
+            } finally {
+                val winnerCall = winner?.call
+                prefixCalls.forEach { call ->
+                    if (call !== winnerCall) call.cancel()
+                }
+                prefixFutures.forEach { future ->
+                    if (!future.isDone) future.cancel(true)
+                }
+            }
+            return winner ?: throw lastFailure.get()
+                ?: IOException("Manhwa prefix race exhausted")
+        }
+
+        private fun executeSegmentedManhwa(candidates: List<Request>): Response {
+            val rangeCandidates = strictOwnedManhwaRangeCandidates(
+                candidates,
+                originalRequest.url.host.lowercase(Locale.ROOT),
+            )
+            var lastFailure: IOException? = null
+            val prefixWinner = try {
+                raceSegmentedManhwaPrefix(rangeCandidates)
+            } catch (failure: IOException) {
+                if (cancelled.get()) throw failure
+                lastFailure = failure
+                null
+            }
+            prefixWinner?.let prefix@ { winner ->
+                if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+                val candidateIndex = winner.candidateIndex
+                val candidate = winner.candidate
+                val prefixCall = winner.call
+                active.set(prefixCall)
+                try {
+                    val response = winner.response
                     val body = response.body
                     // A mirror that ignores Range has returned the complete image. Preserve that
                     // one transfer and normalize only the logical request identity; never start a
@@ -7115,7 +7311,7 @@ data class NtkResolvedSourceRoute(
                         ?.trim()
                         ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } != false
                     val expectedPrefixEnd = range?.third?.let {
-                        minOf(NTK_MANHWA_RANGE_SEGMENT_BYTES - 1L, it - 1L)
+                        minOf(NTK_MANHWA_RANGE_PREFIX_BYTES - 1L, it - 1L)
                     } ?: -1L
                     val accepted = response.code == 206 && body != null && range != null &&
                         range.first == 0L && range.second == expectedPrefixEnd &&
@@ -7129,7 +7325,7 @@ data class NtkResolvedSourceRoute(
                         lastFailure = IOException(
                             "Rejected manhwa prefix identity code=$code host=${candidate.url.host}"
                         )
-                        return@forEachIndexed
+                        return@prefix
                     }
 
                     val expectedLength = range.third
@@ -7160,7 +7356,7 @@ data class NtkResolvedSourceRoute(
                             executeManhwaRangeSegment(
                                 candidates = rangeCandidates,
                                 pageIndex = -1,
-                                firstCandidateIndex = (candidateIndex + ordinal) %
+                                firstCandidateIndex = (candidateIndex + ordinal - 1) %
                                     rangeCandidates.size,
                                 start = start,
                                 end = end,
@@ -7168,6 +7364,7 @@ data class NtkResolvedSourceRoute(
                                 validator = validator,
                                 contentType = body.contentType(),
                                 physicalAttempt = ordinal,
+                                preserveCanonicalTransport = true,
                             )
                         }
                         segments += NtkManhwaRangeSegment(start, end, task)
@@ -7202,9 +7399,6 @@ data class NtkResolvedSourceRoute(
                     segmentedPhysicalCalls.remove(prefixCall)
                     if (cancelled.get()) throw failure
                     lastFailure = failure
-                } finally {
-                    headerResolved.set(true)
-                    headerDeadline.cancel(false)
                 }
             }
 
@@ -7220,6 +7414,43 @@ data class NtkResolvedSourceRoute(
             } catch (failure: IOException) {
                 throw lastFailure ?: failure
             }
+        }
+
+        private fun strictOwnedManhwaRangeCandidates(
+            candidates: List<Request>,
+            authorityHost: String,
+        ): List<Request> {
+            val declared = candidates.filter {
+                it.url.host.lowercase(Locale.ROOT) in NTK_MANHWA_RANGE_REPLICA_HOSTS
+            }
+            val strictOwned =
+                originalRequest.tag(NtkStrictSourceCallTag::class.java) != null ||
+                    originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java) != null
+            if (declared.size > 1 ||
+                authorityHost !in NTK_MANHWA_RANGE_REPLICA_HOSTS ||
+                !strictOwned
+            ) return declared
+
+            // A hash-form immutable page can enter with one planned host even though the same
+            // strict page identity exists on the complete replica ring. Expand only after strict
+            // operation ownership; executeSegmentedManhwa and executeManhwaRangeSegment still
+            // require the authority prefix's exact total, strong validator, identity encoding and
+            // media type before accepting one byte from any substituted host.
+            return buildList {
+                add(
+                    originalRequest.newBuilder()
+                        .url(originalRequest.url.newBuilder().host(authorityHost).build())
+                        .build(),
+                )
+                NTK_MANHWA_RANGE_REPLICA_HOSTS.forEach { host ->
+                    if (host == authorityHost) return@forEach
+                    add(
+                        originalRequest.newBuilder()
+                            .url(originalRequest.url.newBuilder().host(host).build())
+                            .build(),
+                    )
+                }
+            }.distinctBy { it.url }
         }
 
         private fun executeManhwaRangeSegment(
@@ -7241,8 +7472,10 @@ data class NtkResolvedSourceRoute(
             postRegistrationCancellationHandshake: Boolean = false,
             segmentCancellation:
                 NtkDirectWifiWebtoonTailSegmentCancellation<Call>? = null,
+            preserveCanonicalTransport: Boolean = false,
         ): ByteArray {
             if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+            val segmentStartedAtMs = SystemClock.elapsedRealtime()
             require(bodyIdleMs > 0L)
             require(rangeHeaderDeadlineMs > 0L)
             require(bodyWallMs == null || bodyWallMs > 0L)
@@ -7281,7 +7514,15 @@ data class NtkResolvedSourceRoute(
                     end,
                 ) ?: return output
                 val candidate = candidates[(firstCandidateIndex + offset) % candidates.size]
-                val request = candidate.newBuilder()
+                val requestBuilder = candidate.newBuilder()
+                    // The canonical response keeps its streaming H2 owner so every delivered
+                    // prefix byte remains observable. A projected range is different: it is
+                    // unpublished until the complete disjoint segment passes the exact
+                    // Content-Range, total-length, strong-validator, encoding and media checks
+                    // below. Do not inherit the canonical route's H2-only marker here. On a
+                    // non-cellular bearer this lets the demand-bound transport use HTTP/3 for
+                    // the independently buffered suffix, while cellular still selects its
+                    // resilient OkHttp route and direct-H1 factories remain unchanged.
                     .header("Accept-Encoding", "identity")
                     .header("Range", "bytes=$requestStart-$end")
                     .header("If-Range", validator)
@@ -7289,7 +7530,15 @@ data class NtkResolvedSourceRoute(
                         CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
                         CustomHttpClient.NtkExactImagePhysicalAttempt(physicalAttempt + offset),
                     )
-                    .build()
+                // The entry-page segmented wave is created only after the canonical prefix has
+                // established an exact total and validator. Reuse that already-warm HTTP/2
+                // transport instead of paying up to eighteen cold QUIC handshakes before the
+                // first drawable frame. Projected/background continuations retain independent
+                // HTTP/3 ownership so a slow canonical stream cannot serialize their progress.
+                if (!preserveCanonicalTransport) {
+                    requestBuilder.removeHeader("X-MangaViewer-No-Quic")
+                }
+                val request = requestBuilder.build()
                 val call = rangeCallFactory.newCall(request)
                 segmentedPhysicalCalls.add(call)
                 active.set(call)
@@ -7343,6 +7592,13 @@ data class NtkResolvedSourceRoute(
                                 "Rejected manhwa segment identity code=${response.code}," +
                                     "host=${candidate.url.host},range=$requestStart-$end/$total"
                             )
+                            Log.w(
+                                TAG,
+                                "reader_strict_manhwa_segment_identity_rejected " +
+                                    "page=$pageIndex,host=${candidate.url.host}," +
+                                    "code=${response.code},start=$requestStart,end=$end," +
+                                    "total=$total,contentRange=${response.header("Content-Range")}",
+                            )
                             return@use
                         }
                         val source = body.source().also { rangeSource ->
@@ -7391,11 +7647,27 @@ data class NtkResolvedSourceRoute(
                             )
                             return@use
                         }
+                        if (pageIndex < 0) {
+                            Log.d(
+                                TAG,
+                                "reader_strict_manhwa_anchor_segment_complete " +
+                                    "start=$start,end=$end,host=${candidate.url.host}," +
+                                    "elapsedMs=${SystemClock.elapsedRealtime() - segmentStartedAtMs}",
+                            )
+                        }
                         return output
                     }
                 } catch (failure: IOException) {
                     if (cancelled.get()) throw failure
                     lastFailure = failure
+                    Log.w(
+                        TAG,
+                        "reader_strict_manhwa_segment_attempt_failed " +
+                            "page=$pageIndex,host=${candidate.url.host}," +
+                            "start=$requestStart,end=$end,attempt=${physicalAttempt + offset}," +
+                            "reason=${failure.javaClass.simpleName}," +
+                            "detail=${failure.message.orEmpty().replace(',', ';').take(120)}",
+                    )
                 } finally {
                     headerResolved.set(true)
                     headerDeadline.cancel(false)
@@ -7490,6 +7762,31 @@ data class NtkResolvedSourceRoute(
             } else {
                 null
             }
+            val recoveryPageIndex =
+                originalRequest.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
+                    ?: originalRequest.tag(
+                        NtkQuarantineSourceCallIdentity::class.java,
+                    )?.pageIndex
+                    ?: -1
+            val recoveryValidator = strictStrongValidator(response)
+            val recoveryRangeCapable = response.header("Accept-Ranges")
+                ?.split(',')
+                ?.any { it.trim().equals("bytes", ignoreCase = true) } == true
+            val recoveryIdentityEncoding = response.header("Content-Encoding")
+                ?.trim()
+                ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } != false
+            if (manhwaBody && recoveryPageIndex == 0) {
+                Log.d(
+                    TAG,
+                    "reader_strict_body_recovery_qualification page=0," +
+                        "host=${response.request.url.host},code=${response.code}," +
+                        "length=$contentLength,range=$recoveryRangeCapable," +
+                        "validator=${if (recoveryValidator.isBlank()) "none" else "strong"}," +
+                        "identity=$recoveryIdentityEncoding,aws=$manhwaAwsBody," +
+                        "ordinary=$directWifiOrdinaryBody," +
+                        "ordinaryRecovery=${directWifiIdleSuffixNetwork != null}",
+                )
+            }
             // Preserve the broader direct-Wi-Fi selector's existing header/QUIC semantics. Only
             // the currently visible ordinary JPEG body receives the passive idle-only wrapper;
             // appended episodes keep their continuous original response until they become current.
@@ -7500,13 +7797,9 @@ data class NtkResolvedSourceRoute(
             // identity merely to recover performance.
             if (manhwaAwsBody) return response
             val validatorHeaderName = ""
-            val validator = strictStrongValidator(response)
-            val rangeCapable = response.header("Accept-Ranges")
-                ?.split(',')
-                ?.any { it.trim().equals("bytes", ignoreCase = true) } == true
-            val identityEncoding = response.header("Content-Encoding")
-                ?.trim()
-                ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } != false
+            val validator = recoveryValidator
+            val rangeCapable = recoveryRangeCapable
+            val identityEncoding = recoveryIdentityEncoding
             val webtoonReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
                 NTK_WEBTOON_IMAGE_REPLICA_HOSTS
             val fragmentedTlsRecovery = response.header("x-mangaviewer-transport")
@@ -7525,9 +7818,7 @@ data class NtkResolvedSourceRoute(
             // streams: trying both before returning to the healthy origin added roughly 300 ms to
             // every zero-byte continuation. Range always begins at the first byte not handed to
             // the consumer, so this changes only route order and never repeats consumed bytes.
-            val pageIndex = originalRequest.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
-                ?: originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
-                ?: -1
+            val pageIndex = recoveryPageIndex
             val episodePageCount = originalRequest.tag(
                 NtkStrictEpisodePageCountTag::class.java,
             )?.pageCount ?: 0
@@ -7653,10 +7944,11 @@ data class NtkResolvedSourceRoute(
                 null
             }
             val resumableCandidates = if (manhwaBody) {
-                val rangeCandidates = candidates.filter {
-                    it.url.host.lowercase(Locale.ROOT) in NTK_MANHWA_RANGE_REPLICA_HOSTS
-                }
                 val responseHost = response.request.url.host.lowercase(Locale.ROOT)
+                val rangeCandidates = strictOwnedManhwaRangeCandidates(
+                    candidates,
+                    responseHost,
+                )
                 // A fresh stream on the same congested HTTP/2 connection is a poor rescue path.
                 // Walk different immutable mirrors first and keep the original mirror only as
                 // the final fallback.  AWS is excluded because it ignores byte ranges.
@@ -7713,7 +8005,8 @@ data class NtkResolvedSourceRoute(
                         )
                     directWifiIdleSuffixNetwork != null ->
                         NtkDirectWifiOrdinaryBodyRecoveryPolicy.STRAGGLER_SAMPLE_MS
-                    manhwaBody && pageIndex != 0 -> NTK_MANHWA_BODY_WALL_MS
+                    manhwaBody ->
+                        NtkManhwaProjectedBodyHedgePolicy.bodyRateSampleMs(pageIndex)
                     frozenTailTag != null && directWifiShortTailNetwork != null ->
                         NtkDirectWifiShortWebtoonProjectedTailPolicy.MIN_SAMPLE_MS
                     frozenAdjacentTailTag != null &&
@@ -7744,7 +8037,10 @@ data class NtkResolvedSourceRoute(
                     if (directWifiIdleSuffixNetwork != null) {
                         NtkDirectWifiOrdinaryBodyRecoveryPolicy.NO_PROGRESS_MS
                     } else {
-                        NTK_MANHWA_BODY_FIRST_BYTE_DEADLINE_MS
+                        NtkManhwaProjectedBodyHedgePolicy.bodyProgressDeadlineMs(
+                            pageIndex,
+                            NTK_MANHWA_BODY_FIRST_BYTE_DEADLINE_MS,
+                        )
                     }
                 } else if (fragmentedTlsFollower) {
                     NTK_FRAGMENTED_WEBTOON_FOLLOWER_BODY_IDLE_RESUME_MS
@@ -7755,7 +8051,10 @@ data class NtkResolvedSourceRoute(
                     if (directWifiIdleSuffixNetwork != null) {
                         NtkDirectWifiOrdinaryBodyRecoveryPolicy.NO_PROGRESS_MS
                     } else {
-                        NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS
+                        NtkManhwaProjectedBodyHedgePolicy.bodyProgressDeadlineMs(
+                            pageIndex,
+                            NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS,
+                        )
                     }
                 } else if (fragmentedTlsFollower) {
                     NTK_FRAGMENTED_WEBTOON_FOLLOWER_BODY_IDLE_RESUME_MS
@@ -7797,7 +8096,11 @@ data class NtkResolvedSourceRoute(
                             bodyIdleMs =
                                 NtkManhwaRangeResumePolicy.projectedBodyIdleMs(pageIndex),
                             rangeHeaderDeadlineMs =
-                                NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(pageIndex),
+                                NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(
+                                    pageIndex,
+                                    bufferedResponseBody = !getHttpClient()
+                                        .isNtkCellularResilientTransportActive(),
+                                ),
                             bodyWallMs =
                                 NtkManhwaRangeResumePolicy.projectedBodyWallMs(pageIndex),
                         )
@@ -7863,6 +8166,14 @@ data class NtkResolvedSourceRoute(
                             )?.pageCount ?: 0,
                             defaultMaximum = NTK_WEBTOON_MAX_RANGE_CONTINUATIONS,
                         ),
+                        if (manhwaBody &&
+                            pageIndex in 0..NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_LAST_PAGE
+                        ) {
+                            NtkManhwaProjectedBodyHedgePolicy
+                                .entryViewportMaximumContinuations(pageIndex)
+                        } else {
+                            0
+                        },
                         frozenTailTag?.maximumExtraTailRequests ?: 0,
                         frozenAdjacentTailTag?.maximumExtraTailRequests ?: 0,
                     )
@@ -7935,6 +8246,13 @@ data class NtkResolvedSourceRoute(
         val task: FutureTask<ByteArray>,
     )
 
+    private data class NtkManhwaPrefixRaceWinner(
+        val candidateIndex: Int,
+        val candidate: Request,
+        val call: Call,
+        val response: Response,
+    )
+
     private data class NtkProjectedManhwaTailSegment(
         val range: LongRange,
         val active: AtomicReference<Call?>,
@@ -7997,6 +8315,7 @@ data class NtkResolvedSourceRoute(
         private var segmentIndex = 0
         private var tailBuffer: Buffer? = null
         private var closed = false
+        private var completionLogged = false
 
         private val joinedSource = object : okio.Source {
             override fun read(sink: Buffer, byteCount: Long): Long {
@@ -8004,7 +8323,16 @@ data class NtkResolvedSourceRoute(
                 require(byteCount >= 0L)
                 if (byteCount == 0L) return 0L
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
-                if (delivered == expectedLength) return -1L
+                if (delivered == expectedLength) {
+                    if (!completionLogged) {
+                        completionLogged = true
+                        Log.d(
+                            TAG,
+                            "reader_strict_manhwa_segment_body_complete bytes=$expectedLength",
+                        )
+                    }
+                    return -1L
+                }
 
                 if (delivered < prefixLength) {
                     val count = prefixSource.read(
@@ -8404,7 +8732,7 @@ data class NtkResolvedSourceRoute(
                             ?.let { tail -> minOf(expectedLength, tail.start) - deliveredBytes }
                             ?: (expectedLength - deliveredBytes)
                         if (remaining == 0L) continue
-                        val count = currentSource.read(sink, minOf(byteCount, remaining))
+                        val count = readCurrentSource(sink, minOf(byteCount, remaining))
                         if (count < 0L) {
                             throw EOFException(
                                 "Strict webtoon replica ended at $deliveredBytes/$expectedLength"
@@ -8477,6 +8805,17 @@ data class NtkResolvedSourceRoute(
 
         override fun close() = joinedSource.close()
 
+        private fun readCurrentSource(sink: Buffer, byteCount: Long): Long = try {
+            currentSource.read(sink, byteCount)
+        } catch (failure: IllegalStateException) {
+            // OkHttp may close only the currently selected physical response when a bounded
+            // replica hedge loses. The logical source and its immutable episode ownership are
+            // still alive, so this is the same recoverable transport interruption as EOF or a
+            // socket timeout. Never translate an explicit session/body close or cancellation.
+            if (closed || cancelled.get() || failure.message != "closed") throw failure
+            throw IOException("Replica response source closed before EOF", failure)
+        }
+
         private fun checkedSource(response: Response): BufferedSource {
             val body = response.body ?: throw IOException("Empty strict replica body")
             return body.source().also {
@@ -8510,6 +8849,14 @@ data class NtkResolvedSourceRoute(
             }
             val remainingTailSlots = maxRangeContinuations - continuationCount
             if (remainingTailSlots <= 0) return false
+            val directWifiWebtoonTail = directWifiShortWebtoonTail ||
+                directWifiAdjacentWebtoonTail
+            val tailSegmentSlots = NtkManhwaProjectedBodyHedgePolicy.projectedTailSegmentSlots(
+                remainingContinuationSlots = remainingTailSlots,
+                finalBodyTail = finalBodyTail,
+                directWifiWebtoonTail = directWifiWebtoonTail,
+            )
+            if (tailSegmentSlots <= 0) return false
             val ranges = when {
                 directWifiShortWebtoonTail -> {
                     val tag = directWifiShortWebtoonTailTag ?: return false
@@ -8536,6 +8883,7 @@ data class NtkResolvedSourceRoute(
                             elapsedMs,
                             observedBytes,
                             expectedLength,
+                            pageIndex,
                         ) ?: return false
                     }
                     if (entryViewportTail) {
@@ -8543,7 +8891,8 @@ data class NtkResolvedSourceRoute(
                             .disjointEntryViewportTailSegments(
                                 split,
                                 expectedLength,
-                                remainingTailSlots,
+                                tailSegmentSlots,
+                                pageIndex,
                             )
                     } else {
                         NtkManhwaProjectedBodyHedgePolicy.disjointTailSegments(
@@ -8557,8 +8906,6 @@ data class NtkResolvedSourceRoute(
                 maxRangeContinuations
             ) return false
             val split = ranges.first().first
-            val directWifiWebtoonTail = directWifiShortWebtoonTail ||
-                directWifiAdjacentWebtoonTail
             var directWifiTailLeaseOwner: NtkDirectWifiWebtoonTailLeaseOwner? = null
             val admitted = if (directWifiWebtoonTail) {
                 if (!hasRequiredDirectWifiNetwork()) return false
@@ -8946,6 +9293,10 @@ data class NtkResolvedSourceRoute(
                 continuationCount++
                 if (cancelled.get()) return false
                 val resumeRequest = candidates[candidateIndex].newBuilder()
+                    // A continuation publishes no bytes until the exact 206 identity below is
+                    // accepted. Unlike the canonical streaming prefix, it therefore does not
+                    // need to inherit that prefix's H2-only transport marker.
+                    .removeHeader("X-MangaViewer-No-Quic")
                     .header("Accept-Encoding", "identity")
                     .header("Range", "bytes=$deliveredBytes-")
                     .header("If-Range", validator)
@@ -9159,108 +9510,31 @@ data class NtkResolvedSourceRoute(
         fun cancelFromOwningCall() = closeBody()
     }
 
-    /**
-     * Common direct-Wi-Fi manhwa success path kept separate from the multi-transport recovery
-     * state machine. The returned body still passes the same streaming header, EOF, length and
-     * SHA authority in spoolQuarantinedEncodedOriginal/spoolStrictPublishedBody. Only a clean
-     * complete image response returns here; every miss or transport error resumes the unchanged
-     * replica/extension/QUIC recovery method without retrying the failed physical URL.
-     */
-    private class NtkDirectWifiManhwaSuccessCall(
-        private val delegateFactory: Call.Factory,
-        private val originalRequest: Request,
-    ) : Call {
-        private val executed = AtomicBoolean(false)
-        private val cancelled = AtomicBoolean(false)
-        private val active = AtomicReference<Call?>(null)
-        private val firstCall = delegateFactory.newCall(originalRequest)
-
-        override fun request(): Request = originalRequest
-
-        override fun execute(): Response {
-            check(executed.compareAndSet(false, true)) { "Already Executed" }
-            active.set(firstCall)
-            if (cancelled.get()) firstCall.cancel()
-            val response = try {
-                firstCall.execute()
-            } catch (failure: IOException) {
-                if (cancelled.get()) throw failure
-                return executeRecovery()
-            }
-            val contentType = response.header("Content-Type")
-                .orEmpty()
-                .substringBefore(';')
-                .trim()
-                .lowercase(Locale.ROOT)
-            val completeImageHeaders = response.code == 200 &&
-                response.header("Content-Range") == null &&
-                response.header("x-mangaviewer-partial-image") != "1" &&
-                contentType.startsWith("image/") &&
-                (response.body?.contentLength() ?: 0L) != 0L
-            if (completeImageHeaders) return response
-            response.close()
-            if (cancelled.get()) {
-                throw InterruptedIOException("Replica image Call cancelled")
-            }
-            return executeRecovery()
-        }
-
-        private fun executeRecovery(): Response {
-            val recovery = NtkReplicaFailoverCall(
-                delegateFactory,
-                originalRequest,
-                setOf(originalRequest.url.toString()),
-            )
-            active.set(recovery)
-            if (cancelled.get()) recovery.cancel()
-            return recovery.execute()
-        }
-
-        override fun enqueue(responseCallback: okhttp3.Callback) {
-            throw UnsupportedOperationException("Strict replica image Calls are synchronous")
-        }
-
-        override fun cancel() {
-            cancelled.set(true)
-            active.get()?.cancel() ?: firstCall.cancel()
-        }
-
-        override fun isExecuted(): Boolean = executed.get()
-        override fun isCanceled(): Boolean = cancelled.get()
-        override fun timeout(): okio.Timeout = firstCall.timeout()
-        override fun clone(): Call = NtkDirectWifiManhwaSuccessCall(
-            delegateFactory,
-            originalRequest,
-        )
-    }
-
     private class NtkReplicaFailoverCallFactory(
         private val delegate: Call.Factory,
     ) : Call.Factory {
         override fun newCall(request: Request): Call {
             val replicas = strictReplicaRequests(request)
-            return if (replicas.size > 1 || isLegacyBlockedImageRequest(request)) {
-                if (replicas.size > 1 && isDirectWifiManhwaSuccessCandidate(request)) {
-                    NtkDirectWifiManhwaSuccessCall(delegate, request)
-                } else {
-                    NtkReplicaFailoverCall(delegate, request)
-                }
+            val strictOwnedKnownReplica =
+                (request.tag(NtkStrictSourceCallTag::class.java) != null ||
+                    request.tag(NtkQuarantineSourceCallIdentity::class.java) != null) &&
+                    request.url.host.lowercase(Locale.ROOT) in
+                    (NTK_MANHWA_IMAGE_REPLICA_HOSTS + NTK_WEBTOON_IMAGE_REPLICA_HOSTS)
+            return if (replicas.size > 1 || strictOwnedKnownReplica ||
+                isLegacyBlockedImageRequest(request)
+            ) {
+                // Every accepted replica body must pass through the same stall-aware wrapper.
+                // A former direct-Wi-Fi fast-success Call returned a header-valid 200 response
+                // before maybeWrapStalledReplicaBody(), leaving slowly dripping or zero-byte
+                // manhwa bodies with no deadline and no validator-safe Range continuation. The
+                // replica Call keeps the identical first request and returns immediately on a
+                // healthy body, while preserving the exact accepted prefix on a stalled body.
+                // Hash-form generated URLs may have only one identity-safe candidate; they still
+                // retain validator-safe same-origin Range continuation from the next unread byte.
+                NtkReplicaFailoverCall(delegate, request)
             } else {
                 delegate.newCall(request)
             }
-        }
-
-        private fun isDirectWifiManhwaSuccessCandidate(request: Request): Boolean {
-            if (request.tag(NtkStrictSourceCallTag::class.java) == null &&
-                request.tag(NtkQuarantineSourceCallIdentity::class.java) == null
-            ) return false
-            val ref = ntkGeneratedImageRef(request.url.toString()) ?: return false
-            if (!ref.episodeKey.startsWith("manhwa/", ignoreCase = true) ||
-                request.url.host.lowercase(Locale.ROOT) !in NTK_MANHWA_IMAGE_REPLICA_HOSTS
-            ) return false
-            val client = getHttpClient()
-            return !client.isNtkCellularResilientTransportActive() &&
-                client.isNtkWifiTransportActive()
         }
     }
 

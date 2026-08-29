@@ -1,6 +1,7 @@
 package ml.melun.mangaview.mangaview;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -67,18 +68,37 @@ public class NtkOnePiecePreviousScrollReproTest {
         final ReaderSurfaceView.ScrollPositionSnapshot position;
         final ReaderV2Activity.CleanPhysicalSourceSnapshot physical;
         final ReaderSurfaceView.VisibleCoverageSnapshot coverage;
+        final ReaderSurfaceView.LifecycleViewportAnchorSnapshot committedAnchor;
         final boolean revealPending;
 
         PhysicalViewportEvidence(
                 ReaderSurfaceView.ScrollPositionSnapshot position,
                 ReaderV2Activity.CleanPhysicalSourceSnapshot physical,
                 ReaderSurfaceView.VisibleCoverageSnapshot coverage,
+                ReaderSurfaceView.LifecycleViewportAnchorSnapshot committedAnchor,
                 boolean revealPending
         ) {
             this.position = position;
             this.physical = physical;
             this.coverage = coverage;
+            this.committedAnchor = committedAnchor;
             this.revealPending = revealPending;
+        }
+    }
+
+    private static final class ForwardScrollSample {
+        final int currentPage;
+        final int pageCount;
+        final ReaderSurfaceView.ScrollPositionSnapshot position;
+
+        ForwardScrollSample(
+                int currentPage,
+                int pageCount,
+                ReaderSurfaceView.ScrollPositionSnapshot position
+        ) {
+            this.currentPage = currentPage;
+            this.pageCount = pageCount;
+            this.position = position;
         }
     }
 
@@ -150,6 +170,9 @@ public class NtkOnePiecePreviousScrollReproTest {
                         + progress[0] + ",count=" + progress[1] + ",elapsedMs="
                         + (SystemClock.elapsedRealtime() - scrollStartedAt),
                 progress[0] >= 4 && progress[1] > 4);
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed cellular manga reader", reader);
+        assertViewportRemainsStationaryThroughDeferredGeometrySettlement(reader);
     }
 
     @Test
@@ -1089,6 +1112,11 @@ public class NtkOnePiecePreviousScrollReproTest {
         assertEquals("Native telemetry generation changed during focused 1181 traversal",
                 before.getGeneration(), after.getGeneration());
         long worst = after.getMaxRecordedSlowIntervalDurationSince(before.getSlowIntervals());
+        Log.i(TAG, "focused1181NativeCadence intervals="
+                + (after.getScrollIntervals() - before.getScrollIntervals())
+                + ",slow=" + (after.getSlowIntervals() - before.getSlowIntervals())
+                + ",worstMs=" + (worst / 1_000_000.0)
+                + ",details=" + after.getSlowIntervalDetails());
         assertTrue("Focused physical 1181 traversal contained a 100ms native frame; worstMs="
                         + (worst / 1_000_000.0),
                 worst < 100_000_000L);
@@ -2460,6 +2488,7 @@ public class NtkOnePiecePreviousScrollReproTest {
         assertTrue("Expected cellular NTK webtoon to keep progressing after the initial runway; current="
                         + progress[0] + ",count=" + progress[1],
                 progress[0] >= 12 && progress[1] > 12);
+        assertViewportRemainsStationaryThroughDeferredGeometrySettlement(reader);
         ReaderSurfaceView.VisibleCoverageSnapshot coverage = reader.testVisibleCoverageSnapshot();
         assertNotNull("Webtoon p12 traversal lost visible coverage", coverage);
         assertTrue("Webtoon p12 traversal has no drawable pixels", coverage.getDrawablePx() > 0);
@@ -3539,9 +3568,24 @@ public class NtkOnePiecePreviousScrollReproTest {
             // Both paths inject real touch positions and require the same exact clean-tail proof.
             // Keep the final drag conservative so neither profile can jump over the last source.
             int gestureSteps = approachingTail ? 16 : ordinaryGestureSteps;
+            ReaderSurfaceView.LifecycleViewportAnchorSnapshot beforeGesture =
+                    reader.testCurrentCommittedViewportAnchorSnapshot();
+            assertNotNull("Physical forward gesture has no committed viewport anchor; path="
+                    + currentPath + ",swipe=" + swipes, beforeGesture);
             assertTrue("Physical full-episode swipe injection failed; path=" + currentPath
                             + ",swipe=" + swipes + ",tail=" + approachingTail,
                     device.swipe(x, fromY, x, gestureToY, gestureSteps));
+            ReaderSurfaceView.LifecycleViewportAnchorSnapshot afterGesture =
+                    reader.testCurrentCommittedViewportAnchorSnapshot();
+            assertNotNull("Physical forward gesture lost its committed viewport anchor; path="
+                    + currentPath + ",swipe=" + swipes, afterGesture);
+            if (currentPath.equals(reader.testCurrentNtkEpisodePath())) {
+                assertNoForwardCommittedViewportRollback(
+                        currentPath,
+                        swipes,
+                        beforeGesture,
+                        afterGesture);
+            }
             swipes++;
             if (swipes % 100 == 0) {
                 Log.i(TAG, "physicalFullEpisodeWait path=" + currentPath
@@ -3617,6 +3661,7 @@ public class NtkOnePiecePreviousScrollReproTest {
                 reader.testCurrentScrollPositionSnapshot(),
                 reader.testLatestCleanPhysicalPresentationSnapshot(),
                 reader.testVisibleCoverageSnapshot(),
+                reader.testCurrentCommittedViewportAnchorSnapshot(),
                 reader.testNativeSurfaceRevealPending())));
         return result.get();
     }
@@ -3778,22 +3823,40 @@ public class NtkOnePiecePreviousScrollReproTest {
                         + ",beforeAbsolute=" + beforeHome.getScrollOffset()
                         + ",afterAbsolute=" + afterHome.getScrollOffset(),
                 Math.abs(afterHome.getOffset() - beforeHome.getOffset()) <= 4);
+        ReaderSurfaceView.LifecycleViewportAnchorSnapshot resumedCommittedAnchor =
+                resumed.testCurrentCommittedViewportAnchorSnapshot();
+        assertNotNull("HOME return lost its committed content anchor; chapter=" + chapter,
+                resumedCommittedAnchor);
 
         runOnMain(resumed::testResetFrameStatsSnapshot);
         int x = device.getDisplayWidth() / 2;
-        int fromY = Math.min(device.getDisplayHeight() - 160,
-                device.getDisplayHeight() * 3 / 4);
-        int toY = Math.max(120, device.getDisplayHeight() / 4);
+        // A full fling from an episode's exact final viewport legitimately exposes the structural
+        // transition card. CleanPhysicalSourceSnapshot intentionally excludes that mixed frame,
+        // so using it as the sole motion oracle mislabels a successful 2,000 px move as locked.
+        // Exercise the required slow-scroll path instead and qualify the real committed identity
+        // and page top while allowing the visible transition card itself (never missing pixels).
+        int centerY = device.getDisplayHeight() / 2;
+        int slowDragHalfDistance = Math.min(120, device.getDisplayHeight() / 12);
+        int fromY = centerY + slowDragHalfDistance;
+        int toY = centerY - slowDragHalfDistance;
         assertTrue("HOME return swipe injection failed; chapter=" + chapter,
-                device.swipe(x, fromY, x, toY, 18));
+                device.swipe(x, fromY, x, toY, 60));
+        Manga exactNextEpisode = resumed.testEpisode(chapter + 1);
+        String exactNextPath = exactNextEpisode == null
+                ? null
+                : exactNextEpisode.getNtkEpisodePath();
         ReaderSurfaceView.ScrollPositionSnapshot moved = null;
         ReaderV2Activity.CleanPhysicalSourceSnapshot movedPhysical = null;
+        ReaderSurfaceView.LifecycleViewportAnchorSnapshot movedCommittedAnchor = null;
+        boolean committedForwardMotion = false;
         long motionDeadline = SystemClock.elapsedRealtime() + 5000L;
         while (SystemClock.elapsedRealtime() < motionDeadline) {
             PhysicalViewportEvidence evidence = physicalViewportEvidence(resumed);
             ReaderV2Activity.CleanPhysicalSourceSnapshot candidate = evidence.physical;
+            ReaderSurfaceView.LifecycleViewportAnchorSnapshot candidateCommittedAnchor =
+                    evidence.committedAnchor;
             moved = evidence.position;
-            boolean semanticForwardMotion = candidate != null
+            boolean stayedInExpectedEpisode = candidate != null
                     && expectedPath.equals(candidate.getPhysicalEpisodePath())
                     && candidate.getPresentedUptimeNanos()
                     > resumedPhysical.getPresentedUptimeNanos()
@@ -3808,8 +3871,46 @@ public class NtkOnePiecePreviousScrollReproTest {
                             == resumedPhysical.getFirstVisibleSourcePage()
                             && candidate.getFirstVisiblePageTopPx()
                             < resumedPhysical.getFirstVisiblePageTopPx() - 100f));
-            if (semanticForwardMotion) {
+            boolean enteredExactNextEpisode = candidate != null
+                    && exactNextEpisode != null
+                    && exactNextPath != null
+                    && exactNextPath.equals(candidate.getPhysicalEpisodePath())
+                    && exactNextPath.equals(resumed.testCurrentNtkEpisodePath())
+                    && resumed.testHasCanonicalEpisodeOrder(exactNextEpisode)
+                    && candidate.getPresentedUptimeNanos()
+                    > resumedPhysical.getPresentedUptimeNanos()
+                    && candidate.getFirstVisibleSourcePage() >= 0
+                    && candidate.getMissingPx() == 0
+                    && candidate.getPlaceholderPx() == 0
+                    && candidate.getVisibleLoading() == 0
+                    && candidate.getVisibleErrors() == 0
+                    && isCurrentCommittedViewport(evidence);
+            boolean semanticForwardMotion = stayedInExpectedEpisode || enteredExactNextEpisode;
+            ReaderSurfaceView.CommittedPageIdentity beforeCommittedIdentity =
+                    resumedCommittedAnchor.getIdentity();
+            ReaderSurfaceView.CommittedPageIdentity candidateCommittedIdentity =
+                    candidateCommittedAnchor == null
+                            ? null
+                            : candidateCommittedAnchor.getIdentity();
+            committedForwardMotion = candidateCommittedIdentity != null
+                    && expectedPath.equals(
+                        candidateCommittedIdentity.getNormalizedEpisodePath())
+                    && expectedPath.equals(resumed.testCurrentNtkEpisodePath())
+                    && evidence.coverage != null
+                    && evidence.coverage.getMissingPx() == 0
+                    && evidence.coverage.getPlaceholderPx() == 0
+                    && evidence.coverage.getVisibleLoading() == 0
+                    && evidence.coverage.getVisibleErrors() == 0
+                    && !evidence.revealPending
+                    && (candidateCommittedIdentity.getSourcePageIndex()
+                        > beforeCommittedIdentity.getSourcePageIndex()
+                        || (candidateCommittedIdentity.getSourcePageIndex()
+                            == beforeCommittedIdentity.getSourcePageIndex()
+                            && candidateCommittedAnchor.getPageTopInViewportPx()
+                            < resumedCommittedAnchor.getPageTopInViewportPx() - 100f));
+            if (semanticForwardMotion || committedForwardMotion) {
                 movedPhysical = candidate;
+                movedCommittedAnchor = candidateCommittedAnchor;
                 break;
             }
             SystemClock.sleep(16L);
@@ -3818,11 +3919,13 @@ public class NtkOnePiecePreviousScrollReproTest {
         // Forward-history pruning intentionally removes consumed display rows and rebases the
         // absolute document coordinate. Verify a newer clean physical source/local position,
         // which is both rebase-safe and stronger than observing Java scrollOffset alone.
-        assertNotNull("HOME return remained motion-locked; chapter=" + chapter
+        assertTrue("HOME return remained motion-locked; chapter=" + chapter
                         + ",beforeAbsolute=" + afterHome.getScrollOffset()
                         + ",afterAbsolute=" + moved.getScrollOffset()
-                        + ",beforeSource=" + resumedPhysical.getFirstVisibleSourcePage(),
-                movedPhysical);
+                        + ",beforeSource=" + resumedPhysical.getFirstVisibleSourcePage()
+                        + ",beforeCommitted=" + resumedCommittedAnchor
+                        + ",afterCommitted=" + movedCommittedAnchor,
+                movedPhysical != null || committedForwardMotion);
         SystemClock.sleep(80L);
 
         List<ReaderSurfaceView.FrameStatsSnapshot> segments =
@@ -4018,12 +4121,14 @@ public class NtkOnePiecePreviousScrollReproTest {
         int fromY = Math.min(height - 160, height * 3 / 4);
         int toY = Math.max(120, height / 4);
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
-        int[] progress = resumedReaderProgress();
-        while(progress[0] < minimumPage && SystemClock.elapsedRealtime() < deadline) {
+        ForwardScrollSample progress = resumedReaderForwardScrollSample();
+        while(progress.currentPage < minimumPage && SystemClock.elapsedRealtime() < deadline) {
             device.swipe(x, fromY, x, toY, 12);
-            progress = resumedReaderProgress();
+            ForwardScrollSample next = resumedReaderForwardScrollSample();
+            assertNoForwardSemanticRollback(progress, next);
+            progress = next;
         }
-        return progress;
+        return new int[] {progress.currentPage, progress.pageCount};
     }
 
     private void launchOnePieceEpisodes() {
@@ -4048,20 +4153,120 @@ public class NtkOnePiecePreviousScrollReproTest {
         context.startActivity(intent);
     }
 
-    private int[] resumedReaderProgress() {
-        int[] progress = {-1, -1};
+    private ForwardScrollSample resumedReaderForwardScrollSample() {
+        AtomicReference<ForwardScrollSample> sample = new AtomicReference<>(
+                new ForwardScrollSample(-1, -1, null));
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             for(Activity activity : ActivityLifecycleMonitorRegistry.getInstance()
                     .getActivitiesInStage(Stage.RESUMED)) {
                 if(activity instanceof ReaderV2Activity) {
                     ReaderV2Activity reader = (ReaderV2Activity)activity;
-                    progress[0] = reader.testCurrentPage();
-                    progress[1] = reader.testPageCount();
+                    sample.set(new ForwardScrollSample(
+                            reader.testCurrentPage(),
+                            reader.testPageCount(),
+                            reader.testCurrentScrollPositionSnapshot()));
                     return;
                 }
             }
         });
-        return progress;
+        return sample.get();
+    }
+
+    private void assertNoForwardSemanticRollback(
+            ForwardScrollSample previous,
+            ForwardScrollSample current
+    ) {
+        if(previous == null || current == null) return;
+        ReaderSurfaceView.ScrollPositionSnapshot before = previous.position;
+        ReaderSurfaceView.ScrollPositionSnapshot after = current.position;
+        boolean readerPageRolledBack = previous.currentPage >= 0 &&
+                current.currentPage < previous.currentPage;
+        boolean semanticPositionRolledBack = before != null && after != null &&
+                (after.getPage() < before.getPage() ||
+                        (after.getPage() == before.getPage() &&
+                                after.getOffset() > before.getOffset()));
+        assertFalse(
+                "Forward input moved the semantic viewport backward; previousPage="
+                        + previous.currentPage + ",currentPage=" + current.currentPage
+                        + ",before=" + before + ",after=" + after,
+                readerPageRolledBack || semanticPositionRolledBack);
+    }
+
+    /**
+     * The reader intentionally waits for a long input-quiet interval before merging deferred exact
+     * heights. Observe past that interval instead of merely checking the coordinate immediately
+     * after the final swipe. A changed absolute scroll value is valid when earlier page geometry is
+     * reprojected; the visible page and its page-local offset must remain bit-for-bit stationary.
+     */
+    private void assertViewportRemainsStationaryThroughDeferredGeometrySettlement(
+            ReaderV2Activity reader
+    ) {
+        ReaderSurfaceView.ScrollPositionSnapshot baseline = null;
+        long idleDeadline = SystemClock.elapsedRealtime() + 2000L;
+        while(SystemClock.elapsedRealtime() < idleDeadline) {
+            baseline = reader.testCurrentScrollPositionSnapshot();
+            if(baseline != null && !baseline.getBusy()) break;
+            SystemClock.sleep(16L);
+        }
+        assertNotNull("Reader never exposed a semantic viewport before idle settlement", baseline);
+        assertFalse("Reader was still physically moving before idle settlement", baseline.getBusy());
+        ReaderSurfaceView.LifecycleViewportAnchorSnapshot committedBaseline =
+                reader.testCurrentCommittedViewportAnchorSnapshot();
+        assertNotNull("Reader never exposed a committed viewport before idle settlement",
+                committedBaseline);
+
+        int samples = 0;
+        long settleDeadline = SystemClock.elapsedRealtime() + 7200L;
+        while(SystemClock.elapsedRealtime() < settleDeadline) {
+            ReaderSurfaceView.ScrollPositionSnapshot current =
+                    reader.testCurrentScrollPositionSnapshot();
+            assertNotNull("Reader lost its semantic viewport during idle settlement", current);
+            assertFalse("Reader started moving without physical input during idle settlement",
+                    current.getBusy());
+            assertEquals("Deferred geometry changed the stationary visible page; baseline="
+                            + baseline + ",current=" + current,
+                    baseline.getPage(), current.getPage());
+            assertEquals("Deferred geometry moved the stationary page-local viewport; baseline="
+                            + baseline + ",current=" + current,
+                    baseline.getOffset(), current.getOffset());
+            ReaderSurfaceView.LifecycleViewportAnchorSnapshot committed =
+                    reader.testCurrentCommittedViewportAnchorSnapshot();
+            assertNotNull("Reader lost its committed viewport during idle settlement", committed);
+            assertEquals("Deferred geometry changed the stationary source identity",
+                    committedBaseline.getIdentity(), committed.getIdentity());
+            assertEquals("Deferred geometry moved the committed source in the viewport",
+                    committedBaseline.getPageTopInViewportPx(),
+                    committed.getPageTopInViewportPx(),
+                    0.5f);
+            samples++;
+            SystemClock.sleep(16L);
+        }
+        assertTrue("Idle geometry settlement was not observed at frame cadence; samples=" + samples,
+                samples >= 300);
+    }
+
+    private void assertNoForwardCommittedViewportRollback(
+            String expectedPath,
+            int swipe,
+            ReaderSurfaceView.LifecycleViewportAnchorSnapshot before,
+            ReaderSurfaceView.LifecycleViewportAnchorSnapshot after
+    ) {
+        ReaderSurfaceView.CommittedPageIdentity beforeIdentity = before.getIdentity();
+        ReaderSurfaceView.CommittedPageIdentity afterIdentity = after.getIdentity();
+        assertEquals("Forward gesture started from an unexpected committed episode; swipe="
+                        + swipe,
+                expectedPath, beforeIdentity.getNormalizedEpisodePath());
+        assertEquals("Forward gesture changed committed episode without reader transition; swipe="
+                        + swipe,
+                expectedPath, afterIdentity.getNormalizedEpisodePath());
+        assertTrue("Forward gesture moved to an earlier original page; swipe=" + swipe
+                        + ",before=" + before + ",after=" + after,
+                afterIdentity.getSourcePageIndex() >= beforeIdentity.getSourcePageIndex());
+        if (afterIdentity.getSourcePageIndex() == beforeIdentity.getSourcePageIndex()) {
+            assertTrue("Forward gesture moved the same original page backward; swipe=" + swipe
+                            + ",before=" + before + ",after=" + after,
+                    after.getPageTopInViewportPx() <= before.getPageTopInViewportPx() + 0.5f);
+        }
     }
 
     private void launchNeighborEpisodes() {

@@ -321,6 +321,8 @@ internal object HostExactHardwareTilePool {
     private var lastPhysicalReaderActivityAtMs = 0L
     @Volatile
     private var lastPhysicalReaderInputAtMs = 0L
+    @Volatile
+    private var hostResumeCompactionProtectedUntilMs = 0L
 
     fun supported(hostGpuEmulatorRuntime: Boolean): Boolean =
         hostGpuEmulatorRuntime && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -538,9 +540,23 @@ internal object HostExactHardwareTilePool {
         lastPoolActivityAtMs = now
     }
 
+    /**
+     * A HOME return commonly precedes the user's first swipe by one to three seconds. Do not close
+     * already-paid idle HardwareBuffers in that exact interval and then allocate replacements on
+     * the first gesture. The first real pointer sample ends this hold; if no input arrives, the
+     * bounded fallback lets the ordinary 64 MiB convergence continue.
+     */
+    fun notePhysicalReaderHostResumed() {
+        val now = SystemClock.elapsedRealtime()
+        hostResumeCompactionProtectedUntilMs = now + HOST_RESUME_COMPACTION_PROTECTION_MS
+        lastPhysicalReaderActivityAtMs = now
+        lastPoolActivityAtMs = now
+    }
+
     /** Records a real pointer sample separately from compositor/scroller motion. */
     fun notePhysicalReaderInput() {
         val now = SystemClock.elapsedRealtime()
+        hostResumeCompactionProtectedUntilMs = 0L
         lastPhysicalReaderInputAtMs = now
         lastPhysicalReaderActivityAtMs = now
         lastPoolActivityAtMs = now
@@ -848,6 +864,7 @@ internal object HostExactHardwareTilePool {
             decodeAdmission = decodeAdmission,
             allowTransientOvercommit = allowTransientOvercommit,
             settledPoolOnly = settledPoolOnly,
+            compatibleRetirementRequiredNow = mirrorPublicationRequiredNow,
         ) ?: return null
         var decodedTiles: List<Bitmap> = emptyList()
         var success = false
@@ -968,6 +985,7 @@ internal object HostExactHardwareTilePool {
                 decodeAdmission = decodeAdmission,
                 allowTransientOvercommit = allowTransientOvercommit,
                 settledPoolOnly = settledPoolOnly,
+                compatibleRetirementRequiredNow = mirrorPublicationRequiredNow,
             )
         } catch (failure: Throwable) {
             releaseScratch(scratchLease)
@@ -1209,6 +1227,7 @@ internal object HostExactHardwareTilePool {
         allowTransientOvercommit: Boolean = true,
         waitForCompatibleRetirement: Boolean = true,
         settledPoolOnly: Boolean = false,
+        compatibleRetirementRequiredNow: (() -> Boolean)? = null,
     ): List<Slot>? {
         if (capacityWidth <= 0 || capacityHeight <= 0 || requiredBytes <= 0L || count <= 0 ||
             requiredBytes > MAX_ATOMIC_PAGE_BYTES / count.toLong()
@@ -1244,7 +1263,9 @@ internal object HostExactHardwareTilePool {
                 }
                 val newAllocationExceedsSettledTarget = newCount > 0 &&
                     allocatedBytes > MAX_POOL_BYTES - newBytes
-                if (waitForCompatibleRetirement && newAllocationExceedsSettledTarget) {
+                if (waitForCompatibleRetirement && newAllocationExceedsSettledTarget &&
+                    compatibleRetirementRequiredNow?.invoke() != true
+                ) {
                     val now = SystemClock.elapsedRealtime()
                     // A Session-owned input admission callback has already rejected real pointer
                     // input and its quiet fence at the top of this loop. Passive inertial motion
@@ -1653,10 +1674,17 @@ internal object HostExactHardwareTilePool {
     }
 
     private fun drainIdleCompactionAfterQuiet() {
+        val resumeProtectionRemainingMs =
+            hostResumeCompactionProtectedUntilMs - SystemClock.elapsedRealtime()
         val remainingQuietMs = IDLE_COMPACTION_QUIET_MS -
             (SystemClock.elapsedRealtime() - lastPoolActivityAtMs)
-        if (remainingQuietMs > 0L || NtkReaderTransferPacer.isPhysicalMotionActive()) {
-            scheduleIdleCompactionWake(remainingQuietMs.coerceAtLeast(32L))
+        if (resumeProtectionRemainingMs > 0L || remainingQuietMs > 0L ||
+            NtkReaderTransferPacer.isPhysicalMotionActive() ||
+            NtkReaderTransferPacer.isPhysicalInputPriorityActive()
+        ) {
+            scheduleIdleCompactionWake(
+                maxOf(resumeProtectionRemainingMs, remainingQuietMs, 32L),
+            )
             return
         }
         try {
@@ -1675,7 +1703,10 @@ internal object HostExactHardwareTilePool {
             // One native close at a time keeps the operation interruptible at the next real
             // gesture. Selecting the complete victim set up front made every handle close even
             // when input resumed after the quiet check.
-            if (NtkReaderTransferPacer.isPhysicalMotionActive()) return
+            if (hostResumeCompactionProtectedUntilMs > SystemClock.elapsedRealtime() ||
+                NtkReaderTransferPacer.isPhysicalMotionActive() ||
+                NtkReaderTransferPacer.isPhysicalInputPriorityActive()
+            ) return
             val victim = synchronized(lock) {
                 val bytesToFree = (allocatedBytes - MAX_POOL_BYTES).coerceAtLeast(0L)
                 if (bytesToFree <= 0L) return
@@ -1713,4 +1744,5 @@ internal object HostExactHardwareTilePool {
     private const val TAG = "HostExactTilePool"
     private const val RETIREMENT_SELECTION_GRACE_MS = 64L
     private const val PRESSURE_SIGNAL_MIN_INTERVAL_MS = 96L
+    private const val HOST_RESUME_COMPACTION_PROTECTION_MS = 4_000L
 }

@@ -11,6 +11,17 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
     @Test
     fun stalledAcceptedBodyResumesBeforeItCanReachTheForwardViewport() {
         assertEquals(2_500L, ReaderImageCache.manhwaBodyProgressDeadlineMsForTest())
+        assertEquals(1_000L, NtkManhwaProjectedBodyHedgePolicy.BODY_RATE_SAMPLE_MS)
+        assertEquals(100L, NtkManhwaProjectedBodyHedgePolicy.bodyRateSampleMs(0))
+        assertEquals(1_000L, NtkManhwaProjectedBodyHedgePolicy.bodyRateSampleMs(1))
+        assertEquals(
+            500L,
+            NtkManhwaProjectedBodyHedgePolicy.bodyProgressDeadlineMs(0, 2_500L),
+        )
+        assertEquals(
+            2_500L,
+            NtkManhwaProjectedBodyHedgePolicy.bodyProgressDeadlineMs(1, 2_500L),
+        )
     }
 
     @Test
@@ -60,16 +71,21 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
     }
 
     @Test
-    fun entryViewportRecoveryNeverExpandsIntoTheBulkWave() {
-        assertFalse(
+    fun entryViewportRecoveryIncludesOpeningPageButNeverExpandsIntoTheBulkWave() {
+        assertTrue(
             NtkManhwaProjectedBodyHedgePolicy.shouldStartEntryViewportTail(
                 pageIndex = 0,
-                sessionElapsedMs = 2_000L,
-                bodyElapsedMs = 1_000L,
-                deliveredBytes = 50_000L,
+                sessionElapsedMs = 100L,
+                bodyElapsedMs = 100L,
+                deliveredBytes = 2_000L,
                 expectedLength = 180_000L,
             )
         )
+        assertEquals(0L, NtkManhwaProjectedBodyHedgePolicy.OPENING_PAGE_MIN_SESSION_MS)
+        assertEquals(12, NtkManhwaProjectedBodyHedgePolicy.OPENING_PAGE_MAX_CONTINUATIONS)
+        assertEquals(6, NtkManhwaProjectedBodyHedgePolicy.ENTRY_VIEWPORT_MAX_CONTINUATIONS)
+        assertEquals(12, NtkManhwaProjectedBodyHedgePolicy.entryViewportMaximumContinuations(0))
+        assertEquals(6, NtkManhwaProjectedBodyHedgePolicy.entryViewportMaximumContinuations(1))
         assertFalse(
             NtkManhwaProjectedBodyHedgePolicy.shouldStartEntryViewportTail(
                 pageIndex = 2,
@@ -83,6 +99,13 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
 
     @Test
     fun failedEntryViewportSuffixCanRetryOnlyInsideItsFiniteContinuationBudget() {
+        assertTrue(
+            NtkManhwaProjectedBodyHedgePolicy.shouldRearmEntryViewportTailAfterFailure(
+                pageIndex = 0,
+                continuationCount = 1,
+                maximumContinuations = 4,
+            )
+        )
         assertTrue(
             NtkManhwaProjectedBodyHedgePolicy.shouldRearmEntryViewportTailAfterFailure(
                 pageIndex = 1,
@@ -133,6 +156,20 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
         assertTrue(split - delivered >= 24L * 1024L)
         assertTrue(split - delivered <= 64L * 1024L)
         assertTrue(expected - split >= 32L * 1024L)
+    }
+
+    @Test
+    fun openingPageLeadCoversBufferedReadAheadWithoutCreatingATinyGapRequest() {
+        val delivered = 16_384L
+        val split = requireNotNull(
+            NtkManhwaProjectedBodyHedgePolicy.disjointTailStart(
+                bodyElapsedMs = 100L,
+                deliveredBytes = delivered,
+                expectedLength = 3_117_748L,
+                pageIndex = 0,
+            )
+        )
+        assertEquals(delivered + 16L * 1024L, split)
     }
 
     @Test
@@ -232,6 +269,53 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
         }
         assertTrue(segments.maxOf { it.last - it.first + 1L } -
             segments.minOf { it.last - it.first + 1L } <= 1L)
+    }
+
+    @Test
+    fun openingPageUsesTheExistingGlobalRangeWorkerCeilingForSmallPieces() {
+        val start = 30_043L
+        val expectedLength = 3_117_748L
+        val segments = NtkManhwaProjectedBodyHedgePolicy
+            .disjointEntryViewportTailSegments(
+                start,
+                expectedLength,
+                NtkManhwaProjectedBodyHedgePolicy.entryViewportMaximumContinuations(0),
+                pageIndex = 0,
+            )
+
+        assertEquals(12, segments.size)
+        assertEquals(start, segments.first().first)
+        assertEquals(expectedLength - 1L, segments.last().last)
+        assertTrue(segments.maxOf { it.last - it.first + 1L } <= 258_000L)
+        assertEquals(expectedLength - start, segments.sumOf { it.last - it.first + 1L })
+    }
+
+    @Test
+    fun projectedPrefixAlwaysRetainsOnePhysicalSlotForItsExactGap() {
+        assertEquals(
+            11,
+            NtkManhwaProjectedBodyHedgePolicy.projectedTailSegmentSlots(
+                remainingContinuationSlots = 12,
+                finalBodyTail = false,
+                directWifiWebtoonTail = false,
+            ),
+        )
+        assertEquals(
+            12,
+            NtkManhwaProjectedBodyHedgePolicy.projectedTailSegmentSlots(
+                remainingContinuationSlots = 12,
+                finalBodyTail = true,
+                directWifiWebtoonTail = false,
+            ),
+        )
+        assertEquals(
+            12,
+            NtkManhwaProjectedBodyHedgePolicy.projectedTailSegmentSlots(
+                remainingContinuationSlots = 12,
+                finalBodyTail = false,
+                directWifiWebtoonTail = true,
+            ),
+        )
     }
 
     @Test
@@ -375,13 +459,27 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
         assertEquals(900L, NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(0))
         assertEquals(900L, NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(1))
         assertEquals(900L, NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(2))
+        assertEquals(
+            3_600L,
+            NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(
+                0,
+                bufferedResponseBody = true,
+            ),
+        )
+        assertEquals(
+            3_600L,
+            NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(
+                1,
+                bufferedResponseBody = true,
+            ),
+        )
         assertEquals(3_000L, NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(3))
         assertEquals(3_000L, NtkManhwaRangeResumePolicy.projectedHeaderDeadlineMs(194))
-        assertNull(NtkManhwaRangeResumePolicy.projectedBodyWallMs(0))
-        assertEquals(3_200L, NtkManhwaRangeResumePolicy.projectedBodyWallMs(1))
+        assertEquals(3_600L, NtkManhwaRangeResumePolicy.projectedBodyWallMs(0))
+        assertEquals(3_600L, NtkManhwaRangeResumePolicy.projectedBodyWallMs(1))
         assertNull(NtkManhwaRangeResumePolicy.projectedBodyWallMs(2))
         assertNull(NtkManhwaRangeResumePolicy.projectedBodyWallMs(194))
-        assertEquals(1, NtkManhwaRangeResumePolicy.maximumProgressRounds(0))
+        assertEquals(4, NtkManhwaRangeResumePolicy.maximumProgressRounds(0))
         assertEquals(4, NtkManhwaRangeResumePolicy.maximumProgressRounds(1))
         assertEquals(1, NtkManhwaRangeResumePolicy.maximumProgressRounds(2))
         assertEquals(1, NtkManhwaRangeResumePolicy.maximumProgressRounds(194))
@@ -395,6 +493,31 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
 
         assertFalse(source.contains("shouldForceCriticalSerialResume"))
         assertFalse(source.contains("Critical projected manhwa tail"))
+    }
+
+    @Test
+    fun validatedDisjointRangeDoesNotInheritTheCanonicalH2OnlyMarker() {
+        val source = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt"
+        ).readText()
+        val start = source.indexOf("private fun executeManhwaRangeSegment(")
+        val end = source.indexOf("private fun isLiveDirectWifiAdjacentProofRoute()", start)
+        assertTrue(start >= 0)
+        assertTrue(end > start)
+
+        val rangeTransport = source.substring(start, end)
+        assertTrue(rangeTransport.contains(".removeHeader(\"X-MangaViewer-No-Quic\")"))
+        assertTrue(rangeTransport.contains("response.code == 206"))
+        assertTrue(rangeTransport.contains("strictStrongValidator(response) == validator"))
+        assertTrue(rangeTransport.contains("range.third == total"))
+
+        val serialStart = source.indexOf("private fun continueFromNextByte(")
+        val serialEnd = source.indexOf("private fun hasRequiredDirectWifiNetwork()", serialStart)
+        assertTrue(serialStart >= 0)
+        assertTrue(serialEnd > serialStart)
+        val serialTransport = source.substring(serialStart, serialEnd)
+        assertTrue(serialTransport.contains(".removeHeader(\"X-MangaViewer-No-Quic\")"))
+        assertTrue(serialTransport.contains("range.third == expectedLength"))
     }
 
 }
