@@ -26,6 +26,7 @@ internal data class LibraryState(
     val home: HomeContent = HomeContent.Loading,
     val genres: GenreContent = GenreContent.Empty,
     val selectedGenre: SourceGenre? = null,
+    val genreCatalog: LibraryContent = LibraryContent.Empty,
     val searchKind: SeriesKind? = null,
     val searchField: SearchField = SearchField.TITLE,
     val detailTab: DetailTab = DetailTab.INTRO,

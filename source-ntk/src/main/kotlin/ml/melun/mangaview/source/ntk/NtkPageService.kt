@@ -56,33 +56,37 @@ internal class NtkPageService(
         val origin = documents.currentOrigin()
         val intent = preparationIntents.remove(episodeId) ?: PreparationIntent.INITIAL_VIEW
         gateway.prepare(origin, path, intent)
-        val document = documents.episodeDocument(path)
-        validateDocumentIdentity(document, path)
-        val parsed = parser.manifest(document)
-        val viewer = parsed.viewer
-        val nextEpisodeId = viewer?.nextEpisodePath?.let { EpisodeId(episodeId.seriesId, it) }
-        parsed.descriptor?.let { descriptor ->
-            gateway.documentAvailable(document, descriptor)
+        try {
+            val document = documents.episodeDocument(path)
+            validateDocumentIdentity(document, path)
+            val parsed = parser.manifest(document)
+            val viewer = parsed.viewer
+            val nextEpisodeId = viewer?.nextEpisodePath?.let { EpisodeId(episodeId.seriesId, it) }
+            parsed.descriptor?.let { descriptor ->
+                gateway.documentAvailable(document, descriptor)
+            }
+            val resolved = resolveRequests(document, parsed)
+            // HttpEngine construction is origin-scoped and can otherwise sit directly on the
+            // visible page's critical path. Build only the selector's current best origin here;
+            // this opens no image request and preserves PageId single-flight ownership.
+            transport.warmConnections(resolved.first().candidates, preferQuic = true)
+            // The ACK browser must remain alive until an image header and signature prove that the
+            // protected replica is usable. Releasing the pool lease does not quiesce that browser.
+            val ids = resolved.indices.map { PageId.at(episodeId, it) }
+            NtkPreparedEpisode(
+                pages = ids.mapIndexed { index, id -> PageSpec(id, index) },
+                requests = ids.zip(resolved).toMap(),
+                title = viewer?.title,
+                previousEpisodeId = viewer?.previousEpisodePath?.let {
+                    EpisodeId(episodeId.seriesId, it)
+                },
+                nextEpisodeId = nextEpisodeId,
+                previousKnown = viewer?.previousKnown == true,
+                nextKnown = viewer?.nextKnown == true,
+            )
+        } finally {
+            gateway.manifestResolutionFinished(origin, path)
         }
-        val resolved = resolveRequests(document, parsed)
-        // HttpEngine construction is origin-scoped and can otherwise sit directly on the
-        // visible page's critical path. Build only the selector's current best origin here;
-        // this opens no image request and preserves PageId single-flight ownership.
-        transport.warmConnections(resolved.first().candidates, preferQuic = true)
-        // The ACK browser must remain alive until an image header and signature prove that the
-        // protected replica is usable. Quiescing here races the first page on a cold install.
-        val ids = resolved.indices.map { PageId.at(episodeId, it) }
-        NtkPreparedEpisode(
-            pages = ids.mapIndexed { index, id -> PageSpec(id, index) },
-            requests = ids.zip(resolved).toMap(),
-            title = viewer?.title,
-            previousEpisodeId = viewer?.previousEpisodePath?.let {
-                EpisodeId(episodeId.seriesId, it)
-            },
-            nextEpisodeId = nextEpisodeId,
-            previousKnown = viewer?.previousKnown == true,
-            nextKnown = viewer?.nextKnown == true,
-        )
     }
 
     private fun strongerIntent(

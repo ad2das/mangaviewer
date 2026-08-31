@@ -37,12 +37,16 @@ internal fun LibraryScreen(
 ) {
     val colors = libraryColors(state.saved.settings.darkTheme)
     val detailVisible = state.activeSeries != null
+    val genreCatalogVisible = state.selectedGenre != null
     BackHandler(
-        enabled = detailVisible || state.settingsVisible || state.preferencesVisible || state.downloadSelectionVisible,
+        enabled = detailVisible || genreCatalogVisible || state.settingsVisible ||
+            state.preferencesVisible || state.downloadSelectionVisible,
     ) { accept(LibraryIntent.Back) }
     Box(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
         if (detailVisible) {
             SeriesDetailScreen(state, artworkLoader, colors, accept)
+        } else if (genreCatalogVisible) {
+            GenreCatalogScreen(state, artworkLoader, colors, accept)
         } else {
             MainShell(state, artworkLoader, colors, accept)
         }

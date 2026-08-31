@@ -23,6 +23,7 @@ data class NtkEpisodeRecord(
 data class NtkSearchResult(
     val series: List<SourceSeries>,
     val total: Int?,
+    val recognized: Boolean,
 )
 
 data class NtkEpisodeResult(
@@ -66,11 +67,27 @@ class NtkDocumentParser {
         forcedKind: NtkKind? = null,
     ): NtkSearchResult {
         val root = JSONObject(payload)
+        val works = root.optJSONArray("works")
+            ?: root.optJSONObject("data")?.optJSONArray("works")
+            ?: return NtkSearchResult(emptyList(), null, recognized = false)
+        return NtkSearchResult(
+            parseWorks(works, sourceId, forcedKind),
+            nonNegativeInt(root, "total"),
+            recognized = true,
+        )
+    }
+
+    private fun parseWorks(
+        works: JSONArray,
+        sourceId: SourceId,
+        forcedKind: NtkKind?,
+    ): List<SourceSeries> {
         val found = linkedMapOf<String, SourceSeries>()
-        JsonObjects.walk(root) { candidate ->
-            val workKey = string(candidate, "sourceWorkId", "workId", "id") ?: return@walk
-            val title = string(candidate, "title", "name", "subject") ?: return@walk
-            val kind = forcedKind ?: kind(candidate, string(candidate, "path", "href", "url")) ?: return@walk
+        for (index in 0 until works.length()) {
+            val candidate = works.optJSONObject(index) ?: continue
+            val workKey = string(candidate, "sourceWorkId", "workId") ?: continue
+            val title = string(candidate, "title", "name") ?: continue
+            val kind = forcedKind ?: kind(candidate, string(candidate, "path", "href", "url")) ?: continue
             val key = NtkSeriesKey(kind, workKey)
             found.putIfAbsent(
                 key.path(),
@@ -82,11 +99,18 @@ class NtkDocumentParser {
                 ),
             )
         }
-        return NtkSearchResult(found.values.toList(), positiveInt(root, "total"))
+        return found.values.toList()
     }
 
-    fun searchHtml(payload: String, sourceId: SourceId): List<SourceSeries> {
+    fun searchHtml(
+        payload: String,
+        sourceId: SourceId,
+        forcedKind: NtkKind? = null,
+    ): List<SourceSeries> {
         val normalized = JsonObjects.normalizeEscapes(payload)
+        embeddedArray(normalized, "initialWorks")?.let { works ->
+            parseWorks(works, sourceId, forcedKind).takeIf { it.isNotEmpty() }?.let { return it }
+        }
         val document = Jsoup.parse(normalized)
         val found = linkedMapOf<String, SourceSeries>()
         document.select("a[href]").forEach { link ->
@@ -94,7 +118,9 @@ class NtkDocumentParser {
             val key = NtkSeriesKey.decode(SeriesId(sourceId, path))
             val title = link.selectFirst("h1, h2, h3, h4, .title, .subject, strong")
                 ?.text()?.clean() ?: link.ownText().clean()
-            if (title.isBlank()) return@forEach
+            if (title.isBlank() || title in NON_SERIES_TITLES || NON_EPISODE_LABELS.any(title::contains)) {
+                return@forEach
+            }
             val thumbnail = link.selectFirst("img")?.let(::imageAttribute)
             found.putIfAbsent(path, SourceSeries(SeriesId(sourceId, key.path()), title, thumbnailKey = thumbnail))
         }
@@ -319,7 +345,7 @@ class NtkDocumentParser {
 
     private fun normalizedSeriesPath(value: String): String? {
         val path = pathOnly(value)
-        return Regex("^/(?:manhwa|webtoon)/[A-Za-z0-9_-]{1,160}$").matchEntire(path)?.value
+        return Regex("^/(?:manhwa|webtoon)/[\\p{L}\\p{N}_-]{1,160}$").matchEntire(path)?.value
     }
 
     private fun normalizedEpisodePath(value: String, key: NtkSeriesKey): String? {
@@ -357,6 +383,10 @@ class NtkDocumentParser {
         candidate.optString(key, "").toIntOrNull()?.takeIf { it > 0 }
     }
 
+    private fun nonNegativeInt(candidate: JSONObject, vararg keys: String): Int? = keys.firstNotNullOfOrNull { key ->
+        candidate.optString(key, "").toIntOrNull()?.takeIf { it >= 0 }
+    }
+
     private fun imageAttribute(image: Element): String? =
         IMAGE_ATTRIBUTES.firstNotNullOfOrNull { image.attr(it).trim().takeIf(String::isNotEmpty) }
 
@@ -369,6 +399,9 @@ class NtkDocumentParser {
     private companion object {
         val NON_EPISODE_LABELS = listOf(
             "목록", "최신화 보기", "첫화부터", "처음부터", "정주행", "이어보기", "전체보기",
+        )
+        val NON_SERIES_TITLES = setOf(
+            "업데이트", "최신 업데이트", "전체", "웹툰", "만화", "목록", "더보기",
         )
         const val MAX_EPISODE_PAGES = 100
         val IMAGE_ATTRIBUTES = listOf("data-original", "data-src", "data-lazy-src", "data-url", "src")
@@ -396,10 +429,42 @@ class NtkDocumentParser {
             }
 
             private val PATTERN = Regex(
-                "^/(webtoon|manhwa)/([A-Za-z0-9_-]{1,160})/([A-Za-z0-9_.-]{1,200})$",
+                "^/(webtoon|manhwa)/([\\p{L}\\p{N}_-]{1,160})/([\\p{L}\\p{N}_.-]{1,200})$",
             )
         }
     }
+}
+
+private fun embeddedArray(payload: String, key: String): JSONArray? {
+    val marker = payload.indexOf("\"$key\"")
+    if (marker < 0) return null
+    val start = payload.indexOf('[', marker + key.length + 2)
+    if (start < 0) return null
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (index in start until payload.length) {
+        val character = payload[index]
+        if (inString) {
+            when {
+                escaped -> escaped = false
+                character == '\\' -> escaped = true
+                character == '"' -> inString = false
+            }
+            continue
+        }
+        when (character) {
+            '"' -> inString = true
+            '[' -> depth += 1
+            ']' -> {
+                depth -= 1
+                if (depth == 0) {
+                    return runCatching { JSONArray(payload.substring(start, index + 1)) }.getOrNull()
+                }
+            }
+        }
+    }
+    return null
 }
 
 private val NtkKind.apiPath: String

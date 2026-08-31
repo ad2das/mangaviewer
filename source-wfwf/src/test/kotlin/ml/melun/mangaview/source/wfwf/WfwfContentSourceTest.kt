@@ -10,8 +10,11 @@ import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.PageByteStream
+import ml.melun.mangaview.source.CatalogOrder
+import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
+import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceSearchQuery
@@ -88,12 +91,49 @@ class WfwfContentSourceTest {
     }
 
     @Test
-    fun exposesEveryLegacyProviderGenre() = runTest {
-        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), QueueTransport(""))
+    fun exposesVerifiedProviderGenresWithoutANetworkRoundTrip() = runTest {
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), QueueTransport())
 
-        assertEquals(21, source.genres(SeriesKind.WEBTOON).size)
-        assertEquals(34, source.genres(SeriesKind.COMIC).size)
+        assertEquals(17, source.genres(SeriesKind.WEBTOON).size)
+        assertEquals(35, source.genres(SeriesKind.COMIC).size)
+        assertTrue(source.genres(SeriesKind.WEBTOON).any { it.key == "t2:3" && it.label == "성인" })
+        assertTrue(source.genres(SeriesKind.COMIC).any { it.key == "t3:백합" && it.label == "백합" })
+        assertTrue(source.genres(SeriesKind.COMIC).any { it.key == "t3:sf" && it.label == "SF" })
+        assertTrue(source.genres(SeriesKind.COMIC).any { it.key == "t3:bl" && it.label == "BL" })
+        assertTrue(source.genres(SeriesKind.COMIC).any { it.key == "t3:ts" && it.label == "TS" })
+        assertTrue(source.genres(SeriesKind.COMIC).none { it.label == "일상+치유" })
         assertTrue(source.genres(SeriesKind.COMIC).any { it.label == "무협" })
+    }
+
+    @Test
+    fun catalogUsesTheCurrentProviderGenreAndOrderParameters() = runTest {
+        val adultTransport = QueueTransport("<a href='/list?toon=1'><h3>성인 작품</h3></a>")
+        val adultSource = WfwfContentSource(
+            WfwfConfig("https://wfwf.test", "agent"),
+            adultTransport,
+        )
+        adultSource.catalog(
+            CatalogQuery(
+                SeriesKind.WEBTOON,
+                CatalogOrder.LATEST,
+                SourceGenre("t2:3", "성인"),
+            ),
+        )
+        assertEquals("/ing?o=n&pg=1&t1=&t2=3&t3=", adultTransport.requestPaths().single())
+
+        val yuriTransport = QueueTransport("<a href='/cl?toon=2'><h3>백합 작품</h3></a>")
+        val yuriSource = WfwfContentSource(
+            WfwfConfig("https://wfwf.test", "agent"),
+            yuriTransport,
+        )
+        yuriSource.catalog(
+            CatalogQuery(
+                SeriesKind.COMIC,
+                CatalogOrder.NEW,
+                SourceGenre("t3:백합", "백합"),
+            ),
+        )
+        assertEquals("/cm?o=r&pg=1&t3=%B9%E9%C7%D5", yuriTransport.requestPaths().single())
     }
 
     @Test
@@ -113,6 +153,77 @@ class WfwfContentSourceTest {
 
         assertEquals("정확한 작품명", items.single().title)
         assertEquals("https://cdn.example/72442.jpg", items.single().thumbnailKey)
+    }
+
+    @Test
+    fun currentProviderCardKeepsItsOwnTitleAndGenreEvidence() {
+        val document = org.jsoup.Jsoup.parse(
+            """
+            <div class="thumb-grid">
+              <a class="t-card" href="/list?toon=75698">
+                <div class="t-img"><img alt="솔스티스" src="https://cdn.example/75698.jpg"></div>
+                <div class="t-title">솔스티스</div>
+                <div class="t-genre">성인/로맨스</div>
+                <div class="t-ep">51화</div>
+              </a>
+              <a class="t-card" href="/list?toon=76044">
+                <div class="t-title">다른 작품</div><div class="t-genre">스포츠</div>
+              </a>
+            </div>
+            """.trimIndent(),
+        )
+
+        val item = WfwfHtmlParser().search(document) { key ->
+            SeriesId(SourceId("wfwf"), key.encode())
+        }.first { it.id.remoteKey == "webtoon:75698" }
+
+        assertEquals("솔스티스", item.title)
+        assertEquals("성인/로맨스", item.subtitle)
+    }
+
+    @Test
+    fun catalogNeverBorrowsAnotherSeriesTitleFromABroadContainer() {
+        val document = org.jsoup.Jsoup.parse(
+            """
+            <div class="grid">
+              <a href="/list?toon=11"><img src="https://cdn.example/11.jpg"></a>
+              <article><a href="/list?toon=22"><h3 class="item-title">22번 작품</h3></a></article>
+            </div>
+            """.trimIndent(),
+        )
+
+        val items = WfwfHtmlParser().search(document) { key ->
+            SeriesId(SourceId("wfwf"), key.encode())
+        }
+
+        assertEquals(listOf("webtoon:22"), items.map { it.id.remoteKey })
+        assertEquals(listOf("22번 작품"), items.map { it.title })
+    }
+
+    @Test
+    fun genericUpdateLinksAreNeverExposedAsSeries() {
+        val document = org.jsoup.Jsoup.parse(
+            """<a href="/list?toon=77"><span class="title">업데이트</span></a>""",
+        )
+
+        val items = WfwfHtmlParser().search(document) { key ->
+            SeriesId(SourceId("wfwf"), key.encode())
+        }
+
+        assertTrue(items.isEmpty())
+    }
+
+    @Test
+    fun liveGenreLinksDefineTheExposedGenreSet() {
+        val document = org.jsoup.Jsoup.parse(
+            """
+            <a href="/ing?o=n&amp;pg=1&amp;t1=&amp;t2=3&amp;t3=">성인</a>
+            <a href="/ing?o=n&amp;pg=1&amp;t1=&amp;t2=&amp;t3=%B5%E5%B6%F3%B8%B6">드라마</a>
+            <a href="/ing?o=n&amp;pg=1&amp;t1=mon&amp;t2=&amp;t3=">월</a>
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("성인", "드라마"), WfwfHtmlParser().genres(document).map { it.label })
     }
 
     @Test
@@ -312,6 +423,11 @@ private class RoutingTransport(
 private class QueueTransport(vararg bodies: String) : SourceTransport {
     private val bodies = ArrayDeque(bodies.toList())
     val requests = mutableListOf<SourceRequest>()
+
+    fun requestPaths(): List<String> = requests.map { request ->
+        val uri = java.net.URI(request.url)
+        uri.rawPath + uri.rawQuery?.let { "?$it" }.orEmpty()
+    }
 
     override suspend fun execute(request: SourceRequest): SourceResponse {
         requests += request

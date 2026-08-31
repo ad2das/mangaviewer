@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -28,6 +29,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -48,7 +51,7 @@ internal fun HomeScreen(
         item { KindSelector(state.homeKind, colors, accept) }
         item { HomeTabs(state.homeTab, colors, accept) }
         if (state.homeTab == HomeTab.GENRES) {
-            genreRows(state, artworkLoader, colors, accept)
+            genreRows(state, colors, accept)
         } else {
             when (val home = state.home) {
                 HomeContent.Loading -> item { HomeLoading(colors) }
@@ -102,7 +105,6 @@ private fun androidx.compose.foundation.lazy.LazyListScope.seriesGrid(
 
 private fun androidx.compose.foundation.lazy.LazyListScope.genreRows(
     state: LibraryState,
-    loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
@@ -119,14 +121,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.genreRows(
         GenreContent.Empty, GenreContent.Loading -> item { GenreMessage("장르를 불러오는 중…", colors) }
         is GenreContent.Failure -> item { GenreMessage(genres.message, colors) }
         is GenreContent.Ready -> items(genres.items.chunked(3), key = { row -> row.joinToString("|") { it.key } }) { row ->
-            GenreRow(row, state.selectedGenre, colors, accept)
-        }
-    }
-    if (state.selectedGenre != null) {
-        when (val home = state.home) {
-            HomeContent.Loading -> item { HomeLoading(colors) }
-            is HomeContent.Failure -> item { HomeFailure(home.message, colors, accept) }
-            is HomeContent.Ready -> seriesGrid(home.latest, loader, colors, accept)
+            GenreRow(row, colors, accept)
         }
     }
 }
@@ -134,7 +129,6 @@ private fun androidx.compose.foundation.lazy.LazyListScope.genreRows(
 @Composable
 private fun GenreRow(
     row: List<SourceGenre>,
-    selectedGenre: SourceGenre?,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
@@ -143,25 +137,69 @@ private fun GenreRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         row.forEach { genre ->
-            val selected = genre.key == selectedGenre?.key
             Box(
                 Modifier.weight(1f).height(34.dp).clip(RoundedCornerShape(10.dp))
-                    .background(if (selected) colors.accent else colors.card)
+                    .background(colors.card)
                     .border(1.dp, colors.outline, RoundedCornerShape(10.dp))
                     .clickable { accept(LibraryIntent.GenreSelected(genre)) },
                 contentAlignment = Alignment.Center,
             ) {
                 BasicText(
                     genre.label,
-                    style = labelStyle(colors, selected).copy(
-                        color = if (selected) Color.White else colors.secondary,
-                    ),
+                    style = labelStyle(colors, false).copy(color = colors.secondary),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
         }
         repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+    }
+}
+
+@Composable
+internal fun GenreCatalogScreen(
+    state: LibraryState,
+    artworkLoader: SeriesArtworkLoader,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    val genre = state.selectedGenre ?: return
+    Column(
+        Modifier.fillMaxSize().semantics {
+            contentDescription = "장르 목록: ${genre.label}"
+        },
+    ) {
+        Row(
+            Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).clickable { accept(LibraryIntent.Back) },
+                contentAlignment = Alignment.Center,
+            ) {
+                LibraryIconView(LibraryIcon.BACK, colors.secondary, Modifier.size(26.dp))
+            }
+            BasicText(
+                genre.label,
+                Modifier.weight(1f).padding(horizontal = 8.dp),
+                titleStyle(colors, 21),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        when (val catalog = state.genreCatalog) {
+            LibraryContent.Empty, LibraryContent.Loading ->
+                LibraryMessage("${genre.label} 작품을 불러오는 중…", colors, Modifier.weight(1f))
+            is LibraryContent.Failure ->
+                LibraryMessage(catalog.message, colors, Modifier.weight(1f))
+            is LibraryContent.Series -> LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp),
+            ) {
+                seriesGrid(catalog.items, artworkLoader, colors, accept)
+            }
+            is LibraryContent.Episodes -> Unit
+        }
     }
 }
 
@@ -331,6 +369,7 @@ private fun SeriesGridCard(
     Column(
         modifier.height(240.dp).padding(6.dp).clip(RoundedCornerShape(16.dp)).background(colors.card)
             .border(1.dp, colors.outline, RoundedCornerShape(16.dp))
+            .semantics { contentDescription = "작품: ${series.title}" }
             .clickable { accept(LibraryIntent.SeriesSelected(series)) },
     ) {
         SeriesArtwork(series, loader, colors, Modifier.fillMaxWidth().height(160.dp))

@@ -42,7 +42,7 @@ internal class NtkCatalogService(
         if (query.field == SearchField.AUTHOR) return authorSearch(query, page, encoded)
         val path = "/api/works?keyword=$encoded&page=$page&pageSize=$searchPageSize&withTotal=1"
         val api = attempt { parser.searchApi(documents.text(path, json = true), sourceId) }
-        if (api != null && api.series.isNotEmpty()) {
+        if (api?.recognized == true) {
             val items = filterKind(api.series, query.kind)
             val hasNext = api.total?.let { page * searchPageSize < it }
                 ?: (api.series.size == searchPageSize)
@@ -79,8 +79,7 @@ internal class NtkCatalogService(
                 CatalogOrder.NEW -> add("sort=new")
             }
             query.genre?.let { genre ->
-                val key = if (query.kind == SeriesKind.COMIC) "g" else "tag"
-                add("$key=${URLEncoder.encode(genre.key, Charsets.UTF_8.name())}")
+                add(genreParameter(query.kind, genre))
             }
             add("page=$page")
             add("pageSize=$searchPageSize")
@@ -93,20 +92,20 @@ internal class NtkCatalogService(
                 if (query.kind == SeriesKind.COMIC) NtkKind.MANHWA else NtkKind.WEBTOON,
             )
         }
-        if (parsed != null && parsed.series.isNotEmpty()) {
+        if (parsed?.recognized == true) {
             val hasNext = parsed.total?.let { page * searchPageSize < it }
                 ?: (parsed.series.size == searchPageSize)
             return SourcePage(parsed.series, if (hasNext) (page + 1).toString() else null)
         }
         if (page > 1) return SourcePage(emptyList())
-        return SourcePage(parser.searchHtml(documents.text(catalogPath(query), false), sourceId))
+        return SourcePage(parser.searchHtml(
+            documents.text(catalogPath(query), false),
+            sourceId,
+            if (query.kind == SeriesKind.COMIC) NtkKind.MANHWA else NtkKind.WEBTOON,
+        ))
     }
 
-    suspend fun genres(kind: SeriesKind): List<SourceGenre> {
-        val path = if (kind == SeriesKind.COMIC) "/manhwa" else "/ing"
-        val parsed = attempt { parser.genres(documents.text(path, false), kind) }.orEmpty()
-        return parsed.ifEmpty { fallbackGenres(kind) }
-    }
+    fun genres(kind: SeriesKind): List<SourceGenre> = normalizeGenres(kind, fallbackGenres(kind))
 
     private fun catalogPath(query: CatalogQuery): String {
         val root = if (query.kind == SeriesKind.COMIC) "/manhwa" else "/ing"
@@ -114,8 +113,7 @@ internal class NtkCatalogService(
             if (query.order == CatalogOrder.POPULAR) add("sort=hot")
             if (query.order == CatalogOrder.NEW) add("sort=new")
             query.genre?.let { genre ->
-                val key = if (query.kind == SeriesKind.COMIC) "g" else "tag"
-                add("$key=${URLEncoder.encode(genre.key, Charsets.UTF_8.name())}")
+                add(genreParameter(query.kind, genre))
             }
         }
         return if (parameters.isEmpty()) root else "$root?${parameters.joinToString("&")}"
@@ -192,7 +190,33 @@ internal class NtkCatalogService(
         SeriesKind.COMIC -> NTK_COMIC_GENRES.map { SourceGenre(it, it) }
     }
 
+    private fun normalizeGenres(kind: SeriesKind, genres: List<SourceGenre>): List<SourceGenre> {
+        if (kind == SeriesKind.COMIC) {
+            return genres.map { genre ->
+                if (genre.key == "17") SourceGenre(genre.key, "성인") else genre
+            }.distinctBy(SourceGenre::key)
+        }
+        return genres.map { genre ->
+            when (genre.label) {
+                "BL/백합" -> SourceGenre("category:bl", genre.label)
+                "성인" -> SourceGenre("category:adult", genre.label)
+                else -> genre
+            }
+        }.distinctBy(SourceGenre::key)
+    }
+
+    private fun genreParameter(kind: SeriesKind, genre: SourceGenre): String {
+        val category = genre.key.removePrefix(CATEGORY_PREFIX)
+        if (kind == SeriesKind.WEBTOON && category != genre.key) {
+            require(category == "bl" || category == "adult") { "Unsupported NTK category" }
+            return "cat=$category"
+        }
+        val key = if (kind == SeriesKind.COMIC) "g" else "tag"
+        return "$key=${URLEncoder.encode(genre.key, Charsets.UTF_8.name())}"
+    }
+
     private companion object {
+        const val CATEGORY_PREFIX = "category:"
         val NTK_WEBTOON_GENRES = listOf(
             "1" to "학원", "2" to "액션", "3" to "SF", "4" to "스토리", "5" to "판타지",
             "6" to "BL/백합", "7" to "개그/코미디", "8" to "연애/순정", "9" to "드라마",

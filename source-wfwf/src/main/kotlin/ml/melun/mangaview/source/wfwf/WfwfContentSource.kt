@@ -87,12 +87,15 @@ class WfwfContentSource(
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         if (query.cursor != null) return SourcePage(emptyList())
         val path = catalogPath(query)
-        return SourcePage(parser.search(document(path), ::seriesId))
+        val items = parser.search(document(path), ::seriesId).filter { item ->
+            runCatching { WfwfSeriesKey.decode(item.id).kind }.getOrNull().matches(query.kind)
+        }
+        return SourcePage(items)
     }
 
     override suspend fun genres(kind: SeriesKind): List<SourceGenre> = when (kind) {
-        SeriesKind.WEBTOON -> WFWF_WEBTOON_GENRES.map { SourceGenre(it, it) }
-        SeriesKind.COMIC -> WFWF_COMIC_GENRES.map { SourceGenre(it, it) }
+        SeriesKind.WEBTOON -> WFWF_WEBTOON_GENRES
+        SeriesKind.COMIC -> WFWF_COMIC_GENRES
     }
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> {
@@ -354,17 +357,37 @@ class WfwfContentSource(
     }
 
     private fun catalogPath(query: CatalogQuery): String {
-        val order = if (query.order == CatalogOrder.POPULAR) "f" else "n"
-        val value = when (query.order) {
-            CatalogOrder.NEW -> "new"
-            CatalogOrder.LATEST, CatalogOrder.POPULAR -> "recent"
+        val order = when (query.order) {
+            CatalogOrder.LATEST -> "n"
+            CatalogOrder.NEW -> "r"
+            CatalogOrder.POPULAR -> "f"
         }
-        val base = if (query.kind == SeriesKind.COMIC) "/cm" else "/ing"
-        val type = if (query.genre == null) "day" else "genre"
-        val selected = query.genre?.key ?: value
-        val encoded = URLEncoder.encode(selected, Charset.forName("EUC-KR").name())
-        return "$base?type1=$type&type2=$encoded&o=$order"
+        val route = query.genre?.let(::genreRoute)
+        return when (query.kind) {
+            SeriesKind.COMIC -> {
+                require(route == null || route.first == "t3") { "WFWF comic genre route is invalid" }
+                "/cm?o=$order&pg=1&t3=${encoded(route?.second.orEmpty())}"
+            }
+            SeriesKind.WEBTOON -> {
+                val t2 = route?.takeIf { it.first == "t2" }?.second.orEmpty()
+                val t3 = route?.takeIf { it.first == "t3" }?.second.orEmpty()
+                "/ing?o=$order&pg=1&t1=&t2=${encoded(t2)}&t3=${encoded(t3)}"
+            }
+        }
     }
+
+    private fun genreRoute(genre: SourceGenre): Pair<String, String> {
+        val separator = genre.key.indexOf(':')
+        require(separator > 0 && separator < genre.key.lastIndex) {
+            "WFWF genre key has no provider route"
+        }
+        val parameter = genre.key.substring(0, separator)
+        require(parameter == "t2" || parameter == "t3") { "WFWF genre route is invalid" }
+        return parameter to genre.key.substring(separator + 1)
+    }
+
+    private fun encoded(value: String): String =
+        URLEncoder.encode(value, Charset.forName("EUC-KR").name())
 
     private fun listPagePath(key: WfwfSeriesKey, page: Int): String {
         require(page > 1) { "The first catalog page uses the canonical list URL" }
@@ -387,16 +410,24 @@ class WfwfContentSource(
 
     private companion object {
         val WFWF_WEBTOON_GENRES = listOf(
-            "성인", "드라마", "판타지", "액션", "로맨스", "일상", "개그", "미스터리", "순정",
-            "스포츠", "BL", "스릴러", "무협", "학원", "공포", "스토리", "백합", "요리", "시대",
-            "게임", "음악",
-        )
+            SourceGenre("t2:1", "일반"),
+            SourceGenre("t2:2", "BL"),
+            SourceGenre("t2:3", "성인"),
+        ) + listOf(
+            "드라마", "판타지", "액션", "로맨스", "일상", "개그", "미스터리", "순정", "스포츠",
+            "스릴러", "무협", "학원", "공포", "스토리",
+        ).map { SourceGenre("t3:$it", it) }
         val WFWF_COMIC_GENRES = listOf(
-            "드라마", "액션", "SF", "TS", "개그", "게임", "공포", "도박", "호러", "라노벨",
-            "러브코미디", "로맨스", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러",
-            "스포츠", "시대", "애니화", "판타지", "학원", "BL", "여장", "역사", "요리", "음악",
-            "이세계", "일상", "전생", "추리", "무협",
-        )
+            "액션" to "액션", "판타지" to "판타지", "로맨스" to "로맨스", "드라마" to "드라마",
+            "이세계" to "이세계", "전생" to "전생", "무협" to "무협", "일상" to "일상",
+            "순정" to "순정", "러브코미디" to "러브코미디",
+            "개그" to "개그", "학원" to "학원", "스포츠" to "스포츠", "미스터리" to "미스터리",
+            "추리" to "추리", "스릴러" to "스릴러", "공포" to "공포", "호러" to "호러",
+            "도박" to "도박", "역사" to "역사", "시대" to "시대", "게임" to "게임",
+            "sf" to "SF", "요리" to "요리", "먹방" to "먹방", "음악" to "음악",
+            "라노벨" to "라노벨", "애니화" to "애니화", "bl" to "BL", "백합" to "백합",
+            "성인" to "성인", "붕탁" to "붕탁", "ts" to "TS", "여장" to "여장", "17" to "17",
+        ).map { (wire, label) -> SourceGenre("t3:$wire", label) }
         const val MAX_DOCUMENT_BYTES = 16 * 1_024 * 1_024
         const val PRECONNECT_TIMEOUT_MILLIS = 5_000L
         const val VISIBLE_HEADER_TIMEOUT_MILLIS = 2_500L

@@ -1,9 +1,12 @@
 package ml.melun.mangaview.source.wfwf
 
 import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.Charset
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.source.SourceEpisode
+import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceSeries
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -17,25 +20,46 @@ internal data class WfwfViewerMetadata(
 
 class WfwfHtmlParser {
     fun search(document: Document, sourceSeriesId: (WfwfSeriesKey) -> SeriesId): List<SourceSeries> {
-        val found = linkedMapOf<String, SourceSeries>()
+        val found = linkedMapOf<String, SeriesEvidence>()
         document.select("a[href]").forEach { link ->
             val key = seriesKey(link.attr("href")) ?: return@forEach
-            val title = title(link)
-            val candidate = SourceSeries(
-                id = sourceSeriesId(key),
-                title = title.ifBlank { "#${key.titleId}" },
-                subtitle = subtitle(link),
-                thumbnailKey = imageUrl(link),
+            val context = singleSeriesContext(link, key)
+            val title = directTitle(link) ?: context?.let { contextTitle(it, key) }
+            val image = directImageUrl(link) ?: context?.let { contextImageUrl(it, key) }
+            val subtitle = directSubtitle(link) ?: context?.let(::contextSubtitle)
+            val old = found[key.encode()] ?: SeriesEvidence(key)
+            found[key.encode()] = old.copy(
+                title = old.title ?: title,
+                subtitle = old.subtitle ?: subtitle,
+                thumbnail = old.thumbnail ?: image,
             )
-            val old = found[key.encode()]
-            if (old == null || (old.title.startsWith('#') && title.isNotBlank())) {
-                found[key.encode()] = candidate.copy(thumbnailKey = candidate.thumbnailKey ?: old?.thumbnailKey)
-            } else if (old.thumbnailKey == null && candidate.thumbnailKey != null) {
-                found[key.encode()] = old.copy(thumbnailKey = candidate.thumbnailKey)
-            }
         }
-        return found.values.toList()
+        return found.values.mapNotNull { evidence ->
+            val title = evidence.title ?: return@mapNotNull null
+            SourceSeries(
+                id = sourceSeriesId(evidence.key),
+                title = title,
+                subtitle = evidence.subtitle,
+                thumbnailKey = evidence.thumbnail,
+            )
+        }
     }
+
+    fun genres(document: Document): List<SourceGenre> = document
+        .select("a[href*='t2='], a[href*='t3=']")
+        .mapNotNull { link ->
+            val href = link.attr("href")
+            val parameter = when {
+                queryValue(href, "t2").orEmpty().isNotEmpty() -> "t2"
+                queryValue(href, "t3").orEmpty().isNotEmpty() -> "t3"
+                else -> return@mapNotNull null
+            }
+            val value = queryValue(href, parameter)?.clean()?.takeIf(String::isNotEmpty)
+                ?: return@mapNotNull null
+            val label = link.text().clean().takeIf(String::isNotEmpty) ?: value
+            SourceGenre("$parameter:$value", label)
+        }
+        .distinctBy(SourceGenre::key)
 
     fun episodes(document: Document, seriesId: SeriesId, key: WfwfSeriesKey): List<SourceEpisode> {
         val parsed = linkedMapOf<Long, SourceEpisode>()
@@ -159,21 +183,42 @@ class WfwfHtmlParser {
             listOf("/data/", "/toon/", "/webtoon/", "/comic/").any(lower::contains)
     }
 
-    private fun title(link: Element): String {
+    private fun directTitle(link: Element): String? {
         val own = link.selectFirst(TITLE_SELECTORS)?.text()?.clean().orEmpty()
-        if (own.isNotEmpty()) return own
+        validTitle(own)?.let { return it }
         val imageLabel = link.selectFirst("img")?.let { image ->
             image.attr("alt").clean().ifEmpty { image.attr("title").clean() }
         }.orEmpty()
-        if (imageLabel.isNotEmpty()) return imageLabel
-        link.ownText().clean().takeIf(String::isNotEmpty)?.let { return it }
+        validTitle(imageLabel)?.let { return it }
+        validTitle(link.ownText())?.let { return it }
+        return null
+    }
+
+    private fun singleSeriesContext(link: Element, key: WfwfSeriesKey): Element? {
         var context = link.parent()
-        repeat(3) {
-            val candidate = context?.selectFirst(TITLE_SELECTORS)?.text()?.clean().orEmpty()
-            if (candidate.isNotEmpty()) return candidate
+        repeat(4) {
+            val candidate = context ?: return null
+            val keys = candidate.select("a[href]")
+                .mapNotNull { seriesKey(it.attr("href")) }
+                .distinct()
+            if (keys.isNotEmpty() && keys.all { it == key }) return candidate
             context = context?.parent()
         }
-        return ""
+        return null
+    }
+
+    private fun contextTitle(context: Element, key: WfwfSeriesKey): String? = context
+        .select("a[href]")
+        .asSequence()
+        .filter { seriesKey(it.attr("href")) == key }
+        .mapNotNull(::directTitle)
+        .firstOrNull()
+
+    private fun validTitle(value: String): String? {
+        val clean = value.clean()
+        if (clean.isEmpty() || clean in NON_SERIES_TITLES) return null
+        if (NON_EPISODE_LABELS.any(clean::contains)) return null
+        return clean
     }
 
     private fun episodeTitle(link: Element): String =
@@ -194,31 +239,33 @@ class WfwfHtmlParser {
         (if (Regex("[0-9]+(?:\\.[0-9]+)?\\s*화").containsMatchIn(title)) 2 else 0) +
             (if (title.any(Char::isLetter)) 1 else 0)
 
-    private fun imageUrl(link: Element): String? {
-        var context: Element? = link
-        repeat(4) {
-            context?.selectFirst("img")?.let { image ->
-                IMAGE_ATTRIBUTES.firstNotNullOfOrNull {
-                    image.attr(it).trim().takeIf(String::isNotEmpty)
-                }?.let { return it }
-            }
-            context = context?.parent()
+    private fun directImageUrl(link: Element): String? = link.selectFirst("img")?.let { image ->
+        IMAGE_ATTRIBUTES.firstNotNullOfOrNull {
+            image.attr(it).trim().takeIf(String::isNotEmpty)
         }
-        return null
     }
 
-    private fun subtitle(link: Element): String? {
-        var context: Element? = link
-        repeat(4) {
-            val value = context?.selectFirst(SUBTITLE_SELECTORS)?.text()?.clean().orEmpty()
-            if (value.isNotEmpty()) return value
-            context = context?.parent()
-        }
-        return null
-    }
+    private fun directSubtitle(link: Element): String? =
+        link.selectFirst(SUBTITLE_SELECTORS)?.text()?.clean()?.takeIf(String::isNotEmpty)
+
+    private fun contextImageUrl(context: Element, key: WfwfSeriesKey): String? = context
+        .select("a[href]")
+        .asSequence()
+        .filter { seriesKey(it.attr("href")) == key }
+        .mapNotNull(::directImageUrl)
+        .firstOrNull()
+
+    private fun contextSubtitle(context: Element): String? =
+        context.selectFirst(SUBTITLE_SELECTORS)?.text()?.clean()?.takeIf(String::isNotEmpty)
 
     private fun queryLong(href: String, key: String): Long? = runCatching {
         Regex("(?:[?&])${Regex.escape(key)}=([0-9]+)").find(href)?.groupValues?.get(1)?.toLong()
+    }.getOrNull()
+
+    private fun queryValue(href: String, key: String): String? = runCatching {
+        val raw = Regex("(?:[?&])${Regex.escape(key)}=([^&#]+)")
+            .find(href)?.groupValues?.get(1) ?: return@runCatching null
+        URLDecoder.decode(raw, Charset.forName("EUC-KR").name())
     }.getOrNull()
 
     private fun pathId(href: String): Long? =
@@ -236,10 +283,10 @@ class WfwfHtmlParser {
                 "div.image-view img, div.view-padding img, section.webtoon-body img, " +
                 "div.toon-view img, #toon_img img, #viewer img, article.reader img"
         const val TITLE_SELECTORS =
-            "h1, h2, h3, h4, .title, .subject, .toon-title, .webtoon-title, .item-title, " +
+            "h1, h2, h3, h4, .title, .subject, .t-title, .toon-title, .webtoon-title, .item-title, " +
                 ".post-title, .name, strong, [data-title]"
         const val SUBTITLE_SELECTORS =
-            ".genre, .genres, .author, .writer, .artist, .meta, [data-genre], [data-author]"
+            ".t-genre, .genre, .genres, .author, .writer, .artist, .meta, [data-genre], [data-author]"
         val LAZY_IMAGE_ATTRIBUTES = listOf("data-original", "data-src", "data-lazy-src", "data-url")
         val IMAGE_ATTRIBUTES = LAZY_IMAGE_ATTRIBUTES + "src"
         val BLOCKED_CONTEXT_TOKENS = listOf(
@@ -254,6 +301,16 @@ class WfwfHtmlParser {
         val NON_EPISODE_CONTEXT = listOf(
             "quick-read", "quick_read", "shortcut", "hero-action", "read-action",
         )
+        val NON_SERIES_TITLES = setOf(
+            "업데이트", "최신 업데이트", "전체", "웹툰", "만화", "목록", "더보기",
+        )
         const val MAX_CATALOG_PAGES = 100L
     }
 }
+
+private data class SeriesEvidence(
+    val key: WfwfSeriesKey,
+    val title: String? = null,
+    val subtitle: String? = null,
+    val thumbnail: String? = null,
+)

@@ -66,7 +66,9 @@ internal class LibraryViewModel(
     val state: StateFlow<LibraryState> = mutableState.asStateFlow()
     val effects = effectChannel.receiveAsFlow()
     init {
-        observers.start(viewModelScope, ::update, ::loadHome, ::warmMostLikelyContinuation)
+        observers.start(viewModelScope, ::update, ::loadHome) {
+            mostLikelyContinuation(state.value)?.let(episodeWarmer::warm)
+        }
         loadHome()
     }
     fun accept(intent: LibraryIntent) {
@@ -129,7 +131,7 @@ internal class LibraryViewModel(
     private fun acceptContentAction(intent: LibraryIntent) {
         when (intent) {
             is LibraryIntent.SeriesSelected -> episodes(intent.series)
-            is LibraryIntent.EpisodeSelected -> openEpisode(intent.episodeId, currentSeries())
+            is LibraryIntent.EpisodeSelected -> openEpisode(intent.episodeId, currentSeries(state.value))
             is LibraryIntent.SavedSeriesSelected -> openSavedSeries(intent.series)
             is LibraryIntent.OfflineSeriesSelected -> episodes(intent.series, offlineOnly = true)
             is LibraryIntent.SavedEpisodeSelected -> openSavedPosition(intent.position)
@@ -173,6 +175,7 @@ internal class LibraryViewModel(
             homeTab = HomeTab.HOME,
             genres = GenreContent.Empty,
             selectedGenre = null,
+            genreCatalog = LibraryContent.Empty,
         ) }
         actions.updateSettings { it.copy(sourceKey = sourceId.value) }
         loadHome()
@@ -186,6 +189,7 @@ internal class LibraryViewModel(
             homeTab = HomeTab.HOME,
             genres = GenreContent.Empty,
             selectedGenre = null,
+            genreCatalog = LibraryContent.Empty,
         ) }
         actions.updateSettings { it.copy(seriesKind = kind.ordinal) }
         loadHome()
@@ -193,7 +197,12 @@ internal class LibraryViewModel(
 
     private fun selectHomeTab(tab: HomeTab) {
         update { it.copy(homeTab = tab) }
-        if (tab == HomeTab.GENRES && mutableState.value.genres !is GenreContent.Ready) loadGenres()
+        if (tab == HomeTab.GENRES) {
+            cancelHome()
+            if (mutableState.value.genres !is GenreContent.Ready) loadGenres()
+        } else if (mutableState.value.home !is HomeContent.Ready) {
+            loadHome()
+        }
     }
 
     private fun loadHome() {
@@ -207,7 +216,7 @@ internal class LibraryViewModel(
                 val result = withContext(ioDispatcher) { homeCatalogs(source, snapshot.homeKind) }
                 if (version == homeVersion) {
                     update { it.copy(home = result) }
-                    warmMostLikelyContinuation()
+                    mostLikelyContinuation(state.value)?.let(episodeWarmer::warm)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -217,16 +226,6 @@ internal class LibraryViewModel(
                 }
             }
         }
-    }
-
-    private suspend fun homeCatalogs(
-        source: ContentSource,
-        kind: ml.melun.mangaview.source.SeriesKind,
-    ): HomeContent.Ready = coroutineScope {
-        val popular = async { source.catalog(CatalogQuery(kind, CatalogOrder.POPULAR)).items }
-        val latest = async { source.catalog(CatalogQuery(kind, CatalogOrder.LATEST)).items }
-        val new = async { source.catalog(CatalogQuery(kind, CatalogOrder.NEW)).items }
-        HomeContent.Ready(popular.await(), latest.await(), new.await())
     }
 
     private fun loadGenres() {
@@ -254,25 +253,39 @@ internal class LibraryViewModel(
     }
 
     private fun loadGenre(genre: ml.melun.mangaview.source.SourceGenre) {
-        homeJob?.cancel()
+        cancelHome()
+        cancelContent()
         val snapshot = mutableState.value
-        val version = ++homeVersion
-        update { it.copy(homeTab = HomeTab.GENRES, selectedGenre = genre, home = HomeContent.Loading) }
-        homeJob = viewModelScope.launch {
+        val version = ++contentVersion
+        update { it.copy(
+            homeTab = HomeTab.GENRES,
+            selectedGenre = genre,
+            genreCatalog = LibraryContent.Loading,
+        ) }
+        contentJob = viewModelScope.launch {
             try {
                 val items = withContext(ioDispatcher) {
                     sourceRegistry.require(snapshot.selectedSourceId).catalog(
                         CatalogQuery(snapshot.homeKind, CatalogOrder.LATEST, genre),
                     ).items
                 }
-                if (version == homeVersion) update {
-                    it.copy(home = HomeContent.Ready(items, items, items))
+                if (version == contentVersion) update {
+                    it.copy(
+                        genreCatalog = if (items.isEmpty()) {
+                            LibraryContent.Failure("${genre.label} 장르에 등록된 작품이 없습니다")
+                        } else {
+                            LibraryContent.Series(items)
+                        },
+                        lastSeries = items,
+                    )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                if (version == homeVersion) update {
-                    it.copy(home = HomeContent.Failure(failure.message ?: "장르 목록을 불러오지 못했습니다"))
+                if (version == contentVersion) update {
+                    it.copy(genreCatalog = LibraryContent.Failure(
+                        failure.message ?: "장르 작품을 불러오지 못했습니다",
+                    ))
                 }
             }
         }
@@ -308,7 +321,7 @@ internal class LibraryViewModel(
             },
             success = { result: List<SourceEpisode> ->
                 update { it.copy(content = LibraryContent.Episodes(series, result)) }
-                preferredEpisode(series, result)?.let(episodeWarmer::warm)
+                preferredEpisode(state.value, series, result)?.let(episodeWarmer::warm)
             },
             failureMessage = "회차를 불러오지 못했습니다",
         )
@@ -367,6 +380,11 @@ internal class LibraryViewModel(
                 downloadSelectionVisible = false,
                 content = if (series.isEmpty()) LibraryContent.Empty else LibraryContent.Series(series),
             ) }
+            return
+        }
+        if (state.value.selectedGenre != null) {
+            cancelContent()
+            update { it.copy(selectedGenre = null, genreCatalog = LibraryContent.Empty) }
         }
     }
 
@@ -393,41 +411,51 @@ internal class LibraryViewModel(
         effectChannel.trySend(LibraryEffect.OpenEpisode(position.pageId.episodeId, position))
     }
 
-    private fun currentSeries(): SourceSeries =
-        state.value.activeSeries
-            ?: error("Episode selection requires an active series")
-
-    private fun preferredEpisode(
-        series: SourceSeries,
-        episodes: List<SourceEpisode>,
-    ): EpisodeId? {
-        val recent = state.value.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
-        return episodes.firstOrNull { it.id == recent }?.id ?: firstEpisode(episodes)?.id
-    }
-
-    private fun warmMostLikelyContinuation() {
-        val snapshot = state.value
-        if (snapshot.destination != MainDestination.HOME) return
-        snapshot.saved.recent.firstOrNull {
-            it.series.id.sourceId == snapshot.selectedSourceId
-        }?.episodeId?.let(episodeWarmer::warm)
-    }
-
     private fun cancelContent() {
         contentVersion += 1L
         contentJob?.cancel()
         contentJob = null
     }
 
-    private fun cancelGenres() {
-        genreJob?.cancel()
-        genreJob = null
+    private fun cancelHome() {
+        homeVersion += 1L
+        homeJob?.cancel()
+        homeJob = null
     }
+
+    private fun cancelGenres() = genreJob?.cancel().also { genreJob = null }
 
     private fun update(transform: (LibraryState) -> LibraryState) {
         mutableState.value = transform(mutableState.value)
     }
 
+}
+
+private suspend fun homeCatalogs(source: ContentSource, kind: SeriesKind): HomeContent.Ready =
+    coroutineScope {
+        val popular = async { source.catalog(CatalogQuery(kind, CatalogOrder.POPULAR)).items }
+        val latest = async { source.catalog(CatalogQuery(kind, CatalogOrder.LATEST)).items }
+        val new = async { source.catalog(CatalogQuery(kind, CatalogOrder.NEW)).items }
+        HomeContent.Ready(popular.await(), latest.await(), new.await())
+    }
+
+private fun currentSeries(state: LibraryState): SourceSeries =
+    state.activeSeries ?: error("Episode selection requires an active series")
+
+private fun preferredEpisode(
+    state: LibraryState,
+    series: SourceSeries,
+    episodes: List<SourceEpisode>,
+): EpisodeId? {
+    val recent = state.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
+    return episodes.firstOrNull { it.id == recent }?.id ?: firstEpisode(episodes)?.id
+}
+
+private fun mostLikelyContinuation(state: LibraryState): EpisodeId? {
+    if (state.destination != MainDestination.HOME) return null
+    return state.saved.recent.firstOrNull {
+        it.series.id.sourceId == state.selectedSourceId
+    }?.episodeId
 }
 
 private fun initialLibraryState(sourceRegistry: SourceRegistry): LibraryState {

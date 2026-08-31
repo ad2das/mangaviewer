@@ -41,6 +41,7 @@ internal object NtkBrowserCaptureScript {
           };
           const captureManifest = (response, requestPath, identityPromise) => {
             Promise.all([response.clone().json(), identityPromise]).then(([payload, identity]) => {
+              const images = Array.isArray(payload?.images) ? payload.images : [];
               if (response.ok && payload?.ok === true && Array.isArray(payload.images)) {
                 window.NtkNativeManifest.onImages(
                   location.origin,
@@ -55,11 +56,15 @@ internal object NtkBrowserCaptureScript {
                     requestWorkId: identity?.workId || '',
                     requestEpisodeId: identity?.episodeId || '',
                     requestToken: identity?.token || '',
-                    images: payload.images
+                    images
                   })
                 );
               }
-            }).catch(() => {});
+            }).catch(error => report(
+              'manifest-capture-failed:' + String(error?.name || 'Error') + ':' +
+                String(error?.message || error || '').slice(0, 96),
+              response.status
+            ));
           };
           const reportAuthorizationShape = (response, requestPath) => {
             response.clone().json().then(payload => {

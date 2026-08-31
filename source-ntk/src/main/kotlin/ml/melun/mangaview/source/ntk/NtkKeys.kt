@@ -13,13 +13,13 @@ data class NtkSeriesKey(
     val workKey: String,
 ) {
     init {
-        require(workKey.matches(Regex("[A-Za-z0-9_-]{1,160}"))) { "Invalid NTK work key" }
+        require(workKey.matches(WORK_KEY)) { "Invalid NTK work key" }
     }
 
     fun path(): String = "/${kind.pathSegment}/$workKey"
 
     fun episodePath(episodeKey: String): String {
-        require(episodeKey.matches(Regex("[A-Za-z0-9_.-]{1,200}"))) { "Invalid NTK episode key" }
+        require(episodeKey.matches(EPISODE_KEY)) { "Invalid NTK episode key" }
         return "${path()}/$episodeKey"
     }
 
@@ -38,6 +38,8 @@ data class NtkSeriesKey(
             return episodeId.remoteKey.removePrefix(prefix).also { seriesKey.episodePath(it) }
         }
 
-        private val SERIES_PATH = Regex("^/(manhwa|webtoon)/([A-Za-z0-9_-]{1,160})$")
+        private val WORK_KEY = Regex("[\\p{L}\\p{N}_-]{1,160}")
+        private val EPISODE_KEY = Regex("[\\p{L}\\p{N}_.-]{1,200}")
+        private val SERIES_PATH = Regex("^/(manhwa|webtoon)/([\\p{L}\\p{N}_-]{1,160})$")
     }
 }

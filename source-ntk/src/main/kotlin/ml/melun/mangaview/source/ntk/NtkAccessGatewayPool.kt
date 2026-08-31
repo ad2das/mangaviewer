@@ -75,6 +75,11 @@ class NtkAccessGatewayPool(
         }
     }
 
+    override fun manifestResolutionFinished(origin: String, episodePath: String) {
+        val key = runCatching { validatedKey(origin, episodePath) }.getOrNull() ?: return
+        release(key)
+    }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         lanes.forEach(NtkAccessGateway::close)

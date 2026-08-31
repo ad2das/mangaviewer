@@ -19,6 +19,25 @@ import org.junit.Test
 
 class NtkContentSourceTest {
     @Test
+    fun adultAndYuriGenresAreImmediateAndUseProviderKeys() = runTest {
+        val transport = NtkQueueTransport()
+        val source = NtkContentSource(
+            NtkConfig("https://ntk.test", "agent"),
+            transport,
+            RecordingGateway(emptyList()),
+        )
+
+        val webtoon = source.genres(SeriesKind.WEBTOON)
+        val comic = source.genres(SeriesKind.COMIC)
+
+        assertTrue(webtoon.any { it.key == "category:adult" && it.label == "성인" })
+        assertTrue(webtoon.any { it.key == "category:bl" && it.label == "BL/백합" })
+        assertTrue(comic.any { it.key == "17" && it.label == "성인" })
+        assertTrue(comic.any { it.key == "백합" && it.label == "백합" })
+        assertTrue(transport.requests.isEmpty())
+    }
+
+    @Test
     fun authorSearchUsesAuthorFieldAndHonorsContentKind() = runTest {
         val html = """
             <a href="/manhwa/11"><h3>만화 결과</h3></a>

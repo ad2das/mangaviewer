@@ -56,6 +56,45 @@ class NtkDocumentParserTest {
         assertEquals("/webtoon/60914825", result.series.single().id.remoteKey)
         assertEquals("소년", result.series.single().subtitle)
         assertEquals("https://cdn.example/cover.jpg", result.series.single().thumbnailKey)
+        assertTrue(result.recognized)
+    }
+
+    @Test
+    fun catalogApiNeverPromotesNestedUpdateMetadataToAWork() {
+        val json = """{
+          "works":[{"sourceWorkId":"42","title":"정확한 작품"}],
+          "updates":[{"id":"999","name":"업데이트","title":"업데이트"}],
+          "total":1
+        }""".trimIndent()
+
+        val result = parser.searchApi(json, sourceId, NtkKind.WEBTOON)
+
+        assertEquals(listOf("정확한 작품"), result.series.map { it.title })
+        assertEquals(listOf("/webtoon/42"), result.series.map { it.id.remoteKey })
+    }
+
+    @Test
+    fun htmlCatalogUsesInitialWorksAndRejectsNavigationCards() {
+        val html = """
+            <a href="/webtoon/999"><strong>업데이트</strong></a>
+            <script>{"initialWorks":[{"sourceWorkId":"42","title":"실제 성인 작품",
+              "thumbnailUrl":"https://cdn.example/42.jpg"}],"initialHasMore":false}</script>
+        """.trimIndent()
+
+        val result = parser.searchHtml(html, sourceId, NtkKind.WEBTOON)
+
+        assertEquals(listOf("실제 성인 작품"), result.map { it.title })
+        assertEquals(listOf("/webtoon/42"), result.map { it.id.remoteKey })
+    }
+
+    @Test
+    fun currentUnicodeProviderSlugsRemainStableSeriesKeys() {
+        val json = """{"works":[{"sourceWorkId":"복학생-네이버","title":"복학생"}],"total":1}"""
+
+        val result = parser.searchApi(json, sourceId, NtkKind.WEBTOON)
+
+        assertEquals("/webtoon/복학생-네이버", result.series.single().id.remoteKey)
+        assertEquals("복학생-네이버", NtkSeriesKey.decode(result.series.single().id).workKey)
     }
 
     @Test

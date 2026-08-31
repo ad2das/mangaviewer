@@ -53,6 +53,13 @@ interface NtkAccessGateway : Closeable {
         descriptor: NtkViewerDescriptor,
     ) = Unit
 
+    /**
+     * Releases the exclusive manifest-preparation lease while retaining any browser state for
+     * [awaitAuthorization]. Direct manifests never call [resolve], so without this boundary they
+     * could occupy the pool forever even though document parsing had already finished.
+     */
+    fun manifestResolutionFinished(origin: String, episodePath: String) = Unit
+
     /** Releases provider browser work once the direct page path has proved usable. */
     fun pageAccessEstablished(origin: String, episodePath: String) = Unit
 

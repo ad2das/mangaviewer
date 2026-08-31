@@ -55,6 +55,22 @@ class NtkAccessGatewayPoolTest {
         pool.close()
     }
 
+    @Test
+    fun directManifestCompletionReleasesItsLeaseButKeepsAuthorizationResident() = runTest {
+        val lane = PoolLane()
+        val pool = NtkAccessGatewayPool(listOf(lane))
+        val direct = "/manhwa/1/direct"
+        val following = "/manhwa/2/following"
+
+        pool.prepare(ORIGIN, direct, PreparationIntent.INITIAL_VIEW)
+        pool.manifestResolutionFinished(ORIGIN, direct)
+        assertTrue(pool.awaitAuthorization(ORIGIN, direct))
+
+        pool.prepare(ORIGIN, following, PreparationIntent.INITIAL_VIEW)
+        assertEquals(listOf(direct, following), lane.prepared)
+        pool.manifestResolutionFinished(ORIGIN, following)
+    }
+
     private fun document(path: String) = NtkEpisodeDocument(
         origin = ORIGIN,
         path = path,
