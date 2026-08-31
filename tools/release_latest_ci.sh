@@ -4,26 +4,20 @@ set -euo pipefail
 repo="${REPO_NAME:-${GITHUB_REPOSITORY:-ad2das/mangaviewer}}"
 release_tag="${RELEASE_TAG:-main-latest}"
 target_branch="${GITHUB_REF_NAME:-main}"
-ci_release_patch_floor="${CI_RELEASE_PATCH_FLOOR:-1000000}"
-run_number="${GITHUB_RUN_NUMBER:-0}"
 
-patch_base="$(sed -nE 's/^[[:space:]]*def defaultReleasePatch = ([0-9]+).*$/\1/p' app/build.gradle | head -n 1)"
-if [ -z "${patch_base}" ]; then
-  echo "Could not find defaultReleasePatch in app/build.gradle" >&2
+version_code="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]+([0-9]+).*$/\1/p' app/build.gradle | head -n 1)"
+version_name="$(sed -nE "s/^[[:space:]]*versionName[[:space:]]+'([^']+)'.*$/\1/p" app/build.gradle | head -n 1)"
+if [ -z "${version_code}" ] || [ -z "${version_name}" ]; then
+  echo "Could not read versionCode/versionName from app/build.gradle" >&2
   exit 1
 fi
 
-release_patch="${RELEASE_PATCH:-$((patch_base + ci_release_patch_floor + run_number))}"
-date_code="$(date +%y%m%d)"
-version_code="$((2112000000 + 10#${date_code} + release_patch))"
 apk_name="mangaViewer_${version_code}-debug.apk"
 apk_path="app/build/outputs/apk/debug/${apk_name}"
 download_url="https://github.com/${repo}/releases/download/${release_tag}/${apk_name}"
 
-version_name="4.6-${version_code}"
-
-echo "releasePatchBase=${patch_base} ciFloor=${ci_release_patch_floor} runNumber=${run_number} releasePatch=${release_patch}"
 echo "versionCode=${version_code}"
+echo "versionName=${version_name}"
 echo "apk=${apk_name}"
 
 VERSION_CODE="${version_code}" DOWNLOAD_URL="${download_url}" python3 - <<'PY'

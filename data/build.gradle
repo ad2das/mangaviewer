@@ -1,0 +1,48 @@
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'kotlin-kapt'
+
+kapt {
+    arguments {
+        arg('room.schemaLocation', "$projectDir/schemas")
+    }
+}
+
+android {
+    namespace 'ml.melun.mangaview.data'
+    compileSdkVersion 36
+
+    defaultConfig {
+        minSdkVersion 24
+        targetSdkVersion 33
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    api project(':core')
+    implementation project(':source-api')
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'androidx.room:room-runtime:2.6.1'
+    implementation 'androidx.room:room-ktx:2.6.1'
+    kapt 'androidx.room:room-compiler:2.6.1'
+    implementation 'androidx.datastore:datastore-preferences:1.1.1'
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+    implementation 'androidx.annotation:annotation:1.9.1'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0'
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+}

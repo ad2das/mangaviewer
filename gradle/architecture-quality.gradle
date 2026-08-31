@@ -1,0 +1,441 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
+import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+
+abstract class ArchitectureQualityTask extends DefaultTask {
+    @InputFiles
+    @PathSensitive(PathSensitivity.RELATIVE)
+    abstract ConfigurableFileCollection getProductionSources()
+
+    @TaskAction
+    void verify() {
+        List<String> violations = []
+        productionSources.files.sort { it.path }.each { File source ->
+            violations.addAll(ArchitectureQualityScanner.inspect(project.rootDir, source))
+        }
+        if (!violations.isEmpty()) {
+            String report = violations.collect { "  - ${it}" }.join(System.lineSeparator())
+            throw new GradleException("Architecture quality gate failed:\n${report}")
+        }
+        logger.lifecycle("Architecture quality gate passed (${productionSources.files.size()} files)")
+    }
+}
+
+final class ArchitectureQualityScanner {
+    private static final int FILE_LINE_LIMIT = 800
+    private static final int CLASS_LINE_LIMIT = 400
+    private static final int FUNCTION_LINE_LIMIT = 60
+    private static final int COMPLEXITY_LIMIT = 15
+    private static final Set<String> CONTROL_WORDS = [
+        'if', 'for', 'while', 'switch', 'catch', 'when', 'synchronized', 'return', 'new', 'throw'
+    ] as Set
+    private static final java.util.regex.Pattern KOTLIN_FUNCTION = java.util.regex.Pattern.compile(
+        '(?m)^[ \\t]*(?:(?:public|private|protected|internal|open|final|abstract|override|suspend|' +
+            'inline|tailrec|operator|infix|external|actual|expect)\\s+)*fun\\s+(?:<[^>\\n]+>\\s*)?' +
+            '(?:[A-Za-z_][A-Za-z0-9_?.<>, ]*\\.)?([A-Za-z_][A-Za-z0-9_]*)\\s*\\('
+    )
+    private static final java.util.regex.Pattern JAVA_FUNCTION = java.util.regex.Pattern.compile(
+        '(?m)^[ \\t]*(?:(?:public|private|protected|static|final|abstract|synchronized|native|' +
+            'strictfp|default)\\s+)*(?:<[^>\\n]+>\\s*)?[A-Za-z_$][A-Za-z0-9_$.<>,?\\[\\] ]*\\s+' +
+            '([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\('
+    )
+    private static final java.util.regex.Pattern CLASS_DECLARATION = java.util.regex.Pattern.compile(
+        '(?m)^[ \\t]*(?:(?:public|private|protected|internal|open|final|abstract|sealed|data|value|' +
+            'annotation|actual|expect)\\s+)*(?:enum\\s+class|class|interface|object|struct)\\s+' +
+            '([A-Za-z_][A-Za-z0-9_]*)\\b'
+    )
+
+    static List<String> inspect(File root, File file) {
+        String relative = root.toPath().relativize(file.toPath()).toString().replace('\\', '/')
+        String original = file.getText('UTF-8')
+        String masked = maskNonCode(original)
+        int[] lineStarts = lineStarts(original)
+        List<String> violations = []
+        int fileLines = lineStarts.length
+        if (fileLines > FILE_LINE_LIMIT) {
+            violations << "${relative}:1 file has ${fileLines} lines (maximum ${FILE_LINE_LIMIT})"
+        }
+        Map<Integer, Integer> braces = matchingBraces(masked, relative)
+        List<CodeScope> functions = functions(masked, lineStarts, braces, file.name)
+        List<CodeScope> classes = declarations(masked, lineStarts, braces, CLASS_DECLARATION, 1)
+        classes.each { scope ->
+            if (scope.lines > CLASS_LINE_LIMIT) {
+                violations << "${relative}:${scope.startLine} class ${scope.name} has ${scope.lines} lines " +
+                    "(maximum ${CLASS_LINE_LIMIT})"
+            }
+        }
+        functions.each { scope ->
+            if (scope.lines > FUNCTION_LINE_LIMIT) {
+                violations << "${relative}:${scope.startLine} function ${scope.name} has ${scope.lines} lines " +
+                    "(maximum ${FUNCTION_LINE_LIMIT})"
+            }
+            String body = masked.substring(scope.bodyStart, scope.bodyEnd + 1)
+            int complexity = complexity(body, file.name.endsWith('.kt'))
+            if (complexity > COMPLEXITY_LIMIT) {
+                violations << "${relative}:${scope.startLine} function ${scope.name} has cyclomatic " +
+                    "complexity ${complexity} (maximum ${COMPLEXITY_LIMIT})"
+            }
+            if (repeatsPostDelayed(body, scope.name)) {
+                violations << "${relative}:${scope.startLine} function ${scope.name} schedules a repeating " +
+                    'Handler.postDelayed loop'
+            }
+            if (isAndroidMainThreadFunction(relative, scope, masked, lineStarts) &&
+                containsBlockingIo(body)) {
+                violations << "${relative}:${scope.startLine} Android main-thread callback ${scope.name} " +
+                    'contains blocking I/O'
+            }
+        }
+        eachMatch(masked, java.util.regex.Pattern.compile('\\bThread\\s*\\.\\s*sleep\\s*\\(')) { start, ignored ->
+            violations << "${relative}:${lineOf(lineStarts, start)} Thread.sleep is forbidden"
+        }
+        return violations
+    }
+
+    private static List<CodeScope> functions(
+        String code,
+        int[] starts,
+        Map<Integer, Integer> braces,
+        String fileName
+    ) {
+        if (fileName.endsWith('.kt')) {
+            return declarations(code, starts, braces, KOTLIN_FUNCTION, 1)
+        }
+        if (fileName.endsWith('.java')) {
+            return declarations(code, starts, braces, JAVA_FUNCTION, 1)
+        }
+        return cppFunctions(code, starts, braces)
+    }
+
+    private static List<CodeScope> declarations(
+        String code,
+        int[] starts,
+        Map<Integer, Integer> braces,
+        java.util.regex.Pattern pattern,
+        int nameGroup
+    ) {
+        List<CodeScope> result = []
+        def matcher = pattern.matcher(code)
+        while (matcher.find()) {
+            int bodyStart = bodyAfterDeclaration(code, matcher.end())
+            Integer bodyEnd = bodyStart >= 0 ? braces[bodyStart] : null
+            if (bodyEnd == null) continue
+            result << new CodeScope(
+                matcher.group(nameGroup),
+                bodyStart,
+                bodyEnd,
+                lineOf(starts, matcher.start()),
+                lineOf(starts, bodyEnd) - lineOf(starts, matcher.start()) + 1
+            )
+        }
+        return result
+    }
+
+    private static int bodyAfterDeclaration(String code, int from) {
+        int parentheses = 0
+        int brackets = 0
+        for (int index = from; index < code.length(); index++) {
+            char c = code.charAt(index)
+            if (c == '(' as char) parentheses++
+            else if (c == ')' as char) parentheses = Math.max(0, parentheses - 1)
+            else if (c == '[' as char) brackets++
+            else if (c == ']' as char) brackets = Math.max(0, brackets - 1)
+            else if (parentheses == 0 && brackets == 0 && c == '{' as char) return index
+            else if (parentheses == 0 && brackets == 0 &&
+                (c == '=' as char || c == ';' as char || c == '}' as char)) return -1
+            if (parentheses == 0 && brackets == 0 && c == '\n' as char) {
+                String remaining = code.substring(index + 1)
+                def next = java.util.regex.Pattern.compile(
+                    '^[ \\t]*(?:(?:public|private|protected|internal|open|final|abstract|sealed|data|' +
+                        'override|suspend|inline|actual|expect)\\s+)*(?:fun|class|interface|object|struct)\\b'
+                )
+                    .matcher(remaining)
+                if (next.find()) return -1
+            }
+        }
+        return -1
+    }
+
+    private static List<CodeScope> cppFunctions(
+        String code,
+        int[] starts,
+        Map<Integer, Integer> braces
+    ) {
+        List<CodeScope> result = []
+        def matcher = java.util.regex.Pattern.compile('([A-Za-z_~][A-Za-z0-9_]*)\\s*\\(').matcher(code)
+        while (matcher.find()) {
+            String name = matcher.group(1)
+            if (CONTROL_WORDS.contains(name)) continue
+            int lineStart = code.lastIndexOf('\n', matcher.start()) + 1
+            String prefix = code.substring(lineStart, matcher.start())
+            if (prefix.contains('.') || prefix.contains('->') || prefix.contains('=')) continue
+            int closeParen = matchingDelimiter(code, matcher.end() - 1, '(' as char, ')' as char)
+            if (closeParen < 0) continue
+            int bodyStart = cppBodyStart(code, closeParen + 1)
+            Integer bodyEnd = bodyStart >= 0 ? braces[bodyStart] : null
+            if (bodyEnd == null) continue
+            int declarationStart = lineStart
+            if (prefix.trim().isEmpty()) {
+                declarationStart = code.lastIndexOf('\n', Math.max(0, lineStart - 2)) + 1
+            }
+            result << new CodeScope(
+                name,
+                bodyStart,
+                bodyEnd,
+                lineOf(starts, declarationStart),
+                lineOf(starts, bodyEnd) - lineOf(starts, declarationStart) + 1
+            )
+            matcher.region(bodyEnd + 1, code.length())
+        }
+        return result
+    }
+
+    private static int cppBodyStart(String code, int from) {
+        int index = from
+        while (index < code.length()) {
+            char c = code.charAt(index)
+            if (c == '{' as char) return index
+            if (c == ';' as char || c == '=' as char) return -1
+            if (c == '\n' as char) {
+                String next = code.substring(index + 1, Math.min(code.length(), index + 120)).trim()
+                if (next.startsWith('#')) return -1
+            }
+            index++
+        }
+        return -1
+    }
+
+    private static int complexity(String body, boolean kotlin) {
+        int score = 1
+        score += matchCount(body, java.util.regex.Pattern.compile('\\b(?:if|for|while|catch|case)\\b'))
+        score += matchCount(body, java.util.regex.Pattern.compile('&&|\\|\\|'))
+        if (kotlin) {
+            def branches = java.util.regex.Pattern.compile('(?m)^\\s*(?!else\\s*->)[^\\n{]+->').matcher(body)
+            while (branches.find()) score++
+        } else {
+            score += matchCount(body, java.util.regex.Pattern.compile('\\?(?![.?:])'))
+        }
+        return score
+    }
+
+    private static boolean repeatsPostDelayed(String body, String functionName) {
+        if (!java.util.regex.Pattern.compile('\\bpostDelayed\\s*\\(').matcher(body).find()) return false
+        if (matchCount(body, java.util.regex.Pattern.compile('\\bpostDelayed\\s*\\(')) > 1) return true
+        if (java.util.regex.Pattern.compile('\\bpostDelayed\\s*\\(\\s*this\\b').matcher(body).find()) return true
+        if (java.util.regex.Pattern.compile('\\b(?:while|for)\\s*\\(').matcher(body).find()) return true
+        return java.util.regex.Pattern.compile('\\b' + java.util.regex.Pattern.quote(functionName) + '\\s*\\(')
+            .matcher(body.substring(1)).find()
+    }
+
+    private static boolean isAndroidMainThreadFunction(
+        String path,
+        CodeScope scope,
+        String source,
+        int[] starts
+    ) {
+        if (!path.startsWith('app/src/main/java/')) return false
+        int annotationStart = starts[Math.max(0, scope.startLine - 4)]
+        String declaration = source.substring(annotationStart, scope.bodyStart)
+        return declaration.contains('@MainThread') ||
+            scope.name ==~ /on(Create|Start|Resume|Pause|Stop|Destroy|Terminate|TouchEvent|Draw|Measure|Layout|Click)/ ||
+            scope.name ==~ /surface(Created|Changed|Destroyed|RedrawNeeded)/
+    }
+
+    private static boolean containsBlockingIo(String body) {
+        return java.util.regex.Pattern.compile(
+            '\\b(?:FileInputStream|FileOutputStream|RandomAccessFile|Socket)\\s*\\(|' +
+                '\\.(?:readBytes|writeBytes|readText|writeText|inputStream|outputStream|delete|mkdirs|' +
+                'listFiles|canonicalFile)\\b|\\bRoom\\s*\\.\\s*databaseBuilder\\s*\\(|' +
+                '\\b(?:getSharedPreferences|deleteDatabase)\\s*\\('
+        ).matcher(body).find()
+    }
+
+    private static int matchingDelimiter(String code, int open, char left, char right) {
+        int depth = 0
+        for (int index = open; index < code.length(); index++) {
+            char c = code.charAt(index)
+            if (c == left) depth++
+            else if (c == right && --depth == 0) return index
+        }
+        return -1
+    }
+
+    private static Map<Integer, Integer> matchingBraces(String code, String path) {
+        ArrayDeque<Integer> stack = new ArrayDeque<>()
+        Map<Integer, Integer> result = [:]
+        for (int index = 0; index < code.length(); index++) {
+            char c = code.charAt(index)
+            if (c == '{' as char) stack.push(index)
+            else if (c == '}' as char) {
+                if (stack.isEmpty()) throw new GradleException("Unbalanced closing brace in ${path}")
+                result[stack.pop()] = index
+            }
+        }
+        if (!stack.isEmpty()) throw new GradleException("Unbalanced opening brace in ${path}")
+        return result
+    }
+
+    private static String maskNonCode(String source) {
+        char[] output = source.toCharArray()
+        int index = 0
+        while (index < output.length) {
+            if (startsWith(source, index, '//')) {
+                index = maskUntilLineEnd(output, index)
+            } else if (startsWith(source, index, '/*')) {
+                index = maskBlockComment(source, output, index)
+            } else if (startsWith(source, index, '\"\"\"')) {
+                index = maskQuoted(source, output, index, '\"\"\"')
+            } else if (startsWith(source, index, 'R\"')) {
+                index = maskCppRawString(source, output, index)
+            } else if (source.charAt(index) == '\"' as char || source.charAt(index) == '\'' as char) {
+                index = maskEscapedQuote(source, output, index, source.charAt(index))
+            } else {
+                index++
+            }
+        }
+        return new String(output)
+    }
+
+    private static int maskUntilLineEnd(char[] output, int start) {
+        int index = start
+        while (index < output.length && output[index] != '\n' as char) output[index++] = ' ' as char
+        return index
+    }
+
+    private static int maskBlockComment(String source, char[] output, int start) {
+        int depth = 1
+        int index = start + 2
+        while (index < source.length() && depth > 0) {
+            if (startsWith(source, index, '/*')) {
+                depth++
+                index += 2
+            } else if (startsWith(source, index, '*/')) {
+                depth--
+                index += 2
+            } else {
+                index++
+            }
+        }
+        return maskRange(output, start, index)
+    }
+
+    private static int maskCppRawString(String source, char[] output, int start) {
+        int delimiterEnd = source.indexOf('(', start + 2)
+        if (delimiterEnd < 0 || delimiterEnd - start > 18) return start + 1
+        String delimiter = source.substring(start + 2, delimiterEnd)
+        String terminator = ')' + delimiter + '"'
+        int end = source.indexOf(terminator, delimiterEnd + 1)
+        if (end < 0) return maskRange(output, start, output.length)
+        return maskRange(output, start, end + terminator.length())
+    }
+
+    private static int maskQuoted(String source, char[] output, int start, String delimiter) {
+        int end = source.indexOf(delimiter, start + delimiter.length())
+        if (end < 0) end = source.length() - delimiter.length()
+        return maskRange(output, start, Math.min(output.length, end + delimiter.length()))
+    }
+
+    private static int maskEscapedQuote(String source, char[] output, int start, char quote) {
+        int index = start + 1
+        boolean escaped = false
+        while (index < output.length) {
+            char current = source.charAt(index)
+            if (!escaped && current == quote) return maskRange(output, start, index + 1)
+            if (current == '\n' as char && quote == '\'' as char) return maskRange(output, start, index)
+            escaped = !escaped && current == '\\' as char
+            if (current != '\\' as char) escaped = false
+            index++
+        }
+        return maskRange(output, start, output.length)
+    }
+
+    private static int maskRange(char[] output, int start, int end) {
+        for (int index = start; index < end; index++) {
+            if (output[index] != '\n' as char && output[index] != '\r' as char) output[index] = ' ' as char
+        }
+        return end
+    }
+
+    private static boolean startsWith(String source, int offset, String value) {
+        return offset + value.length() <= source.length() && source.regionMatches(offset, value, 0, value.length())
+    }
+
+    private static int[] lineStarts(String source) {
+        List<Integer> starts = [0]
+        for (int index = 0; index < source.length(); index++) {
+            if (source.charAt(index) == '\n' as char && index + 1 < source.length()) starts << index + 1
+        }
+        return starts as int[]
+    }
+
+    private static int lineOf(int[] starts, int offset) {
+        int found = Arrays.binarySearch(starts, offset)
+        if (found >= 0) return found + 1
+        return -found - 1
+    }
+
+    private static int matchCount(String source, java.util.regex.Pattern pattern) {
+        int count = 0
+        def matcher = pattern.matcher(source)
+        while (matcher.find()) count++
+        return count
+    }
+
+    private static void eachMatch(
+        String source,
+        java.util.regex.Pattern pattern,
+        Closure<?> consumer
+    ) {
+        def matcher = pattern.matcher(source)
+        while (matcher.find()) consumer.call(matcher.start(), matcher.group())
+    }
+
+    private static final class CodeScope {
+        final String name
+        final int bodyStart
+        final int bodyEnd
+        final int startLine
+        final int lines
+
+        CodeScope(String name, int bodyStart, int bodyEnd, int startLine, int lines) {
+            this.name = name
+            this.bodyStart = bodyStart
+            this.bodyEnd = bodyEnd
+            this.startLine = startLine
+            this.lines = lines
+        }
+    }
+}
+
+def productionRoots = [
+    'core/src/main',
+    'source-api/src/main',
+    'source-ntk/src/main',
+    'source-wfwf/src/main',
+    'data/src/main',
+    'viewer/src/main',
+    'app/src/main/java',
+    'app/src/main/cpp',
+]
+
+def productionFiles = files(productionRoots.collect { root ->
+    fileTree(root) {
+        include '**/*.kt', '**/*.java', '**/*.cpp', '**/*.cc', '**/*.cxx', '**/*.h', '**/*.hpp'
+        exclude '**/build/**', '**/generated/**'
+    }
+})
+
+def architectureQuality = tasks.register('verifyArchitectureQuality', ArchitectureQualityTask) {
+    group = 'verification'
+    description = 'Checks production source size, complexity, and forbidden runtime patterns.'
+    productionSources.from(productionFiles)
+}
+
+subprojects { child ->
+    child.tasks.matching { task -> task.name == 'check' || task.name.startsWith('lint') }.configureEach {
+        dependsOn architectureQuality
+    }
+}

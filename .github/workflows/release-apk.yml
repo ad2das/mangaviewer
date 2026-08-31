@@ -38,7 +38,6 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TZ: Asia/Seoul
-      CI_RELEASE_PATCH_FLOOR: 1000000
       SYNC_RELEASE_METADATA_TO_BRANCH: "false"
     steps:
       - name: Checkout
@@ -50,12 +49,16 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /app/
+            /core/
+            /data/
+            /source-api/
+            /source-ntk/
+            /source-wfwf/
+            /viewer/
             /config/
             /gradle/
             /tools/patch_apk_manifest_version.py
             /tools/release_latest_ci.sh
-            /tools/release_latest.ps1
-            /tools/ntk_qualification_manifest.json
             /build.gradle
             /gradle.properties
             /gradlew

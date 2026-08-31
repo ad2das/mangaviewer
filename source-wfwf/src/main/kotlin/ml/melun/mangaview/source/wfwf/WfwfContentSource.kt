@@ -1,0 +1,278 @@
+package ml.melun.mangaview.source.wfwf
+
+import java.io.ByteArrayInputStream
+import java.io.IOException
+import java.net.URLEncoder
+import java.nio.charset.Charset
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.core.EpisodeManifest
+import ml.melun.mangaview.core.PageId
+import ml.melun.mangaview.core.PageSpec
+import ml.melun.mangaview.core.SeriesId
+import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.source.AdjacentEpisodes
+import ml.melun.mangaview.source.ContentSource
+import ml.melun.mangaview.source.OpenedPage
+import ml.melun.mangaview.source.PageValidation
+import ml.melun.mangaview.source.PreparationIntent
+import ml.melun.mangaview.source.SourceEpisode
+import ml.melun.mangaview.source.SourceHttpMethod
+import ml.melun.mangaview.source.SourcePage
+import ml.melun.mangaview.source.SourceRequest
+import ml.melun.mangaview.source.SourceResponse
+import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceTransport
+import ml.melun.mangaview.source.readBytes
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+
+data class WfwfConfig(
+    val initialOrigin: String,
+    val userAgent: String,
+    val imageOriginHints: List<String> = listOf("https://i1.imgcloud18.com"),
+    val manifestCacheEpisodes: Int = 12,
+) {
+    init {
+        require(manifestCacheEpisodes > 0) { "WFWF manifest cache capacity must be positive" }
+    }
+}
+
+class WfwfContentSource(
+    private val config: WfwfConfig,
+    private val transport: SourceTransport,
+    private val preparationScope: CoroutineScope? = null,
+    private val parser: WfwfHtmlParser = WfwfHtmlParser(),
+    private val originResolver: WfwfOriginResolver = WfwfOriginResolver(transport, config.userAgent),
+) : ContentSource {
+    override val id = SourceId("wfwf")
+    private val origin = WfwfOriginSession(config.initialOrigin)
+    private val catalogStore = WfwfCatalogStore(::fetchCatalog)
+    private val manifestStore = WfwfManifestStore(config.manifestCacheEpisodes, ::fetchManifest)
+    private val preparedOrigins = ConcurrentHashMap.newKeySet<String>()
+
+    override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> {
+        if (cursor != null) return SourcePage(emptyList())
+        val encoded = URLEncoder.encode(query.trim(), Charset.forName("EUC-KR").name())
+        val document = document("/search.html?q=$encoded")
+        return SourcePage(parser.search(document, ::seriesId))
+    }
+
+    override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> {
+        require(seriesId.sourceId == id) { "Series belongs to another source" }
+        if (cursor != null) return SourcePage(emptyList())
+        return SourcePage(catalogStore.load(seriesId, refresh = true))
+    }
+
+    override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest {
+        require(episodeId.seriesId.sourceId == id) { "Episode belongs to another source" }
+        return manifestStore.load(episodeId).payload.manifest
+    }
+
+    private suspend fun fetchManifest(episodeId: EpisodeId): WfwfManifestPayload {
+        val key = WfwfSeriesKey.decode(episodeId.seriesId)
+        val document = document(viewPath(key, episodeId.remoteKey))
+        val images = parser.pageImages(document)
+        require(images.isNotEmpty()) { "WFWF episode contains no page images" }
+        val metadata = parser.viewerMetadata(document, key, episodeId.remoteKey)
+        val catalog = if (metadata.navigationKnown) null else {
+            catalogStore.load(episodeId.seriesId, refresh = false)
+        }
+        val adjacent = catalog?.let { adjacentFrom(it, episodeId) } ?: AdjacentEpisodes(
+            previous = metadata.previousEpisodeKey?.let { EpisodeId(episodeId.seriesId, it) },
+            next = metadata.nextEpisodeKey?.let { EpisodeId(episodeId.seriesId, it) },
+        )
+        val title = metadata.title
+            ?: catalog?.firstOrNull { it.id == episodeId }?.title
+            ?: episodeId.remoteKey
+        val pageIds = images.mapIndexed { index, _ -> PageId.at(episodeId, index) }
+        return WfwfManifestPayload(
+            manifest = EpisodeManifest(
+                id = episodeId,
+                title = title,
+                pages = pageIds.mapIndexed { index, pageId -> PageSpec(pageId, index) },
+                previousEpisodeId = adjacent.previous,
+                nextEpisodeId = adjacent.next,
+            ),
+            pageUrls = pageIds.zip(images).toMap(),
+        )
+    }
+
+    override suspend fun adjacent(episodeId: EpisodeId): AdjacentEpisodes {
+        require(episodeId.seriesId.sourceId == id) { "Episode belongs to another source" }
+        val catalog = catalogStore.load(episodeId.seriesId, refresh = false)
+        return adjacentFrom(catalog, episodeId)
+    }
+
+    override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) {
+        require(episodeId.seriesId.sourceId == id) { "Episode belongs to another source" }
+        config.imageOriginHints.forEach(::preconnect)
+    }
+
+    override suspend fun openPage(pageId: PageId, validation: PageValidation?): OpenedPage {
+        require(pageId.episodeId.seriesId.sourceId == id) { "Page belongs to another source" }
+        val registered = resolvePage(pageId)
+        val response = executePage(pageId, registered.url, validation)
+        if (response.statusCode in 200..299) return response.openedPage()
+        val statusCode = response.statusCode
+        response.close()
+        if (statusCode !in EXPIRED_PAGE_STATUSES) throw pageFailure(statusCode)
+        val refreshed = manifestStore.refreshIfCurrent(pageId.episodeId, registered.revision)
+        val refreshedUrl = refreshed.payload.pageUrls[pageId]
+            ?: throw IllegalStateException("WFWF refreshed manifest no longer contains the page")
+        if (refreshedUrl == registered.url) {
+            throw IOException("WFWF refreshed page URL did not change after HTTP $statusCode")
+        }
+        val retried = executePage(pageId, refreshedUrl, validation)
+        if (retried.statusCode in 200..299) return retried.openedPage()
+        val retryStatus = retried.statusCode
+        retried.close()
+        throw pageFailure(retryStatus)
+    }
+
+    private suspend fun resolvePage(pageId: PageId): WfwfPageLookup.Found =
+        when (val lookup = manifestStore.page(pageId)) {
+            is WfwfPageLookup.Found -> lookup
+            WfwfPageLookup.MissingEpisode -> manifestStore.load(pageId.episodeId).registered(pageId)
+            is WfwfPageLookup.MissingPage ->
+                manifestStore.refreshIfCurrent(pageId.episodeId, lookup.revision).registered(pageId)
+        }
+
+    private fun WfwfManifestEntry.registered(pageId: PageId): WfwfPageLookup.Found {
+        val url = payload.pageUrls[pageId]
+            ?: throw IllegalStateException("WFWF manifest does not contain the requested page")
+        return WfwfPageLookup.Found(url, revision)
+    }
+
+    private suspend fun executePage(
+        pageId: PageId,
+        pageUrl: String,
+        validation: PageValidation?,
+    ): SourceResponse {
+        val headers = requestHeaders(referer = origin.resolve(viewPathFor(pageId.episodeId))).toMutableMap()
+        validation?.entityTag?.let { headers["If-None-Match"] = it }
+        validation?.lastModified?.let { headers["If-Modified-Since"] = it }
+        return transport.execute(SourceRequest(pageUrl, headers = headers))
+    }
+
+    private fun SourceResponse.openedPage(): OpenedPage = OpenedPage(
+        stream = body,
+        contentLength = contentLength,
+        contentType = contentType,
+        entityTag = header("ETag"),
+        lastModified = header("Last-Modified"),
+    )
+
+    private fun pageFailure(statusCode: Int): IOException =
+        IOException("WFWF page request failed with $statusCode")
+
+    private suspend fun fetchCatalog(seriesId: SeriesId): List<SourceEpisode> {
+        val key = WfwfSeriesKey.decode(seriesId)
+        val first = document(listPath(key))
+        val pageNumbers = parser.catalogPageNumbers(first, key).filter { it != 1 }
+        if (pageNumbers.isEmpty()) return parser.episodes(first, seriesId, key)
+        return coroutineScope {
+            val remaining = pageNumbers.map { page ->
+                async { parser.episodes(document(listPagePath(key, page)), seriesId, key) }
+            }
+            parser.mergeEpisodePages(
+                listOf(parser.episodes(first, seriesId, key)) + remaining.map { it.await() },
+            )
+        }
+    }
+
+    private suspend fun document(path: String): Document {
+        return try {
+            requestDocument(path)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (firstFailure: Exception) {
+            val replacement = originResolver.resolve(origin.current()) ?: throw firstFailure
+            origin.replace(replacement)
+            requestDocument(path)
+        }
+    }
+
+    private suspend fun requestDocument(path: String): Document {
+        val response = transport.execute(
+            SourceRequest(
+                url = origin.resolve(path),
+                method = SourceHttpMethod.GET,
+                headers = requestHeaders(),
+            ),
+        )
+        origin.observe(response.finalUrl)
+        if (response.statusCode !in 200..299) {
+            response.close()
+            throw IOException("WFWF document request failed with ${response.statusCode}")
+        }
+        val finalUrl = response.finalUrl
+        val bytes = response.readBytes(MAX_DOCUMENT_BYTES)
+        return Jsoup.parse(ByteArrayInputStream(bytes), null, finalUrl)
+    }
+
+    private fun preconnect(targetOrigin: String) {
+        val scope = preparationScope ?: return
+        if (!preparedOrigins.add(targetOrigin)) return
+        scope.launch {
+            try {
+                transport.execute(SourceRequest(
+                    url = targetOrigin,
+                    method = SourceHttpMethod.HEAD,
+                    headers = requestHeaders(),
+                    totalTimeoutMillis = PRECONNECT_TIMEOUT_MILLIS,
+                )).close()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                preparedOrigins.remove(targetOrigin)
+                throw cancelled
+            } catch (_: Exception) {
+                preparedOrigins.remove(targetOrigin)
+            }
+        }
+    }
+
+    private fun adjacentFrom(catalog: List<SourceEpisode>, episodeId: EpisodeId): AdjacentEpisodes {
+        val index = catalog.indexOfFirst { it.id == episodeId }
+        if (index < 0) return AdjacentEpisodes(null, null)
+        return AdjacentEpisodes(
+            previous = catalog.getOrNull(index + 1)?.id,
+            next = catalog.getOrNull(index - 1)?.id,
+        )
+    }
+
+    private fun seriesId(key: WfwfSeriesKey): SeriesId = SeriesId(id, key.encode())
+
+    private fun listPath(key: WfwfSeriesKey): String = when (key.kind) {
+        WfwfKind.COMIC -> "/cl?toon=${key.titleId}"
+        WfwfKind.WEBTOON -> "/list?toon=${key.titleId}"
+    }
+
+    private fun listPagePath(key: WfwfSeriesKey, page: Int): String {
+        require(page > 1) { "The first catalog page uses the canonical list URL" }
+        return "${listPath(key)}&s=n&pg=$page"
+    }
+
+    private fun viewPath(key: WfwfSeriesKey, episodeKey: String): String = when (key.kind) {
+        WfwfKind.COMIC -> "/cv?toon=${key.titleId}&num=$episodeKey"
+        WfwfKind.WEBTOON -> "/view?toon=${key.titleId}&num=$episodeKey"
+    }
+
+    private fun viewPathFor(episodeId: EpisodeId): String =
+        viewPath(WfwfSeriesKey.decode(episodeId.seriesId), episodeId.remoteKey)
+
+    private fun requestHeaders(referer: String? = null): Map<String, String> = buildMap {
+        put("User-Agent", config.userAgent)
+        put("Accept", "text/html,application/xhtml+xml,image/avif,image/webp,image/*,*/*;q=0.8")
+        referer?.let { put("Referer", it) }
+    }
+
+    private companion object {
+        const val MAX_DOCUMENT_BYTES = 16 * 1_024 * 1_024
+        const val PRECONNECT_TIMEOUT_MILLIS = 5_000L
+        val EXPIRED_PAGE_STATUSES = setOf(401, 403, 404, 410)
+    }
+}

@@ -1,0 +1,271 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "f5560161a74b913edfeede96df3433f0",
+    "entities": [
+      {
+        "tableName": "raw_pages",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`cacheKey` TEXT NOT NULL, `sourceKey` TEXT NOT NULL, `seriesKey` TEXT NOT NULL, `episodeKey` TEXT NOT NULL, `pageKey` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `byteCount` INTEGER NOT NULL, `sha256` TEXT NOT NULL, `mediaType` TEXT NOT NULL, `widthPx` INTEGER NOT NULL, `heightPx` INTEGER NOT NULL, `createdAtEpochMillis` INTEGER NOT NULL, `lastAccessEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`cacheKey`))",
+        "fields": [
+          {
+            "fieldPath": "cacheKey",
+            "columnName": "cacheKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceKey",
+            "columnName": "sourceKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seriesKey",
+            "columnName": "seriesKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "episodeKey",
+            "columnName": "episodeKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pageKey",
+            "columnName": "pageKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "byteCount",
+            "columnName": "byteCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mediaType",
+            "columnName": "mediaType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "widthPx",
+            "columnName": "widthPx",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "heightPx",
+            "columnName": "heightPx",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMillis",
+            "columnName": "createdAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastAccessEpochMillis",
+            "columnName": "lastAccessEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "cacheKey"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "reading_progress",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sourceKey` TEXT NOT NULL, `seriesKey` TEXT NOT NULL, `episodeKey` TEXT NOT NULL, `pageKey` TEXT NOT NULL, `offsetInPageUnits` INTEGER NOT NULL, `updatedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`sourceKey`, `seriesKey`))",
+        "fields": [
+          {
+            "fieldPath": "sourceKey",
+            "columnName": "sourceKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seriesKey",
+            "columnName": "seriesKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "episodeKey",
+            "columnName": "episodeKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pageKey",
+            "columnName": "pageKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "offsetInPageUnits",
+            "columnName": "offsetInPageUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMillis",
+            "columnName": "updatedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sourceKey",
+            "seriesKey"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "library_entries",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sourceKey` TEXT NOT NULL, `seriesKey` TEXT NOT NULL, `title` TEXT NOT NULL, `thumbnailKey` TEXT, `favorite` INTEGER NOT NULL, `updatedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`sourceKey`, `seriesKey`))",
+        "fields": [
+          {
+            "fieldPath": "sourceKey",
+            "columnName": "sourceKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seriesKey",
+            "columnName": "seriesKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "thumbnailKey",
+            "columnName": "thumbnailKey",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "favorite",
+            "columnName": "favorite",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMillis",
+            "columnName": "updatedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sourceKey",
+            "seriesKey"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_library_entries_updatedAtEpochMillis",
+            "unique": false,
+            "columnNames": [
+              "updatedAtEpochMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_library_entries_updatedAtEpochMillis` ON `${TABLE_NAME}` (`updatedAtEpochMillis`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "bookmarks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sourceKey` TEXT NOT NULL, `seriesKey` TEXT NOT NULL, `episodeKey` TEXT NOT NULL, `pageKey` TEXT NOT NULL, `offsetInPageUnits` INTEGER NOT NULL, `createdAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`sourceKey`, `seriesKey`, `episodeKey`, `pageKey`))",
+        "fields": [
+          {
+            "fieldPath": "sourceKey",
+            "columnName": "sourceKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seriesKey",
+            "columnName": "seriesKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "episodeKey",
+            "columnName": "episodeKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pageKey",
+            "columnName": "pageKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "offsetInPageUnits",
+            "columnName": "offsetInPageUnits",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMillis",
+            "columnName": "createdAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sourceKey",
+            "seriesKey",
+            "episodeKey",
+            "pageKey"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'f5560161a74b913edfeede96df3433f0')"
+    ]
+  }
+}

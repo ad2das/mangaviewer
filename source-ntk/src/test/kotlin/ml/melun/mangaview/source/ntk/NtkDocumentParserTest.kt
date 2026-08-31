@@ -1,0 +1,133 @@
+package ml.melun.mangaview.source.ntk
+
+import ml.melun.mangaview.core.SeriesId
+import ml.melun.mangaview.core.SourceId
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
+import org.junit.Test
+
+class NtkDocumentParserTest {
+    private val parser = NtkDocumentParser()
+    private val sourceId = SourceId("ntk")
+
+    @Test
+    fun mergesNumericAndSlugRowsWithEmbeddedImageMetadata() {
+        val series = SeriesId(sourceId, "/webtoon/61393986")
+        val html = """
+            <a class="ep-row-v2-link" href="/webtoon/61393986/kp-61393986-64942327">
+              <span class="ep-row-v2-no">68</span><strong>68화</strong>
+            </a>
+            <script>{"episodes":[{"id":"1377023","sourceEpisodeId":"kp-61393986-64942327",
+              "epNo":68,"imageCount":67}]}</script>
+        """.trimIndent()
+
+        val result = parser.episodes(html, series)
+
+        assertEquals(1, result.episodes.size)
+        assertEquals("/webtoon/61393986/kp-61393986-64942327", result.episodes.single().episode.id.remoteKey)
+        assertEquals(67, result.episodes.single().imageCount)
+        assertEquals("1377023", result.episodes.single().imageEpisodeId)
+    }
+
+    @Test
+    fun protectedDescriptorAndDirectImagesNeverPromotePageChrome() {
+        val html = """
+            <script type="application/json">{
+              "sourceWorkId":"18190","episodeId":"1518441","token":"token-value",
+              "imageApiPath":"/api/webtoon-images","images":[{"page":1},{"page":2},{"page":3}]
+            }</script>
+            <img src="https://cdn.example/board_uploads/banner.png">
+            <img src="https://i.toonflix.app/webtoon_uploads/real-page-001.jpg">
+        """.trimIndent()
+
+        val result = parser.manifest(NtkEpisodeDocument("https://ntk.test", "/webtoon/18190/1518441", html))
+
+        assertEquals(1, result.directPages.size)
+        assertNotNull(result.descriptor)
+        assertEquals(3, result.descriptor?.expectedPageCount)
+        assertTrue(result.directPages.single().url.contains("real-page-001.jpg"))
+    }
+
+    @Test
+    fun verifiedViewerObjectOwnsTitleAndSlugNeighbors() {
+        val html = """
+            <script>{"sourceWorkId":"work-slug","episodeId":"current","imagesToken":"token",
+              "imageApiPath":"/api/webtoon-images","imageMetas":[{"page":1}],
+              "epTitle":"특별편","prevEpId":"older","nextEpId":"newer"}</script>
+        """.trimIndent()
+
+        val viewer = parser.manifest(
+            NtkEpisodeDocument("https://ntk.test", "/webtoon/work-slug/current", html),
+        ).viewer
+
+        assertEquals("특별편", viewer?.title)
+        assertEquals("/webtoon/work-slug/older", viewer?.previousEpisodePath)
+        assertEquals("/webtoon/work-slug/newer", viewer?.nextEpisodePath)
+        assertTrue(viewer?.previousKnown == true)
+        assertTrue(viewer?.nextKnown == true)
+    }
+
+    @Test
+    fun explicitNullBoundaryIsKnownWithoutInventingAnEpisode() {
+        val html = """
+            <script>{"sourceWorkId":"42","episodeId":"100","imagesToken":"token",
+              "imageApiPath":"/api/manhwa-images","imageCount":1,
+              "prevEpId":"99","nextEpId":null}</script>
+        """.trimIndent()
+
+        val viewer = parser.manifest(
+            NtkEpisodeDocument("https://ntk.test", "/manhwa/42/100", html),
+        ).viewer
+
+        assertEquals("/manhwa/42/99", viewer?.previousEpisodePath)
+        assertNull(viewer?.nextEpisodePath)
+        assertTrue(viewer?.nextKnown == true)
+    }
+
+    @Test
+    fun textualNullBoundariesAreKnownWithoutInventingEpisodes() {
+        val html = """
+            <script>{"sourceWorkId":"42","episodeId":"100","imagesToken":"token",
+              "imageApiPath":"/api/manhwa-images","imageCount":1,
+              "prevEpId":"undefined","nextEpId":"null"}</script>
+        """.trimIndent()
+
+        val viewer = parser.manifest(
+            NtkEpisodeDocument("https://ntk.test", "/manhwa/42/100", html),
+        ).viewer
+
+        assertNull(viewer?.previousEpisodePath)
+        assertNull(viewer?.nextEpisodePath)
+        assertTrue(viewer?.previousKnown == true)
+        assertTrue(viewer?.nextKnown == true)
+    }
+
+    @Test
+    fun mismatchedViewerIdentityIsRejected() {
+        val html = """
+            <script>{"sourceWorkId":"other-work","episodeId":"current","imagesToken":"token",
+              "imageApiPath":"/api/webtoon-images","imageCount":1}</script>
+        """.trimIndent()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            parser.manifest(
+                NtkEpisodeDocument("https://ntk.test", "/webtoon/work-slug/current", html),
+            )
+        }
+    }
+
+    @Test
+    fun escapedPaginationAndEpisodeRowsAreParsedWithoutProviderSpecialCases() {
+        val series = SeriesId(sourceId, "/manhwa/3540")
+        val payload = """
+            self.__next_f.push([1,"\u003ca href=\"/manhwa/3540/135918\" class=\"ep-row-v2-link\"\u003e
+            \u003cstrong\u003e258화\u003c/strong\u003e\u003c/a\u003e?epage=6"]);
+        """.trimIndent()
+
+        assertEquals(6, parser.episodePageCount(payload))
+        assertEquals("/manhwa/3540/135918", parser.episodes(payload, series).episodes.single().episode.id.remoteKey)
+    }
+}

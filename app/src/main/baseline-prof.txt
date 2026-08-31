@@ -1,18 +1,15 @@
-# Viewer entry, immutable full-scene decode, and physical Surface rendering are the cold UX path.
+# New viewer entry, immutable coordinator, and physical Surface rendering are the cold UX path.
 # These production profile rules compile code only; they do not execute a viewer, fetch content,
 # create a connection, or populate an image/content cache.
-HSPLml/melun/mangaview/activity/ReaderV2Activity;->**(**)**
-HSPLml/melun/mangaview/reader/ReaderSurfaceView;->**(**)**
-HSPLml/melun/mangaview/reader/ReaderSession;->**(**)**
-HSPLml/melun/mangaview/reader/ReaderSessionListenerGate;->**(**)**
-HSPLml/melun/mangaview/reader/NtkStrictSourceSession;->**(**)**
-HSPLml/melun/mangaview/reader/NtkFullSceneDecodeDispatcher;->**(**)**
-HSPLml/melun/mangaview/reader/ReaderImageCache;->**(**)**
-HSPLml/melun/mangaview/reader/ReaderPagePipeline;->**(**)**
-HSPLml/melun/mangaview/reader/NtkRollingNativeBridge;->**(**)**
-HSPLml/melun/mangaview/reader/NtkAsyncTelemetry;->**(**)**
-HSPLml/melun/mangaview/runtime/ViewerTelemetry;->**(**)**
-HSPLml/melun/mangaview/mangaview/CustomHttpClient;->**(**)**
+HSPLml/melun/mangaview/activity/ViewerActivity;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/ViewerRuntime;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/ViewerCanvasView;->**(**)**
+HSPLml/melun/mangaview/viewer/ViewerPipelineCoordinator;->**(**)**
+HSPLml/melun/mangaview/viewer/ViewerReducer;->**(**)**
+HSPLml/melun/mangaview/viewer/ScrollController;->**(**)**
+HSPLml/melun/mangaview/viewer/LayoutLedger;->**(**)**
+HSPLml/melun/mangaview/viewer/WorkScheduler;->**(**)**
+HSPLml/melun/mangaview/source/ntk/NtkContentSource;->**(**)**
 
 # These library methods were the remaining 30-96 ms cold JIT slices in the measured trace.
 HSPLandroidx/constraintlayout/widget/ConstraintLayout;->onMeasure(II)V

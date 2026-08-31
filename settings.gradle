@@ -1,1 +1,4 @@
-include ':app', ':macrobenchmark'
+include ':app'
+include ':core', ':source-api', ':viewer'
+include ':data'
+include ':source-wfwf', ':source-ntk'

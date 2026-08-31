@@ -5,13 +5,11 @@ param(
     [string]$JavaHome = "",
     [string]$CommitMessage = "",
     [string]$PythonExe = "",
-    [int]$ReleasePatch = -1,
     [switch]$SkipTests,
     [switch]$SkipClassificationAssets,
     [switch]$NoCommit,
     [switch]$NoPush,
     [switch]$NoUpload,
-    [switch]$DeleteOldRepoApks,
     [switch]$DeleteOldReleaseApks
 )
 
@@ -208,16 +206,14 @@ if ([string]::IsNullOrWhiteSpace($TargetBranch)) {
 }
 
 $buildGradle = Read-Utf8 $buildGradlePath
-$patchMatch = [regex]::Match($buildGradle, "def\s+defaultReleasePatch\s*=\s*(\d+)")
-if (-not $patchMatch.Success) {
-    throw "Could not find defaultReleasePatch in $buildGradlePath"
+$versionCodeMatch = [regex]::Match($buildGradle, '(?m)^\s*versionCode\s+(\d+)\s*$')
+$versionNameMatch = [regex]::Match($buildGradle, '(?m)^\s*versionName\s+[''"]([^''"]+)[''"]\s*$')
+if (-not $versionCodeMatch.Success -or -not $versionNameMatch.Success) {
+    throw "Could not read versionCode/versionName from $buildGradlePath"
 }
 
-$currentPatch = [int]$patchMatch.Groups[1].Value
-$nextPatch = if ($ReleasePatch -ge 0) { $ReleasePatch } else { $currentPatch + 1 }
-$dateCodeText = Get-Date -Format "yyMMdd"
-$dateCode = [int]$dateCodeText
-$versionCode = 2112000000 + $dateCode + $nextPatch
+$versionCode = [long]$versionCodeMatch.Groups[1].Value
+$versionName = $versionNameMatch.Groups[1].Value
 if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
     $ReleaseTag = "main-latest"
 }
@@ -227,7 +223,7 @@ $classificationManifestPath = "release/classification-manifest.json"
 $classificationBasePath = "release/classification-base.sqlite.gz"
 
 Write-Step "Preparing version $versionCode"
-Write-Host "releasePatch: $currentPatch -> $nextPatch"
+Write-Host "versionName: $versionName"
 Write-Host "apk: $apkName"
 
 $versionJson = @{
@@ -242,17 +238,44 @@ $releasesHtml = [regex]::Replace($releasesHtml, 'browser_download_url:\s*"[^"]*m
 Write-Utf8NoBom $releasesHtmlPath $releasesHtml
 
 Write-Step "Building debug APK"
-Invoke-Gradle -GradleArgs @("--configuration-cache", "--build-cache", "--parallel", "-PreleasePatch=$nextPatch", "-PreleaseDateCode=$dateCodeText", ":app:assembleDebug")
+Invoke-Gradle -GradleArgs @("--configuration-cache", "--build-cache", "--parallel", ":app:assembleDebug")
 
 if (-not $SkipTests) {
     Write-Step "Running unit tests"
-    Invoke-Gradle -GradleArgs @("--configuration-cache", "--build-cache", "--parallel", "-PreleasePatch=$nextPatch", "-PreleaseDateCode=$dateCodeText", "testDebugUnitTest")
+    Invoke-Gradle -GradleArgs @(
+        "--configuration-cache",
+        "--build-cache",
+        "--parallel",
+        "verifyArchitectureQuality",
+        ":core:test",
+        ":source-api:test",
+        ":source-wfwf:test",
+        ":viewer:test",
+        ":source-ntk:testDebugUnitTest",
+        ":data:testDebugUnitTest",
+        ":app:testDebugUnitTest"
+    )
 }
 
-$builtApk = "app/build/outputs/apk/debug/$apkName"
-if (-not (Test-Path $builtApk)) {
-    throw "Built APK not found: $builtApk"
+$outputDirectory = "app/build/outputs/apk/debug"
+$metadataPath = Join-Path $outputDirectory "output-metadata.json"
+if (-not (Test-Path $metadataPath)) {
+    throw "APK output metadata not found: $metadataPath"
 }
+$metadata = Read-Utf8 $metadataPath | ConvertFrom-Json
+$element = @($metadata.elements)[0]
+if ($null -eq $element -or [string]::IsNullOrWhiteSpace($element.outputFile)) {
+    throw "APK output metadata contains no output element: $metadataPath"
+}
+if ([long]$element.versionCode -ne $versionCode -or [string]$element.versionName -ne $versionName) {
+    throw "Built APK version does not match $buildGradlePath"
+}
+$stableApk = Join-Path $outputDirectory $element.outputFile
+if (-not (Test-Path $stableApk)) {
+    throw "Built APK not found: $stableApk"
+}
+$builtApk = Join-Path $outputDirectory $apkName
+Copy-Item -LiteralPath $stableApk -Destination $builtApk -Force
 
 if (-not $SkipClassificationAssets) {
     Write-Step "Building classification SQLite release assets"
@@ -267,11 +290,7 @@ if (-not $SkipClassificationAssets) {
     }
 }
 
-$buildGradle = [regex]::Replace($buildGradle, "def\s+defaultReleasePatch\s*=\s*\d+", "def defaultReleasePatch = $nextPatch", 1)
-Write-Utf8NoBom $buildGradlePath $buildGradle
-
 $changedFiles = @(
-    $buildGradlePath,
     $versionJsonPath,
     $releasesHtmlPath
 )

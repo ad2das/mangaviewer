@@ -32,11 +32,7 @@ release/
 app/release/
 app/google-services.json
 app/src/main/res/values/google_services.xml
-app/src/bazel/AndroidManifest.xml
-app/src/bazel/LibraryManifest.xml
 apk/*.apk
-
-bazel-*
 
 *.iml
 *.p12
@@ -49,6 +45,7 @@ webtoon-classification-audit-details.json
 .codex-remote-attachments/
 app/.cxx/
 artifacts/
+.artifacts/
 .playwright-cli/
 tmp-codex-emulator/
 tmp-*
@@ -92,7 +89,6 @@ ntk-*-page.js
 /*.trace
 /*.txt
 /*.xml
-!/BUILD.bazel
 !/version.json
 !/comic-classification.json
 !/webtoon-classification.json

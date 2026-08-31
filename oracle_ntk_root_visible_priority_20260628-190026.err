@@ -1,6 +1,0 @@
-[oracle-wrapper] Found live Oracle Chrome DevTools port 60758; attaching instead of launching a second browser.
-error: too many arguments. Expected 1 argument but got 124.
-(use --help for usage)
-[oracle-wrapper] post-failure submission verification: {"state":"submitted","session":"android-native-manga-reader-ntk","reason":"session runtime recorded promptSubmitted/conversation evidence","url":"https://chatgpt.com/","promptSubmitted":true}
-[oracle-wrapper] The browser command failed, but the prompt appears submitted. Do not retry blindly; recover/read this session first.
-[oracle-wrapper] Recover now with: node "C:\Users\Administrator\.codex\skills\oracle-patched-package\scripts\run-oracle.mjs" session "android-native-manga-reader-ntk" --render
