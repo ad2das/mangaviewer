@@ -2,11 +2,10 @@ package ml.melun.mangaview.source.ntk
 
 import java.io.IOException
 import java.net.URI
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Logger
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import ml.melun.mangaview.core.EpisodeId
@@ -15,6 +14,7 @@ import ml.melun.mangaview.core.PageSpec
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageByteStream
 import ml.melun.mangaview.source.PageValidation
+import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.PreparationIntent
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceTransport
@@ -26,26 +26,23 @@ internal class NtkPageService(
     private val parser: NtkDocumentParser,
     private val replicas: NtkReplicaSelector = NtkReplicaSelector(),
     private val preparedEpisodes: NtkPreparedEpisodeStore = NtkPreparedEpisodeStore(),
-    private val prefetchScope: CoroutineScope? = null,
 ) {
     private val manifestLanes = Semaphore(MANIFEST_LANES)
-    private val prefetchLock = Any()
-    private val forwardDepths = mutableMapOf<EpisodeId, Int>()
+    private val preparationIntents = ConcurrentHashMap<EpisodeId, PreparationIntent>()
+    private val replicaRacer = NtkReplicaRacer(
+        transport,
+        replicas,
+        // Only an unproven origin set is raced. As soon as one replica verifies, the selector
+        // sends every later page through that single winner. Starting the initial candidates
+        // together removes an artificial 75 ms from HARD-page first byte without multiplying
+        // steady-state traffic or decode work.
+        hedgeDelayMillis = 0L,
+        preferQuic = true,
+    )
 
     suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) {
-        val depth = when (intent) {
-            PreparationIntent.INITIAL_VIEW -> INITIAL_FORWARD_PREFETCH_DEPTH
-            PreparationIntent.ADJACENT_FORWARD -> ADJACENT_FORWARD_PREFETCH_DEPTH
-            else -> 0
-        }
-        rememberDepth(episodeId, depth)
-        if (!preparedEpisodes.contains(episodeId) || depth <= 0) return
-        prefetchScope?.launch {
-            runCatching { resolve(episodeId) }
-                .getOrNull()
-                ?.nextEpisodeId
-                ?.let { scheduleForward(it, depth - 1) }
-        }
+        if (preparedEpisodes.contains(episodeId)) return
+        preparationIntents.merge(episodeId, intent, ::strongerIntent)
     }
 
     suspend fun resolve(episodeId: EpisodeId): NtkPreparedEpisode =
@@ -57,63 +54,46 @@ internal class NtkPageService(
         // Start the browser's authorized ACK flight before the duplicate HTML transport request so
         // browser startup, challenge work and document parsing overlap on that cold path too.
         val origin = documents.currentOrigin()
-        gateway.prepare(origin, path, PreparationIntent.INITIAL_VIEW)
-        try {
-            val document = documents.episodeDocument(path)
-            validateDocumentIdentity(document, path)
-            val parsed = parser.manifest(document)
-            val viewer = parsed.viewer
-            val nextEpisodeId = viewer?.nextEpisodePath?.let { EpisodeId(episodeId.seriesId, it) }
-            val remaining = consumeDepth(episodeId)
-            parsed.descriptor?.let { descriptor ->
-                gateway.documentAvailable(document, descriptor)
-            }
-            val resolved = resolveRequests(document, parsed)
-            // HttpEngine construction is origin-scoped and can otherwise sit directly on the
-            // visible page's critical path. Build only the selector's current best origin here;
-            // this opens no image request and preserves PageId single-flight ownership.
-            val firstCandidate = replicas.order(resolved.first().candidates).first()
-            transport.warmConnections(listOf(firstCandidate))
-            // Finish the visible manifest before starting the adjacent browser acknowledgement.
-            // The warmed lane can then overlap next-episode authorization with current bytes.
-            if (remaining > 0 && nextEpisodeId != null) {
-                scheduleForward(nextEpisodeId, remaining - 1)
-            }
-            val ids = resolved.indices.map { PageId.at(episodeId, it) }
-            NtkPreparedEpisode(
-                pages = ids.mapIndexed { index, id -> PageSpec(id, index) },
-                requests = ids.zip(resolved).toMap(),
-                title = viewer?.title,
-                previousEpisodeId = viewer?.previousEpisodePath?.let {
-                    EpisodeId(episodeId.seriesId, it)
-                },
-                nextEpisodeId = nextEpisodeId,
-                previousKnown = viewer?.previousKnown == true,
-                nextKnown = viewer?.nextKnown == true,
-            )
-        } finally {
-            gateway.pageAccessEstablished(origin, path)
+        val intent = preparationIntents.remove(episodeId) ?: PreparationIntent.INITIAL_VIEW
+        gateway.prepare(origin, path, intent)
+        val document = documents.episodeDocument(path)
+        validateDocumentIdentity(document, path)
+        val parsed = parser.manifest(document)
+        val viewer = parsed.viewer
+        val nextEpisodeId = viewer?.nextEpisodePath?.let { EpisodeId(episodeId.seriesId, it) }
+        parsed.descriptor?.let { descriptor ->
+            gateway.documentAvailable(document, descriptor)
         }
+        val resolved = resolveRequests(document, parsed)
+        // HttpEngine construction is origin-scoped and can otherwise sit directly on the
+        // visible page's critical path. Build only the selector's current best origin here;
+        // this opens no image request and preserves PageId single-flight ownership.
+        transport.warmConnections(resolved.first().candidates, preferQuic = true)
+        // The ACK browser must remain alive until an image header and signature prove that the
+        // protected replica is usable. Quiescing here races the first page on a cold install.
+        val ids = resolved.indices.map { PageId.at(episodeId, it) }
+        NtkPreparedEpisode(
+            pages = ids.mapIndexed { index, id -> PageSpec(id, index) },
+            requests = ids.zip(resolved).toMap(),
+            title = viewer?.title,
+            previousEpisodeId = viewer?.previousEpisodePath?.let {
+                EpisodeId(episodeId.seriesId, it)
+            },
+            nextEpisodeId = nextEpisodeId,
+            previousKnown = viewer?.previousKnown == true,
+            nextKnown = viewer?.nextKnown == true,
+        )
     }
 
-    private fun scheduleForward(episodeId: EpisodeId, depth: Int) {
-        if (depth < 0) return
-        rememberDepth(episodeId, depth)
-        prefetchScope?.launch {
-            runCatching { resolve(episodeId) }.onFailure { failure ->
-                if (failure !is CancellationException) {
-                    LOGGER.fine("forward manifest prefetch failed: ${failure.message}")
-                }
-            }
-        }
-    }
-
-    private fun rememberDepth(episodeId: EpisodeId, depth: Int) = synchronized(prefetchLock) {
-        forwardDepths[episodeId] = maxOf(forwardDepths[episodeId] ?: 0, depth)
-    }
-
-    private fun consumeDepth(episodeId: EpisodeId): Int = synchronized(prefetchLock) {
-        forwardDepths.remove(episodeId) ?: 0
+    private fun strongerIntent(
+        existing: PreparationIntent,
+        incoming: PreparationIntent,
+    ): PreparationIntent = if (
+        existing == PreparationIntent.INITIAL_VIEW || incoming == PreparationIntent.INITIAL_VIEW
+    ) {
+        PreparationIntent.INITIAL_VIEW
+    } else {
+        incoming
     }
 
     private fun validateDocumentIdentity(document: NtkEpisodeDocument, expectedPath: String) {
@@ -127,18 +107,27 @@ internal class NtkPageService(
         }
     }
 
-    suspend fun open(pageId: PageId, validation: PageValidation?): OpenedPage {
+    suspend fun open(
+        pageId: PageId,
+        validation: PageValidation?,
+        priority: PageFetchPriority = PageFetchPriority.NORMAL,
+    ): OpenedPage {
         val request = preparedEpisodes.request(pageId) ?: run {
             resolve(pageId.episodeId)
             preparedEpisodes.request(pageId)
         }
             ?: throw IllegalStateException("NTK page was not registered by a manifest")
-        val headers = documents.requestHeaders(documents.url(pageId.episodeId.remoteKey)).toMutableMap()
+        val referer = documents.url(pageId.episodeId.remoteKey)
+        val headers = documents.requestHeaders(referer).toMutableMap()
         headers.putAll(request.headers)
         headers["Accept"] = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+        headers["Accept-Language"] = "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+        headers["Sec-Fetch-Dest"] = "image"
+        headers["Sec-Fetch-Mode"] = "no-cors"
+        headers["Sec-Fetch-Site"] = fetchSite(referer, request.url)
         validation?.entityTag?.let { headers["If-None-Match"] = it }
         validation?.lastModified?.let { headers["If-Modified-Since"] = it }
-        return openCandidate(pageId, request, headers)
+        return openCandidate(pageId, request, headers, priority)
     }
 
     private suspend fun resolveRequests(
@@ -171,55 +160,48 @@ internal class NtkPageService(
         if (value.startsWith("https://") || value.startsWith("http://")) value
         else base.resolve(value).toString()
 
+    private fun fetchSite(referer: String, target: String): String = runCatching {
+        val from = URI(referer)
+        val to = URI(target)
+        if (from.scheme == to.scheme && from.authority == to.authority) "same-origin" else "cross-site"
+    }.getOrDefault("cross-site")
+
     private suspend fun openCandidate(
         pageId: PageId,
         request: NtkPageRequest,
         headers: Map<String, String>,
+        priority: PageFetchPriority,
     ): OpenedPage {
-        var lastFailure: Throwable? = null
-        val candidates = replicas.prepare(request.candidates).toMutableList()
-        while (candidates.isNotEmpty()) {
-            val lease = replicas.acquirePrepared(candidates)
-            candidates.remove(lease.candidate)
-            val url = lease.candidate.url
-            val started = System.nanoTime()
-            try {
-                val response = transport.execute(SourceRequest(url, headers = headers))
-                if (response.statusCode !in 200..299) {
-                    response.close()
-                    throw IOException("HTTP ${response.statusCode}")
-                }
-                // The visible request establishes its connection without competing with
-                // speculative engine construction. Once its headers arrive, prepare the
-                // remaining origins while this response is validated and consumed.
-                transport.warmConnections(candidates.map { it.url })
-                val verified = validateImageResponse(response)
-                gateway.pageAccessEstablished(
-                    documents.currentOrigin(),
-                    pageId.episodeId.remoteKey,
-                )
-                return verified.copy(
-                    stream = ReplicaTrackedPageByteStream(
-                        upstream = verified.stream,
-                        expectedLength = verified.contentLength,
-                        succeeded = { replicas.completed(lease, elapsedMillis(started)) },
-                        failed = { replicas.failedAndReleased(lease) },
-                        abandoned = { replicas.abandoned(lease) },
-                    ),
-                )
-            } catch (cancelled: CancellationException) {
-                replicas.abandoned(lease)
-                throw cancelled
-            } catch (failure: Throwable) {
-                replicas.failedAndReleased(lease)
-                lastFailure = failure
-                LOGGER.warning(
-                    "page candidate failed id=${pageId.remoteKey} " +
-                    "candidate=${sanitizedIdentity(url)} reason=${failure.message}",
-                )
-            }
+        val origin = documents.currentOrigin()
+        // Wait only inside this page worker; ViewerActivity and touch input remain live.
+        val authorizationReady = gateway.awaitAuthorization(
+            origin,
+            pageId.episodeId.remoteKey,
+        )
+        if (!authorizationReady) {
+            LOGGER.warning("ACK confirmation unavailable; using transport fallback id=${pageId.remoteKey}")
         }
-        throw IOException("Every NTK page replica failed for ${pageId.remoteKey}", lastFailure)
+        val winner = replicaRacer.open(
+            request.candidates,
+            headers,
+            pageId.remoteKey,
+            priority,
+            ::validateImageResponse,
+        )
+        val elapsed = elapsedMillis(winner.startedAtNanos)
+        replicas.accepted(winner.lease, elapsed)
+        gateway.pageAccessEstablished(origin, pageId.episodeId.remoteKey)
+        return winner.opened.copy(
+            stream = ReplicaTrackedPageByteStream(
+                upstream = winner.opened.stream,
+                expectedLength = winner.opened.contentLength,
+                succeeded = {
+                    replicas.completed(winner.lease, elapsedMillis(winner.startedAtNanos))
+                },
+                failed = { replicas.failedAndReleased(winner.lease) },
+                abandoned = { replicas.abandoned(winner.lease) },
+            ),
+        )
     }
 
     private suspend fun validateImageResponse(
@@ -252,19 +234,9 @@ internal class NtkPageService(
     private fun elapsedMillis(startedNanos: Long): Long =
         ((System.nanoTime() - startedNanos).coerceAtLeast(0L)) / 1_000_000L
 
-    private fun sanitizedIdentity(url: String): String = runCatching {
-        val uri = URI(url)
-        "${uri.host.orEmpty()}${uri.path.orEmpty()}"
-    }.getOrDefault("invalid-url")
-
     private companion object {
         const val IMAGE_SIGNATURE_BYTES = 12
         const val MANIFEST_LANES = 2
-        // Keep exactly the next episode authorized on the cold path. Recursively opening nine
-        // hidden browser documents competes with the current page decoder; subsequent manifests
-        // are requested naturally as the append planner advances.
-        const val INITIAL_FORWARD_PREFETCH_DEPTH = 1
-        const val ADJACENT_FORWARD_PREFETCH_DEPTH = 0
         val LOGGER: Logger = Logger.getLogger(NtkPageService::class.java.simpleName)
     }
 

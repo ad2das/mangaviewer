@@ -23,16 +23,36 @@ class NextEpisodePlannerTest {
     }
 
     @Test
-    fun adjacentRunwayStartsBeforePixelsSoAnImmediateFlingCannotReachAPlaceholder() {
+    fun adjacentRunwayNeverStartsBeforeCurrentContentIsPresented() {
         val opened = requireNotNull(reducer.reduce(
             null,
             ViewerEvent.OpenEpisode(3L, ViewerFixtures.manifest(20), ViewerFixtures.viewport, 1L),
         )).state
 
-        assertTrue(planner.shouldPrepare(opened))
-        assertTrue(planner.shouldPrepare(opened.copy(
+        assertFalse(planner.shouldPrepare(opened))
+        assertFalse(planner.shouldPrepare(opened.copy(
             velocityUnitsPerSecond = opened.layout.totalHeight.units,
         )))
+        assertTrue(planner.shouldPrepare(opened.withFirstPixel().copy(
+            hasPresentedContent = true,
+            surfacePresentationReady = true,
+            velocityUnitsPerSecond = opened.layout.totalHeight.units,
+        )))
+    }
+
+    @Test
+    fun adjacentPreparationWaitsForAnActiveGestureToFinish() {
+        val opened = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(5L, ViewerFixtures.manifest(3), ViewerFixtures.viewport, 1L),
+        )).state.withFirstPixel().copy(
+            hasPresentedContent = true,
+            surfacePresentationReady = true,
+            interactionActive = true,
+        )
+
+        assertFalse(planner.shouldPrepare(opened))
+        assertTrue(planner.shouldPrepare(opened.copy(interactionActive = false)))
     }
 
     @Test
@@ -70,6 +90,6 @@ class NextEpisodePlannerTest {
                 pixel = PixelRef(1L, dimensions, 1_080L * 1_920L * 4L),
                 isPresented = true,
             ),
-        )
+        ).copy(hasPresentedContent = true, surfacePresentationReady = true)
     }
 }

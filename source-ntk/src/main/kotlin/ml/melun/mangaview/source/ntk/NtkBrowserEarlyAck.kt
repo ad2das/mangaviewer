@@ -76,6 +76,40 @@ internal object NtkBrowserEarlyAck {
           const digest = async value => base64Url(new Uint8Array(
             await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
           ));
+          const providerHandshakeReady = new Promise(resolve => {
+            const name = '__ntk_hs_ok';
+            let value = window[name];
+            let settled = false;
+            let timeoutId = 0;
+            const finish = next => {
+              value = next;
+              if (settled) return;
+              settled = true;
+              if (timeoutId) window.clearTimeout(timeoutId);
+              try {
+                Object.defineProperty(window, name, {
+                  configurable: true,
+                  enumerable: true,
+                  writable: true,
+                  value: next
+                });
+              } catch (_) {}
+              resolve(next === 1);
+            };
+            if (value === 1) return finish(value);
+            try {
+              Object.defineProperty(window, name, {
+                configurable: true,
+                enumerable: true,
+                get: () => value,
+                set: finish
+              });
+            } catch (_) {
+              resolve(false);
+              return;
+            }
+            timeoutId = window.setTimeout(() => finish(value), 2500);
+          });
           const prewarmNvSession = async () => {
             const present = cookie('nv');
             if ((present.split('.')[0] || '').length >= 40) return;
@@ -181,27 +215,54 @@ internal object NtkBrowserEarlyAck {
             return rows.every(row => row.getClientRects().length > 0 &&
               row.getBoundingClientRect().width > 0 && row.getBoundingClientRect().height > 0);
           };
-          const guardModule = async () => {
-            const prewarmed = await window.__ntkGuardModulePromise;
-            if (prewarmed) return prewarmed;
-            const [module, encrypted] = await Promise.all([
-              import(location.origin + '/wasm/ad-guard/ad_guard.js'),
-              fetch(location.origin + '/wasm/ad-guard/ad_guard_bg.wasm', {
-                credentials: 'same-origin', cache: 'force-cache'
-              }).then(response => {
-                if (!response.ok) throw new Error('guard wasm HTTP ' + response.status);
-                return response.arrayBuffer();
-              })
-            ]);
-            const blobUrl = URL.createObjectURL(new Blob([encrypted], {
-              type: 'application/octet-stream'
-            }));
-            try {
-              await module.default({module_or_path: blobUrl});
-            } finally {
-              URL.revokeObjectURL(blobUrl);
+          const providerGuardModule = async () => {
+            const providerReady = await providerHandshakeReady;
+            if (providerReady) {
+              const blockScript = Array.from(document.scripts).find(script => {
+                try {
+                  return new URL(script.src, location.href).pathname === '/init/block.js';
+                } catch (_) { return false; }
+              });
+              if (blockScript) {
+                const blockUrl = new URL(blockScript.src, location.href);
+                const version = blockUrl.searchParams.get('wv');
+                const moduleUrl = new URL('/wasm/ad-guard/ad_guard.js', location.origin);
+                if (version) moduleUrl.searchParams.set('v', version);
+                const module = await import(moduleUrl.href);
+                if (module.__i5() === true) return module;
+              }
             }
-            return module;
+            return null;
+          };
+          const independentGuardModule = async () => {
+            const module = await import(location.origin + '/wasm/ad-guard/ad_guard.js');
+            await module.default();
+            return module.__i5() === true ? module : null;
+          };
+          const initializeGuard = guard => {
+            if (!guard || guard.__i5() !== true || typeof guard._hk !== 'function' ||
+                typeof guard._vc !== 'function') return false;
+            // Keep this byte contract identical to the provider's current block.js bootstrap.
+            // _hk does not accept strings: passing token/scope values appears to succeed at the
+            // JS boundary but leaves the WASM guard uninitialized and forces its slow fallback.
+            const key = new Uint8Array([
+              0x9e, 0x3f, 0x71, 0x2c, 0x8b, 0x4a, 0xd6, 0x15,
+              0xe7, 0x5d, 0x33, 0x9a, 0x2f, 0x6c, 0x84, 0xb1,
+              0x47, 0x59, 0xae, 0x18, 0xcd, 0x7f, 0x23, 0x60,
+              0x95, 0x0a, 0xde, 0x4b, 0x72, 0x36, 0xf8, 0x11
+            ]);
+            const nonce = new Uint8Array(16);
+            crypto.getRandomValues(nonce);
+            const handshake = new Uint8Array(8);
+            for (let index = 0; index < handshake.length; index += 1) {
+              const value = nonce[index % nonce.length];
+              const multiplier = key[(index * 3 + 7) % key.length];
+              handshake[index] = (((value * multiplier) & 0xff) +
+                key[(index * 5 + 13) % key.length]) & 0xff;
+            }
+            if (guard._hk(nonce, handshake) !== true) return false;
+            guard._vc(new Uint8Array(64));
+            return true;
           };
           const waitForRows = () => new Promise(resolve => {
             if (rowsReady()) return resolve(true);
@@ -226,40 +287,64 @@ internal object NtkBrowserEarlyAck {
               const response = await window.__nativeChallengeResponse();
               const payload = await response.json();
               const challenge = payload?.challenge;
-              return response.ok && challenge?.scope === scope ? challenge : null;
+              return response.ok && challenge?.scope === scope
+                ? {value: challenge, receivedAt: performance.now()}
+                : null;
             })();
-            const guardReadyFlight = Promise.all([waitForRows(), guardModule()])
-              .then(async ([rows, guard]) => {
-                if (!rows || !guard || guard.__i5() !== true) return null;
-                const marker = await fetch('/api/ad/canary', {
-                  method: 'POST', credentials: 'include', cache: 'no-store',
-                  headers: {'Content-Type': 'application/json'},
-                  body: JSON.stringify({adGuardLoaded: true})
-                });
-                return marker.ok ? guard : null;
-              });
-            const [challenge, key, guard] = await Promise.all([
+            const canaryFlight = fetch('/api/ad/canary', {
+              method: 'POST', credentials: 'include', cache: 'no-store',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({adGuardLoaded: true})
+            });
+            const independentGuardFlight = independentGuardModule().catch(() => null);
+            const [challengeResult, key, rows, marker, independentGuard] = await Promise.all([
               challengeFlight,
               keyFlight,
-              guardReadyFlight
+              waitForRows(),
+              canaryFlight,
+              independentGuardFlight
             ]);
-            if (!challenge || !key || !guard) return;
+            if (!challengeResult || !key || !rows || !marker.ok) return;
+            const challenge = challengeResult.value;
+            // The guard silently ignores a proof submitted before minSeen. A premature call then
+            // falls back to the much later hydrated-page controller, producing multi-second
+            // variance. Submit exactly once at the earliest server-authorized instant.
+            const minSeenMillis = Math.max(0, Math.min(
+              5000,
+              Math.ceil((Number(challenge.minSeen) || 0) * 1000)
+            ));
+            // A submission only a few milliseconds over the nominal boundary is occasionally
+            // rejected because the server and WebView quantize time independently. A small fixed
+            // settle margin is cheaper than falling through to the controller's ~1.5 s retry.
+            const settleMarginMillis = minSeenMillis > 0 ? 75 : 0;
+            const remaining = challengeResult.receivedAt + minSeenMillis +
+              settleMarginMillis - performance.now();
+            if (remaining > 0) {
+              await new Promise(resolve => window.setTimeout(resolve, remaining));
+            }
             window.__ntk_request_key_id = key.keyId;
             window.__ntk_request_key_cert = key.certificate;
-            const prime = [
-              String(challenge.token || ''),
-              JSON.stringify({token: String(challenge.token || ''), path: scope}),
-              scope
-            ];
-            for (const value of prime) {
-              try { if (guard._vc) guard._vc(value, scope); } catch (_) {}
+            const submit = async (guard, submittedPhase) => {
+              const result = guard.__i4(JSON.stringify(challenge), scope);
+              if (result?.then) await result;
+              phase(submittedPhase);
+            };
+            if (independentGuard && initializeGuard(independentGuard)) {
+              await submit(independentGuard, 'early-ack-guard-fired');
             }
-            for (const value of prime) {
-              try { if (guard._hk) guard._hk(value, scope); } catch (_) {}
+            if (!window.__nativeAckRequestStarted) {
+              await new Promise(resolve => window.setTimeout(resolve, 150));
             }
-            const result = guard.__i4(JSON.stringify(challenge), scope);
-            if (result?.then) await result;
-            phase('early-ack-guard-fired');
+            if (!window.__nativeAckRequestStarted && independentGuard) {
+              await submit(independentGuard, 'early-ack-guard-retry-fired');
+              await new Promise(resolve => window.setTimeout(resolve, 150));
+            }
+            if (!window.__nativeAckRequestStarted) {
+              const providerGuard = await providerGuardModule().catch(() => null);
+              if (providerGuard && !window.__nativeAckRequestStarted) {
+                await submit(providerGuard, 'early-ack-provider-fallback-fired');
+              }
+            }
           })().catch(error => phase(
             'early-ack-failed:' + String(error?.name || 'Error') + ':' +
               String(error?.message || error || '').slice(0, 96)

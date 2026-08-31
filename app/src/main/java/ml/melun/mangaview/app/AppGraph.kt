@@ -18,13 +18,14 @@ import ml.melun.mangaview.data.db.DeferredViewerDatabase
 import ml.melun.mangaview.data.library.UserLibraryRepository
 import ml.melun.mangaview.data.network.OkHttpTransportFactory
 import ml.melun.mangaview.data.network.HttpEngineSourceTransport
+import ml.melun.mangaview.data.offline.OfflineDownloadManager
+import ml.melun.mangaview.data.offline.OfflineEpisodeStore
 import ml.melun.mangaview.data.settings.ViewerSettingsStoreFactory
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.ntk.NtkConfig
 import ml.melun.mangaview.source.ntk.NtkContentSource
 import ml.melun.mangaview.source.ntk.NtkAccessGatewayPool
-import ml.melun.mangaview.source.ntk.NtkBrowserServiceSecondary
 import ml.melun.mangaview.source.ntk.NtkWebViewAccessGateway
 import ml.melun.mangaview.source.wfwf.WfwfConfig
 import ml.melun.mangaview.source.wfwf.WfwfContentSource
@@ -48,25 +49,28 @@ internal class AppGraph(
     private val ioDispatcher: CoroutineDispatcher,
 ) : Closeable {
     private val appContext = context.applicationContext
+    val offlineStore = OfflineEpisodeStore(
+        File(appContext.applicationInfo.dataDir, "app_offline_episodes_v2"),
+        ioDispatcher,
+    )
     private val database = DeferredViewerDatabase(appContext, ioDispatcher)
     private val transportFactory = OkHttpTransportFactory(ioDispatcher)
-    private val ntkBrowserGateways = listOf(
-        NtkWebViewAccessGateway(appContext, userAgent()),
-        NtkWebViewAccessGateway(
-            appContext,
-            userAgent(),
-            NtkBrowserServiceSecondary::class.java,
-        ),
-    )
+    // ACK work is deliberately serialized through one resident browser. Two detached WebViews
+    // still share Chromium's UI/renderer resources and caused the adjacent episode to steal
+    // frames from the visible reader. Reusing one warm session is both faster after the first
+    // challenge and gives the current episode an enforceable priority boundary.
+    private val ntkBrowserGateways = listOf(NtkWebViewAccessGateway(appContext, userAgent()))
     private val ntkGateway = NtkAccessGatewayPool(ntkBrowserGateways)
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
     val sources = SourceRegistry(
         registrations = listOf(
             SourceRegistration(NTK_ID, "NTK") {
                 ntkBrowserGateways.forEach(NtkWebViewAccessGateway::warm)
-                ntkSource.value.also { it.start() }
+                OfflineContentSource(ntkSource.value.also { it.start() }, offlineStore)
             },
-            SourceRegistration(WFWF_ID, "WFWF", ::createWfwfSource),
+            SourceRegistration(WFWF_ID, "WFWF") {
+                OfflineContentSource(createWfwfSource(), offlineStore)
+            },
         ),
     )
     private val pageStore = RawPageStore(
@@ -77,7 +81,8 @@ internal class AppGraph(
         dao = database.rawPages,
         ioDispatcher = ioDispatcher,
     )
-    private val pageRepository = PageRepository(applicationScope, sources::require, pageStore)
+    val repository = PageRepository(applicationScope, sources::require, pageStore, offlineStore)
+    val offlineDownloads = OfflineDownloadManager(applicationScope, sources::require, repository, offlineStore)
     val userLibrary = UserLibraryRepository(
         dao = database.viewer,
         settingsStore = ViewerSettingsStoreFactory().open(
@@ -94,13 +99,14 @@ internal class AppGraph(
         // from the first visible page without delaying or blocking the UI.
         ntkBrowserGateways.forEach(NtkWebViewAccessGateway::warm)
         ntkSource.value.start()
+        applicationScope.launch(ioDispatcher) { offlineStore.load() }
     }
 
     fun viewer(spec: ViewerLaunchSpec): ViewerDependencies {
         val source = sources.require(spec.sourceId)
         return ViewerDependencies(
             source = source,
-            repository = pageRepository,
+            repository = repository,
             sourceDispatcher = sourceDispatcher,
             ioDispatcher = ioDispatcher,
             loadPosition = {
@@ -143,7 +149,6 @@ internal class AppGraph(
                 NtkConfig(DEFAULT_NTK_ORIGIN, userAgent()),
                 transport,
                 ntkGateway,
-                prefetchScope = applicationScope,
             )
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()

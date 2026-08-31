@@ -6,15 +6,19 @@ import android.os.CancellationSignal
 import androidx.annotation.RequiresApi
 import java.net.InetAddress
 import java.net.UnknownHostException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicInteger
 import okhttp3.Dns
 
 internal class AndroidIpv4FirstDns(
     private val fallback: Dns = Dns.SYSTEM,
 ) : Dns {
+    private val rotations = ConcurrentHashMap<String, AtomicInteger>()
+
     override fun lookup(hostname: String): List<InetAddress> {
         if (hostname.isBlank()) throw UnknownHostException("hostname == null")
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return fallback.lookup(hostname)
@@ -23,7 +27,11 @@ internal class AndroidIpv4FirstDns(
         } catch (_: RuntimeException) {
             emptyList()
         }
-        return ipv4.ifEmpty { fallback.lookup(hostname) }
+        val resolved = ipv4.ifEmpty { fallback.lookup(hostname) }
+        val cursor = rotations.computeIfAbsent(hostname.lowercase()) { AtomicInteger() }
+            .getAndIncrement()
+        if (rotations.size > MAX_TRACKED_HOSTS) rotations.clear()
+        return rotatedAddressOrder(resolved, cursor)
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
@@ -61,6 +69,14 @@ internal class AndroidIpv4FirstDns(
 
     private companion object {
         const val QUERY_TIMEOUT_MILLIS = 1_500L
+        const val MAX_TRACKED_HOSTS = 128
         val DIRECT_EXECUTOR = Executor(Runnable::run)
     }
+}
+
+internal fun <T> rotatedAddressOrder(addresses: List<T>, cursor: Int): List<T> {
+    if (addresses.size < 2) return addresses
+    val offset = Math.floorMod(cursor, addresses.size)
+    if (offset == 0) return addresses
+    return addresses.drop(offset) + addresses.take(offset)
 }

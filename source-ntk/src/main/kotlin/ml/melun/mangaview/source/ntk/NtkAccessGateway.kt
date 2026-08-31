@@ -36,6 +36,13 @@ data class NtkEpisodeDocument(
 interface NtkAccessGateway : Closeable {
     suspend fun prepare(origin: String, episodePath: String, intent: PreparationIntent)
 
+    /**
+     * Waits for the provider browser to confirm that protected image requests are authorized.
+     * False means that no trustworthy confirmation arrived within the browser flight's absolute
+     * deadline; callers must retain their normal transport fallback in that case.
+     */
+    suspend fun awaitAuthorization(origin: String, episodePath: String): Boolean = true
+
     suspend fun resolve(
         document: NtkEpisodeDocument,
         descriptor: NtkViewerDescriptor,

@@ -1,6 +1,7 @@
 package ml.melun.mangaview.source.ntk
 
 import java.net.URI
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.yield
@@ -19,6 +20,49 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkPageServiceTest {
+    @Test
+    fun imageTransportDoesNotStartBeforeProviderAuthorizationProof() = runTest {
+        val authorization = CompletableDeferred<Boolean>()
+        val transport = SelfHealTransport(directManifest = true)
+        val gateway = SelfHealGateway(authorization = authorization)
+        val service = NtkPageService(
+            transport = transport,
+            documents = NtkDocumentClient(NtkConfig("https://ntk.test", "agent"), transport),
+            gateway = gateway,
+            parser = NtkDocumentParser(),
+        )
+        val episode = episode("authorization-order")
+        service.resolve(episode)
+
+        val opened = async { service.open(PageId.at(episode, 0), null) }
+        testScheduler.runCurrent()
+        assertEquals(0, transport.imageLoads)
+
+        authorization.complete(true)
+        opened.await().stream.close()
+        assertEquals(1, transport.imageLoads)
+        assertEquals(1, gateway.authorizationWaits)
+    }
+
+    @Test
+    fun directManifestKeepsAckAliveUntilARealImageIsAccepted() = runTest {
+        val transport = SelfHealTransport(directManifest = true)
+        val gateway = SelfHealGateway()
+        val service = NtkPageService(
+            transport = transport,
+            documents = NtkDocumentClient(NtkConfig("https://ntk.test", "agent"), transport),
+            gateway = gateway,
+            parser = NtkDocumentParser(),
+        )
+        val episode = episode("direct")
+
+        service.resolve(episode)
+        assertEquals(0, gateway.pageAccessEstablishedCalls)
+
+        service.open(PageId.at(episode, 0), null).stream.close()
+        assertEquals(1, gateway.pageAccessEstablishedCalls)
+    }
+
     @Test
     fun concurrentEpisodeManifestsUseAtMostTheTwoProviderBrowserLanes() = runTest {
         val transport = SelfHealTransport()
@@ -219,8 +263,17 @@ private class YieldingGateway : NtkAccessGateway {
 private class SelfHealGateway(
     private val decoyFirst: Boolean = false,
     private val opaqueImage: Boolean = false,
+    private val authorization: CompletableDeferred<Boolean>? = null,
 ) : NtkAccessGateway {
+    var pageAccessEstablishedCalls = 0
+    var authorizationWaits = 0
+
     override suspend fun prepare(origin: String, episodePath: String, intent: PreparationIntent) = Unit
+
+    override suspend fun awaitAuthorization(origin: String, episodePath: String): Boolean {
+        authorizationWaits += 1
+        return authorization?.await() ?: true
+    }
 
     override suspend fun resolve(
         document: NtkEpisodeDocument,
@@ -238,16 +291,22 @@ private class SelfHealGateway(
         }
         return listOf(request)
     }
+
+    override fun pageAccessEstablished(origin: String, episodePath: String) {
+        pageAccessEstablishedCalls += 1
+    }
 }
 
-private class SelfHealTransport : SourceTransport {
+private class SelfHealTransport(
+    private val directManifest: Boolean = false,
+) : SourceTransport {
     val documentLoads = mutableMapOf<String, Int>()
     var imageLoads = 0
     var decoyLoads = 0
     var opaqueImageLoads = 0
     val warmedUrls = mutableListOf<String>()
 
-    override fun warmConnections(urls: List<String>) {
+    override fun warmConnections(urls: List<String>, preferQuic: Boolean) {
         warmedUrls += urls
     }
 
@@ -265,7 +324,11 @@ private class SelfHealTransport : SourceTransport {
         } else {
             val path = uri.path
             documentLoads[path] = documentLoads.getOrDefault(path, 0) + 1
-            response(request.url, viewerDocument(path.substringAfterLast('/')).toByteArray(), "text/html")
+            response(
+                request.url,
+                viewerDocument(path.substringAfterLast('/'), path, directManifest).toByteArray(),
+                "text/html",
+            )
         }
     }
 
@@ -284,9 +347,10 @@ private class SelfHealTransport : SourceTransport {
             0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xe0.toByte(),
             0, 12, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4,
         )
-        fun viewerDocument(episodeId: String): String = """
+        fun viewerDocument(episodeId: String, path: String = "", direct: Boolean = false): String = """
             <script>{"sourceWorkId":"work","episodeId":"$episodeId","imagesToken":"token",
               "imageApiPath":"/api/webtoon-images","imageCount":1}</script>
+            ${if (direct) "<img src=\"https://images.test$path/p0000.jpg\">" else ""}
         """.trimIndent()
     }
 }

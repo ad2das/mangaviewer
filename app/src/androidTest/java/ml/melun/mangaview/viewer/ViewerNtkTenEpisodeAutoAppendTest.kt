@@ -19,17 +19,14 @@ class ViewerNtkTenEpisodeAutoAppendTest {
             ?.toIntOrNull()
             ?.takeIf { it > 0 }
             ?: DEFAULT_REQUIRED_EPISODES
-        ViewerTenEpisodeAutoAppendHarness(
-            instrumentation = instrumentation,
-            artifactPrefix = artifactPrefix,
-            requiredEpisodes = requiredEpisodes,
-        ).run(
-            LiveEpisode(
-                sourceId = "ntk",
-                seriesKey = seriesKey,
-                episodeKey = episodeKey,
-            ),
-        )
+        val episode = LiveEpisode("ntk", seriesKey, episodeKey)
+        withProductionDetailWarmup(instrumentation, episode) {
+            ViewerTenEpisodeAutoAppendHarness(
+                instrumentation = instrumentation,
+                artifactPrefix = artifactPrefix,
+                requiredEpisodes = requiredEpisodes,
+            ).run(episode)
+        }
     }
 
     private companion object {

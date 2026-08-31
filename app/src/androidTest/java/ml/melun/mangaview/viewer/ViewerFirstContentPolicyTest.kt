@@ -7,8 +7,8 @@ import org.junit.Test
 
 class ViewerFirstContentPolicyTest {
     @Test
-    fun totalOverLimitPassesOnlyWhenTheMeasuredAppTailRemainsStrict() {
-        assertNull(ViewerFirstContentPolicy.violation(6_000L, 4_000L, timing(
+    fun totalOverLimitAlwaysFailsEvenWhenTheMeasuredAppTailIsFast() {
+        assertNotNull(ViewerFirstContentPolicy.violation(6_000L, 4_000L, timing(
             verified = 5_000_000_000L,
             decoded = 5_100_000_000L,
             submitted = 5_150_000_000L,
@@ -23,8 +23,8 @@ class ViewerFirstContentPolicyTest {
     }
 
     @Test
-    fun offscreenDwellAfterPredecodeIsNotMisreportedAsRenderLatency() {
-        assertNull(ViewerFirstContentPolicy.violation(6_000L, 4_000L, timing(
+    fun offscreenDwellCannotExcuseAnOverLimitResult() {
+        assertNotNull(ViewerFirstContentPolicy.violation(6_000L, 4_000L, timing(
             verified = 5_000_000_000L,
             decoded = 5_050_000_000L,
             submitted = 5_800_000_000L,

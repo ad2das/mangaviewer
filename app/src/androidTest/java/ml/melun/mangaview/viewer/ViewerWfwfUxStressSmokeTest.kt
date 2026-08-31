@@ -9,15 +9,24 @@ import org.junit.runner.RunWith
 class ViewerWfwfUxStressSmokeTest {
     @Test
     fun realGesturesHomeAndFrameTimingRemainHealthy() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val arguments = InstrumentationRegistry.getArguments()
         ViewerUxTestHarness(
-            instrumentation = InstrumentationRegistry.getInstrumentation(),
-            artifactPrefix = "wfwf-ux-stress-smoke",
+            instrumentation = instrumentation,
+            artifactPrefix = arguments.getString(ARG_ARTIFACT_PREFIX)
+                ?: "wfwf-ux-stress-smoke",
         ).run(
             LiveEpisode(
                 sourceId = "wfwf",
-                seriesKey = "comic:10007",
-                episodeKey = "28",
+                seriesKey = arguments.getString(ARG_SERIES_KEY) ?: "comic:10007",
+                episodeKey = arguments.getString(ARG_EPISODE_KEY) ?: "28",
             ),
         )
+    }
+
+    private companion object {
+        const val ARG_SERIES_KEY = "wfwfSeriesKey"
+        const val ARG_EPISODE_KEY = "wfwfEpisodeKey"
+        const val ARG_ARTIFACT_PREFIX = "artifactPrefix"
     }
 }

@@ -37,14 +37,20 @@ internal fun LibraryScreen(
 ) {
     val colors = libraryColors(state.saved.settings.darkTheme)
     val detailVisible = state.activeSeries != null
-    BackHandler(enabled = detailVisible || state.settingsVisible) { accept(LibraryIntent.Back) }
+    BackHandler(
+        enabled = detailVisible || state.settingsVisible || state.preferencesVisible || state.downloadSelectionVisible,
+    ) { accept(LibraryIntent.Back) }
     Box(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
         if (detailVisible) {
             SeriesDetailScreen(state, artworkLoader, colors, accept)
         } else {
             MainShell(state, artworkLoader, colors, accept)
         }
-        if (state.settingsVisible) SettingsOverlay(state, colors, accept)
+        if (state.seriesMenuVisible) SeriesActionsOverlay(state, colors, accept)
+        if (state.downloadSelectionVisible) DownloadSelectionOverlay(state, colors, accept)
+        if (state.pendingOfflineRemoval != null) OfflineRemovalConfirmation(state, colors, accept)
+        if (state.settingsVisible) SettingsOverlay(colors, accept)
+        if (state.preferencesVisible) PreferencesOverlay(state, colors, accept)
     }
 }
 
@@ -76,13 +82,13 @@ private fun MainTopBar(state: LibraryState, colors: LibraryColors, accept: (Libr
         MainDestination.LIBRARY -> "내 보관함"
     }
     Row(
-        Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 20.dp),
+        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         BasicText(
             title,
             Modifier.weight(1f),
-            titleStyle(colors, 25).copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal),
+            titleStyle(colors, 22).copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
         )
         val source = state.sources.firstOrNull { it.id == state.selectedSourceId }
         val next = state.sources.let { options ->
@@ -90,20 +96,21 @@ private fun MainTopBar(state: LibraryState, colors: LibraryColors, accept: (Libr
             options.getOrNull((index + 1).mod(options.size.coerceAtLeast(1)))
         }
         Box(
-            Modifier.size(48.dp).clip(CircleShape).clickable {
+            Modifier.size(44.dp).clip(CircleShape).clickable {
                 next?.let { accept(LibraryIntent.SourceSelected(it.id)) }
             },
             contentAlignment = Alignment.Center,
         ) {
             val art = if (source?.id?.value == "ntk") LegacySiteArtwork.ntk else LegacySiteArtwork.wfwf
-            Image(art, source?.label, Modifier.size(38.dp), contentScale = ContentScale.Fit)
+            Image(art, source?.label, Modifier.size(34.dp), contentScale = ContentScale.Fit)
         }
         Spacer(Modifier.size(8.dp))
         Box(
-            Modifier.size(44.dp).clip(CircleShape).clickable { accept(LibraryIntent.ToggleSettings) },
+            Modifier.size(40.dp).semantics { contentDescription = "계정" }
+                .clip(CircleShape).clickable { accept(LibraryIntent.ToggleSettings) },
             contentAlignment = Alignment.Center,
         ) {
-            LibraryIconView(LibraryIcon.PROFILE, colors.accent, Modifier.size(34.dp))
+            LibraryIconView(LibraryIcon.PROFILE, colors.accent, Modifier.size(30.dp))
         }
     }
 }
@@ -116,8 +123,8 @@ private fun MainBottomNavigation(
 ) {
     Row(
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp)
-            .height(72.dp).shadow(5.dp, RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp))
-            .background(colors.card).border(1.dp, colors.outline, RoundedCornerShape(28.dp)),
+            .height(64.dp).shadow(4.dp, RoundedCornerShape(24.dp)).clip(RoundedCornerShape(24.dp))
+            .background(colors.card).border(1.dp, colors.outline, RoundedCornerShape(24.dp)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         NavigationItem(MainDestination.HOME, LibraryIcon.HOME, selected, colors, accept)
@@ -136,7 +143,7 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
 ) {
     val active = item == selected
     Column(
-        Modifier.weight(1f).height(64.dp).semantics { contentDescription = "하단 ${item.label}" }
+        Modifier.weight(1f).height(56.dp).semantics { contentDescription = "하단 ${item.label}" }
             .clickable { accept(LibraryIntent.DestinationSelected(item)) },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,

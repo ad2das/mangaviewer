@@ -12,34 +12,21 @@ internal object ViewerFirstContentPolicy {
         require(firstContentMillis >= 0L)
         require(limitMillis > 0L)
         if (firstContentMillis <= limitMillis) return null
-        val timing = startup ?: return (
-            "Cold first frame ${firstContentMillis}ms exceeded ${limitMillis}ms " +
-                "without structured timing evidence"
-            )
-        val verified = timing.initialVerifiedAtNanos
-        val decoded = timing.initialDecodedAtNanos
-        val submitted = timing.firstActualSubmittedAtNanos
-        val presented = timing.firstActualPresentedAtNanos
-        if (verified == null || decoded == null || submitted == null || presented == null) {
-            return "Cold first frame ${firstContentMillis}ms exceeded ${limitMillis}ms " +
-                "with incomplete startup timing: $timing"
-        }
-        val decodeNanos = decoded - verified
-        val presentationNanos = presented - submitted
-        val internalTailNanos = decodeNanos + presentationNanos
-        return if (decodeNanos >= MAXIMUM_INITIAL_DECODE_NANOS ||
-            presentationNanos >= MAXIMUM_INITIAL_PRESENT_NANOS ||
-            internalTailNanos >= MAXIMUM_INITIAL_INTERNAL_TAIL_NANOS
-        ) {
-            "Cold first frame ${firstContentMillis}ms exceeded ${limitMillis}ms with app tail " +
-                "decode=${decodeNanos / 1_000_000.0}ms, " +
-                "present=${presentationNanos / 1_000_000.0}ms"
-        } else {
-            null
-        }
+        return "Cold first frame ${firstContentMillis}ms exceeded ${limitMillis}ms" +
+            startupBreakdown(startup)
     }
 
-    const val MAXIMUM_INITIAL_DECODE_NANOS = 350_000_000L
-    const val MAXIMUM_INITIAL_PRESENT_NANOS = 150_000_000L
-    const val MAXIMUM_INITIAL_INTERNAL_TAIL_NANOS = 500_000_000L
+    private fun startupBreakdown(timing: ViewerStartupTiming?): String {
+        timing ?: return " without structured timing evidence"
+        fun elapsed(end: Long?, start: Long?): String = if (end == null || start == null) {
+            "unknown"
+        } else {
+            "${(end - start).coerceAtLeast(0L) / 1_000_000.0}ms"
+        }
+        return "; manifest=${elapsed(timing.manifestReadyAtNanos, timing.openStartedAtNanos)}, " +
+            "response=${elapsed(timing.initialResponseStartedAtNanos, timing.manifestReadyAtNanos)}, " +
+            "transfer=${elapsed(timing.initialVerifiedAtNanos, timing.initialResponseStartedAtNanos)}, " +
+            "decode=${elapsed(timing.initialDecodedAtNanos, timing.initialVerifiedAtNanos)}, " +
+            "present=${elapsed(timing.firstActualPresentedAtNanos, timing.firstActualSubmittedAtNanos)}"
+    }
 }

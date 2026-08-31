@@ -17,8 +17,11 @@ import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceEpisode
+import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceSearchQuery
+import ml.melun.mangaview.source.SearchField
 
 internal class NtkCatalogService(
     private val sourceId: SourceId,
@@ -30,16 +33,39 @@ internal class NtkCatalogService(
     private var catalogs: Map<SeriesId, List<NtkEpisodeRecord>> = emptyMap()
 
     suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> {
-        val page = cursor?.toIntOrNull()?.coerceAtLeast(1) ?: 1
-        val encoded = URLEncoder.encode(query.trim(), Charsets.UTF_8.name())
+        return search(SourceSearchQuery(query, cursor = cursor))
+    }
+
+    suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> {
+        val page = query.cursor?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+        val encoded = URLEncoder.encode(query.text.trim(), Charsets.UTF_8.name())
+        if (query.field == SearchField.AUTHOR) return authorSearch(query, page, encoded)
         val path = "/api/works?keyword=$encoded&page=$page&pageSize=$searchPageSize&withTotal=1"
         val api = attempt { parser.searchApi(documents.text(path, json = true), sourceId) }
         if (api != null && api.series.isNotEmpty()) {
+            val items = filterKind(api.series, query.kind)
             val hasNext = api.total?.let { page * searchPageSize < it }
                 ?: (api.series.size == searchPageSize)
-            return SourcePage(api.series, if (hasNext) (page + 1).toString() else null)
+            return SourcePage(items, if (hasNext) (page + 1).toString() else null)
         }
-        return SourcePage(parser.searchHtml(documents.text("/search?q=$encoded", false), sourceId))
+        val html = parser.searchHtml(documents.text("/search?q=$encoded&field=title&match=contains", false), sourceId)
+        return SourcePage(filterKind(html, query.kind))
+    }
+
+    private suspend fun authorSearch(query: SourceSearchQuery, page: Int, encoded: String): SourcePage<SourceSeries> {
+        if (page > 1) return SourcePage(emptyList())
+        val path = "/search?q=$encoded&field=author&match=contains"
+        val items = parser.searchHtml(documents.text(path, false), sourceId)
+        return SourcePage(filterKind(items, query.kind))
+    }
+
+    private fun filterKind(items: List<SourceSeries>, kind: SeriesKind?): List<SourceSeries> {
+        if (kind == null) return items
+        return items.filter { item ->
+            val value = runCatching { NtkSeriesKey.decode(item.id).kind }.getOrNull()
+            (kind == SeriesKind.COMIC && value == NtkKind.MANHWA) ||
+                (kind == SeriesKind.WEBTOON && value == NtkKind.WEBTOON)
+        }
     }
 
     suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
@@ -52,9 +78,9 @@ internal class NtkCatalogService(
                 CatalogOrder.LATEST -> add("sort=recent")
                 CatalogOrder.NEW -> add("sort=new")
             }
-            query.genre?.trim()?.takeIf(String::isNotEmpty)?.let { genre ->
+            query.genre?.let { genre ->
                 val key = if (query.kind == SeriesKind.COMIC) "g" else "tag"
-                add("$key=${URLEncoder.encode(genre, Charsets.UTF_8.name())}")
+                add("$key=${URLEncoder.encode(genre.key, Charsets.UTF_8.name())}")
             }
             add("page=$page")
             add("pageSize=$searchPageSize")
@@ -76,14 +102,20 @@ internal class NtkCatalogService(
         return SourcePage(parser.searchHtml(documents.text(catalogPath(query), false), sourceId))
     }
 
+    suspend fun genres(kind: SeriesKind): List<SourceGenre> {
+        val path = if (kind == SeriesKind.COMIC) "/manhwa" else "/ing"
+        val parsed = attempt { parser.genres(documents.text(path, false), kind) }.orEmpty()
+        return parsed.ifEmpty { fallbackGenres(kind) }
+    }
+
     private fun catalogPath(query: CatalogQuery): String {
         val root = if (query.kind == SeriesKind.COMIC) "/manhwa" else "/ing"
         val parameters = buildList {
             if (query.order == CatalogOrder.POPULAR) add("sort=hot")
             if (query.order == CatalogOrder.NEW) add("sort=new")
-            query.genre?.trim()?.takeIf(String::isNotEmpty)?.let { genre ->
+            query.genre?.let { genre ->
                 val key = if (query.kind == SeriesKind.COMIC) "g" else "tag"
-                add("$key=${URLEncoder.encode(genre, Charsets.UTF_8.name())}")
+                add("$key=${URLEncoder.encode(genre.key, Charsets.UTF_8.name())}")
             }
         }
         return if (parameters.isEmpty()) root else "$root?${parameters.joinToString("&")}"
@@ -153,5 +185,26 @@ internal class NtkCatalogService(
         throw cancelled
     } catch (_: Exception) {
         null
+    }
+
+    private fun fallbackGenres(kind: SeriesKind): List<SourceGenre> = when (kind) {
+        SeriesKind.WEBTOON -> NTK_WEBTOON_GENRES.map { (key, label) -> SourceGenre(key, label) }
+        SeriesKind.COMIC -> NTK_COMIC_GENRES.map { SourceGenre(it, it) }
+    }
+
+    private companion object {
+        val NTK_WEBTOON_GENRES = listOf(
+            "1" to "학원", "2" to "액션", "3" to "SF", "4" to "스토리", "5" to "판타지",
+            "6" to "BL/백합", "7" to "개그/코미디", "8" to "연애/순정", "9" to "드라마",
+            "10" to "로맨스", "11" to "시대", "12" to "스포츠", "13" to "일상",
+            "14" to "추리/미스터리", "15" to "공포/스릴러", "16" to "성인",
+            "17" to "옴니버스", "18" to "에피소드", "19" to "무협", "20" to "소년",
+            "99" to "기타",
+        )
+        val NTK_COMIC_GENRES = listOf(
+            "순정", "판타지", "러브코미디", "드라마", "17", "학원", "라노벨", "개그", "액션",
+            "백합", "일상", "SF", "이세계", "스릴러", "애니화", "전생", "스포츠", "TS",
+            "소년", "먹방", "붕탁", "게임", "호러", "시대", "로맨스", "추리", "음악", "무협", "BL",
+        )
     }
 }

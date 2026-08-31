@@ -16,6 +16,7 @@ import ml.melun.mangaview.data.cache.CachedPage
 import ml.melun.mangaview.data.cache.PageCacheKey
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.PreparationIntent
+import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.viewer.EpisodeOperationToken
 import ml.melun.mangaview.viewer.OperationToken
 import ml.melun.mangaview.viewer.PixelBand
@@ -92,7 +93,7 @@ internal class ViewerWorkExecutor(
         launchUnique(token, ioDispatcher) {
             val started = System.nanoTime()
             try {
-                val cached = repository.get(token.pageId) {
+                val cached = repository.get(token.pageId, token.priority.fetchPriority()) {
                     eventSink(ViewerEvent.FetchResponseStarted(token, System.nanoTime()))
                 }
                 // CachedPage is metadata plus a File handle, not the encoded body. Keeping a
@@ -204,7 +205,10 @@ internal class ViewerWorkExecutor(
         band: PixelBand,
     ): CachedPage {
         val handedOff = verifiedPages.find(token.pageId, encoded)
-        val cached = handedOff ?: repository.get(token.pageId).also(verifiedPages::remember)
+        val cached = handedOff ?: repository.get(
+            token.pageId,
+            token.priority.fetchPriority(),
+        ).also(verifiedPages::remember)
         check(cached.byteCount == encoded.byteCount && cached.sha256 == encoded.sha256) {
             "Cached page identity changed before decode"
         }
@@ -284,4 +288,10 @@ internal class ViewerWorkExecutor(
         const val NANOS_PER_MILLISECOND = 1_000_000L
     }
 
+}
+
+private fun WorkPriority.fetchPriority(): PageFetchPriority = when (this) {
+    WorkPriority.HARD -> PageFetchPriority.VISIBLE
+    WorkPriority.WARM -> PageFetchPriority.FORWARD
+    WorkPriority.COLD -> PageFetchPriority.BACKGROUND
 }

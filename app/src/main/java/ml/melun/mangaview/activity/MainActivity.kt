@@ -2,8 +2,10 @@ package ml.melun.mangaview.activity
 
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.LaunchedEffect
@@ -27,7 +29,14 @@ class MainActivity : ComponentActivity() {
         val graph = (application as ViewerApplication).graph
         val viewModel = ViewModelProvider(
             this,
-            LibraryViewModelFactory(graph.sources, graph.userLibrary, Dispatchers.IO),
+            LibraryViewModelFactory(
+                graph.sources,
+                graph.userLibrary,
+                graph.offlineStore,
+                graph.offlineDownloads,
+                graph.repository,
+                Dispatchers.IO,
+            ),
         )[LibraryViewModel::class.java]
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
@@ -36,8 +45,15 @@ class MainActivity : ComponentActivity() {
             }
             LaunchedEffect(viewModel) {
                 viewModel.effects.collectLatest { effect ->
-                    if (effect is LibraryEffect.OpenEpisode) {
-                        openEpisode(effect.episodeId, effect.position)
+                    when (effect) {
+                        is LibraryEffect.OpenEpisode -> openEpisode(effect.episodeId, effect.position)
+                        is LibraryEffect.OpenUri -> openExternalUri(effect.value)
+                        is LibraryEffect.ShareText -> share(effect.title, effect.value)
+                        is LibraryEffect.ShowMessage -> Toast.makeText(
+                            this@MainActivity,
+                            effect.value,
+                            Toast.LENGTH_SHORT,
+                        ).show()
                     }
                 }
             }
@@ -65,5 +81,20 @@ class MainActivity : ComponentActivity() {
                 putExtra(ViewerLaunchSpec.EXTRA_PAGE_OFFSET_UNITS, it.offsetInPageUnits)
             }
         })
+    }
+
+    private fun openExternalUri(value: String) {
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(value))) }
+            .onFailure { Toast.makeText(this, "주소를 열 앱이 없습니다", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun share(title: String, value: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, value)
+        }
+        runCatching { startActivity(Intent.createChooser(intent, "공유")) }
+            .onFailure { Toast.makeText(this, "공유할 앱이 없습니다", Toast.LENGTH_SHORT).show() }
     }
 }

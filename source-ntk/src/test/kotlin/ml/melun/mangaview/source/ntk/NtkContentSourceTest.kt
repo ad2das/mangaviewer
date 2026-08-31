@@ -10,11 +10,35 @@ import ml.melun.mangaview.source.PreparationIntent
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceTransport
+import ml.melun.mangaview.source.SourceSearchQuery
+import ml.melun.mangaview.source.SearchField
+import ml.melun.mangaview.source.SeriesKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkContentSourceTest {
+    @Test
+    fun authorSearchUsesAuthorFieldAndHonorsContentKind() = runTest {
+        val html = """
+            <a href="/manhwa/11"><h3>만화 결과</h3></a>
+            <a href="/webtoon/22"><h3>웹툰 결과</h3></a>
+        """.trimIndent()
+        val transport = NtkQueueTransport(html)
+        val source = NtkContentSource(
+            NtkConfig("https://ntk.test", "agent"),
+            transport,
+            RecordingGateway(emptyList()),
+        )
+
+        val result = source.search(
+            SourceSearchQuery("작가", SeriesKind.COMIC, SearchField.AUTHOR),
+        ).items
+
+        assertEquals(listOf("/manhwa/11"), result.map { it.id.remoteKey })
+        assertTrue(transport.requests.single().url.contains("field=author"))
+    }
+
     @Test
     fun manifestUsesViewerMetadataWithoutAnyCatalogRequest() = runTest {
         val viewer = """
@@ -108,10 +132,15 @@ class NtkContentSourceTest {
 
     @Test
     fun prepareDefersNavigationToTheSerializedManifestLane() = runTest {
-        val gateway = RecordingGateway(emptyList())
+        val gateway = RecordingGateway(listOf(
+            NtkPageRequest("https://images.test/manhwa/2/1181/p0001.jpg"),
+        ))
         val source = NtkContentSource(
             NtkConfig("https://ntk.test", "agent"),
-            NtkQueueTransport(),
+            NtkQueueTransport(
+                """<script>{"sourceWorkId":"2","episodeId":"1181","imagesToken":"token",
+                    "imageApiPath":"/api/manhwa-images","imageCount":1}</script>""",
+            ),
             gateway,
         )
         val series = SeriesId(SourceId("ntk"), "/manhwa/2")
@@ -120,6 +149,9 @@ class NtkContentSourceTest {
         source.prepare(episode, PreparationIntent.ADJACENT_FORWARD)
 
         assertEquals(null, gateway.preparedPath)
+        runCatching { source.manifest(episode) }
+        assertEquals(episode.remoteKey, gateway.preparedPath)
+        assertEquals(PreparationIntent.ADJACENT_FORWARD, gateway.preparedIntent)
     }
 }
 
@@ -128,9 +160,11 @@ private class RecordingGateway(
 ) : NtkAccessGateway {
     var resolved = false
     var preparedPath: String? = null
+    var preparedIntent: PreparationIntent? = null
 
     override suspend fun prepare(origin: String, episodePath: String, intent: PreparationIntent) {
         preparedPath = episodePath
+        preparedIntent = intent
     }
 
     override suspend fun resolve(
@@ -144,8 +178,10 @@ private class RecordingGateway(
 
 private class NtkQueueTransport(vararg bodies: String) : SourceTransport {
     private val bodies = ArrayDeque(bodies.toList())
+    val requests = mutableListOf<SourceRequest>()
 
     override suspend fun execute(request: SourceRequest): SourceResponse {
+        requests += request
         val bytes = bodies.removeFirst().toByteArray()
         return SourceResponse(
             statusCode = 200,

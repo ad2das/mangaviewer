@@ -196,11 +196,25 @@ class ViewerReducer(
         is ViewerEvent.RetryWakeup -> Reduction(state, emptyList())
         is ViewerEvent.EnterBackground -> enterBackground(state)
         is ViewerEvent.ReturnForeground -> Reduction(
-            state.copy(visibility = ViewerVisibility.FOREGROUND),
+            state.copy(
+                visibility = ViewerVisibility.FOREGROUND,
+                surfacePresentationReady = false,
+            ),
             emptyList(),
         )
         is ViewerEvent.SurfaceAttachmentChanged -> Reduction(
-            state.copy(surfaceAttached = event.attached),
+            state.copy(
+                surfaceAttached = event.attached,
+                surfacePresentationReady = state.surfacePresentationReady && event.attached,
+            ),
+            emptyList(),
+        )
+        is ViewerEvent.ContentFramePresented -> Reduction(
+            state.copy(
+                hasPresentedContent = true,
+                surfacePresentationReady = state.surfaceAttached &&
+                    state.visibility == ViewerVisibility.FOREGROUND,
+            ),
             emptyList(),
         )
         is ViewerEvent.EvictPage -> evict(state, event.generation, event.pageId)
@@ -256,13 +270,33 @@ class ViewerReducer(
         event: ViewerEvent.InteractionChanged,
     ): Reduction {
         val startedBeforePixels = event.active && state.residentPageIds.isEmpty()
+        val movingWithContent = event.active && state.hasPresentedContent
+        val warmDecodes = if (movingWithContent) {
+            state.ownership.decodes.values.filter { it.priority == WorkPriority.WARM }
+        } else {
+            emptyList()
+        }
+        val visible = if (movingWithContent) visiblePageIds(state) else emptySet()
+        val offscreenFetches = if (movingWithContent) {
+            state.ownership.fetches.values.filter {
+                it.pageId !in visible && it.pageId.episodeId != state.currentEpisodeId
+            }
+        } else {
+            emptyList()
+        }
+        val relinquished = warmDecodes + offscreenFetches
+        val ownership = relinquished.fold(state.ownership) { current, token ->
+            current.release(token)
+        }
         return Reduction(
             state.copy(
+                ownership = ownership,
                 interactionActive = event.active,
                 startupMotionPending = event.active &&
                     (state.startupMotionPending || startedBeforePixels),
             ),
-            emptyList(),
+            warmDecodes.map(ViewerCommand::CancelDecode) +
+                offscreenFetches.map(ViewerCommand::CancelFetch),
         )
     }
 
@@ -276,6 +310,7 @@ class ViewerReducer(
                 ownership = state.ownership.clearDecodes(),
                 interactionActive = false,
                 startupMotionPending = false,
+                surfacePresentationReady = false,
             ),
             cancellations,
         )
@@ -314,20 +349,14 @@ class ViewerReducer(
         if (!state.surfaceAttached || state.visibility != ViewerVisibility.FOREGROUND) return state
         val visible = visiblePageIds(state)
         var changed = state
-        var newlyPresented = false
         visible.forEach { pageId ->
             val runtime = changed.pages.getValue(pageId)
             if (!runtime.isPresented && coversVisiblePage(changed, pageId, runtime.pixel)) {
                 val presented = runtime.advance(PageMilestone.PRESENTED).copy(isPresented = true)
                 changed = changed.replacePage(pageId, presented)
-                newlyPresented = true
             }
         }
-        return if (newlyPresented && !changed.hasPresentedContent) {
-            changed.copy(hasPresentedContent = true)
-        } else {
-            changed
-        }
+        return changed
     }
 
     private fun visiblePageIds(state: ViewerState): Set<PageId> {

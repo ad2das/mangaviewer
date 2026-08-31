@@ -50,7 +50,11 @@ class ViewerActivity : ComponentActivity() {
     private val hardDecodeWork = AndroidWorkDispatcher(
         name = "viewer-decode-hard",
         threads = 1,
-        linuxPriority = Process.THREAD_PRIORITY_DISPLAY,
+        // A visible decode is latency-sensitive, but running CPU-heavy native decode at the
+        // same Linux priority as Android's display pipeline can steal the exact VSYNC that must
+        // present the gesture. Default priority keeps it ahead of warm/background work while
+        // leaving RenderThread and input delivery uncontested.
+        linuxPriority = Process.THREAD_PRIORITY_DEFAULT,
     )
     private val warmDecodeWork = AndroidWorkDispatcher(
         name = "viewer-decode-warm",

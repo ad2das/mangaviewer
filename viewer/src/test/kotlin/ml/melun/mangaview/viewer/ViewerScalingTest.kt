@@ -137,6 +137,15 @@ class ViewerScalingTest {
                 ),
             ))
             assertEquals(logicalAnchor, reduction.state.scroll.anchor)
+            if (fetched.size == 1) {
+                reduction = requireNotNull(reducer.reduce(
+                    reduction.state.copy(
+                        hasPresentedContent = true,
+                        surfacePresentationReady = true,
+                    ),
+                    ViewerEvent.RetryWakeup(now++),
+                ))
+            }
             pending.addFetches(reduction.commands)
         }
 
@@ -179,12 +188,28 @@ class ViewerScalingTest {
             opened.state,
             ViewerEvent.FetchResponseStarted(first.token, 2L),
         ))
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state,
+            ViewerEvent.FetchSucceeded(
+                first.token,
+                VerifiedPageRef("initial", 1L, "initial-sha", PageDimensions(1_000, 1_500)),
+                10L,
+                3L,
+            ),
+        ))
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state.copy(
+                hasPresentedContent = true,
+                surfacePresentationReady = true,
+            ),
+            ViewerEvent.RetryWakeup(4L),
+        ))
         val initialRunway = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
-        assertEquals(5, initialRunway.size)
+        assertEquals(2, initialRunway.size)
 
         reduction = requireNotNull(reducer.reduce(
             reduction.state,
-            ViewerEvent.InteractionChanged(true, 3L),
+            ViewerEvent.InteractionChanged(true, 4L),
         ))
         val completed = initialRunway.first()
         reduction = requireNotNull(reducer.reduce(
@@ -193,7 +218,7 @@ class ViewerScalingTest {
                 completed.token,
                 VerifiedPageRef("forward", 1L, "forward-sha", PageDimensions(1_000, 1_500)),
                 10L,
-                4L,
+                5L,
             ),
         ))
 
@@ -216,8 +241,13 @@ class ViewerScalingTest {
         ))
         val initial = opened.commands.filterIsInstance<ViewerCommand.FetchPage>().single()
         var reduction = requireNotNull(reducer.reduce(
-            opened.state,
-            ViewerEvent.FetchResponseStarted(initial.token, 2L),
+            opened.state.copy(
+                firstResponseReceived = true,
+                networkConcurrency = 6,
+                hasPresentedContent = true,
+                surfacePresentationReady = true,
+            ),
+            ViewerEvent.RetryWakeup(2L),
         ))
         assertEquals(6, reduction.state.ownership.fetches.size)
 

@@ -70,6 +70,13 @@ internal class NativeTilePool(
         }
     }
 
+    /** Moves gralloc allocation off the first decoded frame; no pixels are fabricated or shown. */
+    fun preallocate(width: Int, height: Int) {
+        require(width > 0 && height > 0)
+        val slot = acquire(width, height)
+        releaseReserved(slot)
+    }
+
     fun recycle(pixel: PixelRef) {
         synchronized(lock) {
             pixel.tiles.forEach { tile ->

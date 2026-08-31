@@ -23,11 +23,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.data.library.RecentReading
-import ml.melun.mangaview.data.library.SavedBookmark
 import ml.melun.mangaview.data.library.SavedSeries
 import ml.melun.mangaview.source.SourceSeries
 
@@ -51,14 +52,19 @@ internal fun SavedLibraryScreen(
             SavedTab.ALL -> AllSaved(state, query, artworkLoader, colors, accept)
             SavedTab.RECENT -> RecentSaved(state.saved.recent, query, artworkLoader, colors, accept)
             SavedTab.FAVORITES -> FavoriteSaved(state.saved.favorites, query, artworkLoader, colors, accept)
-            SavedTab.BOOKMARKS -> BookmarkSaved(state.saved.bookmarks, query, colors, accept)
+            SavedTab.OFFLINE -> OfflineSaved(state, query, artworkLoader, colors, accept)
         }
     }
 }
 
 @Composable
 private fun SavedSearch(query: String, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, top = 12.dp, end = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Row(
             Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(14.dp)).background(colors.card)
                 .border(1.dp, colors.outline, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp),
@@ -80,13 +86,16 @@ private fun SavedSearch(query: String, colors: LibraryColors, accept: (LibraryIn
                 },
             )
         }
-        LibraryAction("검색", colors, Modifier.height(52.dp)) { }
+        LibraryAction("검색", colors, Modifier.width(80.dp).height(52.dp)) {
+            focusManager.clearFocus()
+            keyboard?.hide()
+        }
     }
 }
 
 @Composable
 private fun SavedTabs(selected: SavedTab, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    Row(Modifier.fillMaxWidth().height(52.dp).padding(top = 4.dp)) {
+    Row(Modifier.fillMaxWidth().height(48.dp)) {
         SavedTab.entries.forEach { tab ->
             val active = tab == selected
             Column(
@@ -105,7 +114,12 @@ private fun SavedTabs(selected: SavedTab, colors: LibraryColors, accept: (Librar
 @Composable
 private fun AllSaved(state: LibraryState, query: String, loader: SeriesArtworkLoader, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     val recentIds = state.saved.recent.mapTo(hashSetOf()) { it.series.id }
-    val combined = state.saved.recent.map { it.series } + state.saved.favorites.filterNot { it.id in recentIds }
+    val favoriteIds = state.saved.favorites.mapTo(hashSetOf()) { it.id }
+    val combined = state.saved.recent.map { it.series } +
+        state.saved.favorites.filterNot { it.id in recentIds } +
+        state.offlineEpisodes.map { it.series }.distinctBy { it.id }
+            .filterNot { it.id in recentIds || it.id in favoriteIds }
+            .map { item -> SavedSeries(item.id, item.title, item.thumbnailKey, false, 0L) }
     FavoriteSaved(combined, query, loader, colors, accept, "최근 읽거나 보관하거나 저장한 작품이 없습니다")
 }
 
@@ -143,24 +157,43 @@ private fun FavoriteSaved(
 }
 
 @Composable
-private fun BookmarkSaved(items: List<SavedBookmark>, query: String, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    val filtered = items.filter { query.isEmpty() || it.seriesTitle.contains(query, true) }
-    if (filtered.isEmpty()) return SavedEmpty("저장한 책갈피가 없습니다", colors)
+private fun OfflineSaved(
+    state: LibraryState,
+    query: String,
+    loader: SeriesArtworkLoader,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    val series = state.offlineEpisodes.map { it.series }.distinctBy { it.id }
+        .filter { query.isEmpty() || it.title.contains(query, true) }
+    if (series.isEmpty()) return SavedEmpty("오프라인으로 볼 작품을 저장하면 여기에 표시됩니다", colors)
     LazyColumn(Modifier.fillMaxSize()) {
-        items(filtered, key = { "${it.pageId.episodeId.remoteKey}:${it.pageId.remoteKey}" }) { item ->
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 5.dp).height(80.dp)
-                    .clip(RoundedCornerShape(14.dp)).background(colors.card)
-                    .clickable { accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits))) }
-                    .padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                LibraryIconView(LibraryIcon.LIBRARY, colors.accent, Modifier.size(32.dp))
-                Column(Modifier.padding(start = 14.dp)) {
-                    BasicText(item.seriesTitle, style = bodyStyle(colors), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    BasicText(item.pageId.episodeId.remoteKey, style = hintStyle(colors), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+        items(series, key = { "${it.id.sourceId.value}:${it.id.remoteKey}" }) { item ->
+            val count = state.offlineEpisodes.count { it.series.id == item.id }
+            SavedSourceSeriesRow(item, "${count}개 회차", loader, colors) {
+                accept(LibraryIntent.OfflineSeriesSelected(item))
             }
+        }
+    }
+}
+
+@Composable
+private fun SavedSourceSeriesRow(
+    item: SourceSeries,
+    subtitle: String,
+    loader: SeriesArtworkLoader,
+    colors: LibraryColors,
+    click: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 5.dp).height(92.dp)
+            .clip(RoundedCornerShape(14.dp)).background(colors.card).clickable(onClick = click).padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SeriesArtwork(item, loader, colors, Modifier.width(58.dp).height(72.dp).clip(RoundedCornerShape(8.dp)))
+        Column(Modifier.padding(start = 14.dp)) {
+            BasicText(item.title, style = bodyStyle(colors, 15), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            BasicText(subtitle, style = hintStyle(colors), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -197,8 +230,11 @@ private fun SavedEmpty(message: String, colors: LibraryColors) {
 }
 
 private fun savedCount(state: LibraryState): Int = when (state.libraryTab) {
-    SavedTab.ALL -> (state.saved.recent.map { it.series.id } + state.saved.favorites.map { it.id }).distinct().size
+    SavedTab.ALL -> (
+        state.saved.recent.map { it.series.id } + state.saved.favorites.map { it.id } +
+            state.offlineEpisodes.map { it.series.id }
+    ).distinct().size
     SavedTab.RECENT -> state.saved.recent.size
     SavedTab.FAVORITES -> state.saved.favorites.size
-    SavedTab.BOOKMARKS -> state.saved.bookmarks.size
+    SavedTab.OFFLINE -> state.offlineEpisodes.map { it.series.id }.distinct().size
 }

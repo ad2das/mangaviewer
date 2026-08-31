@@ -4,6 +4,7 @@ import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.PageSpec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SourceBoundaryContractTest {
@@ -25,13 +26,14 @@ class SourceBoundaryContractTest {
     @Test
     fun contentSourceExposesCanonicalIdsInsteadOfProviderRequestTypes() {
         val manifest = ContentSource::class.java.methods.single { it.name == "manifest" }
-        val openPage = ContentSource::class.java.methods.single { it.name == "openPage" }
+        val openPages = ContentSource::class.java.methods.filter { it.name == "openPage" }
 
         assertEquals(
             true,
             manifest.genericParameterTypes.last().typeName.contains("EpisodeManifest"),
         )
-        assertEquals(PageId::class.java, openPage.parameterTypes.first())
+        assertTrue(openPages.isNotEmpty())
+        assertTrue(openPages.all { it.parameterTypes.firstOrNull() == PageId::class.java })
         assertFalse(
             ContentSource::class.java.methods
                 .flatMap { it.parameterTypes.asIterable() + it.returnType }

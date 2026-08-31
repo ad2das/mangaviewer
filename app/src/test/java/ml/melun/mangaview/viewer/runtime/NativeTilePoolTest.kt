@@ -3,6 +3,7 @@ package ml.melun.mangaview.viewer.runtime
 import java.io.File
 import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.viewer.PixelBandGrid
+import ml.melun.mangaview.viewer.PixelBand
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
@@ -13,6 +14,22 @@ import org.junit.rules.TemporaryFolder
 class NativeTilePoolTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
+
+    @Test
+    fun preallocatedViewportTileIsReusedByTheFirstFullQualitySlice() {
+        val bindings = RecordingPixelBindings()
+        val pool = NativeTilePool(bindings, maximumBytes = 8L * 1_024L * 1_024L)
+        val source = File(temporaryFolder.root, "page.webp").apply { writeBytes(byteArrayOf(1)) }
+        val dimensions = PageDimensions(1_080, 1_920)
+
+        pool.preallocate(1_080, 512)
+        val pixel = pool.decodeBand(source, dimensions, PixelBand(0, 256, 1_080))
+
+        assertEquals(1, bindings.allocations)
+        assertEquals(1, bindings.publications)
+        assertEquals(2L, pixel.tiles.single().contentVersion)
+        pool.close()
+    }
 
     @Test
     fun safelyRetiredSlotsAreReusedWithANewContentVersion() {

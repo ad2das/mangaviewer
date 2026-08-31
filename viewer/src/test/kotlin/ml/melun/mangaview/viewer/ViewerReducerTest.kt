@@ -13,6 +13,32 @@ import org.junit.Test
 
 class ViewerReducerTest {
     @Test
+    fun renderConfirmationOpensWarmWorkGateAndBackgroundClosesItAgain() {
+        val reducer = ViewerFixtures.reducer()
+        var state = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(10L, ViewerFixtures.manifest(3), ViewerFixtures.viewport, 1L),
+        )).state
+        state = requireNotNull(reducer.reduce(
+            state,
+            ViewerEvent.SurfaceAttachmentChanged(true, 2L),
+        )).state
+
+        val presented = requireNotNull(reducer.reduce(
+            state,
+            ViewerEvent.ContentFramePresented(3L),
+        )).state
+        val background = requireNotNull(reducer.reduce(
+            presented,
+            ViewerEvent.EnterBackground(4L),
+        )).state
+
+        assertTrue(presented.hasPresentedContent)
+        assertTrue(presented.surfacePresentationReady)
+        assertFalse(background.surfacePresentationReady)
+    }
+
+    @Test
     fun interactionLifecycleIsExplicitAndSettlesWithoutSyntheticScroll() {
         val reducer = ViewerFixtures.reducer()
         val opened = requireNotNull(reducer.reduce(
@@ -33,6 +59,82 @@ class ViewerReducerTest {
         ))
         assertFalse(settled.state.interactionActive)
         assertEquals(opened.state.scroll, settled.state.scroll)
+    }
+
+    @Test
+    fun startingMotionCancelsOnlyOffscreenWarmDecodeAfterContentIsVisible() {
+        val reducer = ViewerFixtures.reducer()
+        val opened = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(1L, ViewerFixtures.manifest(3), ViewerFixtures.viewport, 1L),
+        )).state
+        val hardPage = opened.pageOrder[0]
+        val warmPage = opened.pageOrder[1]
+        val hardClaim = opened.ownership.claim(1L, hardPage, WorkKind.DECODE, 1, WorkPriority.HARD)
+        val warmClaim = hardClaim.ownership.claim(1L, warmPage, WorkKind.DECODE, 1, WorkPriority.WARM)
+        val moving = requireNotNull(reducer.reduce(
+            opened.copy(
+                ownership = warmClaim.ownership,
+                firstResponseReceived = true,
+                networkConcurrency = 2,
+                hasPresentedContent = true,
+                surfacePresentationReady = true,
+            ),
+            ViewerEvent.InteractionChanged(true, 2L),
+        ))
+
+        assertEquals(hardClaim.token, moving.state.ownership.owner(WorkKind.DECODE, hardPage))
+        assertEquals(null, moving.state.ownership.owner(WorkKind.DECODE, warmPage))
+        assertEquals(
+            warmClaim.token,
+            moving.commands.filterIsInstance<ViewerCommand.CancelDecode>().single().token,
+        )
+    }
+
+    @Test
+    fun startingMotionRelinquishesOffscreenFetchButKeepsVisibleFetch() {
+        val reducer = ViewerFixtures.reducer()
+        val opened = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(7L, ViewerFixtures.manifest(8), ViewerFixtures.viewport, 1L),
+        )).state
+        val visiblePage = opened.pageOrder.first()
+        val offscreenPage = PageId(
+            ViewerFixtures.manifest(1, episodeKey = "adjacent").id,
+            "p0001",
+        )
+        val visibleClaim = WorkOwnership().claim(
+            7L,
+            visiblePage,
+            WorkKind.FETCH,
+            1,
+            WorkPriority.HARD,
+        )
+        val offscreenClaim = visibleClaim.ownership.claim(
+            7L,
+            offscreenPage,
+            WorkKind.FETCH,
+            1,
+            WorkPriority.COLD,
+        )
+
+        val moving = requireNotNull(reducer.reduce(
+            opened.copy(
+                ownership = offscreenClaim.ownership,
+                firstResponseReceived = true,
+                networkConcurrency = 2,
+                hasPresentedContent = true,
+                surfacePresentationReady = true,
+            ),
+            ViewerEvent.InteractionChanged(true, 2L),
+        ))
+
+        assertEquals(visibleClaim.token, moving.state.ownership.owner(WorkKind.FETCH, visiblePage))
+        assertEquals(null, moving.state.ownership.owner(WorkKind.FETCH, offscreenPage))
+        assertEquals(
+            offscreenClaim.token,
+            moving.commands.filterIsInstance<ViewerCommand.CancelFetch>().single().token,
+        )
     }
 
     @Test

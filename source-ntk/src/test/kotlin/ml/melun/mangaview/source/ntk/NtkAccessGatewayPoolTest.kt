@@ -11,6 +11,25 @@ import org.junit.Test
 
 class NtkAccessGatewayPoolTest {
     @Test
+    fun resolvedAckStaysOnItsLaneAndTheNextEpisodeUsesTheOtherLane() = runTest {
+        val first = PoolLane()
+        val second = PoolLane()
+        val pool = NtkAccessGatewayPool(listOf(first, second))
+        val current = "/webtoon/1/current"
+        val next = "/webtoon/1/next"
+
+        pool.prepare(ORIGIN, current, PreparationIntent.INITIAL_VIEW)
+        pool.resolve(document(current), DESCRIPTOR)
+        assertTrue(pool.awaitAuthorization(ORIGIN, current))
+        pool.prepare(ORIGIN, next, PreparationIntent.ADJACENT_FORWARD)
+
+        assertEquals(listOf(current), first.prepared)
+        assertEquals(listOf(next), second.prepared)
+        pool.pageAccessEstablished(ORIGIN, current)
+        assertEquals(listOf(current), first.established)
+    }
+
+    @Test
     fun twoDocumentsOwnIndependentLanesAndAThirdWaitsForRelease() = runTest {
         val first = PoolLane()
         val second = PoolLane()
@@ -56,6 +75,7 @@ class NtkAccessGatewayPoolTest {
 
 private class PoolLane : NtkAccessGateway {
     val prepared = mutableListOf<String>()
+    val established = mutableListOf<String>()
 
     override suspend fun prepare(origin: String, episodePath: String, intent: PreparationIntent) {
         prepared += episodePath
@@ -65,4 +85,8 @@ private class PoolLane : NtkAccessGateway {
         document: NtkEpisodeDocument,
         descriptor: NtkViewerDescriptor,
     ): List<NtkPageRequest> = listOf(NtkPageRequest("https://images.test/page.jpg"))
+
+    override fun pageAccessEstablished(origin: String, episodePath: String) {
+        established += episodePath
+    }
 }

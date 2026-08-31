@@ -3,9 +3,7 @@ package ml.melun.mangaview.source.ntk
 import android.annotation.SuppressLint
 import android.app.Service
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.Rect
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -13,6 +11,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import android.os.Process
 import android.os.RemoteException
 import android.os.SystemClock
 import android.util.Log
@@ -20,18 +19,12 @@ import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.CookieManager
 import android.webkit.ConsoleMessage
-import android.webkit.RenderProcessGoneDetail
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.webkit.WebChromeClient
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.IOException
-import java.net.URI
 
 /** Runs NTK's official browser acknowledgement outside the reader process. */
 open class NtkBrowserService : Service() {
@@ -40,16 +33,14 @@ open class NtkBrowserService : Service() {
     private val startup = NtkBrowserStartup(this, ::startupReady, ::startupFailed)
     private var browser: WebView? = null
     private var active: RemoteRequest? = null
+    private val ackPhases = NtkAckPhaseRelay { active }
     private var isStartupReady = false
     private var startupFailure: Throwable? = null
     private var pendingUserAgent: String? = null
     private var captureScript: ScriptHandler? = null
     private var completedDelivery: CompletedDelivery? = null
 
-    override fun onCreate() {
-        super.onCreate()
-        startup.begin()
-    }
+    override fun onCreate() = super.onCreate().also { startup.begin() }
 
     override fun onBind(intent: Intent?): IBinder = incoming.binder
     override fun onDestroy() {
@@ -87,6 +78,9 @@ open class NtkBrowserService : Service() {
         if (current != null && current.key == request.key) {
             val exactRedelivery = current.contains(request.requestId)
             current.add(request.requestId, request.primaryRecipient)
+            if (current.ackReadyReported) {
+                sendAckReady(request.requestId, request.primaryRecipient)
+            }
             val completed = current.delivery.completedPayload()
             completed?.let {
                 sendPayload(request.requestId, request.primaryRecipient, it)
@@ -140,11 +134,22 @@ open class NtkBrowserService : Service() {
     private fun navigate(request: RemoteRequest) {
         if (active !== request) return
         runCatching {
+            val adjacent = request.intent != ml.melun.mangaview.source.PreparationIntent.INITIAL_VIEW
+            Process.setThreadPriority(
+                if (adjacent) Process.THREAD_PRIORITY_BACKGROUND else Process.THREAD_PRIORITY_DEFAULT,
+            )
             browser(request.userAgent).apply {
                 visibility = View.VISIBLE
                 setLayerType(View.LAYER_TYPE_NONE, null)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, false)
+                    setRendererPriorityPolicy(
+                        if (adjacent) {
+                            WebView.RENDERER_PRIORITY_WAIVED
+                        } else {
+                            WebView.RENDERER_PRIORITY_BOUND
+                        },
+                        adjacent,
+                    )
                 }
                 resumeTimers()
                 onResume()
@@ -175,12 +180,11 @@ open class NtkBrowserService : Service() {
 
     private fun accept(origin: String, path: String, payload: String) {
         val request = active ?: return
-        val key = runCatching { requestKey(origin, path) }.getOrNull() ?: return
+        val key = runCatching { validatedKey(origin, path) }.getOrNull() ?: return
         if (request.key != key) return
         val accepted = request.delivery.accept(payload) ?: return
         completedDelivery = CompletedDelivery(request.requestId, request.key, accepted)
         request.replyPayload(accepted)
-        quiesce(request)
     }
 
     private fun descriptor(message: Message) {
@@ -206,8 +210,8 @@ open class NtkBrowserService : Service() {
         if (active !== request) return
         if (request.authorizationStarted) return
         request.authorizationStarted = true
-        val source = NtkBrowserChallengeSingleFlight.source + "\n" +
-            NtkBrowserCaptureScript.source + "\n" +
+        val source = NtkBrowserCaptureScript.source + "\n" +
+            NtkBrowserChallengeSingleFlight.source + "\n" +
             NtkBrowserEarlyAck.source
         browser?.evaluateJavascript(source, null)
     }
@@ -269,35 +273,32 @@ open class NtkBrowserService : Service() {
                 setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, false)
             }
             addJavascriptInterface(
-                BrowserBridge { origin, path, payload ->
-                    this@NtkBrowserService.handler.post { accept(origin, path, payload) }
-                },
+                BrowserBridge(
+                    images = { origin, path, payload ->
+                        this@NtkBrowserService.handler.post { accept(origin, path, payload) }
+                    },
+                    phase = { origin, path, phase, status ->
+                        this@NtkBrowserService.handler.post {
+                            ackPhases.accept(origin, path, phase, status)
+                        }
+                    },
+                ),
                 NtkBrowserCaptureScript.BRIDGE_NAME,
             )
             webChromeClient = QuietChromeClient()
-            webViewClient = GatewayClient()
+            webViewClient = NtkBrowserGatewayClient(
+                currentRequest = { active },
+                startAuthorization = ::startAuthorization,
+                deliverDescriptor = ::deliverDescriptor,
+                fail = ::fail,
+                rendererGone = ::rendererGone,
+            )
             layoutForProviderObservation(this)
             resumeTimers()
             onResume()
         }.also {
             browser = it
         }
-    }
-
-    private fun layoutForProviderObservation(view: WebView) {
-        // The detached worker only needs non-zero DOM geometry for the provider's own guard.
-        // Measuring it at the device's full 1080p surface makes Chromium allocate raster tiles
-        // that can never be displayed and competes with the reader compositor on an emulator.
-        val width = MIN_BROWSER_WIDTH_PX
-        val height = MIN_BROWSER_HEIGHT_PX
-        view.measure(
-            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
-        )
-        view.layout(0, 0, width, height)
-        // Keep the provider-visible DOM viewport intact while bounding the detached View's
-        // compositor damage to one pixel. No browser pixels are ever presented by this service.
-        view.clipBounds = Rect(0, 0, 1, 1)
     }
 
     private fun installNaturalAuthorization(view: WebView): Boolean {
@@ -331,92 +332,32 @@ open class NtkBrowserService : Service() {
     }
 
     private fun parkBrowser() {
-        // The payload is retained independently of WebView. Replace the very tall episode with
-        // a blank document so its raster tiles are released, but keep the renderer alive. Killing
-        // and recreating Chromium while the reader is flinging causes emulator-wide GPU stalls.
+        // Any document or visibility lifecycle transition here runs Chromium cleanup at the exact
+        // instant the reader starts decoding its first hardware buffer. Both about:blank and an
+        // INVISIBLE/onPause transition produced delayed cross-process Surface stalls. Keep the
+        // detached document intact, freeze JavaScript timers, and only waive process priority. The
+        // next ACK replaces it in place; service shutdown remains the sole destruction boundary.
         runCatching { captureScript?.remove() }
         captureScript = null
         browser?.apply {
-            stopLoading()
-            loadUrl("about:blank")
-            onPause()
-            visibility = View.INVISIBLE
+            pauseTimers()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, true)
+            }
         }
     }
-
-
-    private fun requestKey(origin: String, path: String): String = validatedKey(origin, path)
-    private inner class GatewayClient : WebViewClient() {
-        override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-            active?.let { request ->
-                val redirected = runCatching { URI(url) }.getOrNull()
-                val expected = runCatching { URI(request.key) }.getOrNull()
-                if (redirected?.scheme in HTTP_SCHEMES && redirected?.path == expected?.path) {
-                    request.key = validatedKey(
-                        "${redirected?.scheme}://${redirected?.authority}",
-                        requireNotNull(redirected?.path),
-                    )
-                }
-            }
-            active?.takeIf { !it.captureInstalledAtDocumentStart }?.let {
-                view.evaluateJavascript(NtkBrowserCaptureScript.source, null)
-            }
-        }
-
-        override fun onPageFinished(view: WebView, url: String) {
-            val request = active ?: return
-            val finishedKey = runCatching {
-                val uri = URI(url)
-                validatedKey("${uri.scheme}://${uri.authority}", requireNotNull(uri.path))
-            }.getOrNull()
-            if (finishedKey == request.key) {
-                view.clearHistory()
-                startAuthorization(request)
-                deliverDescriptor(request)
-            }
-        }
-
-        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-            request.url.scheme !in HTTP_SCHEMES
-
-        override fun shouldInterceptRequest(
-            view: WebView,
-            request: WebResourceRequest,
-        ): WebResourceResponse? = NtkBrowserResourcePolicy.intercept(request)
-
-        override fun onReceivedError(
-            view: WebView,
-            request: WebResourceRequest,
-            error: WebResourceError,
-        ) {
-            if (!request.isForMainFrame) return
-            val key = request.url.withoutQuery()
-            active?.takeIf { it.key == key }?.let {
-                fail(it, "NTK browser load failed: ${error.errorCode}")
-            }
-        }
-
-        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-            val request = active
-            runCatching { captureScript?.remove() }
-            captureScript = null
-            browser = null
-            view.destroy()
-            if (request != null && request.rendererRestarts < MAX_RENDERER_RESTARTS) {
-                request.rendererRestarts += 1
-                handler.post { if (active === request) navigate(request) }
-                Log.w(TAG, "browser renderer restarted attempt=${request.rendererRestarts}")
-            } else {
-                active = null
-                request?.replyError("NTK browser renderer stopped")
-            }
-            return true
-        }
-
-        private fun Uri.withoutQuery(): String = buildString {
-            append(scheme).append("://").append(host)
-            if (port != -1) append(':').append(port)
-            append(path)
+    private fun rendererGone(view: WebView, request: RemoteRequest?) {
+        runCatching { captureScript?.remove() }
+        captureScript = null
+        browser = null
+        view.destroy()
+        if (request != null && request.rendererRestarts < MAX_RENDERER_RESTARTS) {
+            request.rendererRestarts += 1
+            handler.post { if (active === request) navigate(request) }
+            Log.w(TAG, "browser renderer restarted attempt=${request.rendererRestarts}")
+        } else {
+            active = null
+            request?.replyError("NTK browser renderer stopped")
         }
     }
 
@@ -447,10 +388,46 @@ private fun replyError(message: Message, detail: String) {
 
 private class BrowserBridge(
     private val images: (String, String, String) -> Unit,
+    private val phase: (String, String, String, Int) -> Unit,
 ) {
     @JavascriptInterface
     fun onImages(origin: String, path: String, payload: String) = images(origin, path, payload)
 
     @JavascriptInterface
-    fun onPhase(origin: String, path: String, phase: String, status: Int) = Unit
+    fun onPhase(origin: String, path: String, phase: String, status: Int) =
+        this.phase(origin, path, phase, status)
 }
+
+private class NtkAckPhaseRelay(
+    private val currentRequest: () -> RemoteRequest?,
+) {
+    fun accept(origin: String, path: String, phase: String, status: Int) {
+        val request = currentRequest() ?: return
+        val key = runCatching { validatedKey(origin, path) }.getOrNull() ?: return
+        if (request.key != key) return
+        val safePhase = phase.take(MAX_PHASE_LENGTH).replace('\n', '_').replace('\r', '_')
+        Log.d(ACK_TAG, "phase=$safePhase status=$status ageMs=${request.ageMillis()}")
+        if (isAuthorizationProof(phase, status)) request.replyAckReady()
+    }
+
+    private fun isAuthorizationProof(phase: String, status: Int): Boolean =
+        status in 200..299 && (
+            phase.startsWith("ack-meta:ok=true,acked=true") ||
+                phase.startsWith("challenge-meta:ok=true,ackValid=true")
+            )
+}
+
+private fun layoutForProviderObservation(view: WebView) {
+    // Give the provider real DOM geometry without rasterizing an invisible device-size page.
+    val width = MIN_BROWSER_WIDTH_PX
+    val height = MIN_BROWSER_HEIGHT_PX
+    view.measure(
+        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+    )
+    view.layout(0, 0, width, height)
+    view.clipBounds = Rect(0, 0, 1, 1)
+}
+
+private const val ACK_TAG = "NtkAck"
+private const val MAX_PHASE_LENGTH = 192

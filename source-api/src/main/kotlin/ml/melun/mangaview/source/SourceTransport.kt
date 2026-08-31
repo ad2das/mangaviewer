@@ -8,6 +8,14 @@ enum class SourceHttpMethod {
     HEAD,
 }
 
+/** End-to-end page urgency. It is a scheduling hint only; bytes and validation stay identical. */
+enum class PageFetchPriority {
+    VISIBLE,
+    FORWARD,
+    NORMAL,
+    BACKGROUND,
+}
+
 data class SourceRequest(
     val url: String,
     val method: SourceHttpMethod = SourceHttpMethod.GET,
@@ -15,6 +23,8 @@ data class SourceRequest(
     val body: ByteArray? = null,
     val bodyMediaType: String? = null,
     val totalTimeoutMillis: Long = 45_000L,
+    val preferQuic: Boolean = false,
+    val priority: PageFetchPriority = PageFetchPriority.NORMAL,
 ) {
     init {
         require(url.startsWith("https://") || url.startsWith("http://")) {
@@ -49,6 +59,13 @@ data class SourceResponse(
 fun interface SourceTransport {
     suspend fun execute(request: SourceRequest): SourceResponse
 
+    /** Executes after a route failure without reusing the failed connection pool. */
+    suspend fun executeOnFreshRoute(request: SourceRequest): SourceResponse = execute(request)
+
     /** Optionally prepares transport state without issuing an HTTP request. */
-    fun warmConnections(urls: List<String>) = Unit
+    fun warmConnections(urls: List<String>, preferQuic: Boolean = false) = Unit
+
+    /** Drops only reusable idle routes after a proven route failure. Active owners stay intact. */
+    fun retireIdleConnections() = Unit
+
 }

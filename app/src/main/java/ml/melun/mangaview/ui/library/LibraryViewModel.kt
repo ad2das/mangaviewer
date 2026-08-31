@@ -12,46 +12,63 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.data.library.SavedSeries
+import ml.melun.mangaview.data.PageRepository
 import ml.melun.mangaview.data.library.UserLibraryRepository
-import ml.melun.mangaview.data.settings.ViewerSettings
+import ml.melun.mangaview.data.offline.OfflineDownloadManager
+import ml.melun.mangaview.data.offline.OfflineEpisodeStore
 import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
-import ml.melun.mangaview.source.PreparationIntent
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SeriesKind
+import ml.melun.mangaview.source.SourceSearchQuery
 
 internal class LibraryViewModel(
     private val sourceRegistry: SourceRegistry,
     private val userLibrary: UserLibraryRepository,
+    private val offlineStore: OfflineEpisodeStore,
+    private val offlineDownloads: OfflineDownloadManager,
+    private val pageRepository: PageRepository,
     private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
-    private val mutableState = MutableStateFlow(initialState())
+    private val actions = LibraryActions(viewModelScope, ioDispatcher, sourceRegistry, userLibrary, offlineDownloads)
+    private val mutableState = MutableStateFlow(initialLibraryState(sourceRegistry))
     private val effectChannel = Channel<LibraryEffect>(Channel.BUFFERED)
+    private val uiActions = LibraryUiActions(
+        viewModelScope,
+        actions,
+        offlineDownloads,
+        current = { mutableState.value },
+        update = ::update,
+        emit = { effect -> effectChannel.trySend(effect) },
+    )
+    private val episodeWarmer = LibraryEpisodeWarmer(
+        viewModelScope,
+        ioDispatcher,
+        sourceRegistry,
+        pageRepository,
+        userLibrary,
+    )
     private var contentJob: Job? = null
     private var homeJob: Job? = null
-    private var warmupJob: Job? = null
-    private var warmingEpisodeId: EpisodeId? = null
+    private var genreJob: Job? = null
     private var contentVersion = 0L
     private var homeVersion = 0L
-    private var restoredDestination = false
+    private val observers = LibraryStateObservers(sourceRegistry, userLibrary, offlineStore, offlineDownloads)
 
     val state: StateFlow<LibraryState> = mutableState.asStateFlow()
     val effects = effectChannel.receiveAsFlow()
-
     init {
-        observeSavedState()
+        observers.start(viewModelScope, ::update, ::loadHome, ::warmMostLikelyContinuation)
         loadHome()
     }
-
     fun accept(intent: LibraryIntent) {
         when (intent) {
             is LibraryIntent.QueryChanged,
@@ -61,6 +78,9 @@ internal class LibraryViewModel(
             is LibraryIntent.HomeTabSelected,
             is LibraryIntent.SavedTabSelected,
             is LibraryIntent.GenreSelected,
+            is LibraryIntent.DetailTabSelected,
+            is LibraryIntent.SearchKindSelected,
+            is LibraryIntent.SearchFieldSelected,
             -> acceptSelection(intent)
             else -> acceptAction(intent)
         }
@@ -72,9 +92,12 @@ internal class LibraryViewModel(
             is LibraryIntent.DestinationSelected -> selectDestination(intent.value)
             is LibraryIntent.SourceSelected -> selectSource(intent.sourceId)
             is LibraryIntent.HomeKindSelected -> selectHomeKind(intent.value)
-            is LibraryIntent.HomeTabSelected -> update { it.copy(homeTab = intent.value) }
+            is LibraryIntent.HomeTabSelected -> selectHomeTab(intent.value)
             is LibraryIntent.SavedTabSelected -> update { it.copy(libraryTab = intent.value) }
             is LibraryIntent.GenreSelected -> loadGenre(intent.value)
+            is LibraryIntent.DetailTabSelected -> update { it.copy(detailTab = intent.value) }
+            is LibraryIntent.SearchKindSelected -> update { it.copy(searchKind = intent.value) }
+            is LibraryIntent.SearchFieldSelected -> update { it.copy(searchField = intent.value) }
             else -> error("Not a selection intent: $intent")
         }
     }
@@ -84,67 +107,93 @@ internal class LibraryViewModel(
             LibraryIntent.Search -> search()
             LibraryIntent.RetryHome -> loadHome()
             LibraryIntent.ToggleSettings -> update { it.copy(settingsVisible = !it.settingsVisible) }
+            LibraryIntent.TogglePreferences -> update {
+                it.copy(preferencesVisible = !it.preferencesVisible, settingsVisible = false)
+            }
+            LibraryIntent.AccountSignIn -> uiActions.showMessage("계정 동기화 설정이 이 빌드에 연결되어 있지 않습니다")
+            LibraryIntent.CheckForUpdate -> uiActions.openProjectPage("https://github.com/ad2das/mangaviewer/releases")
+            LibraryIntent.OpenLicenses -> uiActions.openProjectPage("https://github.com/ad2das/mangaviewer/blob/main/LICENSE")
+            LibraryIntent.ToggleSeriesMenu -> update { it.copy(seriesMenuVisible = !it.seriesMenuVisible) }
+            LibraryIntent.ToggleDownloadSelection -> uiActions.toggleDownloadSelection()
+            is LibraryIntent.OpenSeriesInBrowser -> uiActions.resolveSeriesUrl(intent.series) { url ->
+                LibraryEffect.OpenUri(url)
+            }
+            is LibraryIntent.ShareSeries -> uiActions.resolveSeriesUrl(intent.series) { url ->
+                LibraryEffect.ShareText(intent.series.title, "${intent.series.title}\n$url")
+            }
+            LibraryIntent.Back -> back()
+            else -> acceptContentAction(intent)
+        }
+    }
+
+    private fun acceptContentAction(intent: LibraryIntent) {
+        when (intent) {
             is LibraryIntent.SeriesSelected -> episodes(intent.series)
             is LibraryIntent.EpisodeSelected -> openEpisode(intent.episodeId, currentSeries())
             is LibraryIntent.SavedSeriesSelected -> openSavedSeries(intent.series)
-            is LibraryIntent.SavedEpisodeSelected -> effectChannel.trySend(
-                LibraryEffect.OpenEpisode(intent.position.pageId.episodeId, intent.position),
+            is LibraryIntent.OfflineSeriesSelected -> episodes(intent.series, offlineOnly = true)
+            is LibraryIntent.SavedEpisodeSelected -> openSavedPosition(intent.position)
+            is LibraryIntent.FavoriteToggled -> actions.toggleFavorite(
+                intent.series,
+                state.value.saved.favorites.any { it.id == intent.series.id },
             )
-            is LibraryIntent.FavoriteToggled -> toggleFavorite(intent.series)
-            is LibraryIntent.DarkThemeChanged -> updateSettings { it.copy(darkTheme = intent.enabled) }
-            LibraryIntent.Back -> back()
+            is LibraryIntent.DownloadEpisode -> uiActions.download(intent.series, listOf(intent.episode))
+            is LibraryIntent.DownloadEpisodes -> uiActions.download(intent.series, intent.episodes)
+            is LibraryIntent.RemoveOfflineEpisode -> update { it.copy(pendingOfflineRemoval = intent.episodeId) }
+            LibraryIntent.CancelOfflineRemoval -> update { it.copy(pendingOfflineRemoval = null) }
+            LibraryIntent.ConfirmOfflineRemoval -> confirmOfflineRemoval()
+            is LibraryIntent.StartTabChanged -> actions.updateSettings { it.copy(startTab = intent.value) }
+            is LibraryIntent.DarkThemeChanged -> actions.updateSettings { it.copy(darkTheme = intent.enabled) }
             else -> error("Not an action intent: $intent")
         }
     }
 
-    private fun observeSavedState() {
-        viewModelScope.launch {
-            userLibrary.snapshot.collectLatest { snapshot ->
-                var reloadHome = false
-                update { state ->
-                    if (restoredDestination) return@update state.copy(saved = snapshot)
-                    val destination = run {
-                        restoredDestination = true
-                        MainDestination.fromStored(snapshot.settings.startTab)
-                    }
-                    val sourceId = state.sources.firstOrNull {
-                        it.id.value == snapshot.settings.sourceKey
-                    }?.id ?: state.selectedSourceId
-                    val kind = SeriesKind.entries.getOrElse(snapshot.settings.seriesKind) { SeriesKind.WEBTOON }
-                    reloadHome = sourceId != state.selectedSourceId || kind != state.homeKind
-                    state.copy(
-                        saved = snapshot,
-                        destination = destination,
-                        selectedSourceId = sourceId,
-                        homeKind = kind,
-                    )
-                }
-                if (reloadHome) loadHome()
-            }
-        }
-    }
-
     private fun selectDestination(destination: MainDestination) {
-        cancelWarmup()
-        update { it.copy(destination = destination, content = LibraryContent.Empty, settingsVisible = false) }
-        updateSettings { it.copy(startTab = destination.ordinal) }
+        episodeWarmer.cancel()
+        update { it.copy(
+            destination = destination,
+            content = LibraryContent.Empty,
+            settingsVisible = false,
+            preferencesVisible = false,
+            seriesMenuVisible = false,
+            downloadSelectionVisible = false,
+        ) }
+        actions.updateSettings { it.copy(startTab = destination.ordinal) }
         if (destination == MainDestination.HOME && mutableState.value.home is HomeContent.Failure) loadHome()
     }
 
     private fun selectSource(sourceId: ml.melun.mangaview.core.SourceId) {
         sourceRegistry.require(sourceId)
         cancelContent()
-        cancelWarmup()
-        update { it.copy(selectedSourceId = sourceId, content = LibraryContent.Empty) }
-        updateSettings { it.copy(sourceKey = sourceId.value) }
+        cancelGenres()
+        episodeWarmer.cancel()
+        update { it.copy(
+            selectedSourceId = sourceId,
+            content = LibraryContent.Empty,
+            homeTab = HomeTab.HOME,
+            genres = GenreContent.Empty,
+            selectedGenre = null,
+        ) }
+        actions.updateSettings { it.copy(sourceKey = sourceId.value) }
         loadHome()
     }
 
     private fun selectHomeKind(kind: ml.melun.mangaview.source.SeriesKind) {
         if (mutableState.value.homeKind == kind) return
-        update { it.copy(homeKind = kind, homeTab = HomeTab.HOME) }
-        updateSettings { it.copy(seriesKind = kind.ordinal) }
+        cancelGenres()
+        update { it.copy(
+            homeKind = kind,
+            homeTab = HomeTab.HOME,
+            genres = GenreContent.Empty,
+            selectedGenre = null,
+        ) }
+        actions.updateSettings { it.copy(seriesKind = kind.ordinal) }
         loadHome()
+    }
+
+    private fun selectHomeTab(tab: HomeTab) {
+        update { it.copy(homeTab = tab) }
+        if (tab == HomeTab.GENRES && mutableState.value.genres !is GenreContent.Ready) loadGenres()
     }
 
     private fun loadHome() {
@@ -156,7 +205,10 @@ internal class LibraryViewModel(
             val source = sourceRegistry.require(snapshot.selectedSourceId)
             try {
                 val result = withContext(ioDispatcher) { homeCatalogs(source, snapshot.homeKind) }
-                if (version == homeVersion) update { it.copy(home = result) }
+                if (version == homeVersion) {
+                    update { it.copy(home = result) }
+                    warmMostLikelyContinuation()
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -177,11 +229,35 @@ internal class LibraryViewModel(
         HomeContent.Ready(popular.await(), latest.await(), new.await())
     }
 
-    private fun loadGenre(genre: String) {
+    private fun loadGenres() {
+        cancelGenres()
+        val snapshot = mutableState.value
+        update { it.copy(genres = GenreContent.Loading) }
+        genreJob = viewModelScope.launch {
+            try {
+                val items = withContext(ioDispatcher) {
+                    sourceRegistry.require(snapshot.selectedSourceId).genres(snapshot.homeKind)
+                }
+                update {
+                    it.copy(genres = if (items.isEmpty()) {
+                        GenreContent.Failure("장르 목록을 불러오지 못했습니다")
+                    } else {
+                        GenreContent.Ready(items)
+                    })
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                update { it.copy(genres = GenreContent.Failure(failure.message ?: "장르 목록을 불러오지 못했습니다")) }
+            }
+        }
+    }
+
+    private fun loadGenre(genre: ml.melun.mangaview.source.SourceGenre) {
         homeJob?.cancel()
         val snapshot = mutableState.value
         val version = ++homeVersion
-        update { it.copy(homeTab = HomeTab.GENRES, home = HomeContent.Loading) }
+        update { it.copy(homeTab = HomeTab.GENRES, selectedGenre = genre, home = HomeContent.Loading) }
         homeJob = viewModelScope.launch {
             try {
                 val items = withContext(ioDispatcher) {
@@ -190,7 +266,7 @@ internal class LibraryViewModel(
                     ).items
                 }
                 if (version == homeVersion) update {
-                    it.copy(home = HomeContent.Ready(items, items, items, genre))
+                    it.copy(home = HomeContent.Ready(items, items, items))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -207,9 +283,11 @@ internal class LibraryViewModel(
         val query = snapshot.query.trim()
         if (query.isEmpty()) return
         val source = sourceRegistry.require(snapshot.selectedSourceId)
-        cancelWarmup()
+        episodeWarmer.cancel()
         launchContent(
-            load = { source.search(query).items },
+            load = {
+                source.search(SourceSearchQuery(query, snapshot.searchKind, snapshot.searchField)).items
+            },
             success = { result: List<SourceSeries> ->
                 update { it.copy(content = LibraryContent.Series(result), lastSeries = result) }
             },
@@ -217,14 +295,20 @@ internal class LibraryViewModel(
         )
     }
 
-    private fun episodes(series: SourceSeries) {
+    private fun episodes(series: SourceSeries, offlineOnly: Boolean = false) {
         val source = sourceRegistry.require(series.id.sourceId)
-        update { it.copy(activeSeries = series) }
+        update { it.copy(activeSeries = series, detailTab = DetailTab.INTRO,
+            selectedSourceId = if (offlineOnly) series.id.sourceId else it.selectedSourceId,
+            lastSeries = if (offlineOnly) listOf(series) else it.lastSeries,
+        ) }
         launchContent(
-            load = { source.episodes(series.id).items },
+            load = {
+                if (offlineOnly) offlineStore.episodes(series.id)
+                else source.episodes(series.id).items
+            },
             success = { result: List<SourceEpisode> ->
                 update { it.copy(content = LibraryContent.Episodes(series, result)) }
-                result.firstOrNull()?.id?.let(::warm)
+                preferredEpisode(series, result)?.let(episodeWarmer::warm)
             },
             failureMessage = "회차를 불러오지 못했습니다",
         )
@@ -253,74 +337,80 @@ internal class LibraryViewModel(
     }
 
     private fun back() {
+        if (state.value.pendingOfflineRemoval != null) {
+            update { it.copy(pendingOfflineRemoval = null) }
+            return
+        }
+        if (state.value.downloadSelectionVisible) {
+            update { it.copy(downloadSelectionVisible = false) }
+            return
+        }
+        if (state.value.preferencesVisible) {
+            update { it.copy(preferencesVisible = false, settingsVisible = true) }
+            return
+        }
         if (state.value.settingsVisible) {
             update { it.copy(settingsVisible = false) }
             return
         }
+        if (state.value.seriesMenuVisible) {
+            update { it.copy(seriesMenuVisible = false) }
+            return
+        }
         if (state.value.activeSeries != null) {
             cancelContent()
-            cancelWarmup()
+            episodeWarmer.cancel()
             val series = state.value.lastSeries
             update { it.copy(
                 activeSeries = null,
+                seriesMenuVisible = false,
+                downloadSelectionVisible = false,
                 content = if (series.isEmpty()) LibraryContent.Empty else LibraryContent.Series(series),
             ) }
         }
     }
 
+    private fun confirmOfflineRemoval() {
+        state.value.pendingOfflineRemoval?.let(uiActions::removeOffline)
+        update { it.copy(pendingOfflineRemoval = null) }
+    }
+
     private fun openSavedSeries(saved: SavedSeries) {
         val series = saved.asSourceSeries()
         update { it.copy(selectedSourceId = series.id.sourceId, lastSeries = listOf(series)) }
-        episodes(series)
+        episodes(series, offlineOnly = saved.updatedAtEpochMillis == 0L)
     }
 
     private fun openEpisode(episodeId: EpisodeId, series: SourceSeries) {
-        if (warmingEpisodeId != episodeId) warm(episodeId)
-        persist { userLibrary.recordOpened(series.id, series.title, series.thumbnailKey, episodeId) }
+        episodeWarmer.warm(episodeId)
+        val episode = SourceEpisode(episodeId, episodeId.remoteKey)
+        actions.recordOpened(series, episode)
         effectChannel.trySend(LibraryEffect.OpenEpisode(episodeId))
     }
 
-    private fun toggleFavorite(series: SourceSeries) {
-        val favorite = state.value.saved.favorites.any { it.id == series.id }
-        persist { userLibrary.setFavorite(series.id, series.title, series.thumbnailKey, !favorite) }
-    }
-
-    private fun updateSettings(transform: (ViewerSettings) -> ViewerSettings) {
-        persist { userLibrary.updateSettings(transform) }
-    }
-
-    private fun persist(block: suspend () -> Unit) {
-        viewModelScope.launch(ioDispatcher) {
-            try {
-                block()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                // Persistence failure must not break navigation or touch handling.
-            }
-        }
+    private fun openSavedPosition(position: ml.melun.mangaview.core.ReadingPosition) {
+        episodeWarmer.warm(position.pageId.episodeId)
+        effectChannel.trySend(LibraryEffect.OpenEpisode(position.pageId.episodeId, position))
     }
 
     private fun currentSeries(): SourceSeries =
         state.value.activeSeries
             ?: error("Episode selection requires an active series")
 
-    private fun warm(episodeId: EpisodeId) {
-        cancelWarmup()
-        warmingEpisodeId = episodeId
-        val source = sourceRegistry.require(episodeId.seriesId.sourceId)
-        warmupJob = viewModelScope.launch {
-            try {
-                withContext(ioDispatcher) {
-                    source.prepare(episodeId, PreparationIntent.INITIAL_VIEW)
-                    source.manifest(episodeId)
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                // Viewer entry owns visible retry/error handling.
-            }
-        }
+    private fun preferredEpisode(
+        series: SourceSeries,
+        episodes: List<SourceEpisode>,
+    ): EpisodeId? {
+        val recent = state.value.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
+        return episodes.firstOrNull { it.id == recent }?.id ?: firstEpisode(episodes)?.id
+    }
+
+    private fun warmMostLikelyContinuation() {
+        val snapshot = state.value
+        if (snapshot.destination != MainDestination.HOME) return
+        snapshot.saved.recent.firstOrNull {
+            it.series.id.sourceId == snapshot.selectedSourceId
+        }?.episodeId?.let(episodeWarmer::warm)
     }
 
     private fun cancelContent() {
@@ -329,32 +419,54 @@ internal class LibraryViewModel(
         contentJob = null
     }
 
-    private fun cancelWarmup() {
-        warmupJob?.cancel()
-        warmupJob = null
-        warmingEpisodeId = null
+    private fun cancelGenres() {
+        genreJob?.cancel()
+        genreJob = null
     }
 
     private fun update(transform: (LibraryState) -> LibraryState) {
         mutableState.value = transform(mutableState.value)
     }
 
-    private fun initialState(): LibraryState {
-        val options = sourceRegistry.options
-        return LibraryState(query = "", sources = options, selectedSourceId = options.first().id)
-    }
+}
+
+private fun initialLibraryState(sourceRegistry: SourceRegistry): LibraryState {
+    val options = sourceRegistry.options
+    return LibraryState(query = "", sources = options, selectedSourceId = options.first().id)
 }
 
 private fun SavedSeries.asSourceSeries() = SourceSeries(id, title, thumbnailKey = thumbnailKey)
 
+internal fun firstEpisode(episodes: List<SourceEpisode>): SourceEpisode? {
+    episodes.filter { it.sequenceNumber != null }
+        .minByOrNull { requireNotNull(it.sequenceNumber) }
+        ?.let { return it }
+    episodes.filter { it.publishedAtEpochMillis != null }
+        .minByOrNull { requireNotNull(it.publishedAtEpochMillis) }
+        ?.let { return it }
+    // Provider contracts expose episode lists newest-first when no explicit ordering metadata
+    // exists, so the final entry is the oldest safe fallback.
+    return episodes.lastOrNull()
+}
+
 internal class LibraryViewModelFactory(
     private val sourceRegistry: SourceRegistry,
     private val userLibrary: UserLibraryRepository,
+    private val offlineStore: OfflineEpisodeStore,
+    private val offlineDownloads: OfflineDownloadManager,
+    private val pageRepository: PageRepository,
     private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(LibraryViewModel::class.java))
-        return LibraryViewModel(sourceRegistry, userLibrary, ioDispatcher) as T
+        return LibraryViewModel(
+            sourceRegistry,
+            userLibrary,
+            offlineStore,
+            offlineDownloads,
+            pageRepository,
+            ioDispatcher,
+        ) as T
     }
 }

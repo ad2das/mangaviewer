@@ -36,11 +36,11 @@ internal class ViewerPageEventReducer(
         state: ViewerState,
         event: ViewerEvent.FetchResponseStarted,
     ): ViewerState {
-        if (!owns(state, event.token, WorkKind.FETCH) || state.firstResponseReceived) return state
-        return state.copy(
-            firstResponseReceived = true,
-            networkConcurrency = INITIAL_RESPONSE_CONCURRENCY,
-        )
+        // A validated prefix is not a usable page yet. Keep the visible page's body as the sole
+        // network owner until it has been durably verified; opening speculative transfers here
+        // divides bandwidth at the exact moment the user is waiting for the first pixels.
+        if (!owns(state, event.token, WorkKind.FETCH)) return state
+        return state
     }
 
     fun fetchFailed(state: ViewerState, event: ViewerEvent.FetchFailed): ViewerState {
@@ -151,6 +151,6 @@ internal class ViewerPageEventReducer(
         if (Long.MAX_VALUE - nowNanos < delayNanos) Long.MAX_VALUE else nowNanos + delayNanos
 
     private companion object {
-        const val INITIAL_RESPONSE_CONCURRENCY = 6
+        const val INITIAL_RESPONSE_CONCURRENCY = 2
     }
 }

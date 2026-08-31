@@ -9,17 +9,21 @@ import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.data.cache.CachedPage
 import ml.melun.mangaview.data.cache.RawPageCache
+import ml.melun.mangaview.data.offline.OfflineEpisodeStore
 import ml.melun.mangaview.source.ContentSource
+import ml.melun.mangaview.source.PageFetchPriority
 
 class PageRepository(
     private val scope: CoroutineScope,
     private val sourceFor: (SourceId) -> ContentSource,
     private val cache: RawPageCache,
+    private val offline: OfflineEpisodeStore? = null,
 ) {
     private class Flight(
         var waiters: Int = 1,
         var acceptingWaiters: Boolean = true,
         var responseStarted: Boolean = false,
+        var priority: PageFetchPriority,
         val responseObservers: MutableList<() -> Unit> = mutableListOf(),
     ) {
         lateinit var deferred: Deferred<CachedPage>
@@ -38,10 +42,11 @@ class PageRepository(
 
     suspend fun get(
         pageId: PageId,
+        priority: PageFetchPriority = PageFetchPriority.NORMAL,
         onNetworkResponseStarted: (() -> Unit)? = null,
     ): CachedPage {
         while (true) {
-            when (val acquisition = acquire(pageId, onNetworkResponseStarted)) {
+            when (val acquisition = acquire(pageId, priority, onNetworkResponseStarted)) {
                 is Acquisition.AwaitRetirement -> acquisition.job.join()
                 is Acquisition.Lease -> {
                     acquisition.notifyImmediately?.let(::notifySafely)
@@ -55,6 +60,7 @@ class PageRepository(
 
     private fun acquire(
         pageId: PageId,
+        priority: PageFetchPriority,
         responseObserver: (() -> Unit)?,
     ): Acquisition = synchronized(lock) {
         active[pageId]?.let { flight ->
@@ -62,13 +68,14 @@ class PageRepository(
                 return@synchronized Acquisition.AwaitRetirement(flight.deferred)
             }
             flight.waiters += 1
+            flight.priority = stronger(flight.priority, priority)
             val notifyImmediately = if (flight.responseStarted) responseObserver else null
             if (!flight.responseStarted && responseObserver != null) {
                 flight.responseObservers += responseObserver
             }
             return@synchronized Acquisition.Lease(flight, notifyImmediately)
         }
-        val flight = Flight()
+        val flight = Flight(priority = priority)
         responseObserver?.let(flight.responseObservers::add)
         flight.deferred = scope.async(start = CoroutineStart.LAZY) { load(pageId, flight) }
         active[pageId] = flight
@@ -84,11 +91,13 @@ class PageRepository(
     }
 
     private suspend fun load(pageId: PageId, flight: Flight): CachedPage {
+        offline?.find(pageId)?.let { return it }
         cache.find(pageId)?.let { return it }
         val sourceId = pageId.episodeId.seriesId.sourceId
         val source = sourceFor(sourceId)
         require(source.id == sourceId) { "Source resolver returned a mismatched source" }
-        val opened = source.openPage(pageId)
+        val priority = synchronized(lock) { flight.priority }
+        val opened = source.openPage(pageId, validation = null, priority = priority)
         return try {
             notifyResponseStarted(pageId, flight)
             cache.write(pageId, opened)
@@ -109,6 +118,11 @@ class PageRepository(
     private fun notifySafely(observer: () -> Unit) {
         runCatching(observer)
     }
+
+    private fun stronger(
+        current: PageFetchPriority,
+        incoming: PageFetchPriority,
+    ): PageFetchPriority = if (incoming.ordinal < current.ordinal) incoming else current
 
     private fun release(pageId: PageId, flight: Flight) {
         val cancel = synchronized(lock) {

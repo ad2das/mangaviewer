@@ -20,6 +20,7 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import ml.melun.mangaview.source.SourceHttpMethod
+import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceTransport
@@ -64,10 +65,10 @@ class HttpEngineSourceTransport(
         }
     }
 
-    override fun warmConnections(urls: List<String>) {
+    override fun warmConnections(urls: List<String>, preferQuic: Boolean) {
         if (closed.get()) return
-        urls.distinctBy(::engineKey).forEach { url ->
-            val key = engineKey(url)
+        urls.distinctBy { url -> engineKey(url, preferQuic) }.forEach { url ->
+            val key = engineKey(url, preferQuic)
             val schedule = synchronized(engineLock) {
                 if (closed.get() || key in warmedOrigins) return@synchronized false
                 warmedOrigins += key
@@ -76,7 +77,7 @@ class HttpEngineSourceTransport(
             if (!schedule) return@forEach
             runCatching {
                 callbackExecutor.execute {
-                    runCatching { acquireEngine(url) }
+                    runCatching { acquireEngine(url, preferQuic) }
                         .onSuccess { lease -> releaseEngine(lease.key) }
                         .onFailure {
                             synchronized(engineLock) { warmedOrigins.remove(key) }
@@ -155,7 +156,7 @@ class HttpEngineSourceTransport(
         request: SourceRequest,
         callback: HttpEngineExchange,
     ): UrlRequest.Builder {
-        val lease = acquireEngine(request.url)
+        val lease = acquireEngine(request.url, request.preferQuic)
         callback.attachEngine(lease.key)
         val builder = lease.engine.newUrlRequestBuilder(
             request.url,
@@ -163,6 +164,7 @@ class HttpEngineSourceTransport(
             callback,
         ).setHttpMethod(request.method.name)
             .setCacheDisabled(true)
+            .setPriority(httpEnginePriority(request.priority))
         request.headers.forEach(builder::addHeader)
         if (request.method == SourceHttpMethod.POST) {
             val bodyMediaType = request.bodyMediaType
@@ -180,11 +182,11 @@ class HttpEngineSourceTransport(
         return builder
     }
 
-    private fun acquireEngine(url: String): EngineLease {
+    private fun acquireEngine(url: String, preferQuic: Boolean): EngineLease {
         val uri = URI(url)
         val host = requireNotNull(uri.host) { "HTTP engine URL has no host" }.lowercase()
         val port = if (uri.port > 0) uri.port else if (uri.scheme == "https") 443 else 80
-        val key = engineKey(uri, host, port)
+        val key = engineKey(uri, host, port, preferQuic)
         val acquisition = synchronized(engineLock) {
             check(!closed.get()) { "HTTP engine transport is closed" }
             engines[key]?.let { entry ->
@@ -197,7 +199,9 @@ class HttpEngineSourceTransport(
             engineCreations[key] = future
             EngineAcquisition(future, true)
         }
-        if (acquisition.leader) createEngineFlight(key, uri.scheme, host, port, acquisition.future)
+        if (acquisition.leader) {
+            createEngineFlight(key, uri.scheme, host, port, preferQuic, acquisition.future)
+        }
         val entry = awaitEngine(acquisition.future)
         return synchronized(engineLock) {
             check(!closed.get()) { "HTTP engine transport is closed" }
@@ -213,9 +217,10 @@ class HttpEngineSourceTransport(
         scheme: String?,
         host: String,
         port: Int,
+        preferQuic: Boolean,
         future: CompletableFuture<EngineEntry>,
     ) {
-        val result = runCatching { createEngine(scheme, host, port) }
+        val result = runCatching { createEngine(scheme, host, port, preferQuic) }
         synchronized(engineLock) {
             engineCreations.remove(key, future)
             result.onSuccess { entry ->
@@ -237,16 +242,18 @@ class HttpEngineSourceTransport(
         throw failure.cause ?: failure
     }
 
-    private fun createEngine(scheme: String?, host: String, port: Int): EngineEntry {
+    private fun createEngine(
+        scheme: String?,
+        host: String,
+        port: Int,
+        preferQuic: Boolean,
+    ): EngineEntry {
         val builder = HttpEngine.Builder(appContext)
             .setEnableHttp2(true)
-            // The viewer needs deterministic first-byte latency more than an optimistic HTTP/3
-            // race. Android's emulator network can black-hole UDP and make Cronet wait several
-            // seconds before falling back, while the same CDN is immediately reachable over
-            // HTTP/2. Keep Chromium's browser-compatible TLS stack but use the reliable path.
-            .setEnableQuic(false)
+            .setEnableQuic(preferQuic)
             .setEnableBrotli(true)
             .setUserAgent(userAgent)
+        if (scheme == "https" && preferQuic) builder.addQuicHint(host, port, port)
         return EngineEntry(builder.build())
     }
 
@@ -316,12 +323,20 @@ class HttpEngineSourceTransport(
     }
 }
 
-private fun engineKey(url: String): String {
+@RequiresApi(34)
+internal fun httpEnginePriority(priority: PageFetchPriority): Int = when (priority) {
+    PageFetchPriority.VISIBLE -> UrlRequest.REQUEST_PRIORITY_HIGHEST
+    PageFetchPriority.FORWARD -> UrlRequest.REQUEST_PRIORITY_MEDIUM
+    PageFetchPriority.NORMAL -> UrlRequest.REQUEST_PRIORITY_LOW
+    PageFetchPriority.BACKGROUND -> UrlRequest.REQUEST_PRIORITY_LOWEST
+}
+
+private fun engineKey(url: String, preferQuic: Boolean): String {
     val uri = URI(url)
     val host = requireNotNull(uri.host) { "HTTP engine URL has no host" }.lowercase()
     val port = if (uri.port > 0) uri.port else if (uri.scheme == "https") 443 else 80
-    return engineKey(uri, host, port)
+    return engineKey(uri, host, port, preferQuic)
 }
 
-private fun engineKey(uri: URI, host: String, port: Int): String =
-    "${uri.scheme}:$host:$port"
+private fun engineKey(uri: URI, host: String, port: Int, preferQuic: Boolean): String =
+    "${uri.scheme}:$host:$port:${if (preferQuic) "quic" else "http2"}"

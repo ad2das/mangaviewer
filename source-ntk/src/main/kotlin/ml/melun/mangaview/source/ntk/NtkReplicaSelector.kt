@@ -23,14 +23,30 @@ internal class NtkReplicaSelector(
 
     suspend fun acquirePrepared(candidates: List<ReplicaCandidate>): ReplicaLease = synchronized(lock) {
         require(candidates.isNotEmpty()) { "NTK page has no replica candidates" }
-        val selected = ordered(candidates).first()
+        acquireLocked(ordered(candidates).first())
+    }
+
+    fun orderedPrepared(candidates: List<ReplicaCandidate>): List<ReplicaCandidate> =
+        synchronized(lock) { ordered(candidates) }
+
+    fun acquireCandidate(candidate: ReplicaCandidate): ReplicaLease = synchronized(lock) {
+        acquireLocked(candidate)
+    }
+
+    fun isVerified(candidate: ReplicaCandidate): Boolean = synchronized(lock) {
+        val state = health[candidate.host] ?: return@synchronized false
+        state.successfulSamples >= MIN_SUCCESS_SAMPLES &&
+            state.failures == 0 && state.blockedUntilMillis <= nowMillis()
+    }
+
+    private fun acquireLocked(selected: ReplicaCandidate): ReplicaLease {
         val key = selected.host
         val previous = health[key] ?: ReplicaHealth()
         put(key, previous.copy(
             inFlight = previous.inFlight + 1,
             lastTouchedMillis = nowMillis(),
         ))
-        ReplicaLease(selected)
+        return ReplicaLease(selected)
     }
 
     private fun ordered(candidates: List<ReplicaCandidate>): List<ReplicaCandidate> {
@@ -38,6 +54,7 @@ internal class NtkReplicaSelector(
         return candidates.withIndex()
             .sortedWith(compareBy<IndexedValue<ReplicaCandidate>>(
                 { health[it.value.host]?.blockedUntilMillis?.let { due -> due > now } ?: false },
+                { (health[it.value.host]?.successfulSamples ?: 0) < MIN_SUCCESS_SAMPLES },
                 { predictedCompletion(health[it.value.host] ?: ReplicaHealth()) },
                 { health[it.value.host]?.failures ?: 0 },
                 { health[it.value.host]?.inFlight ?: 0 },
@@ -63,6 +80,21 @@ internal class NtkReplicaSelector(
         succeeded(ReplicaLease(ReplicaCandidate(url, resolveHost(url))), latencyMillis)
 
     suspend fun succeeded(lease: ReplicaLease, latencyMillis: Long) = succeedNow(lease, latencyMillis)
+
+    /** Records a verified image prefix without releasing the body owner's in-flight lease. */
+    fun accepted(lease: ReplicaLease, latencyMillis: Long) = synchronized(lock) {
+        require(latencyMillis >= 0L) { "Replica latency must not be negative" }
+        val key = lease.candidate.host
+        val previous = health[key] ?: ReplicaHealth()
+        val smoothed = previous.latencyMillis?.let { smooth(it, latencyMillis) } ?: latencyMillis
+        put(key, previous.copy(
+            failures = 0,
+            latencyMillis = smoothed,
+            successfulSamples = MIN_SUCCESS_SAMPLES,
+            blockedUntilMillis = 0L,
+            lastTouchedMillis = nowMillis(),
+        ))
+    }
 
     private fun succeedNow(lease: ReplicaLease, latencyMillis: Long) = synchronized(lock) {
         require(latencyMillis >= 0L) { "Replica latency must not be negative" }
@@ -165,7 +197,7 @@ internal class NtkReplicaSelector(
     )
 
     private companion object {
-        const val BASE_COOLDOWN_MILLIS = 2_000L
+        const val BASE_COOLDOWN_MILLIS = 30_000L
         const val MAX_FAILURES = 8
         const val MAX_TRACKED_HOSTS = 64
         const val UNMEASURED_LATENCY_MILLIS = 300L

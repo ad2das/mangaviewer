@@ -44,6 +44,8 @@ data class ViewerState(
     val startupMotionPending: Boolean = false,
     /** Monotonic proof that at least one actual page has reached presented state. */
     val hasPresentedContent: Boolean = false,
+    /** False across first entry and every Surface reattach until RenderThread confirms a frame. */
+    val surfacePresentationReady: Boolean = false,
     /** Prevents a fast first fling from repeatedly cancelling the only pre-response request. */
     val initialFetchRetargeted: Boolean = false,
 ) {

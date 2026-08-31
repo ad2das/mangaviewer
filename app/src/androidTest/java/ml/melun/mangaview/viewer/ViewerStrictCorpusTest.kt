@@ -25,13 +25,23 @@ class ViewerStrictCorpusTest {
         var failure: Throwable? = null
         corpus.forEachIndexed { index, candidate ->
             if (failure != null) return@forEachIndexed
-            val profile = if (index == 0) COLD_ENTRY_PROFILE else NORMAL_PROFILE
+            val profile = when {
+                index == 0 -> COLD_ENTRY_PROFILE
+                candidate.source == "ntk" -> NTK_DETAIL_PROFILE
+                else -> NORMAL_PROFILE
+            }
             val harness = ViewerUxTestHarness(
                 instrumentation = instrumentation,
                 artifactPrefix = "strict-corpus-${index + 1}-${candidate.source}-${candidate.kind}",
             )
             try {
-                val result = harness.run(candidate.episode)
+                val result = if (candidate.source == "ntk") {
+                    withProductionDetailWarmup(instrumentation, candidate.episode) {
+                        harness.run(candidate.episode)
+                    }
+                } else {
+                    harness.run(candidate.episode)
+                }
                 entries.put(candidate.toJson(index, profile, harness.evidenceDirectory, result, null))
             } catch (caught: Throwable) {
                 failure = caught
@@ -112,6 +122,8 @@ class ViewerStrictCorpusTest {
         const val REQUIRED_EPISODES = 10
         const val COLD_ENTRY_PROFILE = "COLD_SUITE_ENTRY_UNMODIFIED_APP_STATE"
         const val NORMAL_PROFILE = "NORMAL_CONTINUATION_UNMODIFIED_APP_STATE"
+        const val NTK_DETAIL_PROFILE =
+            "PRODUCTION_DETAIL_FIXED_2500MS_NO_READINESS_WAIT_UNMODIFIED_APP_STATE"
     }
 }
 

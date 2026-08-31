@@ -95,7 +95,10 @@ internal object NtkBrowserCaptureScript {
             } catch (_) {}
             if (requestPath === '/api/ad/challenge') report('challenge-start');
             if (requestPath === '/api/ad/canary') report('canary-start');
-            if (requestPath === '/api/ad/ack') report('ack-start');
+            if (requestPath === '/api/ad/ack') {
+              window.__nativeAckRequestStarted = true;
+              report('ack-start');
+            }
             if (requestPath === '/api/client-key/register') report('key-register-start');
             if (requestPath === '/api/webtoon-images' ||
                 requestPath === '/api/manhwa-images') report('manifest-start');

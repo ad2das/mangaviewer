@@ -1,19 +1,101 @@
 package ml.melun.mangaview.source.wfwf
 
 import java.util.ArrayDeque
+import java.io.IOException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.PageByteStream
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceTransport
+import ml.melun.mangaview.source.SeriesKind
+import ml.melun.mangaview.source.SourceSearchQuery
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WfwfContentSourceTest {
+    @Test
+    fun deadReusableImageRouteIsRetiredBeforeOneSequentialRetry() = runTest {
+        val transport = RouteRecoveryTransport()
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
+        val episode = EpisodeId(series, "1")
+        source.manifest(episode)
+
+        source.openPage(PageId.at(episode, 0), null, PageFetchPriority.VISIBLE).close()
+
+        assertEquals(2, transport.pageAttempts)
+        assertEquals(1, transport.retiredRoutes)
+        assertEquals(1, transport.freshRouteAttempts)
+    }
+
+    @Test
+    fun silentVisibleImageRouteIsCanceledBeforeFreshSequentialRetry() = runTest {
+        val transport = RouteRecoveryTransport(hangFirstPage = true)
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
+        val episode = EpisodeId(series, "1")
+        source.manifest(episode)
+
+        source.openPage(PageId.at(episode, 0), null, PageFetchPriority.VISIBLE).close()
+
+        assertEquals(2, transport.pageAttempts)
+        assertEquals(1, transport.retiredRoutes)
+        assertEquals(1, transport.freshRouteAttempts)
+    }
+
+    @Test
+    fun searchKindFilterNeverLeaksTheOtherContentType() = runTest {
+        val html = """
+            <a href="/cl?toon=11"><h3>만화 결과</h3></a>
+            <a href="/list?toon=22"><h3>웹툰 결과</h3></a>
+        """.trimIndent()
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), QueueTransport(html))
+
+        val result = source.search(SourceSearchQuery("결과", SeriesKind.COMIC)).items
+
+        assertEquals(listOf("comic:11"), result.map { it.id.remoteKey })
+    }
+
+    @Test
+    fun quickReadActionsNeverReplaceRealEpisodeRows() {
+        val document = org.jsoup.Jsoup.parse(
+            """
+            <div class="quick-read"><a href="/view?toon=77&num=1191">▶최신화 보기|1191화</a></div>
+            <div class="quick-read"><a href="/view?toon=77&num=1">📖첫화부터 정주행</a></div>
+            <div class="episode-list">
+              <a href="/view?toon=77&num=1191"><span class="subject">1191화</span></a>
+              <a href="/view?toon=77&num=1190"><span class="subject">1190화</span></a>
+              <a href="/view?toon=77&num=1"><span class="subject">1화</span></a>
+            </div>
+            """.trimIndent(),
+        )
+        val series = SeriesId(SourceId("wfwf"), "webtoon:77")
+
+        val episodes = WfwfHtmlParser().episodes(
+            document,
+            series,
+            WfwfSeriesKey(WfwfKind.WEBTOON, 77),
+        )
+
+        assertEquals(listOf("1191화", "1190화", "1화"), episodes.map { it.title })
+    }
+
+    @Test
+    fun exposesEveryLegacyProviderGenre() = runTest {
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), QueueTransport(""))
+
+        assertEquals(21, source.genres(SeriesKind.WEBTOON).size)
+        assertEquals(34, source.genres(SeriesKind.COMIC).size)
+        assertTrue(source.genres(SeriesKind.COMIC).any { it.label == "무협" })
+    }
+
     @Test
     fun catalogCombinesSplitCoverAndTitleLinksWithoutPlaceholderNames() {
         val document = org.jsoup.Jsoup.parse(
@@ -156,6 +238,49 @@ class WfwfContentSourceTest {
         assertEquals("29", manifest.nextEpisodeId?.remoteKey)
         assertEquals(listOf("/cv?toon=10007&num=28"), transport.requestPaths())
     }
+}
+
+private class RouteRecoveryTransport(
+    private val hangFirstPage: Boolean = false,
+) : SourceTransport {
+    var pageAttempts = 0
+    var retiredRoutes = 0
+    var freshRouteAttempts = 0
+
+    override fun retireIdleConnections() {
+        retiredRoutes += 1
+    }
+
+    override suspend fun executeOnFreshRoute(request: SourceRequest): SourceResponse {
+        freshRouteAttempts += 1
+        return execute(request)
+    }
+
+    override suspend fun execute(request: SourceRequest): SourceResponse {
+        val uri = java.net.URI(request.url)
+        if (uri.host == "cdn.example") {
+            pageAttempts += 1
+            if (pageAttempts == 1) {
+                if (hangFirstPage) awaitCancellation()
+                throw IOException("stale route")
+            }
+            return response(request.url, byteArrayOf(1, 2, 3), "image/jpeg")
+        }
+        val document = """
+            <div class="viewer-wrap"><img data-src="https://cdn.example/page.jpg"></div>
+            <div class="vnav-row"></div>
+        """.trimIndent().toByteArray()
+        return response(request.url, document, "text/html; charset=utf-8")
+    }
+
+    private fun response(url: String, bytes: ByteArray, type: String) = SourceResponse(
+        statusCode = 200,
+        finalUrl = url,
+        headers = mapOf("Content-Type" to listOf(type)),
+        body = BytesStream(bytes),
+        contentLength = bytes.size.toLong(),
+        contentType = type,
+    )
 }
 
 private class RoutingTransport(

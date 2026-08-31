@@ -5,7 +5,9 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.SourceEpisode
+import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SeriesKind
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -49,6 +51,15 @@ data class NtkViewerMetadata(
 )
 
 class NtkDocumentParser {
+    fun genres(payload: String, kind: SeriesKind): List<SourceGenre> {
+        val normalized = JsonObjects.normalizeEscapes(payload)
+        val values = when (kind) {
+            SeriesKind.WEBTOON -> parseWebtoonGenres(normalized)
+            SeriesKind.COMIC -> parseComicGenres(normalized)
+        }
+        return values.distinctBy { it.key }
+    }
+
     fun searchApi(
         payload: String,
         sourceId: SourceId,
@@ -145,6 +156,33 @@ class NtkDocumentParser {
             .maxOrNull()?.coerceIn(1, MAX_EPISODE_PAGES) ?: 1
     }
 
+    private fun parseWebtoonGenres(payload: String): List<SourceGenre> {
+        val array = Regex(
+            "\\\"tags\\\"\\s*:\\s*(\\[.*?])\\s*,\\s*\\\"platforms\\\"",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+        ).find(payload)?.groupValues?.get(1) ?: return emptyList()
+        return runCatching { JSONArray(array) }.getOrNull()?.let { tags ->
+            (0 until tags.length()).mapNotNull { index ->
+                val tag = tags.optJSONObject(index) ?: return@mapNotNull null
+                val id = tag.optString("id").trim()
+                val name = tag.optString("name").clean()
+                if (id.isEmpty() || name.isEmpty()) null else SourceGenre(id, name)
+            }
+        }.orEmpty()
+    }
+
+    private fun parseComicGenres(payload: String): List<SourceGenre> {
+        val array = Regex(
+            "\\\"genres\\\"\\s*:\\s*(\\[.*?])",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+        ).find(payload)?.groupValues?.get(1) ?: return emptyList()
+        return runCatching { JSONArray(array) }.getOrNull()?.let { genres ->
+            (0 until genres.length()).mapNotNull { index ->
+                genres.optString(index).clean().takeIf(String::isNotEmpty)?.let { SourceGenre(it, it) }
+            }
+        }.orEmpty()
+    }
+
     private fun parseEpisodeAnchors(
         payload: String,
         seriesId: SeriesId,
@@ -156,8 +194,12 @@ class NtkDocumentParser {
             val episodePath = normalizedEpisodePath(link.attr("href"), key) ?: return@forEach
             val title = link.selectFirst(".subject, .episode-title, .title, strong, b")
                 ?.text()?.clean() ?: link.text().clean()
-            if (title.isBlank() || title.contains("목록")) return@forEach
-            val episode = SourceEpisode(EpisodeId(seriesId, episodePath), title)
+            if (title.isBlank() || NON_EPISODE_LABELS.any(title::contains)) return@forEach
+            val episode = SourceEpisode(
+                EpisodeId(seriesId, episodePath),
+                title,
+                sequenceNumber = episodeNumber(title),
+            )
             records.putIfAbsent(episodePath, NtkEpisodeRecord(episode, null, null))
         }
     }
@@ -183,6 +225,7 @@ class NtkDocumentParser {
             id = EpisodeId(seriesId, path),
             title = title,
             pageCountHint = imageCount,
+            sequenceNumber = fallbackNumber?.toDouble() ?: existing?.episode?.sequenceNumber,
         )
         records[path] = NtkEpisodeRecord(
             episode = episode,
@@ -320,7 +363,13 @@ class NtkDocumentParser {
     private fun String.clean(): String = replace('\u00a0', ' ').replace(Regex("<[^>]+>"), " ")
         .replace(Regex("\\s+"), " ").trim()
 
+    private fun episodeNumber(title: String): Double? =
+        Regex("([0-9]+(?:\\.[0-9]+)?)\\s*화").find(title)?.groupValues?.get(1)?.toDoubleOrNull()
+
     private companion object {
+        val NON_EPISODE_LABELS = listOf(
+            "목록", "최신화 보기", "첫화부터", "처음부터", "정주행", "이어보기", "전체보기",
+        )
         const val MAX_EPISODE_PAGES = 100
         val IMAGE_ATTRIBUTES = listOf("data-original", "data-src", "data-lazy-src", "data-url", "src")
         val BLOCKED_CONTEXT_TOKENS = listOf("banner", "advert", "sponsor", "popup")

@@ -15,16 +15,42 @@ enum class SeriesKind {
     COMIC,
 }
 
+enum class SearchField {
+    TITLE,
+    AUTHOR,
+}
+
+data class SourceSearchQuery(
+    val text: String,
+    val kind: SeriesKind? = null,
+    val field: SearchField = SearchField.TITLE,
+    val cursor: String? = null,
+) {
+    init {
+        require(text.isNotBlank()) { "Search text must not be blank" }
+    }
+}
+
 enum class CatalogOrder {
     LATEST,
     POPULAR,
     NEW,
 }
 
+data class SourceGenre(
+    val key: String,
+    val label: String,
+) {
+    init {
+        require(key.isNotBlank()) { "Genre key must not be blank" }
+        require(label.isNotBlank()) { "Genre label must not be blank" }
+    }
+}
+
 data class CatalogQuery(
     val kind: SeriesKind,
     val order: CatalogOrder,
-    val genre: String? = null,
+    val genre: SourceGenre? = null,
     val cursor: String? = null,
 )
 
@@ -33,9 +59,13 @@ data class SourceEpisode(
     val title: String,
     val publishedAtEpochMillis: Long? = null,
     val pageCountHint: Int? = null,
+    val sequenceNumber: Double? = null,
 ) {
     init {
         require(pageCountHint == null || pageCountHint > 0) { "Page count hint must be positive" }
+        require(sequenceNumber == null || sequenceNumber.isFinite()) {
+            "Episode sequence number must be finite"
+        }
     }
 }
 

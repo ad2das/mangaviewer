@@ -72,8 +72,11 @@ class EpisodeAppendReducerTest {
             },
         ).withFirstPixel().copy(velocityUnitsPerSecond = 0L)
 
-        val scheduled = Reduction(verified, openedReduction.commands)
-        val load = openedReduction.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
+        val scheduled = requireNotNull(reducer.reduce(
+            verified,
+            ViewerEvent.RetryWakeup(2L),
+        ))
+        val load = scheduled.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
         val boundary = requireNotNull(
             scheduled.state.episodeAppends.getValue(current.id).boundaryPageId,
         )
@@ -148,7 +151,7 @@ class EpisodeAppendReducerTest {
             ),
             velocityUnitsPerSecond = 0L,
         )
-        return ReadyAppend(moved.replacePages(
+        val ready = moved.replacePages(
             moved.pages.mapValues { (pageId, page) ->
                 if (pageId.episodeId == current.id) {
                     page.copy(encoded = VerifiedPageRef("cache", 1L, "sha"))
@@ -156,8 +159,11 @@ class EpisodeAppendReducerTest {
                     page
                 }
             },
-        ).withFirstPixel().copy(velocityUnitsPerSecond = 0L),
-            opened.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single(),
+        ).withFirstPixel().copy(velocityUnitsPerSecond = 0L)
+        val scheduled = requireNotNull(reducer.reduce(ready, ViewerEvent.RetryWakeup(2L)))
+        return ReadyAppend(
+            scheduled.state,
+            scheduled.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single(),
         )
     }
 
@@ -170,7 +176,7 @@ class EpisodeAppendReducerTest {
                 pixel = PixelRef(1L, dimensions, 1_080L * 1_620L * 4L),
                 isPresented = true,
             ),
-        )
+        ).copy(hasPresentedContent = true, surfacePresentationReady = true)
     }
 
     private data class ReadyAppend(

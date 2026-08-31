@@ -23,8 +23,7 @@ class FirstResponseSchedulingTest {
             reduction.state,
             ViewerEvent.FetchResponseStarted(initialFetch.token, 2L),
         ))
-        val targetFetch = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
-            .first { it.token.pageId == manifest.pages[2].id }
+        assertTrue(reduction.commands.none { it is ViewerCommand.FetchPage })
         reduction = requireNotNull(reducer.reduce(
             reduction.state,
             ViewerEvent.FetchSucceeded(
@@ -35,6 +34,15 @@ class FirstResponseSchedulingTest {
             ),
         ))
         val abandonedDecode = reduction.commands.filterIsInstance<ViewerCommand.DecodePage>().single()
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state.copy(
+                hasPresentedContent = true,
+                surfacePresentationReady = true,
+            ),
+            ViewerEvent.RetryWakeup(4L),
+        ))
+        val targetFetch = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
+            .first { it.token.pageId == manifest.pages[2].id }
         reduction = requireNotNull(reducer.reduce(
             reduction.state,
             ViewerEvent.FetchSucceeded(
@@ -69,10 +77,15 @@ class FirstResponseSchedulingTest {
             null,
             ViewerEvent.OpenEpisode(88L, current, ViewerFixtures.viewport, 1L),
         ))
-        val append = opened.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
+        val presented = opened.state.withFirstPresentedPixel()
+        val scheduled = requireNotNull(reducer.reduce(
+            presented,
+            ViewerEvent.RetryWakeup(2L),
+        ))
+        val append = scheduled.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
         val appended = requireNotNull(reducer.reduce(
-            opened.state,
-            ViewerEvent.NextEpisodeSucceeded(append.token, next, 2L),
+            scheduled.state,
+            ViewerEvent.NextEpisodeSucceeded(append.token, next, 3L),
         )).state
 
         val demands = DemandPlanner().plan(appended)
@@ -81,6 +94,18 @@ class FirstResponseSchedulingTest {
         assertTrue(promoted >= firstOffscreen)
         assertEquals(promoted, firstOffscreen)
         assertTrue(demands[promoted].decodeBand == null)
+    }
+
+    private fun ViewerState.withFirstPresentedPixel(): ViewerState {
+        val pageId = pageOrder.first()
+        val dimensions = PageDimensions(1_080, 1_920)
+        return replacePage(
+            pageId,
+            pages.getValue(pageId).copy(
+                pixel = PixelRef(9_001L, dimensions, 1_080L * 1_920L * 4L),
+                isPresented = true,
+            ),
+        ).copy(hasPresentedContent = true, surfacePresentationReady = true)
     }
 
     @Test
@@ -268,8 +293,7 @@ class FirstResponseSchedulingTest {
             reduction.state,
             ViewerEvent.FetchResponseStarted(initialFetch.token, 2L),
         ))
-        val forwardFetch = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
-            .single { it.token.pageId == manifest.pages[1].id }
+        assertTrue(reduction.commands.none { it is ViewerCommand.FetchPage })
         reduction = requireNotNull(reducer.reduce(
             reduction.state,
             ViewerEvent.FetchSucceeded(
@@ -281,6 +305,15 @@ class FirstResponseSchedulingTest {
         ))
         val hardDecode = reduction.commands.filterIsInstance<ViewerCommand.DecodePage>()
             .single { it.token.pageId == manifest.pages[0].id }
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state.copy(
+                hasPresentedContent = true,
+                surfacePresentationReady = true,
+            ),
+            ViewerEvent.RetryWakeup(4L),
+        ))
+        val forwardFetch = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
+            .single { it.token.pageId == manifest.pages[1].id }
         reduction = requireNotNull(reducer.reduce(
             reduction.state,
             ViewerEvent.SurfaceAttachmentChanged(true, 4L),
@@ -341,7 +374,7 @@ class FirstResponseSchedulingTest {
     }
 
     @Test
-    fun initialVisibleAnchorExclusivelyOwnsFetchUntilItsValidatedResponseStarts() {
+    fun initialVisibleAnchorExclusivelyOwnsFetchUntilItsBodyIsVerified() {
         val reducer = ViewerFixtures.reducer()
         val manifest = ViewerFixtures.manifest(20)
         val requestedAnchor = manifest.pages[7].id
@@ -392,19 +425,9 @@ class FirstResponseSchedulingTest {
             reduction.state,
             ViewerEvent.FetchResponseStarted(retry.token, atNanos = 14L),
         ))
-        val nextFetches = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
-
-        assertTrue(reduction.state.firstResponseReceived)
-        assertEquals(6, reduction.state.networkConcurrency)
-        assertEquals(5, nextFetches.size)
-        val targetIndex = manifest.pages.indexOfFirst { it.id == requestedAnchor }
-        assertTrue(nextFetches.all { command ->
-            manifest.pages.indexOfFirst { it.id == command.token.pageId } > targetIndex
-        })
-        assertEquals(0, nextFetches.count { it.token.priority == WorkPriority.HARD })
-        assertEquals(5, nextFetches.count { it.token.priority == WorkPriority.WARM })
-        assertEquals(5, nextFetches.map { it.token.pageId }.toSet().size)
-        assertTrue(nextFetches.none { it.token.pageId == requestedAnchor })
+        assertFalse(reduction.state.firstResponseReceived)
+        assertEquals(1, reduction.state.networkConcurrency)
+        assertTrue(reduction.commands.none { it is ViewerCommand.FetchPage })
 
         reduction = requireNotNull(reducer.reduce(
             reduction.state,
@@ -415,8 +438,28 @@ class FirstResponseSchedulingTest {
                 atNanos = 15L,
             ),
         ))
+        assertTrue(reduction.state.firstResponseReceived)
+        assertEquals(2, reduction.state.networkConcurrency)
+        assertTrue(reduction.commands.none { it is ViewerCommand.FetchPage })
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state.copy(
+                hasPresentedContent = true,
+                surfacePresentationReady = true,
+            ),
+            ViewerEvent.RetryWakeup(16L),
+        ))
+        val nextFetches = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
+        assertEquals(2, nextFetches.size)
+        val targetIndex = manifest.pages.indexOfFirst { it.id == requestedAnchor }
+        assertTrue(nextFetches.all { command ->
+            manifest.pages.indexOfFirst { it.id == command.token.pageId } > targetIndex
+        })
+        assertEquals(0, nextFetches.count { it.token.priority == WorkPriority.HARD })
+        assertEquals(2, nextFetches.count { it.token.priority == WorkPriority.WARM })
+        assertEquals(2, nextFetches.map { it.token.pageId }.toSet().size)
+        assertTrue(nextFetches.none { it.token.pageId == requestedAnchor })
         assertTrue(reduction.state.pages.getValue(requestedAnchor).encoded != null)
-        assertEquals(6, reduction.state.networkConcurrency)
+        assertEquals(2, reduction.state.networkConcurrency)
     }
 
     @Test

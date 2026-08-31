@@ -34,9 +34,20 @@ class WorkScheduler(
         val commands = preempted.commands.toMutableList()
         for (demand in demands) {
             if (state.ownership.fetches.size >= state.networkConcurrency) break
+            if (state.interactionActive && state.hasPresentedContent &&
+                demand.pageId.episodeId != state.currentEpisodeId
+            ) {
+                continue
+            }
+            val priority = if (state.interactionActive && demand.distanceUnits == 0L) {
+                WorkPriority.HARD
+            } else {
+                demand.priority
+            }
+            if (!state.surfacePresentationReady && priority != WorkPriority.HARD) continue
             val runtime = state.pages.getValue(demand.pageId)
             if (!canFetch(state, runtime)) continue
-            val claimed = claim(state, runtime, WorkKind.FETCH, demand.priority)
+            val claimed = claim(state, runtime, WorkKind.FETCH, priority)
             state = claimed.state
             commands += ViewerCommand.FetchPage(claimed.token)
         }
@@ -69,6 +80,7 @@ class WorkScheduler(
     }
 
     private fun scheduleColdFetches(initial: ViewerState): SchedulingResult {
+        if (!initial.surfacePresentationReady) return SchedulingResult(initial, emptyList())
         var available = initial.networkConcurrency - initial.ownership.fetches.size
         val sweep = initial.coldFetchSweep
         if (available <= 0 || sweep.isComplete || sweep.pausedUntilNanos > initial.lastEventNanos) {
@@ -81,20 +93,15 @@ class WorkScheduler(
         var earliestRetry = Long.MAX_VALUE
         val commands = mutableListOf<ViewerCommand>()
         while (available > 0 && inspected < sweep.pendingCount) {
-            val pageIndex = if (direction > 0) {
-                requireNotNull(sweep.nextPendingIndex(cursor))
-            } else {
-                requireNotNull(sweep.previousPendingIndex(cursor))
-            }
+            val pageIndex = coldPageIndex(sweep, cursor, direction)
             val pageId = state.pageOrder[pageIndex]
-            cursor = if (direction > 0) {
-                (pageIndex + 1) % sweep.pageCount
-            } else {
-                if (pageIndex == 0) sweep.pageCount - 1 else pageIndex - 1
-            }
+            cursor = advanceColdCursor(sweep, pageIndex, direction)
             inspected += 1
             val runtime = state.pages.getValue(pageId)
             earliestRetry = minOf(earliestRetry, retryDeadline(state, runtime))
+            if (state.interactionActive && state.hasPresentedContent &&
+                pageId.episodeId != state.currentEpisodeId
+            ) continue
             if (!canFetch(state, runtime)) continue
             val claimed = claim(state, runtime, WorkKind.FETCH, WorkPriority.COLD)
             state = claimed.state
@@ -107,6 +114,22 @@ class WorkScheduler(
             commands,
         )
     }
+
+    private fun coldPageIndex(sweep: ColdFetchSweep, cursor: Int, direction: Int): Int =
+        if (direction > 0) {
+            requireNotNull(sweep.nextPendingIndex(cursor))
+        } else {
+            requireNotNull(sweep.previousPendingIndex(cursor))
+        }
+
+    private fun advanceColdCursor(sweep: ColdFetchSweep, pageIndex: Int, direction: Int): Int =
+        if (direction > 0) {
+            (pageIndex + 1) % sweep.pageCount
+        } else if (pageIndex == 0) {
+            sweep.pageCount - 1
+        } else {
+            pageIndex - 1
+        }
 
     private fun scheduleDecodes(initial: ViewerState, demands: List<PageDemand>): SchedulingResult {
         if (initial.visibility == ViewerVisibility.BACKGROUND) return SchedulingResult(initial, emptyList())
@@ -129,7 +152,11 @@ class WorkScheduler(
                 )
             }
         }
-        var warmAvailable = 1 - ownedDecodeCount(state, WorkPriority.WARM)
+        var warmAvailable = if (state.interactionActive || !state.surfacePresentationReady) {
+            0
+        } else {
+            1 - ownedDecodeCount(state, WorkPriority.WARM)
+        }
         for (demand in demands) {
             if (warmAvailable <= 0 || !decodeAdmitted(state, demand)) continue
             val band = demand.decodeBand ?: continue

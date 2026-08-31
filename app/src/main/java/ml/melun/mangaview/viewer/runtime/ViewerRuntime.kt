@@ -40,7 +40,7 @@ internal class ViewerRuntime(
     scope: CoroutineScope,
     private val sourceDispatcher: CoroutineDispatcher,
     private val ioDispatcher: CoroutineDispatcher,
-    hardDecodeDispatcher: CoroutineDispatcher,
+    private val hardDecodeDispatcher: CoroutineDispatcher,
     warmDecodeDispatcher: CoroutineDispatcher,
     private val source: ContentSource,
     repository: PageRepository,
@@ -74,6 +74,7 @@ internal class ViewerRuntime(
         recycle = { pixel -> workExecutor.recycle(pixel) },
         presented = { evidence ->
             if (evidence.readableActualContent) {
+                routeEvent(ViewerEvent.ContentFramePresented(evidence.presentedNanos))
                 nearestVisiblePixelPageId()?.let { pageId ->
                     startup.markPresented(
                         pageId,
@@ -141,6 +142,13 @@ internal class ViewerRuntime(
     fun open() {
         if (!openStarted.compareAndSet(false, true) || closed.get()) return
         startup.markOpenStarted(System.nanoTime())
+        runtimeScope.launch(hardDecodeDispatcher) {
+            val width = synchronized(pendingLock) {
+                kotlin.math.ceil(pendingViewport.width.toPixels()).toInt()
+                    .coerceIn(1, MAX_PREALLOCATED_TILE_WIDTH_PX)
+            }
+            runCatching { tilePool.preallocate(width, PREALLOCATED_TILE_HEIGHT_PX) }
+        }
         runtimeScope.launch {
             try {
                 val (prepared, initialPosition) = coroutineScope {
@@ -162,6 +170,11 @@ internal class ViewerRuntime(
                 if (!closed.get()) reportFailure(failure)
             }
         }
+    }
+
+    private companion object {
+        const val MAX_PREALLOCATED_TILE_WIDTH_PX = 1_440
+        const val PREALLOCATED_TILE_HEIGHT_PX = 512
     }
 
     fun enterForeground() {

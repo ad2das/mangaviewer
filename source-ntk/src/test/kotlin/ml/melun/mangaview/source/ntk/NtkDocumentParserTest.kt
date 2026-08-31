@@ -2,6 +2,7 @@ package ml.melun.mangaview.source.ntk
 
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.source.SeriesKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -12,6 +13,34 @@ import org.junit.Test
 class NtkDocumentParserTest {
     private val parser = NtkDocumentParser()
     private val sourceId = SourceId("ntk")
+
+    @Test
+    fun currentWebtoonAndComicGenrePayloadsAreComplete() {
+        val webtoon = """<script>{\"tags\":[{\"id\":1,\"name\":\"학원\"},
+            {\"id\":517,\"name\":\"절륜공\"}],\"platforms\":[]}</script>"""
+        val comic = """<script>{\"genres\":[\"순정\",\"판타지\",\"17\"]}</script>"""
+
+        assertEquals(
+            listOf("1:학원", "517:절륜공"),
+            parser.genres(webtoon, SeriesKind.WEBTOON).map { "${it.key}:${it.label}" },
+        )
+        assertEquals(
+            listOf("순정", "판타지", "17"),
+            parser.genres(comic, SeriesKind.COMIC).map { it.label },
+        )
+    }
+
+    @Test
+    fun quickReadLinksAreNotEpisodes() {
+        val series = SeriesId(sourceId, "/webtoon/42")
+        val html = """
+            <a href="/webtoon/42/latest"><strong>▶최신화 보기</strong></a>
+            <a href="/webtoon/42/first"><strong>📖첫화부터 정주행</strong></a>
+            <a href="/webtoon/42/real"><strong>1190화</strong></a>
+        """.trimIndent()
+
+        assertEquals(listOf("1190화"), parser.episodes(html, series).episodes.map { it.episode.title })
+    }
 
     @Test
     fun catalogApiUsesAdapterKindAndCurrentArtworkFields() {

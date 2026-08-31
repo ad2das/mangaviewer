@@ -19,10 +19,14 @@ import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageValidation
+import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.PreparationIntent
 import ml.melun.mangaview.source.SourceEpisode
+import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceSearchQuery
+import ml.melun.mangaview.source.SeriesKind
 
 /** Keeps Android UI creation synchronous while an expensive provider runtime starts off-thread. */
 internal class DeferredContentSource(
@@ -69,8 +73,14 @@ internal class DeferredContentSource(
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> =
         source().search(query, cursor)
 
+    override suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> =
+        source().search(query)
+
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> =
         source().catalog(query)
+
+    override suspend fun genres(kind: SeriesKind): List<SourceGenre> =
+        source().genres(kind)
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> =
         source().episodes(seriesId, cursor)
@@ -84,11 +94,22 @@ internal class DeferredContentSource(
     override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) =
         source().prepare(episodeId, intent)
 
-    override suspend fun openPage(pageId: PageId, validation: PageValidation?): OpenedPage =
-        source().openPage(pageId, validation)
+    override suspend fun openPage(
+        pageId: PageId,
+        validation: PageValidation?,
+    ): OpenedPage = source().openPage(pageId, validation)
+
+    override suspend fun openPage(
+        pageId: PageId,
+        validation: PageValidation?,
+        priority: PageFetchPriority,
+    ): OpenedPage = source().openPage(pageId, validation, priority)
 
     override suspend fun openArtwork(series: SourceSeries): OpenedPage? =
         source().openArtwork(series)
+
+    override suspend fun seriesUrl(seriesId: SeriesId): String? =
+        source().seriesUrl(seriesId)
 
     private suspend fun source(): ContentSource = delegate.await()
 }

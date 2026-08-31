@@ -17,14 +17,18 @@ class NextEpisodePlanner(
         state: ViewerState,
         episodeId: EpisodeId = state.currentEpisodeId,
     ): Boolean {
+        // The adjacent provider handshake may initialize Chromium and run challenge JavaScript.
+        // It must never share the critical path with the current episode's first actual frame.
+        if (!state.hasPresentedContent || !state.surfacePresentationReady || state.interactionActive) {
+            return false
+        }
         val progress = state.episodeProgress[episodeId] ?: return false
         if (episodeId == state.currentEpisodeId && progress.allVerified) return true
         val measuredVelocity = state.velocityUnitsPerSecond
         if (measuredVelocity < 0L) return false
-        // A reader can fling immediately, before the first network response provides a measured
-        // velocity. Use a conservative physical fling runway at rest so adjacent manifest work
-        // starts with the viewer instead of after the user has already reached a placeholder.
-        // The viewer still opens and accepts input immediately; this only schedules source work.
+        // After a real current-episode frame exists, an idle reader may still fling immediately.
+        // A conservative physical runway starts adjacent work early without placing it ahead of
+        // the visible episode's first pixels.
         val idleForwardVelocity = saturatingMultiply(
             state.viewport.height.units,
             idleForwardScreenfulsPerSecond,

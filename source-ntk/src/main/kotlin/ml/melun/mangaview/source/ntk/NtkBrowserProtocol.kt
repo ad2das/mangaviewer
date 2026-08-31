@@ -8,11 +8,13 @@ internal object NtkBrowserProtocol {
     const val MSG_ERROR = 5
     const val MSG_WARM = 6
     const val MSG_DESCRIPTOR = 7
+    const val MSG_ACK_READY = 8
 
     const val KEY_REQUEST_ID = "requestId"
     const val KEY_ORIGIN = "origin"
     const val KEY_PATH = "path"
     const val KEY_USER_AGENT = "userAgent"
+    const val KEY_PREPARATION_INTENT = "preparationIntent"
     const val KEY_PAYLOAD = "payload"
     const val KEY_ERROR = "error"
     const val KEY_WORK_ID = "workId"

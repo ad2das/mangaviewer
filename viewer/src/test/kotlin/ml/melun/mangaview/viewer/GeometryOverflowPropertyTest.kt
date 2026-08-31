@@ -105,6 +105,15 @@ class GeometryOverflowPropertyTest {
                 ),
             ))
             completed += 1
+            if (completed == 1) {
+                reduction = requireNotNull(reducer.reduce(
+                    reduction.state.copy(
+                        hasPresentedContent = true,
+                        surfacePresentationReady = true,
+                    ),
+                    ViewerEvent.RetryWakeup(now++),
+                ))
+            }
             pending += reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
             if (completed % 53 == 0) {
                 viewport = Viewport(FixedPx.fromPixels(if (completed % 106 == 0) 8_192 else 720), FixedPx.fromPixels(1))

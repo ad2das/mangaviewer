@@ -66,6 +66,24 @@ class NtkReplicaSelectorTest {
     }
 
     @Test
+    fun verifiedPrefixUnblocksHostBeforeTheBodyFinishesWithoutReleasingItsLease() = runTest {
+        val selector = NtkReplicaSelector()
+        val verified = "https://verified.example/page"
+        val alternative = "https://alternative.example/page"
+        val lease = selector.acquirePrepared(selector.prepare(listOf(verified, alternative)))
+        selector.failedAndReleased(lease)
+        val retry = selector.acquirePrepared(selector.prepare(listOf(verified)))
+
+        selector.accepted(retry, 70L)
+
+        val concurrent = selector.acquire(listOf(verified, alternative))
+        assertEquals(verified, concurrent)
+        selector.release(concurrent)
+        selector.completed(retry, 90L)
+        assertEquals(verified, selector.acquire(listOf(verified, alternative)))
+    }
+
+    @Test
     fun preparedLeaseParsesEachOpaqueUrlOnlyOnceAcrossItsLifecycle() = runTest {
         var parseCount = 0
         val selector = NtkReplicaSelector(resolveHost = { url ->

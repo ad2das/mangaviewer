@@ -34,8 +34,18 @@ class ViewerPipelineCoordinatorTest {
         coordinator.post(ViewerEvent.OpenEpisode(1L, manifest, ViewerFixtures.viewport, 1L))
         val initial = commands.filterIsInstance<ViewerCommand.FetchPage>().single()
         coordinator.post(ViewerEvent.FetchResponseStarted(initial.token, 2L))
+        coordinator.post(ViewerEvent.FetchSucceeded(
+            initial.token,
+            VerifiedPageRef("initial", 1_000L, "initial-sha", PageDimensions(1_080, 1_920)),
+            10L,
+            3L,
+        ))
+        coordinator.post(ViewerEvent.SurfaceAttachmentChanged(true, 4L))
+        coordinator.post(ViewerEvent.ContentFramePresented(5L))
         val burst = commands.filterIsInstance<ViewerCommand.FetchPage>()
+            .filter { it.token != initial.token }
         val target = burst.last()
+        commands.clear()
 
         actorThread.set(false)
         burst.forEachIndexed { index, fetch ->
@@ -56,8 +66,8 @@ class ViewerPipelineCoordinatorTest {
         coordinator.post(ViewerEvent.UserScroll(targetTop, 20_000L, 100L))
         runCurrent()
 
-        val firstDecode = commands.filterIsInstance<ViewerCommand.DecodePage>().first()
-        assertEquals(target.token.pageId, firstDecode.token.pageId)
+        val visibleDecode = commands.filterIsInstance<ViewerCommand.DecodePage>().last()
+        assertEquals(target.token.pageId, visibleDecode.token.pageId)
         coordinator.close()
     }
 
@@ -82,7 +92,12 @@ class ViewerPipelineCoordinatorTest {
         val initial = commands.filterIsInstance<ViewerCommand.FetchPage>().single()
 
         actorThread.set(false)
-        coordinator.post(ViewerEvent.FetchResponseStarted(initial.token, 3L))
+        coordinator.post(ViewerEvent.FetchSucceeded(
+            initial.token,
+            VerifiedPageRef("initial", 1_000L, "initial-sha", PageDimensions(1_080, 1_920)),
+            10L,
+            3L,
+        ))
         actorThread.set(true)
         coordinator.post(ViewerEvent.UserScroll(FixedPx.fromPixels(640), 12_000L, 4L))
 

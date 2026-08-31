@@ -22,6 +22,7 @@ import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageByteStream
 import ml.melun.mangaview.source.PageValidation
+import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.PreparationIntent
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourcePage
@@ -93,6 +94,24 @@ class PageRepositoryTest {
         assertEquals(1, responseCount.get())
         assertEquals(1, source.openCount.get())
     }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun visibleWaiterPromotesAQueuedSharedFlightBeforeTransportStarts() = runTest {
+        val source = PrioritySource()
+        val repository = PageRepository(this, { source }, FakeCache())
+
+        val background = async {
+            repository.get(source.pageId, PageFetchPriority.BACKGROUND)
+        }
+        val visible = async {
+            repository.get(source.pageId, PageFetchPriority.VISIBLE)
+        }
+        awaitAll(background, visible)
+
+        assertEquals(PageFetchPriority.VISIBLE, source.observedPriority)
+        assertEquals(1, source.openCount.get())
+    }
 }
 
 private class FakeCache : RawPageCache {
@@ -120,7 +139,7 @@ private class FakeCache : RawPageCache {
     }
 }
 
-private class FakeSource(
+private open class FakeSource(
     private val gate: CompletableDeferred<Unit>? = null,
     private val stream: PageByteStream? = null,
 ) : ContentSource {
@@ -128,7 +147,7 @@ private class FakeSource(
     val pageId = PageId(EpisodeId(SeriesId(id, "series"), "episode"), "p0")
     val openCount = AtomicInteger()
 
-    override suspend fun openPage(pageId: PageId, validation: PageValidation?): OpenedPage {
+    open override suspend fun openPage(pageId: PageId, validation: PageValidation?): OpenedPage {
         require(pageId == this.pageId)
         openCount.incrementAndGet()
         gate?.await()
@@ -149,6 +168,19 @@ private class FakeSource(
     override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent): Unit = unsupported()
 
     private fun <T> unsupported(): T = throw UnsupportedOperationException("Not used by this test")
+}
+
+private class PrioritySource : FakeSource() {
+    var observedPriority: PageFetchPriority? = null
+
+    override suspend fun openPage(
+        pageId: PageId,
+        validation: PageValidation?,
+        priority: PageFetchPriority,
+    ): OpenedPage {
+        observedPriority = priority
+        return super.openPage(pageId, validation)
+    }
 }
 
 private class BlockingPageStream : PageByteStream {

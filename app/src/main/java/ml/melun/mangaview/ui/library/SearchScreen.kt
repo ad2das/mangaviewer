@@ -30,11 +30,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SearchField
+import ml.melun.mangaview.source.SeriesKind
 
 @Composable
 internal fun SearchScreen(
@@ -44,7 +48,7 @@ internal fun SearchScreen(
     accept: (LibraryIntent) -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
-        SearchControls(state.query, colors, accept)
+        SearchControls(state, colors, accept)
         Spacer(Modifier.height(12.dp))
         when (val content = state.content) {
             LibraryContent.Empty -> SearchEmpty(colors)
@@ -63,7 +67,8 @@ internal fun SearchScreen(
 }
 
 @Composable
-private fun SearchControls(query: String, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+private fun SearchControls(state: LibraryState, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    val query = state.query
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(Unit) {
@@ -71,13 +76,14 @@ private fun SearchControls(query: String, colors: LibraryColors, accept: (Librar
         keyboard?.show()
     }
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(12.dp))
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
-                Modifier.weight(1f).height(54.dp).clip(RoundedCornerShape(14.dp)).background(colors.card)
+                Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(14.dp)).background(colors.card)
                     .border(1.dp, colors.outline, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -99,25 +105,60 @@ private fun SearchControls(query: String, colors: LibraryColors, accept: (Librar
                     },
                 )
             }
-            LibraryAction("검색", colors, Modifier.height(54.dp)) { accept(LibraryIntent.Search) }
+            LibraryAction("검색", colors, Modifier.width(80.dp).height(52.dp)) { accept(LibraryIntent.Search) }
         }
-        Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterBox("전체", colors, Modifier.weight(1f))
-            FilterBox("제목", colors, Modifier.weight(1f))
+        Row(
+            Modifier.fillMaxWidth().height(50.dp).padding(vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterBox(searchKindLabel(state.searchKind), "검색 범위", colors, Modifier.weight(1f).fillMaxSize()) {
+                accept(LibraryIntent.SearchKindSelected(nextSearchKind(state.searchKind)))
+            }
+            FilterBox(searchFieldLabel(state.searchField), "검색 항목", colors, Modifier.weight(1f).fillMaxSize()) {
+                accept(LibraryIntent.SearchFieldSelected(nextSearchField(state.searchField)))
+            }
         }
     }
 }
 
 @Composable
-private fun FilterBox(label: String, colors: LibraryColors, modifier: Modifier) {
+private fun FilterBox(
+    label: String,
+    description: String,
+    colors: LibraryColors,
+    modifier: Modifier,
+    click: () -> Unit,
+) {
     Box(
-        modifier.height(44.dp).clip(RoundedCornerShape(11.dp)).background(colors.card)
-            .border(1.dp, colors.outline, RoundedCornerShape(11.dp)).padding(horizontal = 12.dp),
+        modifier.clip(RoundedCornerShape(10.dp)).background(colors.card).clickable(onClick = click)
+            .semantics { contentDescription = "$description: $label" }
+            .border(1.dp, colors.outline, RoundedCornerShape(10.dp)).padding(horizontal = 12.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
         BasicText(label, style = bodyStyle(colors, 14))
     }
+}
+
+private fun searchKindLabel(kind: SeriesKind?): String = when (kind) {
+    null -> "전체"
+    SeriesKind.COMIC -> "만화"
+    SeriesKind.WEBTOON -> "웹툰"
+}
+
+private fun nextSearchKind(kind: SeriesKind?): SeriesKind? = when (kind) {
+    null -> SeriesKind.COMIC
+    SeriesKind.COMIC -> SeriesKind.WEBTOON
+    SeriesKind.WEBTOON -> null
+}
+
+private fun searchFieldLabel(field: SearchField): String = when (field) {
+    SearchField.TITLE -> "제목"
+    SearchField.AUTHOR -> "작가"
+}
+
+private fun nextSearchField(field: SearchField): SearchField = when (field) {
+    SearchField.TITLE -> SearchField.AUTHOR
+    SearchField.AUTHOR -> SearchField.TITLE
 }
 
 @Composable

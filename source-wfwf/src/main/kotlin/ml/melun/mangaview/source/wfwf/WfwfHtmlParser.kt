@@ -24,6 +24,7 @@ class WfwfHtmlParser {
             val candidate = SourceSeries(
                 id = sourceSeriesId(key),
                 title = title.ifBlank { "#${key.titleId}" },
+                subtitle = subtitle(link),
                 thumbnailKey = imageUrl(link),
             )
             val old = found[key.encode()]
@@ -37,19 +38,26 @@ class WfwfHtmlParser {
     }
 
     fun episodes(document: Document, seriesId: SeriesId, key: WfwfSeriesKey): List<SourceEpisode> {
-        val seen = mutableSetOf<Long>()
-        val parsed = document.select("a[href*='toon='][href*='num=']").mapNotNull { link ->
+        val parsed = linkedMapOf<Long, SourceEpisode>()
+        document.select("a[href*='toon='][href*='num=']").forEach { link ->
             val href = link.attr("href")
-            if (queryLong(href, "toon") != key.titleId) return@mapNotNull null
-            val episodeNumber = queryLong(href, "num") ?: return@mapNotNull null
-            if (episodeNumber <= 0L || !seen.add(episodeNumber)) return@mapNotNull null
-            SourceEpisode(
+            if (queryLong(href, "toon") != key.titleId) return@forEach
+            val episodeNumber = queryLong(href, "num") ?: return@forEach
+            if (episodeNumber <= 0L) return@forEach
+            val title = episodeTitle(link)
+            if (!isEpisodeEntry(link, title)) return@forEach
+            val candidate = SourceEpisode(
                 id = EpisodeId(seriesId, episodeNumber.toString()),
-                title = episodeTitle(link).ifBlank { episodeNumber.toString() },
+                title = title.ifBlank { episodeNumber.toString() },
                 publishedAtEpochMillis = null,
+                sequenceNumber = episodeNumber.toDouble(),
             )
+            val existing = parsed[episodeNumber]
+            if (existing == null || episodeTitleQuality(candidate.title) > episodeTitleQuality(existing.title)) {
+                parsed[episodeNumber] = candidate
+            }
         }
-        return orderEpisodes(parsed)
+        return orderEpisodes(parsed.values.toList())
     }
 
     fun catalogPageNumbers(document: Document, key: WfwfSeriesKey): List<Int> =
@@ -63,7 +71,9 @@ class WfwfHtmlParser {
         orderEpisodes(pages.flatten().distinctBy(SourceEpisode::id))
 
     private fun orderEpisodes(episodes: List<SourceEpisode>): List<SourceEpisode> =
-        episodes.sortedWith(compareByDescending<SourceEpisode> { visibleNumber(it.title) }.thenByDescending {
+        episodes.sortedWith(compareByDescending<SourceEpisode> {
+            it.sequenceNumber ?: visibleNumber(it.title)
+        }.thenByDescending {
             it.id.remoteKey.toLongOrNull() ?: 0L
         })
 
@@ -169,6 +179,21 @@ class WfwfHtmlParser {
     private fun episodeTitle(link: Element): String =
         link.selectFirst(".subject")?.ownText()?.clean() ?: link.ownText().clean()
 
+    private fun isEpisodeEntry(link: Element, title: String): Boolean {
+        if (NON_EPISODE_LABELS.any(title::contains)) return false
+        var context: Element? = link
+        repeat(4) {
+            val marker = "${context?.id().orEmpty()} ${context?.className().orEmpty()}".lowercase()
+            if (NON_EPISODE_CONTEXT.any(marker::contains)) return false
+            context = context?.parent()
+        }
+        return true
+    }
+
+    private fun episodeTitleQuality(title: String): Int =
+        (if (Regex("[0-9]+(?:\\.[0-9]+)?\\s*화").containsMatchIn(title)) 2 else 0) +
+            (if (title.any(Char::isLetter)) 1 else 0)
+
     private fun imageUrl(link: Element): String? {
         var context: Element? = link
         repeat(4) {
@@ -177,6 +202,16 @@ class WfwfHtmlParser {
                     image.attr(it).trim().takeIf(String::isNotEmpty)
                 }?.let { return it }
             }
+            context = context?.parent()
+        }
+        return null
+    }
+
+    private fun subtitle(link: Element): String? {
+        var context: Element? = link
+        repeat(4) {
+            val value = context?.selectFirst(SUBTITLE_SELECTORS)?.text()?.clean().orEmpty()
+            if (value.isNotEmpty()) return value
             context = context?.parent()
         }
         return null
@@ -203,6 +238,8 @@ class WfwfHtmlParser {
         const val TITLE_SELECTORS =
             "h1, h2, h3, h4, .title, .subject, .toon-title, .webtoon-title, .item-title, " +
                 ".post-title, .name, strong, [data-title]"
+        const val SUBTITLE_SELECTORS =
+            ".genre, .genres, .author, .writer, .artist, .meta, [data-genre], [data-author]"
         val LAZY_IMAGE_ATTRIBUTES = listOf("data-original", "data-src", "data-lazy-src", "data-url")
         val IMAGE_ATTRIBUTES = LAZY_IMAGE_ATTRIBUTES + "src"
         val BLOCKED_CONTEXT_TOKENS = listOf(
@@ -210,6 +247,12 @@ class WfwfHtmlParser {
         )
         val BLOCKED_IMAGE_TOKENS = listOf(
             "sprite", "logo", "banner", "advert", "sponsor", "popup", "/ad/", "/ads/", "blank", "loading",
+        )
+        val NON_EPISODE_LABELS = listOf(
+            "최신화 보기", "첫화부터", "처음부터", "정주행", "이어보기", "전체보기", "목록으로",
+        )
+        val NON_EPISODE_CONTEXT = listOf(
+            "quick-read", "quick_read", "shortcut", "hero-action", "read-action",
         )
         const val MAX_CATALOG_PAGES = 100L
     }

@@ -7,11 +7,13 @@ import android.os.RemoteException
 import android.os.SystemClock
 import android.util.Log
 import java.net.URI
+import ml.melun.mangaview.source.PreparationIntent
 
 internal data class RemoteRequest(
     val requestId: Long,
     var key: String,
     val userAgent: String,
+    val intent: PreparationIntent,
     val startedAtMillis: Long,
     val recipients: MutableMap<Long, Messenger>,
     val delivery: NtkManifestDelivery = NtkManifestDelivery(),
@@ -22,6 +24,7 @@ internal data class RemoteRequest(
     var descriptorApplying: Boolean = false,
     var rendererRestarts: Int = 0,
     var deliveryRedrives: Int = 0,
+    var ackReadyReported: Boolean = false,
 ) {
     val primaryRecipient: Messenger
         get() = requireNotNull(recipients[requestId])
@@ -49,6 +52,12 @@ internal data class RemoteRequest(
         recipients.forEach { (id, recipient) -> sendError(id, recipient, detail) }
     }
 
+    fun replyAckReady() {
+        if (ackReadyReported) return
+        ackReadyReported = true
+        recipients.forEach { (id, recipient) -> sendAckReady(id, recipient) }
+    }
+
     fun ageMillis(): Long = SystemClock.elapsedRealtime() - startedAtMillis
 
     companion object {
@@ -59,11 +68,15 @@ internal data class RemoteRequest(
             val origin = message.data.requiredString(NtkBrowserProtocol.KEY_ORIGIN)
             val path = message.data.requiredString(NtkBrowserProtocol.KEY_PATH)
             val userAgent = message.data.requiredString(NtkBrowserProtocol.KEY_USER_AGENT)
+            val intent = PreparationIntent.valueOf(
+                message.data.requiredString(NtkBrowserProtocol.KEY_PREPARATION_INTENT),
+            )
             require(userAgent.length <= MAX_USER_AGENT_LENGTH) { "NTK user agent is too long" }
             return RemoteRequest(
                 requestId = requestId,
                 key = validatedKey(origin, path),
                 userAgent = userAgent,
+                intent = intent,
                 startedAtMillis = SystemClock.elapsedRealtime(),
                 recipients = linkedMapOf(requestId to recipient),
             )
@@ -137,6 +150,10 @@ internal fun sendError(requestId: Long, recipient: Messenger, detail: String) {
     sendResponse(NtkBrowserProtocol.MSG_ERROR, requestId, recipient) {
         putString(NtkBrowserProtocol.KEY_ERROR, detail.take(MAX_ERROR_LENGTH))
     }
+}
+
+internal fun sendAckReady(requestId: Long, recipient: Messenger) {
+    sendResponse(NtkBrowserProtocol.MSG_ACK_READY, requestId, recipient) {}
 }
 
 private fun sendResponse(

@@ -95,6 +95,9 @@ sealed interface ViewerEvent {
         override val atNanos: Long,
     ) : ViewerEvent
 
+    /** Render-thread confirmation that an actual page frame reached the display Surface. */
+    data class ContentFramePresented(override val atNanos: Long) : ViewerEvent
+
     data class EvictPage(
         val generation: Long,
         val pageId: ml.melun.mangaview.core.PageId,

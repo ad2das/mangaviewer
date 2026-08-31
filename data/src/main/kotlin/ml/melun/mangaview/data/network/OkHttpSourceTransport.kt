@@ -14,6 +14,7 @@ import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceTransport
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -24,8 +25,19 @@ class OkHttpSourceTransport(
     private val client: OkHttpClient,
     private val ioDispatcher: CoroutineDispatcher,
 ) : SourceTransport {
-    override suspend fun execute(request: SourceRequest): SourceResponse {
-        val call = client.newCall(request.toOkHttpRequest())
+    override fun retireIdleConnections() = client.connectionPool.evictAll()
+
+    override suspend fun execute(request: SourceRequest): SourceResponse = execute(client, request)
+
+    override suspend fun executeOnFreshRoute(request: SourceRequest): SourceResponse {
+        val fresh = client.newBuilder()
+            .connectionPool(ConnectionPool(1, 1L, TimeUnit.MINUTES))
+            .build()
+        return execute(fresh, request)
+    }
+
+    private suspend fun execute(routeClient: OkHttpClient, request: SourceRequest): SourceResponse {
+        val call = routeClient.newCall(request.toOkHttpRequest())
         call.timeout().timeout(request.totalTimeoutMillis, TimeUnit.MILLISECONDS)
         return suspendCancellableCoroutine { continuation ->
             continuation.invokeOnCancellation { call.cancel() }
@@ -40,7 +52,11 @@ class OkHttpSourceTransport(
                         return
                     }
                     runCatching { response.toSourceResponse() }
-                        .onSuccess(continuation::resume)
+                        .onSuccess { opened ->
+                            continuation.resume(opened) { _, cancelledResponse, _ ->
+                                cancelledResponse.close()
+                            }
+                        }
                         .onFailure {
                             response.close()
                             continuation.resumeWithException(it)

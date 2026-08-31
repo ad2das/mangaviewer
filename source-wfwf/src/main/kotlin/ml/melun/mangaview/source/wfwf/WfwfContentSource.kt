@@ -10,6 +10,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -22,13 +24,17 @@ import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageValidation
+import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.PreparationIntent
 import ml.melun.mangaview.source.SourceEpisode
+import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceHttpMethod
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceSearchQuery
+import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
@@ -60,16 +66,33 @@ class WfwfContentSource(
     private val preparedOrigins = ConcurrentHashMap.newKeySet<String>()
 
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> {
-        if (cursor != null) return SourcePage(emptyList())
-        val encoded = URLEncoder.encode(query.trim(), Charset.forName("EUC-KR").name())
+        return search(SourceSearchQuery(query, cursor = cursor))
+    }
+
+    override suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> {
+        if (query.cursor != null) return SourcePage(emptyList())
+        val encoded = URLEncoder.encode(query.text.trim(), Charset.forName("EUC-KR").name())
         val document = document("/search.html?q=$encoded")
-        return SourcePage(parser.search(document, ::seriesId))
+        val parsed = parser.search(document, ::seriesId)
+        val requestedKind = query.kind
+        val kindFiltered = parsed.filter { item ->
+            requestedKind == null || runCatching { WfwfSeriesKey.decode(item.id).kind }.getOrNull().matches(requestedKind)
+        }
+        val filtered = if (query.field == SearchField.TITLE) kindFiltered else {
+            kindFiltered.filter { it.subtitle?.contains(query.text, ignoreCase = true) == true }
+        }
+        return SourcePage(filtered)
     }
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         if (query.cursor != null) return SourcePage(emptyList())
         val path = catalogPath(query)
         return SourcePage(parser.search(document(path), ::seriesId))
+    }
+
+    override suspend fun genres(kind: SeriesKind): List<SourceGenre> = when (kind) {
+        SeriesKind.WEBTOON -> WFWF_WEBTOON_GENRES.map { SourceGenre(it, it) }
+        SeriesKind.COMIC -> WFWF_COMIC_GENRES.map { SourceGenre(it, it) }
     }
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> {
@@ -123,10 +146,19 @@ class WfwfContentSource(
         config.imageOriginHints.forEach(::preconnect)
     }
 
-    override suspend fun openPage(pageId: PageId, validation: PageValidation?): OpenedPage {
+    override suspend fun openPage(
+        pageId: PageId,
+        validation: PageValidation?,
+    ): OpenedPage = openPage(pageId, validation, PageFetchPriority.NORMAL)
+
+    override suspend fun openPage(
+        pageId: PageId,
+        validation: PageValidation?,
+        priority: PageFetchPriority,
+    ): OpenedPage {
         require(pageId.episodeId.seriesId.sourceId == id) { "Page belongs to another source" }
         val registered = resolvePage(pageId)
-        val response = executePage(pageId, registered.url, validation)
+        val response = executePageWithRouteRecovery(pageId, registered.url, validation, priority)
         if (response.statusCode in 200..299) return response.openedPage()
         val statusCode = response.statusCode
         response.close()
@@ -137,7 +169,7 @@ class WfwfContentSource(
         if (refreshedUrl == registered.url) {
             throw IOException("WFWF refreshed page URL did not change after HTTP $statusCode")
         }
-        val retried = executePage(pageId, refreshedUrl, validation)
+        val retried = executePageWithRouteRecovery(pageId, refreshedUrl, validation, priority)
         if (retried.statusCode in 200..299) return retried.openedPage()
         val retryStatus = retried.statusCode
         retried.close()
@@ -154,6 +186,11 @@ class WfwfContentSource(
             return null
         }
         return response.openedPage()
+    }
+
+    override suspend fun seriesUrl(seriesId: SeriesId): String? {
+        require(seriesId.sourceId == id) { "Series belongs to another source" }
+        return origin.resolve(listPath(WfwfSeriesKey.decode(seriesId)))
     }
 
     private suspend fun resolvePage(pageId: PageId): WfwfPageLookup.Found =
@@ -174,11 +211,54 @@ class WfwfContentSource(
         pageId: PageId,
         pageUrl: String,
         validation: PageValidation?,
+        priority: PageFetchPriority,
     ): SourceResponse {
         val headers = requestHeaders(referer = origin.resolve(viewPathFor(pageId.episodeId))).toMutableMap()
         validation?.entityTag?.let { headers["If-None-Match"] = it }
         validation?.lastModified?.let { headers["If-Modified-Since"] = it }
-        return transport.execute(SourceRequest(pageUrl, headers = headers))
+        return transport.execute(SourceRequest(pageUrl, headers = headers, priority = priority))
+    }
+
+    private suspend fun executePageWithRouteRecovery(
+        pageId: PageId,
+        pageUrl: String,
+        validation: PageValidation?,
+        priority: PageFetchPriority,
+    ): SourceResponse {
+        return try {
+            withTimeout(pageHeaderTimeoutMillis(priority)) {
+                executePage(pageId, pageUrl, validation, priority)
+            }
+        } catch (timeout: TimeoutCancellationException) {
+            transport.retireIdleConnections()
+            executePageOnFreshRoute(pageId, pageUrl, validation, priority)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: IOException) {
+            transport.retireIdleConnections()
+            executePageOnFreshRoute(pageId, pageUrl, validation, priority)
+        }
+    }
+
+    private suspend fun executePageOnFreshRoute(
+        pageId: PageId,
+        pageUrl: String,
+        validation: PageValidation?,
+        priority: PageFetchPriority,
+    ): SourceResponse {
+        val headers = requestHeaders(referer = origin.resolve(viewPathFor(pageId.episodeId))).toMutableMap()
+        validation?.entityTag?.let { headers["If-None-Match"] = it }
+        validation?.lastModified?.let { headers["If-Modified-Since"] = it }
+        return transport.executeOnFreshRoute(
+            SourceRequest(pageUrl, headers = headers, priority = priority),
+        )
+    }
+
+    private fun pageHeaderTimeoutMillis(priority: PageFetchPriority): Long = when (priority) {
+        PageFetchPriority.VISIBLE -> VISIBLE_HEADER_TIMEOUT_MILLIS
+        PageFetchPriority.FORWARD -> FORWARD_HEADER_TIMEOUT_MILLIS
+        PageFetchPriority.NORMAL -> NORMAL_HEADER_TIMEOUT_MILLIS
+        PageFetchPriority.BACKGROUND -> BACKGROUND_HEADER_TIMEOUT_MILLIS
     }
 
     private fun SourceResponse.openedPage(): OpenedPage = OpenedPage(
@@ -280,8 +360,8 @@ class WfwfContentSource(
             CatalogOrder.LATEST, CatalogOrder.POPULAR -> "recent"
         }
         val base = if (query.kind == SeriesKind.COMIC) "/cm" else "/ing"
-        val type = if (query.genre.isNullOrBlank()) "day" else "genre"
-        val selected = query.genre?.takeIf(String::isNotBlank) ?: value
+        val type = if (query.genre == null) "day" else "genre"
+        val selected = query.genre?.key ?: value
         val encoded = URLEncoder.encode(selected, Charset.forName("EUC-KR").name())
         return "$base?type1=$type&type2=$encoded&o=$order"
     }
@@ -306,8 +386,27 @@ class WfwfContentSource(
     }
 
     private companion object {
+        val WFWF_WEBTOON_GENRES = listOf(
+            "성인", "드라마", "판타지", "액션", "로맨스", "일상", "개그", "미스터리", "순정",
+            "스포츠", "BL", "스릴러", "무협", "학원", "공포", "스토리", "백합", "요리", "시대",
+            "게임", "음악",
+        )
+        val WFWF_COMIC_GENRES = listOf(
+            "드라마", "액션", "SF", "TS", "개그", "게임", "공포", "도박", "호러", "라노벨",
+            "러브코미디", "로맨스", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러",
+            "스포츠", "시대", "애니화", "판타지", "학원", "BL", "여장", "역사", "요리", "음악",
+            "이세계", "일상", "전생", "추리", "무협",
+        )
         const val MAX_DOCUMENT_BYTES = 16 * 1_024 * 1_024
         const val PRECONNECT_TIMEOUT_MILLIS = 5_000L
+        const val VISIBLE_HEADER_TIMEOUT_MILLIS = 2_500L
+        const val FORWARD_HEADER_TIMEOUT_MILLIS = 4_000L
+        const val NORMAL_HEADER_TIMEOUT_MILLIS = 6_000L
+        const val BACKGROUND_HEADER_TIMEOUT_MILLIS = 8_000L
         val EXPIRED_PAGE_STATUSES = setOf(401, 403, 404, 410)
     }
 }
+
+private fun WfwfKind?.matches(kind: SeriesKind): Boolean =
+    (this == WfwfKind.COMIC && kind == SeriesKind.COMIC) ||
+        (this == WfwfKind.WEBTOON && kind == SeriesKind.WEBTOON)
