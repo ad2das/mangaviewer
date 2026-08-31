@@ -28,7 +28,7 @@ internal data class NtkPreparedEpisode(
  * holds [mutex], so a slow adjacent episode cannot block current-episode page lookup.
  */
 internal class NtkPreparedEpisodeStore(
-    private val maximumEpisodes: Int = 6,
+    private val maximumEpisodes: Int = 64,
 ) {
     private val mutex = Mutex()
     private val entries = LinkedHashMap<EpisodeId, NtkPreparedEpisode>(maximumEpisodes, 0.75f, true)

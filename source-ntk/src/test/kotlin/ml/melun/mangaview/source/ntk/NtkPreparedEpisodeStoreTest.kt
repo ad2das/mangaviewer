@@ -58,6 +58,15 @@ class NtkPreparedEpisodeStoreTest {
     }
 
     @Test
+    fun defaultCapacityRetainsAContinuousForwardRunway() = runTest {
+        val store = NtkPreparedEpisodeStore()
+        val episodes = List(32) { episode("runway-$it") }
+        episodes.forEach { value -> store.resolve(value) { prepared(value) } }
+
+        episodes.forEach { value -> assertNotNull(store.request(PageId.at(value, 0))) }
+    }
+
+    @Test
     fun adjacentLoadDoesNotBlockCurrentEpisodeRequest() = runTest {
         val store = NtkPreparedEpisodeStore()
         val current = episode("current")

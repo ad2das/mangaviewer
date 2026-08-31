@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -33,7 +34,7 @@ import java.io.IOException
 import java.net.URI
 
 /** Runs NTK's official browser acknowledgement outside the reader process. */
-class NtkBrowserService : Service() {
+open class NtkBrowserService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val incoming = Messenger(IncomingHandler())
     private val startup = NtkBrowserStartup(this, ::startupReady, ::startupFailed)
@@ -51,7 +52,6 @@ class NtkBrowserService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder = incoming.binder
-
     override fun onDestroy() {
         active?.replyError("NTK browser service stopped")
         active = null
@@ -144,7 +144,7 @@ class NtkBrowserService : Service() {
                 visibility = View.VISIBLE
                 setLayerType(View.LAYER_TYPE_NONE, null)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+                    setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, false)
                 }
                 resumeTimers()
                 onResume()
@@ -266,7 +266,7 @@ class NtkBrowserService : Service() {
             settings.offscreenPreRaster = false
             settings.userAgentString = userAgent
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, false)
             }
             addJavascriptInterface(
                 BrowserBridge { origin, path, payload ->
@@ -285,14 +285,19 @@ class NtkBrowserService : Service() {
     }
 
     private fun layoutForProviderObservation(view: WebView) {
-        val metrics = resources.displayMetrics
-        val width = metrics.widthPixels.coerceAtLeast(MIN_BROWSER_WIDTH_PX)
-        val height = metrics.heightPixels.coerceAtLeast(MIN_BROWSER_HEIGHT_PX)
+        // The detached worker only needs non-zero DOM geometry for the provider's own guard.
+        // Measuring it at the device's full 1080p surface makes Chromium allocate raster tiles
+        // that can never be displayed and competes with the reader compositor on an emulator.
+        val width = MIN_BROWSER_WIDTH_PX
+        val height = MIN_BROWSER_HEIGHT_PX
         view.measure(
             View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
         )
         view.layout(0, 0, width, height)
+        // Keep the provider-visible DOM viewport intact while bounding the detached View's
+        // compositor damage to one pixel. No browser pixels are ever presented by this service.
+        view.clipBounds = Rect(0, 0, 1, 1)
     }
 
     private fun installNaturalAuthorization(view: WebView): Boolean {
@@ -326,22 +331,21 @@ class NtkBrowserService : Service() {
     }
 
     private fun parkBrowser() {
+        // The payload is retained independently of WebView. Replace the very tall episode with
+        // a blank document so its raster tiles are released, but keep the renderer alive. Killing
+        // and recreating Chromium while the reader is flinging causes emulator-wide GPU stalls.
+        runCatching { captureScript?.remove() }
+        captureScript = null
         browser?.apply {
             stopLoading()
-            settings.blockNetworkImage = true
+            loadUrl("about:blank")
             onPause()
-            pauseTimers()
-            visibility = View.GONE
-            setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, true)
-            }
+            visibility = View.INVISIBLE
         }
     }
 
 
     private fun requestKey(origin: String, path: String): String = validatedKey(origin, path)
-
     private inner class GatewayClient : WebViewClient() {
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             active?.let { request ->

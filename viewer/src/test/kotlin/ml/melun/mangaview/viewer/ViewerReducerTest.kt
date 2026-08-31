@@ -297,6 +297,7 @@ class ViewerReducerTest {
                     now++,
                 )
                 is ViewerCommand.CancelDecode,
+                is ViewerCommand.CancelFetch,
                 is ViewerCommand.CancelGeneration,
                 is ViewerCommand.ReleasePixel,
                 -> continue
@@ -341,11 +342,11 @@ class ViewerReducerTest {
             null,
             ViewerEvent.OpenEpisode(1L, ViewerFixtures.manifest(4), ViewerFixtures.viewport, 1L),
         ))
-        val fetch = opened.commands.filterIsInstance<ViewerCommand.FetchPage>().single()
         val moved = requireNotNull(reducer.reduce(
             opened.state,
             ViewerEvent.UserScroll(FixedPx.fromPixels(2_000), 20_000L, 2L),
         ))
+        val fetch = moved.commands.filterIsInstance<ViewerCommand.FetchPage>().single()
         val offsetBeforeCorrection = moved.state.scroll.contentOffset
 
         val corrected = requireNotNull(reducer.reduce(
@@ -363,8 +364,8 @@ class ViewerReducerTest {
             ),
         ))
 
-        assertNotEquals(offsetBeforeCorrection, corrected.state.scroll.contentOffset)
-        assertEquals(ScrollMutationCause.GEOMETRY_CORRECTION, corrected.state.scroll.lastCause)
+        assertEquals(offsetBeforeCorrection, corrected.state.scroll.contentOffset)
+        assertEquals(ScrollMutationCause.USER_INPUT, corrected.state.scroll.lastCause)
         assertEquals(1L, corrected.state.userInputRevision)
         assertEquals(
             1L,
@@ -672,6 +673,7 @@ class ViewerReducerTest {
                 now,
             )
             is ViewerCommand.CancelDecode,
+            is ViewerCommand.CancelFetch,
             is ViewerCommand.CancelGeneration,
             is ViewerCommand.ReleasePixel,
             -> ViewerEvent.UserScroll(FixedPx.ZERO, 0L, now)

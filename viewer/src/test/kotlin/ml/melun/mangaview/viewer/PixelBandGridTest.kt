@@ -7,6 +7,14 @@ import org.junit.Test
 
 class PixelBandGridTest {
     @Test
+    fun modestPageDecodesOnceWithoutChangingDisplayQuality() {
+        val dimensions = PageDimensions(836, 1_200)
+        val bands = PixelBandGrid().bandsIntersecting(dimensions, 0, dimensions.heightPx, 1_080)
+
+        assertEquals(listOf(PixelBand(0, 1_200, 836)), bands)
+    }
+
+    @Test
     fun extremelyTallPageUsesStableBoundedBands() {
         val dimensions = PageDimensions(800, 500_000)
         val bands = PixelBandGrid().bandsIntersecting(dimensions, 0, dimensions.heightPx)

@@ -47,6 +47,7 @@ internal class ViewerWorkExecutor(
             is ViewerCommand.LoadNextEpisode -> loadNextEpisode(command.token)
             is ViewerCommand.FetchPage -> fetch(command.token)
             is ViewerCommand.DecodePage -> decode(command.token, command.encoded, command.band)
+            is ViewerCommand.CancelFetch -> cancel(command.token)
             is ViewerCommand.CancelDecode -> cancel(command.token)
             is ViewerCommand.CancelGeneration -> cancelGeneration(command.generation)
             is ViewerCommand.ReleasePixel -> retirePixel(command.pixel)

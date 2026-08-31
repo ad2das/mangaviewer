@@ -210,7 +210,12 @@ internal object NtkBrowserEarlyAck {
               observer.disconnect();
               resolve(true);
             });
-            observer.observe(document.documentElement, {childList: true, subtree: true});
+            // A document-start script can run before the HTML element exists. Document itself
+            // is already a Node and observes both its future root and the provider rows.
+            observer.observe(document.documentElement || document, {
+              childList: true,
+              subtree: true
+            });
             window.setTimeout(() => { observer.disconnect(); resolve(rowsReady()); }, 4000);
           });
           const guardFlight = (async () => {

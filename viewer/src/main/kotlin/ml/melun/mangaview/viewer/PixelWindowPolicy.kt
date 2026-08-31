@@ -8,7 +8,7 @@ data class PixelWindow(
 )
 
 class PixelWindowPolicy(
-    private val screenfulsAhead: Int = 6,
+    private val screenfulsAhead: Int = 12,
     private val screenfulsBehind: Int = 2,
 ) {
     init {

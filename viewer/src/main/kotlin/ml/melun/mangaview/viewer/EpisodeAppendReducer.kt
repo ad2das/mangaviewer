@@ -18,12 +18,18 @@ internal class EpisodeAppendReducer(
         } else {
             resolved.scroll
         }
+        val mappedInitialTarget = if (boundary != null && resolved.initialTargetPageId == boundary) {
+            event.manifest.pages.first().id
+        } else {
+            resolved.initialTargetPageId
+        }
         return resolved.copy(
             manifests = resolved.manifests + event.manifest,
             pageOrder = appended.pageOrder,
             pages = appended.pages,
             layout = appended.ledger,
             scroll = scrollController.preserveAnchor(appended.ledger, resolved.viewport, mappedScroll),
+            initialTargetPageId = mappedInitialTarget,
             episodeProgress = resolved.episodeProgress + (
                 event.manifest.id to EpisodeProgress(
                     event.manifest.pages.size,
@@ -93,19 +99,14 @@ internal class EpisodeAppendReducer(
             }
         }
         val additions = if (replacesBoundary) manifest.pages.drop(1) else manifest.pages
-        val firstRuntimeSpec = if (replacesBoundary && first.dimensions == null) {
-            first.copy(dimensions = state.pages.getValue(requireNotNull(boundary)).spec.dimensions)
-        } else {
-            first
-        }
         val pages = if (replacesBoundary) {
-            state.pages.remove(requireNotNull(boundary)).put(first.id, PageRuntime(firstRuntimeSpec))
+            state.pages.remove(requireNotNull(boundary)).put(first.id, PageRuntime(first))
         } else {
             state.pages
         }
         return AppendedPages(
             ledger = if (replacesBoundary) {
-                state.layout.replaceLast(requireNotNull(boundary), firstRuntimeSpec).append(additions)
+                state.layout.replaceLast(requireNotNull(boundary), first).append(additions)
             } else {
                 state.layout.append(additions)
             },

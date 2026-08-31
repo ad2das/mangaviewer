@@ -73,6 +73,47 @@ class RawPageStoreTest {
         assertEquals(0, dao.findCalls)
     }
 
+    @Test
+    fun completedWritesAutomaticallyTrimTheOldestPageToTheDiskBudget() = runTest {
+        val root = temporaryFolder.newFolder("cache-budget")
+        val dao = InMemoryRawPageDao()
+        val bytes = ImageHeaderProbeTest.png(1_080, 2_000)
+        var now = 100L
+        val store = RawPageStore(
+            root = root,
+            dao = dao,
+            ioDispatcher = Dispatchers.IO,
+            publisher = AtomicFilePublisher { staging, destination ->
+                check(staging.renameTo(destination)) { "Test publish failed" }
+            },
+            nowMillis = { now++ },
+            maximumBytes = bytes.size.toLong(),
+        )
+        val first = pageId("first")
+        val second = pageId("second")
+
+        store.write(first, opened(bytes))
+        store.write(second, opened(bytes))
+
+        assertEquals(null, store.find(first))
+        assertNotNull(store.find(second))
+        assertEquals(1, root.listFiles().orEmpty().count { it.extension == "page" })
+    }
+
+    @Test
+    fun completedWritesDoNotMaterializeTheLruWhenTheCacheIsUnderBudget() = runTest {
+        val root = temporaryFolder.newFolder("cache-under-budget")
+        val dao = InMemoryRawPageDao()
+        val store = store(root, dao)
+        val bytes = ImageHeaderProbeTest.png(1_080, 2_000)
+
+        repeat(20) { ordinal ->
+            store.write(pageId("page-$ordinal"), opened(bytes))
+        }
+
+        assertEquals(0, dao.oldestFirstCalls)
+    }
+
     private fun store(root: File, dao: RawPageDao): RawPageStore = RawPageStore(
         root = root,
         dao = dao,
@@ -91,9 +132,9 @@ class RawPageStoreTest {
         lastModified = null,
     )
 
-    private fun pageId(): PageId {
+    private fun pageId(page: String = "page"): PageId {
         val series = SeriesId(SourceId("source"), "series")
-        return PageId(EpisodeId(series, "episode"), "page")
+        return PageId(EpisodeId(series, "episode"), page)
     }
 }
 
@@ -115,6 +156,7 @@ internal class InMemoryRawPageDao : RawPageDao {
     val entries = linkedMapOf<String, RawPageEntity>()
     var findCalls = 0
     var upsertAllCalls = 0
+    var oldestFirstCalls = 0
 
     override suspend fun find(cacheKey: String): RawPageEntity? {
         findCalls += 1
@@ -138,8 +180,12 @@ internal class InMemoryRawPageDao : RawPageDao {
         entries.remove(cacheKey)
     }
 
-    override suspend fun oldestFirst(): List<RawPageEntity> =
-        entries.values.sortedBy(RawPageEntity::lastAccessEpochMillis)
+    override suspend fun oldestFirst(): List<RawPageEntity> {
+        oldestFirstCalls += 1
+        return entries.values.sortedBy(RawPageEntity::lastAccessEpochMillis)
+    }
+
+    override suspend fun totalBytes(): Long = entries.values.sumOf(RawPageEntity::byteCount)
 
     override suspend fun deleteAll() {
         entries.clear()

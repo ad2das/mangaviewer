@@ -1,5 +1,6 @@
 package ml.melun.mangaview.source.ntk
 
+import kotlinx.coroutines.CoroutineScope
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -30,11 +31,18 @@ class NtkContentSource(
     transport: SourceTransport,
     accessGateway: NtkAccessGateway,
     parser: NtkDocumentParser = NtkDocumentParser(),
+    prefetchScope: CoroutineScope? = null,
 ) : ContentSource {
     override val id = SourceId("ntk")
     private val documents = NtkDocumentClient(config, transport)
     private val catalog = NtkCatalogService(id, config.searchPageSize, documents, parser)
-    private val pages = NtkPageService(transport, documents, accessGateway, parser)
+    private val pages = NtkPageService(
+        transport,
+        documents,
+        accessGateway,
+        parser,
+        prefetchScope = prefetchScope,
+    )
 
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> =
         catalog.search(query, cursor)

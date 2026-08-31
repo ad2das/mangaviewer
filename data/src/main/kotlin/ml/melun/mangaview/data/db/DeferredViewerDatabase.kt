@@ -48,6 +48,8 @@ private class DeferredRawPageDao(
 
     override suspend fun oldestFirst(): List<RawPageEntity> = database().rawPages().oldestFirst()
 
+    override suspend fun totalBytes(): Long = database().rawPages().totalBytes()
+
     override suspend fun deleteAll() = database().rawPages().deleteAll()
 }
 

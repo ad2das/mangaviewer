@@ -11,22 +11,18 @@ class EpisodeAppendReducerTest {
     @Test
     fun appendPreservesTheExactAnchorAndExistingGeometry() {
         val ready = readyForAppend(generation = 31L)
-        val scheduled = requireNotNull(reducer.reduce(
-            ready,
-            ViewerEvent.RetryWakeup(20L),
-        ))
-        val load = scheduled.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
-        val anchor = scheduled.state.scroll
-        val prefix = scheduled.state.layout.entries.dropLast(1)
+        val load = ready.load
+        val anchor = ready.state.scroll
+        val prefix = ready.state.layout.entries.dropLast(1)
         val next = ViewerFixtures.manifest(7, episodeKey = "episode-2")
 
         val appended = requireNotNull(reducer.reduce(
-            scheduled.state,
+            ready.state,
             ViewerEvent.NextEpisodeSucceeded(load.token, next, 21L),
         ))
 
         assertEquals(anchor, appended.state.scroll)
-        assertEquals(scheduled.state.userInputRevision, appended.state.userInputRevision)
+        assertEquals(ready.state.userInputRevision, appended.state.userInputRevision)
         assertEquals(prefix, appended.state.layout.entries.take(prefix.size))
         assertEquals(listOf("episode-1", "episode-2"), appended.state.manifests.map { it.id.remoteKey })
         assertTrue(appended.state.episodeAppends.getValue(load.token.fromEpisodeId).terminal)
@@ -40,13 +36,9 @@ class EpisodeAppendReducerTest {
     @Test
     fun failedAppendHasOneOwnerAndRetriesOnlyAfterItsDeadline() {
         val ready = readyForAppend(generation = 41L)
-        val scheduled = requireNotNull(reducer.reduce(
-            ready,
-            ViewerEvent.RetryWakeup(100L),
-        ))
-        val first = scheduled.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
+        val first = ready.load
         val failed = requireNotNull(reducer.reduce(
-            scheduled.state,
+            ready.state,
             ViewerEvent.NextEpisodeFailed(first.token, "timeout", 50L, 110L),
         ))
 
@@ -65,21 +57,23 @@ class EpisodeAppendReducerTest {
         val current = ViewerFixtures.manifest(5) {
             ml.melun.mangaview.core.PageDimensions(1_000, 2_400)
         }.copy(nextEpisodeId = next.id)
-        val opened = requireNotNull(reducer.reduce(
+        val openedReduction = requireNotNull(reducer.reduce(
             null,
             ViewerEvent.OpenEpisode(51L, current, ViewerFixtures.viewport, 1L),
-        )).state
-        val verified = opened.replacePages(
-            opened.pages.mapValues { (_, page) ->
-                page.copy(encoded = VerifiedPageRef("cache", 1L, "sha"))
-            },
-        ).copy(velocityUnitsPerSecond = 0L)
-
-        val scheduled = requireNotNull(reducer.reduce(
-            verified,
-            ViewerEvent.RetryWakeup(2L),
         ))
-        val load = scheduled.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
+        val opened = openedReduction.state
+        val verified = opened.replacePages(
+            opened.pages.mapValues { (pageId, page) ->
+                if (pageId.episodeId == current.id) {
+                    page.copy(encoded = VerifiedPageRef("cache", 1L, "sha"))
+                } else {
+                    page
+                }
+            },
+        ).withFirstPixel().copy(velocityUnitsPerSecond = 0L)
+
+        val scheduled = Reduction(verified, openedReduction.commands)
+        val load = openedReduction.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
         val boundary = requireNotNull(
             scheduled.state.episodeAppends.getValue(current.id).boundaryPageId,
         )
@@ -95,7 +89,6 @@ class EpisodeAppendReducerTest {
             .any { it.token.pageId == boundary })
 
         val boundaryTop = requireNotNull(atBoundary.state.layout.topOf(boundary))
-        val boundaryHeight = requireNotNull(atBoundary.state.layout.heightOf(boundary))
         val appended = requireNotNull(reducer.reduce(
             atBoundary.state,
             ViewerEvent.NextEpisodeSucceeded(load.token, next, 4L),
@@ -103,8 +96,11 @@ class EpisodeAppendReducerTest {
 
         assertFalse(appended.layout.contains(boundary))
         assertEquals(boundaryTop, appended.layout.topOf(next.pages.first().id))
-        assertEquals(boundaryHeight, appended.layout.heightOf(next.pages.first().id))
-        assertEquals(next.pages.first().id, appended.scroll.anchor.pageId)
+        assertEquals(next.id, appended.scroll.anchor.pageId.episodeId)
+        assertTrue(
+            appended.scroll.anchor.offsetInPageUnits <
+                requireNotNull(appended.layout.heightOf(appended.scroll.anchor.pageId)).units,
+        )
         assertEquals(atBoundary.state.userInputRevision, appended.userInputRevision)
         assertEquals(current.pages.size + next.pages.size, appended.pageOrder.size)
         assertEquals(appended.pageOrder.size, appended.coldFetchSweep.pageCount)
@@ -120,7 +116,7 @@ class EpisodeAppendReducerTest {
             opened.pages.mapValues { (_, page) ->
                 page.copy(encoded = VerifiedPageRef("cache", 1L, "sha"))
             },
-        )
+        ).withFirstPixel()
 
         val terminal = requireNotNull(reducer.reduce(
             verified,
@@ -131,7 +127,7 @@ class EpisodeAppendReducerTest {
         assertTrue(terminal.state.episodeAppends.getValue(opened.currentEpisodeId).terminal)
     }
 
-    private fun readyForAppend(generation: Long): ViewerState {
+    private fun readyForAppend(generation: Long): ReadyAppend {
         val next = ViewerFixtures.manifest(1, episodeKey = "episode-2").id
         val current = ViewerFixtures.manifest(5).copy(nextEpisodeId = next)
         val opened = requireNotNull(reducer.reduce(
@@ -142,15 +138,43 @@ class EpisodeAppendReducerTest {
                 ViewerFixtures.viewport,
                 1L,
             ),
-        )).state
-        val moved = requireNotNull(reducer.reduce(
-            opened,
-            ViewerEvent.UserScroll(FixedPx.fromPixels(2_000), 10_000L, 2L),
-        )).state
-        return moved.replacePages(
-            moved.pages.mapValues { (_, page) ->
-                page.copy(encoded = VerifiedPageRef("cache", 1L, "sha"))
+        ))
+        val moved = opened.state.copy(
+            scroll = ScrollController().scrollBy(
+                opened.state.layout,
+                opened.state.viewport,
+                opened.state.scroll,
+                FixedPx.fromPixels(2_000),
+            ),
+            velocityUnitsPerSecond = 0L,
+        )
+        return ReadyAppend(moved.replacePages(
+            moved.pages.mapValues { (pageId, page) ->
+                if (pageId.episodeId == current.id) {
+                    page.copy(encoded = VerifiedPageRef("cache", 1L, "sha"))
+                } else {
+                    page
+                }
             },
-        ).copy(velocityUnitsPerSecond = 0L)
+        ).withFirstPixel().copy(velocityUnitsPerSecond = 0L),
+            opened.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single(),
+        )
     }
+
+    private fun ViewerState.withFirstPixel(): ViewerState {
+        val pageId = pageOrder.first()
+        val dimensions = ml.melun.mangaview.core.PageDimensions(1_080, 1_620)
+        return replacePage(
+            pageId,
+            pages.getValue(pageId).copy(
+                pixel = PixelRef(1L, dimensions, 1_080L * 1_620L * 4L),
+                isPresented = true,
+            ),
+        )
+    }
+
+    private data class ReadyAppend(
+        val state: ViewerState,
+        val load: ViewerCommand.LoadNextEpisode,
+    )
 }

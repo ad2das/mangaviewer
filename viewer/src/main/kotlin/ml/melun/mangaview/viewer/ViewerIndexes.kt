@@ -37,9 +37,10 @@ class ColdFetchSweep private constructor(
         val expanded = ImmutableLongSumTree.create(
             pendingIndex.values() + List(additionalPages) { 1L },
         )
-        // Appended pages are the user's forward runway. Start the background sweep at the
-        // episode boundary instead of spending newly available lanes on older gaps first.
-        return ColdFetchSweep(pageCount + additionalPages, pageCount, 0L, expanded)
+        // Never abandon a nearer forward gap when several manifests are appended quickly.
+        // Move to the new episode only after every previously known original is complete.
+        val nextCursor = if (isComplete) pageCount else cursor
+        return ColdFetchSweep(pageCount + additionalPages, nextCursor, 0L, expanded)
     }
 
     fun nextPendingIndex(fromIndex: Int): Int? {

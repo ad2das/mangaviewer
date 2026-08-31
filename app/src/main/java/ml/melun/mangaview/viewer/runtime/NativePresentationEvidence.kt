@@ -5,6 +5,7 @@ internal data class NativePresentationEvidence(
     val token: Long,
     val generation: Long,
     val presentedNanos: Long,
+    val submittedAtNanos: Long = presentedNanos,
     val renderLatencyNanos: Long,
     val scrollOffsetUnits: Long,
     val viewportHeightUnits: Long,
@@ -18,7 +19,7 @@ internal data class NativePresentationEvidence(
 )
 
 internal object NativePresentationEvidencePacking {
-    const val STRIDE = 12
+    const val STRIDE = 13
     const val READABLE_ACTUAL = 1L
     const val FULL_VISUAL = 1L shl 1
     const val FULL_ACTUAL = 1L shl 2
@@ -37,6 +38,7 @@ internal object NativePresentationEvidencePacking {
                 token = packed[index + 1],
                 generation = packed[index + 2],
                 presentedNanos = packed[index + 3],
+                submittedAtNanos = packed[index + 12],
                 renderLatencyNanos = packed[index + 4],
                 scrollOffsetUnits = packed[index + 5],
                 viewportHeightUnits = packed[index + 6],

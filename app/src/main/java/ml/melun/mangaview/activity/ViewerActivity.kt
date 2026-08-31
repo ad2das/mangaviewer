@@ -50,7 +50,7 @@ class ViewerActivity : ComponentActivity() {
     private val hardDecodeWork = AndroidWorkDispatcher(
         name = "viewer-decode-hard",
         threads = 1,
-        linuxPriority = Process.THREAD_PRIORITY_DEFAULT,
+        linuxPriority = Process.THREAD_PRIORITY_DISPLAY,
     )
     private val warmDecodeWork = AndroidWorkDispatcher(
         name = "viewer-decode-warm",

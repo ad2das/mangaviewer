@@ -2,7 +2,6 @@ package ml.melun.mangaview.viewer.runtime
 
 import android.view.Choreographer
 import kotlin.math.abs
-import kotlin.math.exp
 
 internal class ViewerFlingDriver(
     choreographer: Choreographer,
@@ -62,10 +61,9 @@ internal class ViewerFlingDriver(
         if (previous > 0L) {
             val elapsedSeconds = (frameTimeNanos - previous).coerceAtLeast(0L) / NANOS_PER_SECOND
             if (elapsedSeconds > 0.0) {
-                val decay = exp(-DECAY_PER_SECOND * elapsedSeconds)
-                val displacement = velocity * (1.0 - decay) / DECAY_PER_SECOND
+                val step = ViewerFlingPhysics.advance(velocity, elapsedSeconds)
                 if (!emit(
-                        displacement,
+                        step.displacementPixels,
                         velocity,
                         frameTimeNanos,
                         expectedPresentationTimeNanos,
@@ -75,7 +73,7 @@ internal class ViewerFlingDriver(
                     return
                 }
                 frameObserved(motionSequence, frameTimeNanos)
-                velocity *= decay
+                velocity = step.velocityPixelsPerSecond
             }
         }
         if (abs(velocity) < MINIMUM_VELOCITY) {
@@ -89,6 +87,5 @@ internal class ViewerFlingDriver(
         const val NANOS_PER_SECOND = 1_000_000_000.0
         const val MINIMUM_VELOCITY = 24.0
         const val MAXIMUM_VELOCITY = 24_000.0
-        const val DECAY_PER_SECOND = 4.2
     }
 }

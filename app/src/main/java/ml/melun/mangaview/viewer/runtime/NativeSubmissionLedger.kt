@@ -76,6 +76,7 @@ internal class NativeSubmissionLedger(
             token = token,
             generation = generations[index],
             presentedNanos = presentedNanos,
+            submittedAtNanos = startedAtNanos[index],
             renderLatencyNanos = durationsNanos[index],
             scrollOffsetUnits = scrollOffsets[index],
             viewportHeightUnits = viewportHeights[index],

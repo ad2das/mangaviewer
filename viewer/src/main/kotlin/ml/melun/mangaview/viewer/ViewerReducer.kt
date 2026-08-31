@@ -22,8 +22,11 @@ class ViewerReducer(
         val eventTime = maxOf(existing.lastEventNanos, event.atNanos)
         if (event is ViewerEvent.UserScroll) {
             val retryBecameEligible = existing.nextRetryDeadlineNanos?.let { it <= eventTime } == true
-            val base = Reduction(userScroll(existing, event, eventTime), emptyList())
-            return if (requiresScrollMaintenance(existing, base.state, retryBecameEligible)) {
+            val scrolled = userScroll(existing, event, eventTime)
+            val base = retargetInitialFetch(scrolled)
+            return if (base.commands.isNotEmpty() ||
+                requiresScrollMaintenance(existing, base.state, retryBecameEligible)
+            ) {
                 finish(base)
             } else {
                 base
@@ -115,6 +118,24 @@ class ViewerReducer(
         val maximum = (layout.totalHeight.units - 1L).coerceAtLeast(0L)
         val center = saturatingAdd(scroll.contentOffset.units, viewport.height.units / 2L)
         return requireNotNull(layout.pageAt(FixedPx(center.coerceIn(0L, maximum))))
+    }
+
+    private fun retargetInitialFetch(state: ViewerState): Reduction {
+        if (state.firstResponseReceived || state.initialFetchRetargeted) {
+            return Reduction(state, emptyList())
+        }
+        val target = pageAtViewportCenter(state.layout, state.viewport, state.scroll)
+        if (target == state.initialTargetPageId) return Reduction(state, emptyList())
+        val previous = state.ownership.fetches.values.singleOrNull()
+        val ownership = previous?.let(state.ownership::release) ?: state.ownership
+        return Reduction(
+            state.copy(
+                initialTargetPageId = target,
+                ownership = ownership,
+                initialFetchRetargeted = true,
+            ),
+            previous?.let { listOf(ViewerCommand.CancelFetch(it)) }.orEmpty(),
+        )
     }
 
     private fun initialState(
@@ -234,7 +255,7 @@ class ViewerReducer(
         state: ViewerState,
         event: ViewerEvent.InteractionChanged,
     ): Reduction {
-        val startedBeforePixels = event.active && state.pages.values.none { it.pixel != null }
+        val startedBeforePixels = event.active && state.residentPageIds.isEmpty()
         return Reduction(
             state.copy(
                 interactionActive = event.active,
@@ -293,14 +314,20 @@ class ViewerReducer(
         if (!state.surfaceAttached || state.visibility != ViewerVisibility.FOREGROUND) return state
         val visible = visiblePageIds(state)
         var changed = state
+        var newlyPresented = false
         visible.forEach { pageId ->
             val runtime = changed.pages.getValue(pageId)
             if (!runtime.isPresented && coversVisiblePage(changed, pageId, runtime.pixel)) {
                 val presented = runtime.advance(PageMilestone.PRESENTED).copy(isPresented = true)
                 changed = changed.replacePage(pageId, presented)
+                newlyPresented = true
             }
         }
-        return changed
+        return if (newlyPresented && !changed.hasPresentedContent) {
+            changed.copy(hasPresentedContent = true)
+        } else {
+            changed
+        }
     }
 
     private fun visiblePageIds(state: ViewerState): Set<PageId> {

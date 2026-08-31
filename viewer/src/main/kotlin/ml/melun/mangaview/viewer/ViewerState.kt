@@ -42,6 +42,10 @@ data class ViewerState(
     val interactionActive: Boolean = false,
     /** True only while the first pre-pixel gesture is still moving. */
     val startupMotionPending: Boolean = false,
+    /** Monotonic proof that at least one actual page has reached presented state. */
+    val hasPresentedContent: Boolean = false,
+    /** Prevents a fast first fling from repeatedly cancelling the only pre-response request. */
+    val initialFetchRetargeted: Boolean = false,
 ) {
     val currentEpisodeId: EpisodeId
         get() = scroll.anchor.pageId.episodeId

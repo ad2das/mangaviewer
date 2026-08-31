@@ -31,6 +31,7 @@ class ScrollController {
     ): ScrollSnapshot {
         val maximum = maximumOffset(ledger, viewport)
         val nextOffset = (current.contentOffset + delta).coerceIn(FixedPx.ZERO, maximum)
+        if (nextOffset == current.contentOffset) return current
         return snapshotAt(
             ledger = ledger,
             contentOffset = nextOffset,
@@ -66,22 +67,27 @@ class ScrollController {
         viewport: Viewport,
         current: ScrollSnapshot,
     ): ScrollSnapshot {
-        val top = requireNotNull(ledger.topOf(current.anchor.pageId)) {
+        val originalIndex = requireNotNull(ledger.indexOf(current.anchor.pageId)) {
             "Geometry correction cannot preserve a page outside the ledger"
         }
-        val pageHeight = requireNotNull(ledger.heightOf(current.anchor.pageId))
-        val offsetInPage = current.anchor.offsetInPageUnits.coerceAtMost(pageHeight.units - 1L)
+        val relocated = relocateForwardOverflow(
+            ledger,
+            originalIndex,
+            current.anchor.offsetInPageUnits,
+        )
+        val top = ledger.topAt(relocated.index)
         val requested = FixedPx(saturatingSubtract(
-            saturatingAdd(top.units, offsetInPage),
+            saturatingAdd(top.units, relocated.offsetUnits),
             current.anchor.viewportOffsetUnits,
         ))
         val corrected = requested.coerceIn(FixedPx.ZERO, maximumOffset(ledger, viewport))
         val viewportOffset = saturatingSubtract(
-            saturatingAdd(top.units, offsetInPage),
+            saturatingAdd(top.units, relocated.offsetUnits),
             corrected.units,
         )
-        val anchor = current.anchor.copy(
-            offsetInPageUnits = offsetInPage,
+        val anchor = ReadingPosition(
+            pageId = ledger.entries[relocated.index].spec.id,
+            offsetInPageUnits = relocated.offsetUnits,
             viewportOffsetUnits = viewportOffset,
         )
         if (corrected == current.contentOffset && anchor == current.anchor) return current
@@ -119,4 +125,26 @@ class ScrollController {
 
     private fun maximumOffset(ledger: LayoutLedger, viewport: Viewport): FixedPx =
         FixedPx((ledger.totalHeight.units - viewport.height.units).coerceAtLeast(0L))
+
+    private fun relocateForwardOverflow(
+        ledger: LayoutLedger,
+        initialIndex: Int,
+        initialOffsetUnits: Long,
+    ): RelocatedAnchor {
+        var index = initialIndex
+        var offset = initialOffsetUnits
+        while (index < ledger.entries.lastIndex) {
+            val height = ledger.entries[index].height.units
+            if (offset < height) return RelocatedAnchor(index, offset)
+            offset -= height
+            index += 1
+        }
+        val finalHeight = ledger.entries[index].height.units
+        return RelocatedAnchor(index, offset.coerceAtMost(finalHeight - 1L))
+    }
+
+    private data class RelocatedAnchor(
+        val index: Int,
+        val offsetUnits: Long,
+    )
 }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
 fun interface ViewerWorkPort {
     fun accept(command: ViewerCommand)
@@ -47,6 +48,10 @@ class ViewerPipelineCoordinator(
 
     fun post(event: ViewerEvent): Boolean {
         if (closed.get()) return false
+        if (isActorThread?.invoke() == true && event.isLatencyCriticalInput() && !processingEvents) {
+            processEvent(event)
+            return true
+        }
         events.add(event)
         if (isActorThread?.invoke() == true) {
             drainAvailableEvents()
@@ -63,23 +68,41 @@ class ViewerPipelineCoordinator(
     }
 
     private suspend fun consumeEvents() {
-        for (ignored in eventSignal) drainAvailableEvents()
+        for (ignored in eventSignal) {
+            val hasMore = drainAvailableEvents()
+            if (hasMore) {
+                eventSignal.trySend(Unit)
+                yield()
+            }
+        }
     }
 
-    private fun drainAvailableEvents() {
-        if (processingEvents) return
+    private fun drainAvailableEvents(): Boolean {
+        if (processingEvents) return events.isNotEmpty()
         processingEvents = true
+        var ordinaryPageWorkerEvents = 0
+        var visiblePageWorkerEvents = 0
         try {
             var pendingWorkerState: ViewerState? = null
             while (true) {
-                val event = events.poll()
+                val event = pollNextEvent()
                 if (event == null) {
                     pendingWorkerState?.let(::finishWorkerBatch)
                     break
                 }
                 if (event.isPageWorkerEvent()) {
+                    val visibleResult = event.isTerminalPageWorkerResultFor(
+                        visiblePageIds(mutableState.value),
+                    )
                     val reduction = applyEvent(event)
                     if (reduction != null) pendingWorkerState = reduction.state
+                    if (visibleResult) visiblePageWorkerEvents += 1 else ordinaryPageWorkerEvents += 1
+                    if (ordinaryPageWorkerEvents >= MAXIMUM_PAGE_WORKER_EVENTS_PER_TURN ||
+                        visiblePageWorkerEvents >= MAXIMUM_VISIBLE_PAGE_WORKER_EVENTS_PER_TURN
+                    ) {
+                        pendingWorkerState?.let(::finishWorkerBatch)
+                        break
+                    }
                 } else {
                     pendingWorkerState?.let(::finishWorkerBatch)
                     pendingWorkerState = null
@@ -89,6 +112,9 @@ class ViewerPipelineCoordinator(
         } finally {
             processingEvents = false
         }
+        val hasMore = events.isNotEmpty()
+        if (hasMore) eventSignal.trySend(Unit)
+        return hasMore
     }
 
     private fun processEvent(event: ViewerEvent) {
@@ -107,6 +133,30 @@ class ViewerPipelineCoordinator(
     private fun finishWorkerBatch(state: ViewerState) {
         submitFrameIfVisible(state, scrollOnly = false)
         scheduleRetryWakeup(state)
+    }
+
+    /**
+     * Cached COLD completions can arrive as a large burst. A page that becomes visible while that
+     * burst is queued must not wait behind the whole episode, so its terminal worker result is
+     * selected first. Only result ordering changes; every event is still reduced by this actor.
+     */
+    private fun pollNextEvent(): ViewerEvent? {
+        val visiblePages = visiblePageIds(mutableState.value)
+        if (visiblePages.isNotEmpty()) {
+            val visibleResult = events.firstOrNull { event ->
+                event.isTerminalPageWorkerResultFor(visiblePages)
+            }
+            if (visibleResult != null && events.remove(visibleResult)) return visibleResult
+        }
+        return events.poll()
+    }
+
+    private fun visiblePageIds(state: ViewerState?): Set<ml.melun.mangaview.core.PageId> {
+        state ?: return emptySet()
+        val start = state.scroll.contentOffset
+        val end = FixedPx(start.units + state.viewport.height.units)
+        return state.layout.indicesIntersecting(start, end)
+            .mapTo(mutableSetOf()) { index -> state.pageOrder[index] }
     }
 
     private fun submitFrameIfVisible(state: ViewerState, scrollOnly: Boolean) {
@@ -144,8 +194,13 @@ class ViewerPipelineCoordinator(
 
     private companion object {
         const val NANOS_PER_MILLISECOND = 1_000_000L
+        const val MAXIMUM_PAGE_WORKER_EVENTS_PER_TURN = 1
+        const val MAXIMUM_VISIBLE_PAGE_WORKER_EVENTS_PER_TURN = 4
     }
 }
+
+private fun ViewerEvent.isLatencyCriticalInput(): Boolean =
+    this is ViewerEvent.UserScroll || this is ViewerEvent.InteractionChanged
 
 private fun ViewerEvent.isPageWorkerEvent(): Boolean = when (this) {
     is ViewerEvent.FetchResponseStarted,
@@ -154,5 +209,15 @@ private fun ViewerEvent.isPageWorkerEvent(): Boolean = when (this) {
     is ViewerEvent.DecodeSucceeded,
     is ViewerEvent.DecodeFailed,
     -> true
+    else -> false
+}
+
+private fun ViewerEvent.isTerminalPageWorkerResultFor(
+    visiblePages: Set<ml.melun.mangaview.core.PageId>,
+): Boolean = when (this) {
+    is ViewerEvent.FetchSucceeded -> token.pageId in visiblePages
+    is ViewerEvent.FetchFailed -> token.pageId in visiblePages
+    is ViewerEvent.DecodeSucceeded -> token.pageId in visiblePages
+    is ViewerEvent.DecodeFailed -> token.pageId in visiblePages
     else -> false
 }

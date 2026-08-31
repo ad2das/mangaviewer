@@ -18,11 +18,13 @@ data class PixelBand(
 class PixelBandGrid(
     private val maximumDisplayWidth: Int = 1_440,
     private val maximumDisplayBandHeight: Int = 512,
+    private val maximumWholePageDisplayHeight: Int = 2_048,
     private val maximumScratchBytes: Long = 32L * 1_024L * 1_024L,
 ) {
     init {
         require(maximumDisplayWidth > 0)
         require(maximumDisplayBandHeight > 0)
+        require(maximumWholePageDisplayHeight >= 0)
         require(maximumScratchBytes >= 4L)
     }
 
@@ -32,8 +34,13 @@ class PixelBandGrid(
     fun sourceRowsPerBand(dimensions: PageDimensions): Int {
         // Boundaries must not change when a window is resized. A stable source grid lets a
         // higher-resolution tile atomically replace the exact same band without creating gaps.
-        val outputBound = maximumDisplayBandHeight.toLong() *
-            dimensions.widthPx / minOf(maximumDisplayWidth, dimensions.widthPx)
+        val gridWidth = minOf(maximumDisplayWidth, dimensions.widthPx)
+        val scaledWholeHeight = dimensions.heightPx.toLong() * gridWidth / dimensions.widthPx
+        val outputBound = if (scaledWholeHeight <= maximumWholePageDisplayHeight) {
+            dimensions.heightPx.toLong()
+        } else {
+            maximumDisplayBandHeight.toLong() * dimensions.widthPx / gridWidth
+        }
         val scratchRowBytes = dimensions.widthPx.toLong() * BYTES_PER_PIXEL
         // A corrupt or unusually wide header can make even one source row exceed the target
         // scratch budget. Keep the reducer total and let the decoder report allocation failure;

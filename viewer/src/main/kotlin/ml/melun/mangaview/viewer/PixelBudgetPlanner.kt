@@ -5,7 +5,7 @@ import ml.melun.mangaview.core.PageId
 class PixelBudgetPlanner(
     private val memoryPolicy: PixelMemoryPolicy = PixelMemoryPolicy(),
     retainedScreenfulsBehind: Int = 2,
-    retainedScreenfulsAhead: Int = 6,
+    retainedScreenfulsAhead: Int = 12,
     private val windowPolicy: PixelWindowPolicy = PixelWindowPolicy(
         screenfulsAhead = retainedScreenfulsAhead,
         screenfulsBehind = retainedScreenfulsBehind,

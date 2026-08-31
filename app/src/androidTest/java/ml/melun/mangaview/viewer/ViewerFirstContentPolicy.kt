@@ -18,14 +18,15 @@ internal object ViewerFirstContentPolicy {
             )
         val verified = timing.initialVerifiedAtNanos
         val decoded = timing.initialDecodedAtNanos
+        val submitted = timing.firstActualSubmittedAtNanos
         val presented = timing.firstActualPresentedAtNanos
-        if (verified == null || decoded == null || presented == null) {
+        if (verified == null || decoded == null || submitted == null || presented == null) {
             return "Cold first frame ${firstContentMillis}ms exceeded ${limitMillis}ms " +
                 "with incomplete startup timing: $timing"
         }
         val decodeNanos = decoded - verified
-        val presentationNanos = presented - decoded
-        val internalTailNanos = presented - verified
+        val presentationNanos = presented - submitted
+        val internalTailNanos = decodeNanos + presentationNanos
         return if (decodeNanos >= MAXIMUM_INITIAL_DECODE_NANOS ||
             presentationNanos >= MAXIMUM_INITIAL_PRESENT_NANOS ||
             internalTailNanos >= MAXIMUM_INITIAL_INTERNAL_TAIL_NANOS

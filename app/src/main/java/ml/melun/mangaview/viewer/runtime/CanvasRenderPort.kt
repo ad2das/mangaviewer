@@ -326,7 +326,7 @@ internal class CanvasRenderPort(
     }
 
     private fun releaseRetirement(token: Long) {
-        retirementFrames.remove(token)?.forEach { pixel -> recycle(pixel) }
+        retirementFrames.remove(token)?.forEach(recycle)
     }
 
     private fun recycleRetired() {

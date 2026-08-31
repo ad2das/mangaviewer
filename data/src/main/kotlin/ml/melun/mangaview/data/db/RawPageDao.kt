@@ -25,6 +25,9 @@ interface RawPageDao {
     @Query("SELECT * FROM raw_pages ORDER BY lastAccessEpochMillis ASC")
     suspend fun oldestFirst(): List<RawPageEntity>
 
+    @Query("SELECT COALESCE(SUM(byteCount), 0) FROM raw_pages")
+    suspend fun totalBytes(): Long
+
     @Query("DELETE FROM raw_pages")
     suspend fun deleteAll()
 }

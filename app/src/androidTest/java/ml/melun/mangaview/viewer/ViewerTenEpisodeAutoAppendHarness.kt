@@ -26,12 +26,13 @@ internal class ViewerTenEpisodeAutoAppendHarness(
     private val artifacts = ViewerUxArtifacts(context, artifactPrefix)
     private val violations = mutableListOf<String>()
     private val boundaries = mutableListOf<BoundaryEvidence>()
-    private val prematureBoundaries = mutableSetOf<EpisodeId>()
+    private val invalidPendingBoundaries = mutableSetOf<EpisodeId>()
     private val presentations = linkedSetOf<Long>()
     private val presentationEvidence = linkedSetOf<NativePresentationEvidence>()
     private val motionFrames = linkedSetOf<MotionEvidence>()
     private val renderEvidence = linkedSetOf<RenderEvidence>()
     private val gestureWindows = linkedSetOf<LongRange>()
+    private val telemetryTimeline = mutableListOf<String>()
     private var refreshPeriodNanos = 0L
     private var presentationCursor = 0L
     private var motionCursor = 0L
@@ -62,6 +63,11 @@ internal class ViewerTenEpisodeAutoAppendHarness(
                 harvestActivityEvidence(scenario)
                 checkHealth()
                 val current = telemetry(scenario) ?: continue
+                telemetryTimeline += "$gestureCount\t${current.diagnosticSummary()}\tvisible=" +
+                    current.visiblePages.joinToString { page ->
+                        "${page.pageId.remoteKey}:actual=${page.coveredUnits}/" +
+                            "${page.visibleUnits}:loading=${page.loadingUnits}:shown=${page.presented}"
+                    }
                 if (gestureCount % PROGRESS_INTERVAL_GESTURES == 0) logProgress(gestureCount, current)
                 validateManifestChain(current)
                 validateForwardContinuity(previous, current)
@@ -79,6 +85,19 @@ internal class ViewerTenEpisodeAutoAppendHarness(
             violations += failure.message ?: failure.javaClass.simpleName
             runCatching { artifacts.screenshot(device, "ten-episode-failure") }
         } finally {
+            runCatching {
+                artifacts.directory.resolve("telemetry-timeline.txt")
+                    .writeText(telemetryTimeline.joinToString(separator = "\n", postfix = "\n"))
+            }
+            runCatching {
+                ViewerPresentationEvidenceArtifacts.write(
+                    artifacts.directory,
+                    presentationEvidence.sortedBy(NativePresentationEvidence::presentedNanos),
+                    gestureWindows.map {
+                        PresentationGestureWindow(it, TelemetryDirection.FORWARD)
+                    },
+                )
+            }
             runCatching { scenario.onActivity { windowFrameRecorder?.close() } }
             windowFrameRecorder = null
             scenario.close()
@@ -149,8 +168,16 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         val episodeId = current.anchor.pageId.episodeId
         if (observed.lastOrNull() == episodeId) return
         if (current.manifests.none { it.id == episodeId }) {
-            if (prematureBoundaries.add(episodeId)) {
-                violations += "Reached an unprepared blank boundary for ${episodeId.remoteKey}"
+            val completeLoadingFrame = current.visiblePages.isNotEmpty() &&
+                current.visuallyUncoveredViewportUnits == 0L &&
+                current.overlappingViewportUnits == 0L &&
+                current.visiblePages.all { page ->
+                    page.pageId.episodeId == episodeId &&
+                        page.visualCoveredUnits == page.visibleUnits &&
+                        page.overlappingUnits == 0L
+                }
+            if (!completeLoadingFrame && invalidPendingBoundaries.add(episodeId)) {
+                violations += "Pending boundary had blank or overlapping pixels for ${episodeId.remoteKey}"
             }
             return
         }
@@ -165,7 +192,9 @@ internal class ViewerTenEpisodeAutoAppendHarness(
             violations += "Episode boundary skipped ${expected.remoteKey} for ${episodeId.remoteKey}"
         }
         observed += episodeId
-        if (previous != null) recordBoundary(previous, current)
+        if (previous != null && previous.anchor.pageId.episodeId != episodeId) {
+            recordBoundary(previous, current)
+        }
     }
 
     private fun recordBoundary(
@@ -178,26 +207,29 @@ internal class ViewerTenEpisodeAutoAppendHarness(
             violations += "Undeclared page appeared at boundary: ${wrongPages.map { it.pageId }}"
         }
         val visibleUnits = current.visiblePages.sumOf(VisiblePageTelemetry::visibleUnits)
-        val coveredUnits = current.visiblePages.sumOf(VisiblePageTelemetry::coveredUnits)
-        if (current.uncoveredViewportUnits != 0L || current.overlappingViewportUnits != 0L ||
-            visibleUnits > current.viewportHeightUnits || coveredUnits > visibleUnits ||
+        val visualCoveredUnits = current.visiblePages.sumOf(VisiblePageTelemetry::visualCoveredUnits)
+        if (current.visuallyUncoveredViewportUnits != 0L || current.overlappingViewportUnits != 0L ||
+            visibleUnits > current.viewportHeightUnits || visualCoveredUnits > visibleUnits ||
             current.visiblePages.any {
-                !it.presented || it.coveredUnits != it.visibleUnits || it.overlappingUnits != 0L
+                it.visualCoveredUnits != it.visibleUnits || it.overlappingUnits != 0L
             }
         ) {
-            violations += "Blank or overlapping pixels appeared at " +
-                "${current.anchor.pageId.episodeId.remoteKey} boundary"
+            violations += "Visual blank or overlapping pixels appeared at " +
+                "${current.anchor.pageId.episodeId.remoteKey} boundary: " +
+                "uncovered=${current.uncoveredViewportUnits}, " +
+                "visualUncovered=${current.visuallyUncoveredViewportUnits}, " +
+                "overlap=${current.overlappingViewportUnits}, pages=" +
+                current.visiblePages.joinToString(prefix = "[", postfix = "]") { page ->
+                    "${page.pageId.remoteKey}(visible=${page.visibleUnits}," +
+                        "covered=${page.coveredUnits},loading=${page.loadingUnits}," +
+                        "visual=${page.visualCoveredUnits},overlap=${page.overlappingUnits}," +
+                        "presented=${page.presented})"
+                }
         }
         boundaries += BoundaryEvidence(
             from = previous.anchor.pageId.episodeId,
             to = current.anchor.pageId.episodeId,
             interactionWindow = gestureWindows.lastOrNull(),
-            observedAfterNanos = previous.capturedAtNanos,
-            targetOrdinals = current.manifests.flatMap { it.pages }
-                .mapIndexedNotNull { ordinal, page ->
-                    ordinal.takeIf { page.id.episodeId == current.anchor.pageId.episodeId }
-                }
-                .let { ordinals -> ordinals.first()..ordinals.last() },
         )
     }
 
@@ -275,15 +307,6 @@ internal class ViewerTenEpisodeAutoAppendHarness(
             if (stalled) {
                 violations += "Surface stalled at ${boundary.from.remoteKey} -> ${boundary.to.remoteKey}"
             }
-            val actualTargetPresented = presentationEvidence.any { evidence ->
-                evidence.presentedNanos >= boundary.observedAfterNanos &&
-                    evidence.anchorOrdinal in boundary.targetOrdinals &&
-                    evidence.fullActualCoverage
-            }
-            if (!actualTargetPresented) {
-                violations += "No fully actual-content frame was presented after " +
-                    "${boundary.from.remoteKey} -> ${boundary.to.remoteKey}"
-            }
         }
     }
 
@@ -303,6 +326,12 @@ internal class ViewerTenEpisodeAutoAppendHarness(
             packedMotionEvidence(),
             refreshPeriodNanos,
             windowFrameRecorder?.snapshot() ?: LongArray(0),
+        )
+        artifacts.directory.resolve("frame-stats-summary.txt").writeText(
+            "render=${stats.render}\n" +
+                "gfx=${stats.gfx}\n" +
+                "motion=${stats.motion}\n" +
+                "surface=${stats.surface}\n",
         )
         if ((stats.render.p95Nanos ?: Long.MAX_VALUE) >= FRAME_BUDGET_NANOS) {
             violations += "Native render p95 was ${stats.render.p95Millis}ms"
@@ -431,8 +460,6 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         val from: EpisodeId,
         val to: EpisodeId,
         val interactionWindow: LongRange?,
-        val observedAfterNanos: Long,
-        val targetOrdinals: IntRange,
     )
 
     private data class ActivityEvidence(

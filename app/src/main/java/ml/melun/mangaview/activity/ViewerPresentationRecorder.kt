@@ -21,6 +21,7 @@ internal class ViewerPresentationRecorder {
     private val presentationVsyncIds = LongArray(MAX_PRESENTATION_SAMPLES)
     private val expectedPresentationTimes = LongArray(MAX_PRESENTATION_SAMPLES)
     private val presentationLatencies = LongArray(MAX_PRESENTATION_SAMPLES)
+    private val presentationSubmittedAt = LongArray(MAX_PRESENTATION_SAMPLES)
     private val renderAt = LongArray(MAX_PRESENTATION_SAMPLES)
     private val renderLatency = LongArray(MAX_PRESENTATION_SAMPLES)
     private val motionSequences = LongArray(MAX_PRESENTATION_SAMPLES)
@@ -58,6 +59,7 @@ internal class ViewerPresentationRecorder {
             presentationVsyncIds[index] = evidence.frameTimelineVsyncId
             expectedPresentationTimes[index] = evidence.expectedPresentationTimeNanos
             presentationLatencies[index] = evidence.renderLatencyNanos
+            presentationSubmittedAt[index] = evidence.submittedAtNanos
             presentationWriteIndex = (presentationWriteIndex + 1) % MAX_PRESENTATION_SAMPLES
             presentationCount = minOf(presentationCount + 1, MAX_PRESENTATION_SAMPLES)
             presentationSequence += 1L
@@ -130,6 +132,7 @@ internal class ViewerPresentationRecorder {
             output[target + 9] = presentationFlags[source]
             output[target + 10] = presentationVsyncIds[source]
             output[target + 11] = expectedPresentationTimes[source]
+            output[target + 12] = presentationSubmittedAt[source]
         }
         output
     }
@@ -153,6 +156,7 @@ internal class ViewerPresentationRecorder {
                 output[target + 9] = presentationFlags[source]
                 output[target + 10] = presentationVsyncIds[source]
                 output[target + 11] = expectedPresentationTimes[source]
+                output[target + 12] = presentationSubmittedAt[source]
             }
             ViewerPresentationBatch(presentationSequence, output, range.dropped)
         }

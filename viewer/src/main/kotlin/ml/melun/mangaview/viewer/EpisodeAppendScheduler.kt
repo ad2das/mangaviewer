@@ -12,10 +12,8 @@ class EpisodeAppendScheduler(
         val boundaryOwner = state.episodeAppends.entries.firstOrNull {
             it.value.boundaryPageId == state.scroll.anchor.pageId
         }?.key
-        if (boundaryOwner == null && !planner.shouldPrepare(state)) {
-            return Reduction(state, emptyList())
-        }
-        val episodeId = boundaryOwner ?: state.currentEpisodeId
+        val episodeId = boundaryOwner ?: preparationCandidate(state)
+            ?: return Reduction(state, emptyList())
         val runtime = state.episodeAppends[episodeId] ?: EpisodeAppendRuntime()
         if (!canStart(state, runtime)) return Reduction(state, emptyList())
         val targetEpisodeId = state.manifests.firstOrNull { it.id == episodeId }?.nextEpisodeId
@@ -28,7 +26,7 @@ class EpisodeAppendScheduler(
         )
         val boundary = runtime.boundaryPageId ?: PageId(targetEpisodeId, BOUNDARY_PAGE_KEY)
         val withBoundary = if (!state.layout.contains(boundary)) {
-            val spec = PageSpec(boundary, 0, estimateNextPage(state, episodeId))
+            val spec = PageSpec(boundary, 0, estimateNextEpisodeRunway(state, episodeId))
             val ledger = state.layout.append(listOf(spec))
             state.copy(
                 pageOrder = state.pageOrder + boundary,
@@ -56,12 +54,37 @@ class EpisodeAppendScheduler(
         !runtime.terminal && runtime.owner == null &&
             (runtime.retry?.eligibleAtNanos ?: 0L) <= state.lastEventNanos
 
-    private fun estimateNextPage(state: ViewerState, episodeId: ml.melun.mangaview.core.EpisodeId): PageDimensions {
-        val candidates = state.manifests.first { it.id == episodeId }.pages.mapNotNull { page ->
-            val index = state.layout.indexOf(page.id) ?: return@mapNotNull null
-            state.layout.entries[index].resolvedDimensions ?: page.dimensions
-        }.sortedBy { dimensions -> dimensions.heightPx.toDouble() / dimensions.widthPx }
-        return candidates.getOrNull(candidates.size / 2) ?: PageDimensions(2, 3)
+    private fun preparationCandidate(state: ViewerState): ml.melun.mangaview.core.EpisodeId? {
+        val currentIndex = state.manifests.indexOfFirst { it.id == state.currentEpisodeId }
+        if (currentIndex < 0) return null
+        return state.manifests.asSequence()
+            .drop(currentIndex)
+            .map { it.id }
+            .firstOrNull { episodeId ->
+                val runtime = state.episodeAppends[episodeId] ?: EpisodeAppendRuntime()
+                canStart(state, runtime) && planner.shouldPrepare(state, episodeId)
+            }
+    }
+
+    private fun estimateNextEpisodeRunway(
+        state: ViewerState,
+        episodeId: ml.melun.mangaview.core.EpisodeId,
+    ): PageDimensions {
+        val pages = state.manifests.first { it.id == episodeId }.pages
+        val first = requireNotNull(state.layout.indexOf(pages.first().id))
+        val last = requireNotNull(state.layout.indexOf(pages.last().id))
+        val episodeTop = state.layout.topAt(first).units
+        val episodeBottom = Math.addExact(
+            state.layout.topAt(last).units,
+            state.layout.entries[last].height.units,
+        )
+        val episodeHeight = episodeBottom - episodeTop
+        val ratioHeight = multiplyDivideCeilExact(
+            episodeHeight,
+            RUNWAY_RATIO_WIDTH.toLong(),
+            state.viewport.width.units,
+        ).coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
+        return PageDimensions(RUNWAY_RATIO_WIDTH, ratioHeight)
     }
 
     private fun markTerminal(state: ViewerState, episodeId: ml.melun.mangaview.core.EpisodeId): Reduction =
@@ -74,5 +97,6 @@ class EpisodeAppendScheduler(
 
     private companion object {
         const val BOUNDARY_PAGE_KEY = "__viewer_pending_boundary__"
+        const val RUNWAY_RATIO_WIDTH = 1_024
     }
 }

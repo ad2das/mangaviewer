@@ -107,7 +107,7 @@ class NtkContentSourceTest {
     }
 
     @Test
-    fun prepareWarmsAccessBeforeTheManifestRequest() = runTest {
+    fun prepareDefersNavigationToTheSerializedManifestLane() = runTest {
         val gateway = RecordingGateway(emptyList())
         val source = NtkContentSource(
             NtkConfig("https://ntk.test", "agent"),
@@ -119,7 +119,7 @@ class NtkContentSourceTest {
 
         source.prepare(episode, PreparationIntent.ADJACENT_FORWARD)
 
-        assertEquals("/manhwa/2/1181", gateway.preparedPath)
+        assertEquals(null, gateway.preparedPath)
     }
 }
 

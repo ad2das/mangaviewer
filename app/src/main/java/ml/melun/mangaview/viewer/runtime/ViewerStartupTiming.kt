@@ -9,6 +9,7 @@ internal data class ViewerStartupTiming(
     val initialResponseStartedAtNanos: Long?,
     val initialVerifiedAtNanos: Long?,
     val initialDecodedAtNanos: Long?,
+    val firstActualSubmittedAtNanos: Long?,
     val firstActualPresentedAtNanos: Long?,
 ) {
     init {
@@ -18,6 +19,7 @@ internal data class ViewerStartupTiming(
             initialResponseStartedAtNanos,
             initialVerifiedAtNanos,
             initialDecodedAtNanos,
+            firstActualSubmittedAtNanos,
             firstActualPresentedAtNanos,
         )
         require(stages.zipWithNext().all { (left, right) -> right >= left }) {
@@ -33,7 +35,11 @@ internal class ViewerStartupTracker {
         var decoded: Long = 0L,
     )
 
-    private data class Presentation(val pageId: PageId, val atNanos: Long)
+    private data class Presentation(
+        val pageId: PageId,
+        val submittedAtNanos: Long,
+        val presentedAtNanos: Long,
+    )
 
     private val lock = Any()
     private val pages = mutableMapOf<PageId, MutablePageStages>()
@@ -64,9 +70,11 @@ internal class ViewerStartupTracker {
         stages.decoded = mark(stages.decoded, atNanos)
     }
 
-    fun markPresented(pageId: PageId, atNanos: Long) = synchronized(lock) {
-        require(atNanos > 0L)
-        if (presentation == null) presentation = Presentation(pageId, atNanos)
+    fun markPresented(pageId: PageId, submittedAtNanos: Long, presentedAtNanos: Long) = synchronized(lock) {
+        require(submittedAtNanos > 0L && presentedAtNanos >= submittedAtNanos)
+        if (presentation == null) {
+            presentation = Presentation(pageId, submittedAtNanos, presentedAtNanos)
+        }
     }
 
     fun snapshot(): ViewerStartupTiming? = synchronized(lock) {
@@ -80,7 +88,8 @@ internal class ViewerStartupTracker {
             initialResponseStartedAtNanos = stages?.responseStarted.optional(),
             initialVerifiedAtNanos = stages?.verified.optional(),
             initialDecodedAtNanos = stages?.decoded.optional(),
-            firstActualPresentedAtNanos = shown?.atNanos,
+            firstActualSubmittedAtNanos = shown?.submittedAtNanos,
+            firstActualPresentedAtNanos = shown?.presentedAtNanos,
         )
     }
 

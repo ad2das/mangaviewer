@@ -2,7 +2,6 @@ package ml.melun.mangaview.data.network
 
 import android.content.Context
 import android.net.http.HttpEngine
-import android.net.http.QuicOptions
 import android.net.http.UrlRequest
 import android.os.Process
 import androidx.annotation.RequiresApi
@@ -241,17 +240,13 @@ class HttpEngineSourceTransport(
     private fun createEngine(scheme: String?, host: String, port: Int): EngineEntry {
         val builder = HttpEngine.Builder(appContext)
             .setEnableHttp2(true)
-            .setEnableQuic(scheme == "https")
+            // The viewer needs deterministic first-byte latency more than an optimistic HTTP/3
+            // race. Android's emulator network can black-hole UDP and make Cronet wait several
+            // seconds before falling back, while the same CDN is immediately reachable over
+            // HTTP/2. Keep Chromium's browser-compatible TLS stack but use the reliable path.
+            .setEnableQuic(false)
             .setEnableBrotli(true)
             .setUserAgent(userAgent)
-        if (scheme == "https") {
-            builder.setQuicOptions(
-                QuicOptions.Builder()
-                    .addAllowedQuicHost(host)
-                    .setHandshakeUserAgent(userAgent)
-                    .build(),
-            ).addQuicHint(host, port, port)
-        }
         return EngineEntry(builder.build())
     }
 

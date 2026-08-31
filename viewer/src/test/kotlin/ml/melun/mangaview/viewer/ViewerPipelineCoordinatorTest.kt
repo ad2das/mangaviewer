@@ -1,6 +1,7 @@
 package ml.melun.mangaview.viewer
 
 import java.util.concurrent.Executors
+import ml.melun.mangaview.core.PageDimensions
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
@@ -10,8 +11,87 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ViewerPipelineCoordinatorTest {
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun newlyVisibleFetchCompletionBypassesAnOlderColdCompletionBurst() = runTest {
+        val actorThread = AtomicBoolean(true)
+        val commands = mutableListOf<ViewerCommand>()
+        val manifest = ViewerFixtures.manifest(
+            pageCount = 30,
+            dimensions = { PageDimensions(1_080, 1_920) },
+        )
+        val coordinator = ViewerPipelineCoordinator(
+            scope = this,
+            reducer = ViewerFixtures.reducer(),
+            framePlanner = FramePlanner(),
+            renderPort = RenderPort {},
+            workPort = ViewerWorkPort(commands::add),
+            isActorThread = actorThread::get,
+        )
+        coordinator.post(ViewerEvent.OpenEpisode(1L, manifest, ViewerFixtures.viewport, 1L))
+        val initial = commands.filterIsInstance<ViewerCommand.FetchPage>().single()
+        coordinator.post(ViewerEvent.FetchResponseStarted(initial.token, 2L))
+        val burst = commands.filterIsInstance<ViewerCommand.FetchPage>()
+        val target = burst.last()
+
+        actorThread.set(false)
+        burst.forEachIndexed { index, fetch ->
+            coordinator.post(ViewerEvent.FetchSucceeded(
+                token = fetch.token,
+                encoded = VerifiedPageRef(
+                    cacheKey = "page-$index",
+                    byteCount = 1_000L,
+                    sha256 = "sha-$index",
+                    dimensions = PageDimensions(1_080, 1_920),
+                ),
+                elapsedMillis = 10L,
+                atNanos = 10L + index,
+            ))
+        }
+        actorThread.set(true)
+        val targetTop = requireNotNull(coordinator.state.value?.layout?.topOf(target.token.pageId))
+        coordinator.post(ViewerEvent.UserScroll(targetTop, 20_000L, 100L))
+        runCurrent()
+
+        val firstDecode = commands.filterIsInstance<ViewerCommand.DecodePage>().first()
+        assertEquals(target.token.pageId, firstDecode.token.pageId)
+        coordinator.close()
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun actorInputBypassesAnOlderSpeculativeWorkerCompletion() = runTest {
+        val actorThread = AtomicBoolean(true)
+        val frames = mutableListOf<FramePlan>()
+        val commands = mutableListOf<ViewerCommand>()
+        val coordinator = ViewerPipelineCoordinator(
+            scope = this,
+            reducer = ViewerFixtures.reducer(),
+            framePlanner = FramePlanner(),
+            renderPort = RenderPort(frames::add),
+            workPort = ViewerWorkPort(commands::add),
+            isActorThread = actorThread::get,
+        )
+        coordinator.post(
+            ViewerEvent.OpenEpisode(1L, ViewerFixtures.manifest(30), ViewerFixtures.viewport, 1L),
+        )
+        coordinator.post(ViewerEvent.SurfaceAttachmentChanged(true, 2L))
+        val initial = commands.filterIsInstance<ViewerCommand.FetchPage>().single()
+
+        actorThread.set(false)
+        coordinator.post(ViewerEvent.FetchResponseStarted(initial.token, 3L))
+        actorThread.set(true)
+        coordinator.post(ViewerEvent.UserScroll(FixedPx.fromPixels(640), 12_000L, 4L))
+
+        assertEquals(FixedPx.fromPixels(640), frames.last().scrollOffset)
+        runCurrent()
+        assertTrue(requireNotNull(coordinator.state.value).firstResponseReceived)
+        coordinator.close()
+    }
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test
     fun actorThreadPostReducesAndSubmitsBeforeReturning() = runTest {

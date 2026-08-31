@@ -4,7 +4,11 @@ import java.io.IOException
 import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Logger
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.PageSpec
@@ -22,48 +26,94 @@ internal class NtkPageService(
     private val parser: NtkDocumentParser,
     private val replicas: NtkReplicaSelector = NtkReplicaSelector(),
     private val preparedEpisodes: NtkPreparedEpisodeStore = NtkPreparedEpisodeStore(),
+    private val prefetchScope: CoroutineScope? = null,
 ) {
+    private val manifestLanes = Semaphore(MANIFEST_LANES)
+    private val prefetchLock = Any()
+    private val forwardDepths = mutableMapOf<EpisodeId, Int>()
+
     suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) {
-        if (preparedEpisodes.contains(episodeId)) return
-        gateway.prepare(documents.currentOrigin(), episodeId.remoteKey, intent)
+        val depth = when (intent) {
+            PreparationIntent.INITIAL_VIEW -> INITIAL_FORWARD_PREFETCH_DEPTH
+            PreparationIntent.ADJACENT_FORWARD -> ADJACENT_FORWARD_PREFETCH_DEPTH
+            else -> 0
+        }
+        rememberDepth(episodeId, depth)
+        if (!preparedEpisodes.contains(episodeId) || depth <= 0) return
+        prefetchScope?.launch {
+            runCatching { resolve(episodeId) }
+                .getOrNull()
+                ?.nextEpisodeId
+                ?.let { scheduleForward(it, depth - 1) }
+        }
     }
 
     suspend fun resolve(episodeId: EpisodeId): NtkPreparedEpisode =
         preparedEpisodes.resolve(episodeId) { load(episodeId) }
 
-    private suspend fun load(episodeId: EpisodeId): NtkPreparedEpisode {
+    private suspend fun load(episodeId: EpisodeId): NtkPreparedEpisode = manifestLanes.withPermit {
         val path = episodeId.remoteKey
         // ContentSource callers are allowed to request a manifest without a separate prepare call.
         // Start the browser's authorized ACK flight before the duplicate HTML transport request so
         // browser startup, challenge work and document parsing overlap on that cold path too.
-        gateway.prepare(documents.currentOrigin(), path, PreparationIntent.INITIAL_VIEW)
-        val document = documents.episodeDocument(path)
-        validateDocumentIdentity(document, path)
-        val parsed = parser.manifest(document)
-        parsed.descriptor?.let { descriptor ->
-            gateway.documentAvailable(document, descriptor)
+        val origin = documents.currentOrigin()
+        gateway.prepare(origin, path, PreparationIntent.INITIAL_VIEW)
+        try {
+            val document = documents.episodeDocument(path)
+            validateDocumentIdentity(document, path)
+            val parsed = parser.manifest(document)
+            val viewer = parsed.viewer
+            val nextEpisodeId = viewer?.nextEpisodePath?.let { EpisodeId(episodeId.seriesId, it) }
+            val remaining = consumeDepth(episodeId)
+            parsed.descriptor?.let { descriptor ->
+                gateway.documentAvailable(document, descriptor)
+            }
+            val resolved = resolveRequests(document, parsed)
+            // HttpEngine construction is origin-scoped and can otherwise sit directly on the
+            // visible page's critical path. Build only the selector's current best origin here;
+            // this opens no image request and preserves PageId single-flight ownership.
+            val firstCandidate = replicas.order(resolved.first().candidates).first()
+            transport.warmConnections(listOf(firstCandidate))
+            // Finish the visible manifest before starting the adjacent browser acknowledgement.
+            // The warmed lane can then overlap next-episode authorization with current bytes.
+            if (remaining > 0 && nextEpisodeId != null) {
+                scheduleForward(nextEpisodeId, remaining - 1)
+            }
+            val ids = resolved.indices.map { PageId.at(episodeId, it) }
+            NtkPreparedEpisode(
+                pages = ids.mapIndexed { index, id -> PageSpec(id, index) },
+                requests = ids.zip(resolved).toMap(),
+                title = viewer?.title,
+                previousEpisodeId = viewer?.previousEpisodePath?.let {
+                    EpisodeId(episodeId.seriesId, it)
+                },
+                nextEpisodeId = nextEpisodeId,
+                previousKnown = viewer?.previousKnown == true,
+                nextKnown = viewer?.nextKnown == true,
+            )
+        } finally {
+            gateway.pageAccessEstablished(origin, path)
         }
-        val resolved = resolveRequests(document, parsed)
-        // HttpEngine construction is origin-scoped and can otherwise sit directly on the
-        // visible page's critical path. Build only the selector's current best origin here;
-        // this opens no image request and preserves PageId single-flight ownership.
-        val firstCandidate = replicas.order(resolved.first().candidates).first()
-        transport.warmConnections(listOf(firstCandidate))
-        val ids = resolved.indices.map { PageId.at(episodeId, it) }
-        val viewer = parsed.viewer
-        return NtkPreparedEpisode(
-            pages = ids.mapIndexed { index, id -> PageSpec(id, index) },
-            requests = ids.zip(resolved).toMap(),
-            title = viewer?.title,
-            previousEpisodeId = viewer?.previousEpisodePath?.let {
-                EpisodeId(episodeId.seriesId, it)
-            },
-            nextEpisodeId = viewer?.nextEpisodePath?.let {
-                EpisodeId(episodeId.seriesId, it)
-            },
-            previousKnown = viewer?.previousKnown == true,
-            nextKnown = viewer?.nextKnown == true,
-        )
+    }
+
+    private fun scheduleForward(episodeId: EpisodeId, depth: Int) {
+        if (depth < 0) return
+        rememberDepth(episodeId, depth)
+        prefetchScope?.launch {
+            runCatching { resolve(episodeId) }.onFailure { failure ->
+                if (failure !is CancellationException) {
+                    LOGGER.fine("forward manifest prefetch failed: ${failure.message}")
+                }
+            }
+        }
+    }
+
+    private fun rememberDepth(episodeId: EpisodeId, depth: Int) = synchronized(prefetchLock) {
+        forwardDepths[episodeId] = maxOf(forwardDepths[episodeId] ?: 0, depth)
+    }
+
+    private fun consumeDepth(episodeId: EpisodeId): Int = synchronized(prefetchLock) {
+        forwardDepths.remove(episodeId) ?: 0
     }
 
     private fun validateDocumentIdentity(document: NtkEpisodeDocument, expectedPath: String) {
@@ -209,6 +259,12 @@ internal class NtkPageService(
 
     private companion object {
         const val IMAGE_SIGNATURE_BYTES = 12
+        const val MANIFEST_LANES = 2
+        // Keep exactly the next episode authorized on the cold path. Recursively opening nine
+        // hidden browser documents competes with the current page decoder; subsequent manifests
+        // are requested naturally as the append planner advances.
+        const val INITIAL_FORWARD_PREFETCH_DEPTH = 1
+        const val ADJACENT_FORWARD_PREFETCH_DEPTH = 0
         val LOGGER: Logger = Logger.getLogger(NtkPageService::class.java.simpleName)
     }
 

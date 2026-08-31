@@ -10,7 +10,143 @@ import org.junit.Test
 
 class FirstResponseSchedulingTest {
     @Test
-    fun firstGestureUsesOneSmallPixelSliceThenRestoresFullThroughput() {
+    fun visiblePagePreemptsAnInFlightHardDecodeThatTheGestureLeftBehind() {
+        val dimensions = PageDimensions(1_080, 1_920)
+        val manifest = ViewerFixtures.manifest(8, dimensions = { dimensions })
+        val reducer = ViewerFixtures.reducer()
+        var reduction = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(94L, manifest, ViewerFixtures.viewport, 1L),
+        ))
+        val initialFetch = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>().single()
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state,
+            ViewerEvent.FetchResponseStarted(initialFetch.token, 2L),
+        ))
+        val targetFetch = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
+            .first { it.token.pageId == manifest.pages[2].id }
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state,
+            ViewerEvent.FetchSucceeded(
+                initialFetch.token,
+                VerifiedPageRef("initial", 1_000L, "initial-sha", dimensions),
+                10L,
+                3L,
+            ),
+        ))
+        val abandonedDecode = reduction.commands.filterIsInstance<ViewerCommand.DecodePage>().single()
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state,
+            ViewerEvent.FetchSucceeded(
+                targetFetch.token,
+                VerifiedPageRef("target", 1_000L, "target-sha", dimensions),
+                10L,
+                4L,
+            ),
+        ))
+        val targetTop = requireNotNull(reduction.state.layout.topOf(targetFetch.token.pageId))
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state,
+            ViewerEvent.UserScroll(targetTop, targetTop.units, 5L),
+        ))
+
+        assertEquals(
+            abandonedDecode.token,
+            reduction.commands.filterIsInstance<ViewerCommand.CancelDecode>().single().token,
+        )
+        assertEquals(
+            targetFetch.token.pageId,
+            reduction.state.ownership.decodes.getValue(targetFetch.token.pageId).pageId,
+        )
+    }
+
+    @Test
+    fun appendedEpisodeRawRunwayIsPromotedAheadOfOrdinaryOffscreenWork() {
+        val next = ViewerFixtures.manifest(5, episodeKey = "next")
+        val current = ViewerFixtures.manifest(20).copy(nextEpisodeId = next.id)
+        val reducer = ViewerFixtures.reducer()
+        val opened = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(88L, current, ViewerFixtures.viewport, 1L),
+        ))
+        val append = opened.commands.filterIsInstance<ViewerCommand.LoadNextEpisode>().single()
+        val appended = requireNotNull(reducer.reduce(
+            opened.state,
+            ViewerEvent.NextEpisodeSucceeded(append.token, next, 2L),
+        )).state
+
+        val demands = DemandPlanner().plan(appended)
+        val firstOffscreen = demands.indexOfFirst { it.distanceUnits > 0L }
+        val promoted = demands.indexOfFirst { it.pageId == next.pages.first().id }
+        assertTrue(promoted >= firstOffscreen)
+        assertEquals(promoted, firstOffscreen)
+        assertTrue(demands[promoted].decodeBand == null)
+    }
+
+    @Test
+    fun aNewlyVisiblePageGetsAFastFullQualitySliceEvenAfterEarlierPixelsExist() {
+        val dimensions = PageDimensions(1_080, 5_000)
+        val manifest = ViewerFixtures.manifest(3, dimensions = { dimensions })
+        val reducer = ViewerFixtures.reducer()
+        val opened = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(89L, manifest, ViewerFixtures.viewport, 1L),
+        )).state
+        val first = manifest.pages[0].id
+        val target = manifest.pages[1].id
+        val withEarlierPixels = opened
+            .replacePage(first, opened.pages.getValue(first).copy(
+                pixel = PixelRef(1L, dimensions, 1L),
+                isPresented = true,
+            ))
+            .replacePage(target, opened.pages.getValue(target).copy(
+                encoded = VerifiedPageRef("target", 1L, "target-sha", dimensions),
+            ))
+        val targetTop = requireNotNull(withEarlierPixels.layout.topOf(target))
+        val atTarget = withEarlierPixels.copy(
+            scroll = ScrollController().navigate(
+                withEarlierPixels.layout,
+                withEarlierPixels.viewport,
+                target,
+                FixedPx.ZERO,
+                revision = withEarlierPixels.userInputRevision,
+            ),
+        )
+
+        val demand = DemandPlanner().plan(atTarget).first { it.pageId == target }
+        val band = requireNotNull(demand.decodeBand)
+        assertEquals(1_080, band.displayWidthPx)
+        assertTrue(band.sourceBottomPx - band.sourceTopPx <= 256)
+        assertEquals(targetTop, atTarget.scroll.contentOffset)
+    }
+
+    @Test
+    fun firstDecodeIsAFullQualitySliceEvenWhenNoGestureIsActiveAtManifestCompletion() {
+        val dimensions = PageDimensions(1_080, 1_920)
+        val manifest = ViewerFixtures.manifest(2, dimensions = { dimensions })
+        val reducer = ViewerFixtures.reducer()
+        var reduction = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(90L, manifest, ViewerFixtures.viewport, 1L),
+        ))
+        val fetch = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>().single()
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state,
+            ViewerEvent.FetchSucceeded(
+                fetch.token,
+                VerifiedPageRef("initial", 1_000L, "initial-sha", dimensions),
+                10L,
+                2L,
+            ),
+        ))
+
+        val firstDecode = reduction.commands.filterIsInstance<ViewerCommand.DecodePage>().single()
+        assertEquals(1_080, firstDecode.band.displayWidthPx)
+        assertTrue(firstDecode.band.sourceBottomPx - firstDecode.band.sourceTopPx <= 256)
+    }
+
+    @Test
+    fun firstGestureUsesOneSmallPixelSliceAndKeepsVisibleDecodingActive() {
         val dimensions = PageDimensions(1_080, 5_000)
         val manifest = ViewerFixtures.manifest(3, dimensions = { dimensions })
         val reducer = ViewerFixtures.reducer()
@@ -52,13 +188,16 @@ class FirstResponseSchedulingTest {
         ))
 
         assertTrue(reduction.state.startupMotionPending)
-        assertTrue(reduction.commands.none { it is ViewerCommand.DecodePage })
+        val continued = reduction.commands.filterIsInstance<ViewerCommand.DecodePage>().single()
+        assertEquals(WorkPriority.HARD, continued.token.priority)
+        assertTrue(
+            continued.band.sourceBottomPx <= bootstrap.band.sourceTopPx ||
+                continued.band.sourceTopPx >= bootstrap.band.sourceBottomPx,
+        )
         reduction = requireNotNull(reducer.reduce(
             reduction.state,
             ViewerEvent.InteractionChanged(false, 5L),
         ))
-        val fullThroughput = reduction.commands.filterIsInstance<ViewerCommand.DecodePage>().single()
-        assertEquals(512, fullThroughput.band.sourceBottomPx - fullThroughput.band.sourceTopPx)
         assertFalse(reduction.state.startupMotionPending)
     }
 
@@ -116,7 +255,7 @@ class FirstResponseSchedulingTest {
     }
 
     @Test
-    fun settledForwardGestureStartsOneWarmDecodeBehindThePresentedPage() {
+    fun coveredForegroundImmediatelyDecodesTheTouchingForwardPage() {
         val dimensions = PageDimensions(1_080, 1_920)
         val manifest = ViewerFixtures.manifest(6, dimensions = { dimensions })
         val reducer = ViewerFixtures.reducer()
@@ -167,12 +306,21 @@ class FirstResponseSchedulingTest {
             ),
         ))
         val currentId = manifest.pages[0].id
-        reduction = reduction.copy(
-            state = reduction.state.replacePage(
-                currentId,
-                reduction.state.pages.getValue(currentId).copy(isPresented = true),
-            ),
-        )
+        var fillSequence = 100L
+        while (reduction.state.pages.getValue(currentId).isPresented.not()) {
+            val fill = reduction.commands.filterIsInstance<ViewerCommand.DecodePage>()
+                .single { it.token.pageId == currentId }
+            val fillTile = fill.band.toTile(dimensions).copy(handle = fillSequence++)
+            reduction = requireNotNull(reducer.reduce(
+                reduction.state,
+                ViewerEvent.DecodeSucceeded(
+                    fill.token,
+                    PixelRef(fillTile.handle, dimensions, fillTile.allocationBytes, listOf(fillTile)),
+                    10L,
+                    fillSequence,
+                ),
+            ))
+        }
         reduction = requireNotNull(reducer.reduce(
             reduction.state,
             ViewerEvent.InteractionChanged(true, 6L),
@@ -187,18 +335,9 @@ class FirstResponseSchedulingTest {
             ),
         ))
         assertTrue(reduction.state.interactionActive)
-        assertTrue(reduction.commands.none { command ->
-            command is ViewerCommand.DecodePage && command.token.priority == WorkPriority.WARM
-        })
-        reduction = requireNotNull(reducer.reduce(
-            reduction.state,
-            ViewerEvent.InteractionChanged(false, 8L),
-        ))
-
         val warmDecode = reduction.commands.filterIsInstance<ViewerCommand.DecodePage>()
             .single { it.token.pageId == manifest.pages[1].id }
-        assertFalse(reduction.state.interactionActive)
-        assertEquals(WorkPriority.WARM, warmDecode.token.priority)
+        assertEquals(WorkPriority.HARD, warmDecode.token.priority)
     }
 
     @Test
@@ -301,7 +440,7 @@ class FirstResponseSchedulingTest {
     }
 
     @Test
-    fun randomizedPreResponseScrollKeepsTheSingleLaunchTargetOwner() {
+    fun randomizedPreResponseScrollKeepsOneOwnerOnTheCurrentVisibleTarget() {
         val random = Random(0xF1A57L)
         repeat(200) { sample ->
             val pageCount = 1 + random.nextInt(500)
@@ -318,8 +457,8 @@ class FirstResponseSchedulingTest {
                     initialPosition = ReadingPosition(anchor, random.nextInt(500).toLong()),
                 ),
             ))
-            val launchTarget = reduction.state.initialTargetPageId
-
+            var retargets = 0
+            var previousTarget = reduction.state.initialTargetPageId
             repeat(20) { step ->
                 val direction = if (random.nextBoolean()) 1 else -1
                 val pixels = direction * (1 + random.nextInt(2_500))
@@ -332,12 +471,41 @@ class FirstResponseSchedulingTest {
                     ),
                 ))
                 val scheduledFetches = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
-                assertTrue(scheduledFetches.all { it.token.pageId == launchTarget })
-                assertEquals(setOf(launchTarget), reduction.state.ownership.fetches.keys)
+                val visibleTarget = reduction.state.initialTargetPageId
+                if (visibleTarget != previousTarget) retargets += 1
+                previousTarget = visibleTarget
+                assertTrue(scheduledFetches.all { it.token.pageId == visibleTarget })
+                assertEquals(setOf(visibleTarget), reduction.state.ownership.fetches.keys)
                 assertEquals(1, reduction.state.networkConcurrency)
                 assertFalse(reduction.state.firstResponseReceived)
+                assertTrue(retargets <= 1)
             }
         }
+    }
+
+    @Test
+    fun preResponseGestureAtomicallyMovesTheSingleFetchToTheVisiblePage() {
+        val reducer = ViewerFixtures.reducer()
+        val manifest = ViewerFixtures.manifest(20)
+        val opened = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(81L, manifest, ViewerFixtures.viewport, 1L),
+        ))
+        val original = opened.commands.filterIsInstance<ViewerCommand.FetchPage>().single().token
+
+        val moved = requireNotNull(reducer.reduce(
+            opened.state,
+            ViewerEvent.UserScroll(FixedPx.fromPixels(8_000), 20_000L, 2L),
+        ))
+
+        val cancellation = moved.commands.filterIsInstance<ViewerCommand.CancelFetch>().single()
+        val replacement = moved.commands.filterIsInstance<ViewerCommand.FetchPage>().single()
+        assertEquals(original, cancellation.token)
+        assertTrue(replacement.token.pageId != original.pageId)
+        assertEquals(moved.state.initialTargetPageId, replacement.token.pageId)
+        assertEquals(setOf(replacement.token.pageId), moved.state.ownership.fetches.keys)
+        assertEquals(1, moved.state.networkConcurrency)
+        assertFalse(moved.state.firstResponseReceived)
     }
 
     private fun PixelBand.toTile(dimensions: PageDimensions): PixelTileRef {

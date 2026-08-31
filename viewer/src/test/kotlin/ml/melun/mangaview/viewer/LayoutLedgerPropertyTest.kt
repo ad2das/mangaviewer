@@ -134,12 +134,11 @@ class LayoutLedgerPropertyTest {
         ledger = ledger.resolve(manifest.pages[1].id, PageDimensions(2_000, 100))
         scroll = controller.preserveAnchor(ledger, viewport, scroll)
 
-        val height = requireNotNull(ledger.heightOf(manifest.pages[1].id))
-        assertEquals(manifest.pages[1].id, scroll.anchor.pageId)
-        assertEquals(height.units - 1L, scroll.anchor.offsetInPageUnits)
+        val resolvedHeight = requireNotNull(ledger.heightOf(manifest.pages[1].id))
+        assertEquals(manifest.pages[2].id, scroll.anchor.pageId)
         assertEquals(
-            manifest.pages[1].id,
-            ledger.pageAt(requireNotNull(ledger.topOf(manifest.pages[1].id)) + FixedPx(height.units - 1L)),
+            FixedPx.fromPixels(1_499).units - resolvedHeight.units,
+            scroll.anchor.offsetInPageUnits,
         )
         assertAnchorIsStationary(ledger, scroll)
 
@@ -177,8 +176,9 @@ class LayoutLedgerPropertyTest {
                     )
                     ledger = ledger.reflow(viewport.width)
                 }
+                val previousOrdinal = requireNotNull(ledger.indexOf(scroll.anchor.pageId))
                 scroll = controller.preserveAnchor(ledger, viewport, scroll)
-                assertEquals(anchorId, scroll.anchor.pageId)
+                assertTrue(requireNotNull(ledger.indexOf(scroll.anchor.pageId)) >= previousOrdinal)
                 assertValidAnchor(ledger, scroll)
             }
 

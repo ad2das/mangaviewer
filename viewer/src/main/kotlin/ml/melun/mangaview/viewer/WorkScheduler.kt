@@ -29,8 +29,9 @@ class WorkScheduler(
     }
 
     private fun scheduleActiveFetches(initial: ViewerState, demands: List<PageDemand>): SchedulingResult {
-        var state = initial
-        val commands = mutableListOf<ViewerCommand>()
+        val preempted = preemptForVisibleHardDemand(initial, demands)
+        var state = preempted.state
+        val commands = preempted.commands.toMutableList()
         for (demand in demands) {
             if (state.ownership.fetches.size >= state.networkConcurrency) break
             val runtime = state.pages.getValue(demand.pageId)
@@ -40,6 +41,31 @@ class WorkScheduler(
             commands += ViewerCommand.FetchPage(claimed.token)
         }
         return SchedulingResult(state, commands)
+    }
+
+    private fun preemptForVisibleHardDemand(
+        state: ViewerState,
+        demands: List<PageDemand>,
+    ): SchedulingResult {
+        if (state.ownership.fetches.size < state.networkConcurrency) {
+            return SchedulingResult(state, emptyList())
+        }
+        val target = demands.firstOrNull { demand ->
+            demand.priority == WorkPriority.HARD &&
+                canFetch(state, state.pages.getValue(demand.pageId))
+        } ?: return SchedulingResult(state, emptyList())
+        val demandIndices = demands.associate { it.pageId to it.index }
+        val victim = state.ownership.fetches.values
+            .filter { it.priority != WorkPriority.HARD }
+            .maxWithOrNull(compareBy<OperationToken>(
+                { it.priority.ordinal },
+                { kotlin.math.abs((demandIndices[it.pageId] ?: Int.MAX_VALUE) - target.index) },
+                { -it.operationSequence },
+            )) ?: return SchedulingResult(state, emptyList())
+        return SchedulingResult(
+            state.copy(ownership = state.ownership.release(victim)),
+            listOf(ViewerCommand.CancelFetch(victim)),
+        )
     }
 
     private fun scheduleColdFetches(initial: ViewerState): SchedulingResult {
@@ -84,11 +110,10 @@ class WorkScheduler(
 
     private fun scheduleDecodes(initial: ViewerState, demands: List<PageDemand>): SchedulingResult {
         if (initial.visibility == ViewerVisibility.BACKGROUND) return SchedulingResult(initial, emptyList())
-        var state = initial
-        val commands = mutableListOf<ViewerCommand>()
-        val startupSlicePresented = state.startupMotionPending &&
-            state.pages.values.any { it.pixel != null }
-        if (!startupSlicePresented && ownedDecodeCount(state, WorkPriority.HARD) == 0) {
+        val preempted = preemptObsoleteHardDecode(initial, demands)
+        var state = preempted.state
+        val commands = preempted.commands.toMutableList()
+        if (ownedDecodeCount(state, WorkPriority.HARD) == 0) {
             val foreground = demands.firstOrNull { demand ->
                 demand.distanceUnits == 0L && demand.decodeBand != null &&
                     canDecode(state, state.pages.getValue(demand.pageId), demand.decodeBand)
@@ -104,9 +129,7 @@ class WorkScheduler(
                 )
             }
         }
-        var warmAvailable = if (!state.interactionActive && state.pages.values.any(PageRuntime::isPresented)) {
-            1 - ownedDecodeCount(state, WorkPriority.WARM)
-        } else 0
+        var warmAvailable = 1 - ownedDecodeCount(state, WorkPriority.WARM)
         for (demand in demands) {
             if (warmAvailable <= 0 || !decodeAdmitted(state, demand)) continue
             val band = demand.decodeBand ?: continue
@@ -118,6 +141,31 @@ class WorkScheduler(
             warmAvailable -= 1
         }
         return SchedulingResult(state, commands)
+    }
+
+    private fun preemptObsoleteHardDecode(
+        state: ViewerState,
+        demands: List<PageDemand>,
+    ): SchedulingResult {
+        val hard = state.ownership.decodes.values.singleOrNull {
+            it.priority == WorkPriority.HARD
+        } ?: return SchedulingResult(state, emptyList())
+        val visible = demands.asSequence()
+            .filter { it.distanceUnits == 0L }
+            .map(PageDemand::pageId)
+            .toSet()
+        val focus = demands.firstOrNull { it.priority == WorkPriority.HARD }
+        if (focus?.pageId == hard.pageId) return SchedulingResult(state, emptyList())
+        val focusNeedsDecode = focus?.decodeBand?.let { band ->
+            canDecode(state, state.pages.getValue(focus.pageId), band)
+        } == true
+        if (hard.pageId in visible && !focusNeedsDecode) {
+            return SchedulingResult(state, emptyList())
+        }
+        return SchedulingResult(
+            state.copy(ownership = state.ownership.release(hard)),
+            listOf(ViewerCommand.CancelDecode(hard)),
+        )
     }
 
     private fun retryDeadline(state: ViewerState, runtime: PageRuntime): Long = when {

@@ -11,12 +11,24 @@ class ViewerFirstContentPolicyTest {
         assertNull(ViewerFirstContentPolicy.violation(6_000L, 4_000L, timing(
             verified = 5_000_000_000L,
             decoded = 5_100_000_000L,
+            submitted = 5_150_000_000L,
             presented = 5_200_000_000L,
         )))
         assertNotNull(ViewerFirstContentPolicy.violation(6_000L, 4_000L, timing(
             verified = 5_000_000_000L,
             decoded = 5_350_000_000L,
+            submitted = 5_375_000_000L,
             presented = 5_400_000_000L,
+        )))
+    }
+
+    @Test
+    fun offscreenDwellAfterPredecodeIsNotMisreportedAsRenderLatency() {
+        assertNull(ViewerFirstContentPolicy.violation(6_000L, 4_000L, timing(
+            verified = 5_000_000_000L,
+            decoded = 5_050_000_000L,
+            submitted = 5_800_000_000L,
+            presented = 5_850_000_000L,
         )))
     }
 
@@ -33,6 +45,7 @@ class ViewerFirstContentPolicyTest {
     private fun timing(
         verified: Long,
         decoded: Long,
+        submitted: Long,
         presented: Long,
     ) = ViewerStartupTiming(
         presentedPageKey = "p0001",
@@ -41,6 +54,7 @@ class ViewerFirstContentPolicyTest {
         initialResponseStartedAtNanos = 3L,
         initialVerifiedAtNanos = verified,
         initialDecodedAtNanos = decoded,
+        firstActualSubmittedAtNanos = submitted,
         firstActualPresentedAtNanos = presented,
     )
 }

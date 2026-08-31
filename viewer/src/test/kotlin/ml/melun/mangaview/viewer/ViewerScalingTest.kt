@@ -24,14 +24,25 @@ class ViewerScalingTest {
     }
 
     @Test
-    fun appendingAnEpisodeMovesColdFetchToItsFirstNewPage() {
+    fun appendingAnEpisodeKeepsTheNearestExistingForwardGap() {
         var sweep = ColdFetchSweep.create(pageCount = 6, startIndex = 3)
         sweep = sweep.without(3).without(4)
 
         val appended = sweep.append(additionalPages = 4)
 
-        assertEquals(6, appended.cursor)
-        assertEquals(6, appended.nextPendingIndex(appended.cursor))
+        assertEquals(3, appended.cursor)
+        assertEquals(5, appended.nextPendingIndex(appended.cursor))
+    }
+
+    @Test
+    fun appendingAfterCompletionMovesColdFetchToTheFirstNewPage() {
+        var sweep = ColdFetchSweep.create(pageCount = 3)
+        repeat(3) { index -> sweep = sweep.without(index) }
+
+        val appended = sweep.append(additionalPages = 2)
+
+        assertEquals(3, appended.cursor)
+        assertEquals(3, appended.nextPendingIndex(appended.cursor))
     }
 
     @Test
@@ -186,12 +197,44 @@ class ViewerScalingTest {
             ),
         ))
 
-        val replacement = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>().single()
+        val replacements = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
+        assertEquals(1, replacements.size)
+        val replacement = replacements.first()
         val completedIndex = reduction.state.pageOrder.indexOf(completed.token.pageId)
         val replacementIndex = reduction.state.pageOrder.indexOf(replacement.token.pageId)
         assertTrue(replacementIndex > completedIndex)
         assertTrue(replacement.token.priority != WorkPriority.COLD ||
             replacementIndex >= completedIndex)
+    }
+
+    @Test
+    fun visibleHardFetchPreemptsOnlySpeculativeWorkWhenAllLanesAreBusy() {
+        val reducer = ViewerFixtures.reducer()
+        val opened = requireNotNull(reducer.reduce(
+            null,
+            ViewerEvent.OpenEpisode(93L, manifest(30), ViewerFixtures.viewport, 1L),
+        ))
+        val initial = opened.commands.filterIsInstance<ViewerCommand.FetchPage>().single()
+        var reduction = requireNotNull(reducer.reduce(
+            opened.state,
+            ViewerEvent.FetchResponseStarted(initial.token, 2L),
+        ))
+        assertEquals(6, reduction.state.ownership.fetches.size)
+
+        val targetIndex = 10
+        val targetTop = reduction.state.layout.topAt(targetIndex)
+        reduction = requireNotNull(reducer.reduce(
+            reduction.state,
+            ViewerEvent.UserScroll(targetTop, targetTop.units, 3L),
+        ))
+
+        val cancelled = reduction.commands.filterIsInstance<ViewerCommand.CancelFetch>().single()
+        val replacement = reduction.commands.filterIsInstance<ViewerCommand.FetchPage>()
+            .single { it.token.priority == WorkPriority.HARD }
+        assertTrue(cancelled.token.priority != WorkPriority.HARD)
+        assertEquals(reduction.state.pageOrder[targetIndex], replacement.token.pageId)
+        assertEquals(6, reduction.state.ownership.fetches.size)
+        assertTrue(initial.token in reduction.state.ownership.fetches.values)
     }
 
     @Test

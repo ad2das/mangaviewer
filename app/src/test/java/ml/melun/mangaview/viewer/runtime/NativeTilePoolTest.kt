@@ -140,7 +140,7 @@ class NativeTilePoolTest {
             writeBytes(byteArrayOf(1))
         }
         val dimensions = PageDimensions(1_158, 888)
-        val secondBand = PixelBandGrid()
+        val secondBand = PixelBandGrid(maximumWholePageDisplayHeight = 0)
             .bandsIntersecting(dimensions, 0, dimensions.heightPx, 1_080)[1]
 
         val pixel = pool.decodeBand(source, dimensions, secondBand)

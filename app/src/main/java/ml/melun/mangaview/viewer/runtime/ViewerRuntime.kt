@@ -74,8 +74,12 @@ internal class ViewerRuntime(
         recycle = { pixel -> workExecutor.recycle(pixel) },
         presented = { evidence ->
             if (evidence.readableActualContent) {
-                viewportCenterPageId()?.let { pageId ->
-                    startup.markPresented(pageId, evidence.presentedNanos)
+                nearestVisiblePixelPageId()?.let { pageId ->
+                    startup.markPresented(
+                        pageId,
+                        evidence.submittedAtNanos,
+                        evidence.presentedNanos,
+                    )
                 }
             }
             reportPresentedFrame(evidence)
@@ -323,10 +327,41 @@ internal class ViewerRuntime(
         }
     }
 
-    private fun viewportCenterPageId(): ml.melun.mangaview.core.PageId? {
+    private fun nearestVisiblePixelPageId(): ml.melun.mangaview.core.PageId? {
         val state = coordinator.state.value ?: return null
-        val center = state.scroll.contentOffset + FixedPx(state.viewport.height.units / 2L)
-        return state.layout.pageAt(center)
+        val start = state.scroll.contentOffset.units
+        val end = start + state.viewport.height.units
+        val center = start + state.viewport.height.units / 2L
+        return state.layout.indicesIntersecting(FixedPx(start), FixedPx(end)).mapNotNull { index ->
+            val pageId = state.pageOrder[index]
+            val pixel = state.pages.getValue(pageId).pixel ?: return@mapNotNull null
+            val top = state.layout.topAt(index).units
+            val height = state.layout.entries[index].height.units
+            val nearest = pixel.tiles.mapNotNull { tile ->
+                val tileTop = top + scaleWithinPage(
+                    height,
+                    tile.sourceTopPx,
+                    pixel.dimensions.heightPx,
+                )
+                val tileBottom = top + scaleWithinPage(
+                    height,
+                    tile.sourceBottomPx,
+                    pixel.dimensions.heightPx,
+                )
+                if (tileBottom <= start || tileTop >= end) null else when {
+                    center < tileTop -> tileTop - center
+                    center >= tileBottom -> center - tileBottom + 1L
+                    else -> 0L
+                }
+            }.minOrNull() ?: return@mapNotNull null
+            pageId to nearest
+        }.minByOrNull { it.second }?.first
+    }
+
+    private fun scaleWithinPage(value: Long, numerator: Int, denominator: Int): Long {
+        require(value >= 0L && numerator in 0..denominator && denominator > 0)
+        return (value / denominator) * numerator +
+            (value % denominator) * numerator / denominator
     }
 
     private fun observeLifecycleState() {

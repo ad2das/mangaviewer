@@ -15,6 +15,8 @@ sealed interface ViewerCommand {
 
     data class CancelDecode(val token: OperationToken) : ViewerCommand
 
+    data class CancelFetch(val token: OperationToken) : ViewerCommand
+
     data class ReleasePixel(val pixel: PixelRef) : ViewerCommand
 }
 

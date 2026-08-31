@@ -23,6 +23,8 @@ import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.ntk.NtkConfig
 import ml.melun.mangaview.source.ntk.NtkContentSource
+import ml.melun.mangaview.source.ntk.NtkAccessGatewayPool
+import ml.melun.mangaview.source.ntk.NtkBrowserServiceSecondary
 import ml.melun.mangaview.source.ntk.NtkWebViewAccessGateway
 import ml.melun.mangaview.source.wfwf.WfwfConfig
 import ml.melun.mangaview.source.wfwf.WfwfContentSource
@@ -47,12 +49,20 @@ internal class AppGraph(
     private val appContext = context.applicationContext
     private val database = DeferredViewerDatabase(appContext, ioDispatcher)
     private val transportFactory = OkHttpTransportFactory(ioDispatcher)
-    private val ntkGateway = NtkWebViewAccessGateway(appContext, userAgent())
+    private val ntkBrowserGateways = listOf(
+        NtkWebViewAccessGateway(appContext, userAgent()),
+        NtkWebViewAccessGateway(
+            appContext,
+            userAgent(),
+            NtkBrowserServiceSecondary::class.java,
+        ),
+    )
+    private val ntkGateway = NtkAccessGatewayPool(ntkBrowserGateways)
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
     val sources = SourceRegistry(
         registrations = listOf(
             SourceRegistration(NTK_ID, "NTK") {
-                ntkGateway.warm()
+                ntkBrowserGateways.forEach(NtkWebViewAccessGateway::warm)
                 ntkSource.value.also { it.start() }
             },
             SourceRegistration(WFWF_ID, "WFWF", ::createWfwfSource),
@@ -75,6 +85,14 @@ internal class AppGraph(
             ioDispatcher,
         ),
     )
+
+    init {
+        // Users reach NTK through the library, so starting its browser acknowledgement runtime
+        // and transport while the app shell is appearing removes process/engine construction
+        // from the first visible page without delaying or blocking the UI.
+        ntkBrowserGateways.forEach(NtkWebViewAccessGateway::warm)
+        ntkSource.value.start()
+    }
 
     fun viewer(spec: ViewerLaunchSpec): ViewerDependencies {
         val source = sources.require(spec.sourceId)
@@ -123,6 +141,7 @@ internal class AppGraph(
                 NtkConfig(DEFAULT_NTK_ORIGIN, userAgent()),
                 transport,
                 ntkGateway,
+                prefetchScope = applicationScope,
             )
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()

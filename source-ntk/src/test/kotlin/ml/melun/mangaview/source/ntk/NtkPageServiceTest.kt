@@ -1,6 +1,9 @@
 package ml.melun.mangaview.source.ntk
 
 import java.net.URI
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
@@ -16,6 +19,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkPageServiceTest {
+    @Test
+    fun concurrentEpisodeManifestsUseAtMostTheTwoProviderBrowserLanes() = runTest {
+        val transport = SelfHealTransport()
+        val gateway = YieldingGateway()
+        val service = NtkPageService(
+            transport = transport,
+            documents = NtkDocumentClient(NtkConfig("https://ntk.test", "agent"), transport),
+            gateway = gateway,
+            parser = NtkDocumentParser(),
+        )
+
+        listOf(episode("lane-a"), episode("lane-b"), episode("lane-c"))
+            .map { value -> async { service.resolve(value) } }
+            .awaitAll()
+
+        assertEquals(2, gateway.maximumConcurrentResolves)
+    }
+
     @Test
     fun openSelfHealsAnEpisodeEvictedFromTheManifestLru() = runTest {
         val transport = SelfHealTransport()
@@ -172,6 +193,27 @@ class NtkPageServiceTest {
         SeriesId(SourceId("ntk"), "/webtoon/work"),
         "/webtoon/work/$key",
     )
+}
+
+private class YieldingGateway : NtkAccessGateway {
+    var maximumConcurrentResolves = 0
+    private var activeResolves = 0
+
+    override suspend fun prepare(origin: String, episodePath: String, intent: PreparationIntent) = Unit
+
+    override suspend fun resolve(
+        document: NtkEpisodeDocument,
+        descriptor: NtkViewerDescriptor,
+    ): List<NtkPageRequest> {
+        activeResolves += 1
+        maximumConcurrentResolves = maxOf(maximumConcurrentResolves, activeResolves)
+        try {
+            yield()
+            return listOf(NtkPageRequest("https://images.test${document.path}/p0000.jpg"))
+        } finally {
+            activeResolves -= 1
+        }
+    }
 }
 
 private class SelfHealGateway(

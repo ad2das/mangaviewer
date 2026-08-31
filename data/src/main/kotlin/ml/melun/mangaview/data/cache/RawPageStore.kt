@@ -9,6 +9,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.data.db.RawPageDao
 import ml.melun.mangaview.data.db.RawPageEntity
@@ -20,12 +22,20 @@ class RawPageStore(
     private val ioDispatcher: CoroutineDispatcher,
     private val publisher: AtomicFilePublisher = PosixAtomicFilePublisher(),
     private val nowMillis: () -> Long = System::currentTimeMillis,
+    private val maximumBytes: Long = DEFAULT_CACHE_BYTES,
 ) : RawPageCache {
     private val indexWriter = RawPageIndexWriter(dao)
     private val recent = RecentRawPageIndex()
     private val bootstrapLock = Any()
+    private val trimMutex = Mutex()
+    private val activeWriteKeys = mutableSetOf<String>()
+    private val activeWriteLock = Any()
     @Volatile
     private var bootstrapState = CacheBootstrapState.UNKNOWN
+
+    init {
+        require(maximumBytes > 0L) { "Cache budget must be positive" }
+    }
 
     override suspend fun find(pageId: PageId): CachedPage? = withContext(ioDispatcher) {
         val key = PageCacheKey.of(pageId)
@@ -47,6 +57,7 @@ class RawPageStore(
         withContext(ioDispatcher) {
             ensureRoot()
             val key = PageCacheKey.of(pageId)
+            synchronized(activeWriteLock) { activeWriteKeys += key }
             val destination = File(root, fileName(key))
             val staging = File(root, "$key.${UUID.randomUUID()}.part")
             var published = false
@@ -56,11 +67,15 @@ class RawPageStore(
                 published = true
                 val entity = result.toEntity(pageId, key, destination.name, nowMillis())
                 indexWriter.upsert(entity)
-                entity.toCachedPage(pageId, destination).also { recent[key] = it }
+                val cached = entity.toCachedPage(pageId, destination).also { recent[key] = it }
+                trimAfterCompletedWrite()
+                cached
             } catch (failure: Throwable) {
                 staging.delete()
                 if (published) destination.delete()
                 throw failure
+            } finally {
+                synchronized(activeWriteLock) { activeWriteKeys -= key }
             }
         }
 
@@ -74,16 +89,31 @@ class RawPageStore(
 
     suspend fun trimTo(maxBytes: Long) = withContext(ioDispatcher) {
         require(maxBytes >= 0L) { "Cache budget must not be negative" }
+        trimToLocked(maxBytes, maxBytes)
+    }
+
+    private suspend fun trimAfterCompletedWrite() {
+        val lowWatermark = multiplyFraction(maximumBytes, CACHE_LOW_WATERMARK_PERCENT)
+        trimToLocked(maximumBytes, lowWatermark)
+    }
+
+    private suspend fun trimToLocked(triggerBytes: Long, targetBytes: Long) = trimMutex.withLock {
+        var total = dao.totalBytes()
+        if (total <= triggerBytes) return@withLock
         val entries = dao.oldestFirst()
-        var total = entries.sumOf(RawPageEntity::byteCount)
+        val protected = synchronized(activeWriteLock) { activeWriteKeys.toSet() }
         for (entry in entries) {
-            if (total <= maxBytes) break
+            if (total <= targetBytes) break
+            if (entry.cacheKey in protected) continue
             dao.delete(entry.cacheKey)
             recent.remove(entry.cacheKey)
             File(root, entry.relativePath).delete()
             total -= entry.byteCount
         }
     }
+
+    private fun multiplyFraction(value: Long, percent: Int): Long =
+        (value / 100L) * percent + (value % 100L) * percent / 100L
 
     private suspend fun streamToFile(openedPage: OpenedPage, destination: File): WriteResult {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -196,6 +226,8 @@ class RawPageStore(
         const val HEADER_INITIAL_BYTES = 4 * 1_024
         const val MAX_HEADER_BYTES = 1 * 1_024 * 1_024
         const val MAX_PAGE_BYTES = 512L * 1_024L * 1_024L
+        const val DEFAULT_CACHE_BYTES = 1L * 1_024L * 1_024L * 1_024L
+        const val CACHE_LOW_WATERMARK_PERCENT = 90
     }
 
     private enum class CacheBootstrapState {

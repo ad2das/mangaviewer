@@ -13,7 +13,7 @@ internal class ViewerPageEventReducer(
             fetchRetry = null,
         )
         val concurrency = if (event.token.pageId == state.initialTargetPageId) {
-            6
+            INITIAL_RESPONSE_CONCURRENCY
         } else {
             successfulFetchConcurrency(state, event.elapsedMillis)
         }
@@ -37,7 +37,10 @@ internal class ViewerPageEventReducer(
         event: ViewerEvent.FetchResponseStarted,
     ): ViewerState {
         if (!owns(state, event.token, WorkKind.FETCH) || state.firstResponseReceived) return state
-        return state.copy(firstResponseReceived = true, networkConcurrency = 6)
+        return state.copy(
+            firstResponseReceived = true,
+            networkConcurrency = INITIAL_RESPONSE_CONCURRENCY,
+        )
     }
 
     fun fetchFailed(state: ViewerState, event: ViewerEvent.FetchFailed): ViewerState {
@@ -132,6 +135,7 @@ internal class ViewerPageEventReducer(
 
     private fun successfulFetchConcurrency(state: ViewerState, elapsedMillis: Long): Int {
         if (!state.firstResponseReceived) return 2
+        if (state.residentPageIds.isEmpty()) return INITIAL_RESPONSE_CONCURRENCY
         val ceiling = if (state.ownership.decodes.size < 2) 6 else 4
         return if (elapsedMillis in 0L..1_500L) {
             (state.networkConcurrency + 1).coerceAtMost(ceiling)
@@ -145,4 +149,8 @@ internal class ViewerPageEventReducer(
 
     private fun deadline(nowNanos: Long, delayNanos: Long): Long =
         if (Long.MAX_VALUE - nowNanos < delayNanos) Long.MAX_VALUE else nowNanos + delayNanos
+
+    private companion object {
+        const val INITIAL_RESPONSE_CONCURRENCY = 6
+    }
 }

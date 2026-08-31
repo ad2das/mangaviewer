@@ -27,6 +27,7 @@ import ml.melun.mangaview.source.PreparationIntent
 class NtkWebViewAccessGateway(
     context: Context,
     private val userAgent: String,
+    private val serviceClass: Class<out android.app.Service> = NtkBrowserService::class.java,
 ) : NtkAccessGateway {
     private val appContext = context.applicationContext
     private val closed = AtomicBoolean(false)
@@ -179,7 +180,7 @@ class NtkWebViewAccessGateway(
     private fun ensureBoundLocked() {
         if (remote != null || binding || closed.get()) return
         binding = true
-        val intent = Intent(appContext, NtkBrowserService::class.java)
+        val intent = Intent(appContext, serviceClass)
         val accepted = runCatching {
             appContext.bindService(
                 intent,

@@ -21,15 +21,15 @@ class ViewerNtkSmokeTest {
     @Test
     fun protectedEpisodeOpensWithoutBlockingTheFirstGesture() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val arguments = InstrumentationRegistry.getArguments()
         val context = instrumentation.targetContext
+        val seriesKey = arguments.getString(ARG_SERIES_KEY) ?: DEFAULT_SERIES_KEY
+        val episodeKey = arguments.getString(ARG_EPISODE_KEY) ?: DEFAULT_EPISODE_KEY
         val startedAt = SystemClock.elapsedRealtime()
         val scenario = ActivityScenario.launch<ViewerActivity>(Intent(context, ViewerActivity::class.java).apply {
             putExtra(ViewerLaunchSpec.EXTRA_SOURCE_ID, "ntk")
-            putExtra(ViewerLaunchSpec.EXTRA_SERIES_KEY, "/webtoon/57451201")
-            putExtra(
-                ViewerLaunchSpec.EXTRA_EPISODE_KEY,
-                "/webtoon/57451201/jjaptoon-1341148",
-            )
+            putExtra(ViewerLaunchSpec.EXTRA_SERIES_KEY, seriesKey)
+            putExtra(ViewerLaunchSpec.EXTRA_EPISODE_KEY, episodeKey)
         })
         try {
             val device = UiDevice.getInstance(instrumentation)
@@ -63,6 +63,10 @@ class ViewerNtkSmokeTest {
     }
 
     private companion object {
+        const val ARG_SERIES_KEY = "ntkSeriesKey"
+        const val ARG_EPISODE_KEY = "ntkEpisodeKey"
+        const val DEFAULT_SERIES_KEY = "/webtoon/57451201"
+        const val DEFAULT_EPISODE_KEY = "/webtoon/57451201/jjaptoon-1341148"
         const val FRAME_PREFIX = "viewer-frame-presented:"
         const val FIRST_CONTENT_LIMIT_MILLIS = 4_000L
     }
