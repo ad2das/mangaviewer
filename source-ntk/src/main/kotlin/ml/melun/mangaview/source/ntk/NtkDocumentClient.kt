@@ -1,6 +1,8 @@
 package ml.melun.mangaview.source.ntk
 
 import java.io.IOException
+import java.net.URI
+import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
@@ -48,6 +50,23 @@ internal class NtkDocumentClient(
     suspend fun currentOrigin(): String = origin.current()
 
     suspend fun url(path: String): String = origin.url(path)
+
+    suspend fun openArtwork(value: String, refererPath: String): OpenedPage? {
+        val base = "${origin.current()}/"
+        val url = runCatching { URI(base).resolve(value.trim()).toString() }.getOrNull() ?: return null
+        val response = transport.execute(SourceRequest(url, headers = requestHeaders(origin.url(refererPath))))
+        if (response.statusCode !in 200..299) {
+            response.close()
+            return null
+        }
+        return OpenedPage(
+            stream = response.body,
+            contentLength = response.contentLength,
+            contentType = response.contentType,
+            entityTag = response.header("ETag"),
+            lastModified = response.header("Last-Modified"),
+        )
+    }
 
     fun requestHeaders(referer: String? = null): Map<String, String> = buildMap {
         put("User-Agent", config.userAgent)

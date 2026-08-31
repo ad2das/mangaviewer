@@ -1,8 +1,10 @@
 package ml.melun.mangaview.ui.library
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,151 +15,167 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import ml.melun.mangaview.app.SourceOption
 
 @Composable
-internal fun LibraryScreen(state: LibraryState, accept: (LibraryIntent) -> Unit) {
+internal fun LibraryScreen(
+    state: LibraryState,
+    artworkLoader: SeriesArtworkLoader,
+    accept: (LibraryIntent) -> Unit,
+) {
     val colors = libraryColors(state.saved.settings.darkTheme)
-    Column(
-        Modifier.fillMaxSize().background(colors.background).safeDrawingPadding().padding(18.dp),
-    ) {
-        BasicText("MangaViewer", style = titleStyle(colors))
-        Spacer(Modifier.height(14.dp))
-        LibraryTabs(state.selectedTab, colors, accept)
-        Spacer(Modifier.height(14.dp))
-        when (state.selectedTab) {
-            LibraryTab.SEARCH -> SearchSection(state, colors, accept)
-            LibraryTab.RECENT -> RecentSection(state.saved.recent, colors, accept)
-            LibraryTab.FAVORITES -> FavoriteSection(state.saved.favorites, colors, accept)
-            LibraryTab.BOOKMARKS -> BookmarkSection(state.saved.bookmarks, colors, accept)
-            LibraryTab.SETTINGS -> SettingsSection(state.saved.settings, colors, accept)
+    val detailVisible = state.activeSeries != null
+    BackHandler(enabled = detailVisible || state.settingsVisible) { accept(LibraryIntent.Back) }
+    Box(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
+        if (detailVisible) {
+            SeriesDetailScreen(state, artworkLoader, colors, accept)
+        } else {
+            MainShell(state, artworkLoader, colors, accept)
         }
+        if (state.settingsVisible) SettingsOverlay(state, colors, accept)
     }
 }
 
 @Composable
-private fun LibraryTabs(
-    selected: LibraryTab,
+private fun MainShell(
+    state: LibraryState,
+    artworkLoader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        LibraryTab.entries.forEach { tab ->
-            val background = if (tab == selected) colors.accent else colors.surface
-            BasicText(
-                tab.label,
-                Modifier.background(background).clickable { accept(LibraryIntent.TabSelected(tab)) }
-                    .padding(horizontal = 13.dp, vertical = 9.dp),
-                style = bodyStyle(colors),
-            )
+    Column(Modifier.fillMaxSize()) {
+        MainTopBar(state, colors, accept)
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            when (state.destination) {
+                MainDestination.HOME -> HomeScreen(state, artworkLoader, colors, accept)
+                MainDestination.SEARCH -> SearchScreen(state, artworkLoader, colors, accept)
+                MainDestination.LIBRARY -> SavedLibraryScreen(state, artworkLoader, colors, accept)
+            }
         }
+        MainBottomNavigation(state.destination, colors, accept)
     }
 }
 
 @Composable
-private fun SearchSection(state: LibraryState, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    SourceSelector(state.sources, state.selectedSourceId.value, colors, accept)
-    Spacer(Modifier.height(12.dp))
-    SearchBar(state.query, colors, accept)
-    Spacer(Modifier.height(14.dp))
-    SearchResults(state.content, state.saved.favorites.mapTo(hashSetOf()) { it.id }, colors, accept)
-}
-
-@Composable
-private fun SourceSelector(
-    sources: List<SourceOption>,
-    selectedId: String,
-    colors: LibraryColors,
-    accept: (LibraryIntent) -> Unit,
-) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        sources.forEach { option ->
-            val background = if (option.id.value == selectedId) colors.accent else colors.surface
-            BasicText(
-                option.label,
-                Modifier.background(background).clickable {
-                    accept(LibraryIntent.SourceSelected(option.id))
-                }.padding(horizontal = 14.dp, vertical = 9.dp),
-                style = bodyStyle(colors),
-            )
-        }
+private fun MainTopBar(state: LibraryState, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    val title = when (state.destination) {
+        MainDestination.HOME -> "MangaView"
+        MainDestination.SEARCH -> "검색"
+        MainDestination.LIBRARY -> "내 보관함"
     }
-}
-
-@Composable
-private fun SearchBar(query: String, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        BasicTextField(
-            value = query,
-            onValueChange = { accept(LibraryIntent.QueryChanged(it)) },
-            singleLine = true,
-            textStyle = bodyStyle(colors),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { accept(LibraryIntent.Search) }),
-            modifier = Modifier.weight(1f).background(colors.surface).padding(14.dp),
-            decorationBox = { field ->
-                Box {
-                    if (query.isEmpty()) BasicText("작품 검색", style = hintStyle(colors))
-                    field()
-                }
-            },
+        BasicText(
+            title,
+            Modifier.weight(1f),
+            titleStyle(colors, 25).copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal),
         )
-        LibraryAction("검색", colors) { accept(LibraryIntent.Search) }
+        val source = state.sources.firstOrNull { it.id == state.selectedSourceId }
+        val next = state.sources.let { options ->
+            val index = options.indexOfFirst { it.id == state.selectedSourceId }
+            options.getOrNull((index + 1).mod(options.size.coerceAtLeast(1)))
+        }
+        Box(
+            Modifier.size(48.dp).clip(CircleShape).clickable {
+                next?.let { accept(LibraryIntent.SourceSelected(it.id)) }
+            },
+            contentAlignment = Alignment.Center,
+        ) {
+            val art = if (source?.id?.value == "ntk") LegacySiteArtwork.ntk else LegacySiteArtwork.wfwf
+            Image(art, source?.label, Modifier.size(38.dp), contentScale = ContentScale.Fit)
+        }
+        Spacer(Modifier.size(8.dp))
+        Box(
+            Modifier.size(44.dp).clip(CircleShape).clickable { accept(LibraryIntent.ToggleSettings) },
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.PROFILE, colors.accent, Modifier.size(34.dp))
+        }
     }
 }
 
 @Composable
-internal fun LibraryAction(label: String, colors: LibraryColors, click: () -> Unit) {
-    BasicText(
-        label,
-        Modifier.background(colors.accent).clickable(onClick = click).padding(14.dp),
-        style = bodyStyle(colors),
-    )
-}
-
-@Composable
-internal fun LibraryMessage(value: String, colors: LibraryColors) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        BasicText(value, style = hintStyle(colors))
+private fun MainBottomNavigation(
+    selected: MainDestination,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp)
+            .height(72.dp).shadow(5.dp, RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp))
+            .background(colors.card).border(1.dp, colors.outline, RoundedCornerShape(28.dp)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        NavigationItem(MainDestination.HOME, LibraryIcon.HOME, selected, colors, accept)
+        NavigationItem(MainDestination.SEARCH, LibraryIcon.SEARCH, selected, colors, accept)
+        NavigationItem(MainDestination.LIBRARY, LibraryIcon.LIBRARY, selected, colors, accept)
     }
 }
 
-internal data class LibraryColors(
-    val background: Color,
-    val surface: Color,
-    val divider: Color,
-    val accent: Color,
-    val text: Color,
-    val hint: Color,
-)
-
-private fun libraryColors(dark: Boolean): LibraryColors = if (dark) {
-    LibraryColors(Color(0xFF0E0E0E), Color(0xFF262626), Color(0xFF303030), Color(0xFF3977F6), Color.White, Color(0xFF9B9B9B))
-} else {
-    LibraryColors(Color(0xFFF7F7F7), Color.White, Color(0xFFE0E0E0), Color(0xFF2866E8), Color(0xFF161616), Color(0xFF666666))
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
+    item: MainDestination,
+    icon: LibraryIcon,
+    selected: MainDestination,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    val active = item == selected
+    Column(
+        Modifier.weight(1f).height(64.dp).semantics { contentDescription = "하단 ${item.label}" }
+            .clickable { accept(LibraryIntent.DestinationSelected(item)) },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            Modifier.size(width = 64.dp, height = 32.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(if (active) colors.accentSurface else androidx.compose.ui.graphics.Color.Transparent),
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(icon, if (active) colors.accent else colors.secondary, Modifier.size(25.dp))
+        }
+        BasicText(item.label, style = labelStyle(colors, active))
+    }
 }
 
-internal fun titleStyle(colors: LibraryColors) = TextStyle(colors.text, fontSize = 28.sp)
-internal fun sectionStyle(colors: LibraryColors) = TextStyle(colors.text, fontSize = 20.sp)
-internal fun bodyStyle(colors: LibraryColors) = TextStyle(colors.text, fontSize = 16.sp)
-internal fun hintStyle(colors: LibraryColors) = TextStyle(colors.hint, fontSize = 14.sp)
+@Composable
+internal fun LibraryAction(
+    label: String,
+    colors: LibraryColors,
+    modifier: Modifier = Modifier,
+    click: () -> Unit,
+) {
+    Box(
+        modifier.clip(RoundedCornerShape(12.dp)).background(colors.accent).clickable(onClick = click)
+            .padding(horizontal = 18.dp, vertical = 13.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        BasicText(label, style = bodyStyle(colors).copy(color = androidx.compose.ui.graphics.Color.White, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
+    }
+}
+
+@Composable
+internal fun LibraryMessage(value: String, colors: LibraryColors, modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            LibraryIconView(LibraryIcon.SEARCH, colors.muted, Modifier.size(58.dp))
+            Spacer(Modifier.height(18.dp))
+            BasicText(value, style = hintStyle(colors, 15))
+        }
+    }
+}

@@ -10,6 +10,24 @@ data class SourceSeries(
     val thumbnailKey: String? = null,
 )
 
+enum class SeriesKind {
+    WEBTOON,
+    COMIC,
+}
+
+enum class CatalogOrder {
+    LATEST,
+    POPULAR,
+    NEW,
+}
+
+data class CatalogQuery(
+    val kind: SeriesKind,
+    val order: CatalogOrder,
+    val genre: String? = null,
+    val cursor: String? = null,
+)
+
 data class SourceEpisode(
     val id: EpisodeId,
     val title: String,

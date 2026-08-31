@@ -1,7 +1,9 @@
 package ml.melun.mangaview.activity
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.LaunchedEffect
@@ -29,6 +31,9 @@ class MainActivity : ComponentActivity() {
         )[LibraryViewModel::class.java]
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
+            LaunchedEffect(state.saved.settings.darkTheme) {
+                applySystemBars(state.saved.settings.darkTheme)
+            }
             LaunchedEffect(viewModel) {
                 viewModel.effects.collectLatest { effect ->
                     if (effect is LibraryEffect.OpenEpisode) {
@@ -36,7 +41,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            LibraryScreen(state, viewModel::accept)
+            LibraryScreen(state, graph.artworkLoader, viewModel::accept)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applySystemBars(dark: Boolean) {
+        val background = Color.parseColor(if (dark) "#0F172A" else "#F8FAFC")
+        window.statusBarColor = background
+        window.navigationBarColor = background
+        window.decorView.systemUiVisibility = if (dark) 0 else {
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         }
     }
 

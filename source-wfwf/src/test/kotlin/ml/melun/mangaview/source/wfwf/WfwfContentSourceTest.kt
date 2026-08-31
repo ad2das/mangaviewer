@@ -15,6 +15,25 @@ import org.junit.Test
 
 class WfwfContentSourceTest {
     @Test
+    fun catalogCombinesSplitCoverAndTitleLinksWithoutPlaceholderNames() {
+        val document = org.jsoup.Jsoup.parse(
+            """
+            <article class="item">
+              <a href="/list?toon=72442"><img data-src="https://cdn.example/72442.jpg"></a>
+              <a href="/list?toon=72442"><h3 class="item-title">정확한 작품명</h3></a>
+            </article>
+            """.trimIndent(),
+        )
+
+        val items = WfwfHtmlParser().search(document) { key ->
+            SeriesId(SourceId("wfwf"), key.encode())
+        }
+
+        assertEquals("정확한 작품명", items.single().title)
+        assertEquals("https://cdn.example/72442.jpg", items.single().thumbnailKey)
+    }
+
+    @Test
     fun oldEpisodeAdjacencyLoadsEveryDeclaredCatalogPage() = runTest {
         val firstCatalog = """
             <a href="/cv?toon=10007&num=183"><span class="subject">183화</span></a>

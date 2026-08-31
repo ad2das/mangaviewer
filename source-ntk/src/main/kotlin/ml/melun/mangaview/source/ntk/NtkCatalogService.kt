@@ -13,6 +13,9 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.AdjacentEpisodes
+import ml.melun.mangaview.source.CatalogOrder
+import ml.melun.mangaview.source.CatalogQuery
+import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSeries
@@ -37,6 +40,53 @@ internal class NtkCatalogService(
             return SourcePage(api.series, if (hasNext) (page + 1).toString() else null)
         }
         return SourcePage(parser.searchHtml(documents.text("/search?q=$encoded", false), sourceId))
+    }
+
+    suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
+        val page = query.cursor?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+        val endpoint = if (query.kind == SeriesKind.COMIC) "manhwa-list" else "works"
+        val parameters = buildList {
+            add("status=${if (query.kind == SeriesKind.WEBTOON) "ing" else ""}")
+            when (query.order) {
+                CatalogOrder.POPULAR -> add("sort=hot")
+                CatalogOrder.LATEST -> add("sort=recent")
+                CatalogOrder.NEW -> add("sort=new")
+            }
+            query.genre?.trim()?.takeIf(String::isNotEmpty)?.let { genre ->
+                val key = if (query.kind == SeriesKind.COMIC) "g" else "tag"
+                add("$key=${URLEncoder.encode(genre, Charsets.UTF_8.name())}")
+            }
+            add("page=$page")
+            add("pageSize=$searchPageSize")
+            add("withTotal=1")
+        }
+        val parsed = attempt {
+            parser.searchApi(
+                documents.text("/api/$endpoint?${parameters.joinToString("&")}", json = true),
+                sourceId,
+                if (query.kind == SeriesKind.COMIC) NtkKind.MANHWA else NtkKind.WEBTOON,
+            )
+        }
+        if (parsed != null && parsed.series.isNotEmpty()) {
+            val hasNext = parsed.total?.let { page * searchPageSize < it }
+                ?: (parsed.series.size == searchPageSize)
+            return SourcePage(parsed.series, if (hasNext) (page + 1).toString() else null)
+        }
+        if (page > 1) return SourcePage(emptyList())
+        return SourcePage(parser.searchHtml(documents.text(catalogPath(query), false), sourceId))
+    }
+
+    private fun catalogPath(query: CatalogQuery): String {
+        val root = if (query.kind == SeriesKind.COMIC) "/manhwa" else "/ing"
+        val parameters = buildList {
+            if (query.order == CatalogOrder.POPULAR) add("sort=hot")
+            if (query.order == CatalogOrder.NEW) add("sort=new")
+            query.genre?.trim()?.takeIf(String::isNotEmpty)?.let { genre ->
+                val key = if (query.kind == SeriesKind.COMIC) "g" else "tag"
+                add("$key=${URLEncoder.encode(genre, Charsets.UTF_8.name())}")
+            }
+        }
+        return if (parameters.isEmpty()) root else "$root?${parameters.joinToString("&")}"
     }
 
     suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> =

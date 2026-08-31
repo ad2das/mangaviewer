@@ -49,21 +49,25 @@ data class NtkViewerMetadata(
 )
 
 class NtkDocumentParser {
-    fun searchApi(payload: String, sourceId: SourceId): NtkSearchResult {
+    fun searchApi(
+        payload: String,
+        sourceId: SourceId,
+        forcedKind: NtkKind? = null,
+    ): NtkSearchResult {
         val root = JSONObject(payload)
         val found = linkedMapOf<String, SourceSeries>()
         JsonObjects.walk(root) { candidate ->
             val workKey = string(candidate, "sourceWorkId", "workId", "id") ?: return@walk
             val title = string(candidate, "title", "name", "subject") ?: return@walk
-            val kind = kind(candidate, string(candidate, "path", "href", "url")) ?: return@walk
+            val kind = forcedKind ?: kind(candidate, string(candidate, "path", "href", "url")) ?: return@walk
             val key = NtkSeriesKey(kind, workKey)
             found.putIfAbsent(
                 key.path(),
                 SourceSeries(
                     id = SeriesId(sourceId, key.path()),
                     title = title.clean(),
-                    subtitle = string(candidate, "author", "writer"),
-                    thumbnailKey = string(candidate, "thumbnail", "thumb", "image", "cover"),
+                    subtitle = string(candidate, "author", "writer", "genre"),
+                    thumbnailKey = string(candidate, "thumbnailUrl", "thumbnail", "thumb", "image", "cover"),
                 ),
             )
         }

@@ -6,8 +6,8 @@ import org.junit.Test
 class LibraryTabTest {
     @Test
     fun storedTabUsesStableOrderAndRejectsInvalidValues() {
-        assertEquals(LibraryTab.SEARCH, LibraryTab.fromStored(-1))
-        assertEquals(LibraryTab.FAVORITES, LibraryTab.fromStored(2))
-        assertEquals(LibraryTab.SEARCH, LibraryTab.fromStored(100))
+        assertEquals(MainDestination.HOME, MainDestination.fromStored(-1))
+        assertEquals(MainDestination.LIBRARY, MainDestination.fromStored(2))
+        assertEquals(MainDestination.HOME, MainDestination.fromStored(100))
     }
 }

@@ -3,6 +3,7 @@ package ml.melun.mangaview.source.wfwf
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.net.URLEncoder
+import java.net.URI
 import java.nio.charset.Charset
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -16,6 +17,8 @@ import ml.melun.mangaview.core.PageSpec
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.AdjacentEpisodes
+import ml.melun.mangaview.source.CatalogOrder
+import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageValidation
@@ -26,6 +29,7 @@ import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 import org.jsoup.Jsoup
@@ -60,6 +64,12 @@ class WfwfContentSource(
         val encoded = URLEncoder.encode(query.trim(), Charset.forName("EUC-KR").name())
         val document = document("/search.html?q=$encoded")
         return SourcePage(parser.search(document, ::seriesId))
+    }
+
+    override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
+        if (query.cursor != null) return SourcePage(emptyList())
+        val path = catalogPath(query)
+        return SourcePage(parser.search(document(path), ::seriesId))
     }
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> {
@@ -132,6 +142,18 @@ class WfwfContentSource(
         val retryStatus = retried.statusCode
         retried.close()
         throw pageFailure(retryStatus)
+    }
+
+    override suspend fun openArtwork(series: SourceSeries): OpenedPage? {
+        require(series.id.sourceId == id) { "Series belongs to another source" }
+        val value = series.thumbnailKey?.takeIf(String::isNotBlank) ?: return null
+        val url = runCatching { URI("${origin.current()}/").resolve(value).toString() }.getOrNull() ?: return null
+        val response = transport.execute(SourceRequest(url, headers = requestHeaders(origin.resolve(listPath(WfwfSeriesKey.decode(series.id))))))
+        if (response.statusCode !in 200..299) {
+            response.close()
+            return null
+        }
+        return response.openedPage()
     }
 
     private suspend fun resolvePage(pageId: PageId): WfwfPageLookup.Found =
@@ -249,6 +271,19 @@ class WfwfContentSource(
     private fun listPath(key: WfwfSeriesKey): String = when (key.kind) {
         WfwfKind.COMIC -> "/cl?toon=${key.titleId}"
         WfwfKind.WEBTOON -> "/list?toon=${key.titleId}"
+    }
+
+    private fun catalogPath(query: CatalogQuery): String {
+        val order = if (query.order == CatalogOrder.POPULAR) "f" else "n"
+        val value = when (query.order) {
+            CatalogOrder.NEW -> "new"
+            CatalogOrder.LATEST, CatalogOrder.POPULAR -> "recent"
+        }
+        val base = if (query.kind == SeriesKind.COMIC) "/cm" else "/ing"
+        val type = if (query.genre.isNullOrBlank()) "day" else "genre"
+        val selected = query.genre?.takeIf(String::isNotBlank) ?: value
+        val encoded = URLEncoder.encode(selected, Charset.forName("EUC-KR").name())
+        return "$base?type1=$type&type2=$encoded&o=$order"
     }
 
     private fun listPagePath(key: WfwfSeriesKey, page: Int): String {

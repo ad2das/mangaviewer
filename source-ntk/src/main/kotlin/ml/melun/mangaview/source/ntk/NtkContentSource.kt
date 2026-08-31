@@ -7,6 +7,7 @@ import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.AdjacentEpisodes
+import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageValidation
@@ -46,6 +47,9 @@ class NtkContentSource(
 
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> =
         catalog.search(query, cursor)
+
+    override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> =
+        catalog.catalog(query)
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> {
         require(seriesId.sourceId == id) { "Series belongs to another source" }
@@ -92,6 +96,12 @@ class NtkContentSource(
     override suspend fun openPage(pageId: PageId, validation: PageValidation?): OpenedPage {
         requireSource(pageId.episodeId)
         return pages.open(pageId, validation)
+    }
+
+    override suspend fun openArtwork(series: SourceSeries): OpenedPage? {
+        require(series.id.sourceId == id) { "Series belongs to another source" }
+        val key = series.thumbnailKey?.takeIf(String::isNotBlank) ?: return null
+        return documents.openArtwork(key, series.id.remoteKey)
     }
 
     private fun requireSource(episodeId: EpisodeId) {

@@ -29,6 +29,7 @@ import ml.melun.mangaview.source.ntk.NtkWebViewAccessGateway
 import ml.melun.mangaview.source.wfwf.WfwfConfig
 import ml.melun.mangaview.source.wfwf.WfwfContentSource
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
+import ml.melun.mangaview.ui.library.SeriesArtworkLoader
 
 internal data class ViewerDependencies(
     val source: ContentSource,
@@ -85,6 +86,7 @@ internal class AppGraph(
             ioDispatcher,
         ),
     )
+    val artworkLoader = SeriesArtworkLoader(sources, ioDispatcher)
 
     init {
         // Users reach NTK through the library, so starting its browser acknowledgement runtime

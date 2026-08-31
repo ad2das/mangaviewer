@@ -17,16 +17,23 @@ internal data class WfwfViewerMetadata(
 
 class WfwfHtmlParser {
     fun search(document: Document, sourceSeriesId: (WfwfSeriesKey) -> SeriesId): List<SourceSeries> {
-        val seen = mutableSetOf<String>()
-        return document.select("a[href]").mapNotNull { link ->
-            val key = seriesKey(link.attr("href")) ?: return@mapNotNull null
-            if (!seen.add(key.encode())) return@mapNotNull null
-            SourceSeries(
+        val found = linkedMapOf<String, SourceSeries>()
+        document.select("a[href]").forEach { link ->
+            val key = seriesKey(link.attr("href")) ?: return@forEach
+            val title = title(link)
+            val candidate = SourceSeries(
                 id = sourceSeriesId(key),
-                title = title(link).ifBlank { "#${key.titleId}" },
+                title = title.ifBlank { "#${key.titleId}" },
                 thumbnailKey = imageUrl(link),
             )
+            val old = found[key.encode()]
+            if (old == null || (old.title.startsWith('#') && title.isNotBlank())) {
+                found[key.encode()] = candidate.copy(thumbnailKey = candidate.thumbnailKey ?: old?.thumbnailKey)
+            } else if (old.thumbnailKey == null && candidate.thumbnailKey != null) {
+                found[key.encode()] = old.copy(thumbnailKey = candidate.thumbnailKey)
+            }
         }
+        return found.values.toList()
     }
 
     fun episodes(document: Document, seriesId: SeriesId, key: WfwfSeriesKey): List<SourceEpisode> {
@@ -142,14 +149,37 @@ class WfwfHtmlParser {
             listOf("/data/", "/toon/", "/webtoon/", "/comic/").any(lower::contains)
     }
 
-    private fun title(link: Element): String = link.selectFirst("h1, h2, h3, h4, .title, .subject")
-        ?.text()?.clean() ?: link.ownText().clean()
+    private fun title(link: Element): String {
+        val own = link.selectFirst(TITLE_SELECTORS)?.text()?.clean().orEmpty()
+        if (own.isNotEmpty()) return own
+        val imageLabel = link.selectFirst("img")?.let { image ->
+            image.attr("alt").clean().ifEmpty { image.attr("title").clean() }
+        }.orEmpty()
+        if (imageLabel.isNotEmpty()) return imageLabel
+        link.ownText().clean().takeIf(String::isNotEmpty)?.let { return it }
+        var context = link.parent()
+        repeat(3) {
+            val candidate = context?.selectFirst(TITLE_SELECTORS)?.text()?.clean().orEmpty()
+            if (candidate.isNotEmpty()) return candidate
+            context = context?.parent()
+        }
+        return ""
+    }
 
     private fun episodeTitle(link: Element): String =
         link.selectFirst(".subject")?.ownText()?.clean() ?: link.ownText().clean()
 
-    private fun imageUrl(link: Element): String? = link.selectFirst("img")?.let { image ->
-        IMAGE_ATTRIBUTES.firstNotNullOfOrNull { image.attr(it).trim().takeIf(String::isNotEmpty) }
+    private fun imageUrl(link: Element): String? {
+        var context: Element? = link
+        repeat(4) {
+            context?.selectFirst("img")?.let { image ->
+                IMAGE_ATTRIBUTES.firstNotNullOfOrNull {
+                    image.attr(it).trim().takeIf(String::isNotEmpty)
+                }?.let { return it }
+            }
+            context = context?.parent()
+        }
+        return null
     }
 
     private fun queryLong(href: String, key: String): Long? = runCatching {
@@ -170,6 +200,9 @@ class WfwfHtmlParser {
             ".viewer-wrap img, .viewer-content img, .comic-viewer img, .webtoon-viewer img, " +
                 "div.image-view img, div.view-padding img, section.webtoon-body img, " +
                 "div.toon-view img, #toon_img img, #viewer img, article.reader img"
+        const val TITLE_SELECTORS =
+            "h1, h2, h3, h4, .title, .subject, .toon-title, .webtoon-title, .item-title, " +
+                ".post-title, .name, strong, [data-title]"
         val LAZY_IMAGE_ATTRIBUTES = listOf("data-original", "data-src", "data-lazy-src", "data-url")
         val IMAGE_ATTRIBUTES = LAZY_IMAGE_ATTRIBUTES + "src"
         val BLOCKED_CONTEXT_TOKENS = listOf(

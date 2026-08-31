@@ -14,6 +14,22 @@ class NtkDocumentParserTest {
     private val sourceId = SourceId("ntk")
 
     @Test
+    fun catalogApiUsesAdapterKindAndCurrentArtworkFields() {
+        val json = """{
+          "works":[{"sourceWorkId":"60914825","title":"픽 미 업!",
+            "thumbnailUrl":"https://cdn.example/cover.jpg","genre":"소년"}],
+          "total":1
+        }""".trimIndent()
+
+        val result = parser.searchApi(json, sourceId, NtkKind.WEBTOON)
+
+        assertEquals(1, result.series.size)
+        assertEquals("/webtoon/60914825", result.series.single().id.remoteKey)
+        assertEquals("소년", result.series.single().subtitle)
+        assertEquals("https://cdn.example/cover.jpg", result.series.single().thumbnailKey)
+    }
+
+    @Test
     fun mergesNumericAndSlugRowsWithEmbeddedImageMetadata() {
         val series = SeriesId(sourceId, "/webtoon/61393986")
         val html = """

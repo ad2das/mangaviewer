@@ -15,6 +15,7 @@ import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.AdjacentEpisodes
+import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageValidation
@@ -68,6 +69,9 @@ internal class DeferredContentSource(
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> =
         source().search(query, cursor)
 
+    override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> =
+        source().catalog(query)
+
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> =
         source().episodes(seriesId, cursor)
 
@@ -82,6 +86,9 @@ internal class DeferredContentSource(
 
     override suspend fun openPage(pageId: PageId, validation: PageValidation?): OpenedPage =
         source().openPage(pageId, validation)
+
+    override suspend fun openArtwork(series: SourceSeries): OpenedPage? =
+        source().openArtwork(series)
 
     private suspend fun source(): ContentSource = delegate.await()
 }
