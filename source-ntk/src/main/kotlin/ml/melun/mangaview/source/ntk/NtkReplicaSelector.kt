@@ -29,6 +29,13 @@ internal class NtkReplicaSelector(
     fun orderedPrepared(candidates: List<ReplicaCandidate>): List<ReplicaCandidate> =
         synchronized(lock) { ordered(candidates) }
 
+    /** Atomically orders cold candidates and reserves the primary before another page snapshots. */
+    fun reservePreferred(candidates: List<ReplicaCandidate>): ReservedOrder = synchronized(lock) {
+        require(candidates.isNotEmpty()) { "NTK page has no replica candidates" }
+        val ordered = ordered(candidates)
+        ReservedOrder(ordered, acquireLocked(ordered.first()))
+    }
+
     fun acquireCandidate(candidate: ReplicaCandidate): ReplicaLease = synchronized(lock) {
         acquireLocked(candidate)
     }
@@ -37,6 +44,12 @@ internal class NtkReplicaSelector(
         val state = health[candidate.host] ?: return@synchronized false
         state.successfulSamples >= MIN_SUCCESS_SAMPLES &&
             state.failures == 0 && state.blockedUntilMillis <= nowMillis()
+    }
+
+    fun hasAcceptedPrefix(candidate: ReplicaCandidate): Boolean = synchronized(lock) {
+        val state = health[candidate.host] ?: return@synchronized false
+        state.latencyMillis != null && state.failures == 0 &&
+            state.blockedUntilMillis <= nowMillis()
     }
 
     private fun acquireLocked(selected: ReplicaCandidate): ReplicaLease {
@@ -54,8 +67,7 @@ internal class NtkReplicaSelector(
         return candidates.withIndex()
             .sortedWith(compareBy<IndexedValue<ReplicaCandidate>>(
                 { health[it.value.host]?.blockedUntilMillis?.let { due -> due > now } ?: false },
-                { (health[it.value.host]?.successfulSamples ?: 0) < MIN_SUCCESS_SAMPLES },
-                { predictedCompletion(health[it.value.host] ?: ReplicaHealth()) },
+                { routeScore(health[it.value.host] ?: ReplicaHealth()) },
                 { health[it.value.host]?.failures ?: 0 },
                 { health[it.value.host]?.inFlight ?: 0 },
                 IndexedValue<ReplicaCandidate>::index,
@@ -81,7 +93,7 @@ internal class NtkReplicaSelector(
 
     suspend fun succeeded(lease: ReplicaLease, latencyMillis: Long) = succeedNow(lease, latencyMillis)
 
-    /** Records a verified image prefix without releasing the body owner's in-flight lease. */
+    /** Records a valid image prefix without treating an unfinished body as a proven replica. */
     fun accepted(lease: ReplicaLease, latencyMillis: Long) = synchronized(lock) {
         require(latencyMillis >= 0L) { "Replica latency must not be negative" }
         val key = lease.candidate.host
@@ -90,7 +102,6 @@ internal class NtkReplicaSelector(
         put(key, previous.copy(
             failures = 0,
             latencyMillis = smoothed,
-            successfulSamples = MIN_SUCCESS_SAMPLES,
             blockedUntilMillis = 0L,
             lastTouchedMillis = nowMillis(),
         ))
@@ -176,6 +187,15 @@ internal class NtkReplicaSelector(
         return saturatingMultiply(latency, value.inFlight.toLong() + 1L)
     }
 
+    private fun routeScore(value: ReplicaHealth): Long {
+        val confidencePenalty = if (value.successfulSamples >= MIN_SUCCESS_SAMPLES) {
+            0L
+        } else {
+            UNVERIFIED_ROUTE_PENALTY_MILLIS
+        }
+        return saturatingAdd(predictedCompletion(value), confidencePenalty)
+    }
+
     private fun saturatingAdd(left: Long, right: Long): Long =
         if (left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
 
@@ -186,6 +206,11 @@ internal class NtkReplicaSelector(
     internal data class ReplicaCandidate(val url: String, val host: String)
 
     internal data class ReplicaLease(val candidate: ReplicaCandidate)
+
+    internal data class ReservedOrder(
+        val candidates: List<ReplicaCandidate>,
+        val primary: ReplicaLease,
+    )
 
     private data class ReplicaHealth(
         val failures: Int = 0,
@@ -201,7 +226,11 @@ internal class NtkReplicaSelector(
         const val MAX_FAILURES = 8
         const val MAX_TRACKED_HOSTS = 64
         const val UNMEASURED_LATENCY_MILLIS = 300L
-        const val MIN_SUCCESS_SAMPLES = 3
+        const val UNVERIFIED_ROUTE_PENALTY_MILLIS = 300L
+        // A sample is recorded only after the complete validated image body reaches disk. One
+        // such sample is therefore sufficient route proof; requiring three repeats makes every
+        // early forward page pay the full replica race even though the route is already known.
+        const val MIN_SUCCESS_SAMPLES = 1
     }
 }
 

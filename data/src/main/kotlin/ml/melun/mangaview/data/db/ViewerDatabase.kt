@@ -12,14 +12,20 @@ import androidx.room.RoomDatabase
         ReadingProgressEntity::class,
         LibraryEntryEntity::class,
         BookmarkEntity::class,
+        EngineReadingAnchorEntity::class,
+        EngineBookmarkAnchorEntity::class,
+        EnginePageEntity::class,
+        EnginePublicationEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class ViewerDatabase : RoomDatabase() {
     abstract fun rawPages(): RawPageDao
 
     abstract fun viewer(): ViewerDao
+
+    abstract fun engine(): EngineDao
 }
 
 class ViewerDatabaseFactory(
@@ -30,7 +36,7 @@ class ViewerDatabaseFactory(
         context.applicationContext,
         ViewerDatabase::class.java,
         databaseName,
-    ).build()
+    ).addMigrations(EngineDatabaseMigration.FROM_1_TO_2).build()
 
     companion object {
         const val DATABASE_NAME = "mangaviewer_v2.db"

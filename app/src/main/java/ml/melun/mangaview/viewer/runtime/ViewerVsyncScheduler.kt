@@ -3,7 +3,6 @@ package ml.melun.mangaview.viewer.runtime
 import android.os.Build
 import android.view.Choreographer
 import androidx.annotation.RequiresApi
-import ml.melun.mangaview.viewer.INVALID_FRAME_TIMELINE_VSYNC_ID
 
 /** Delivers the SurfaceFlinger frame timeline that produced a UI motion step. */
 internal class ViewerVsyncScheduler(
@@ -16,7 +15,7 @@ internal class ViewerVsyncScheduler(
 ) {
     private var scheduled = false
     private val legacyCallback = Choreographer.FrameCallback { frameTimeNanos ->
-        deliver(frameTimeNanos, INVALID_FRAME_TIMELINE_VSYNC_ID, frameTimeNanos)
+        deliver(frameTimeNanos, NO_FRAME_TIMELINE_VSYNC_ID, frameTimeNanos)
     }
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private val timelineCallback = Choreographer.VsyncCallback { frameData ->

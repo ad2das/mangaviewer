@@ -19,12 +19,15 @@ class OkHttpTransportFactory(
         protocols: List<Protocol>,
     ): OkHttpSourceTransport {
         val dispatcher = Dispatcher().apply {
-            maxRequests = 6
+            // Keep all six image lanes available while an independent provider-document request
+            // prepares the adjacent episode.
+            maxRequests = 8
             maxRequestsPerHost = 6
         }
+        val dns = AndroidIpv4FirstDns(fixedAddressOffset = 0)
         val client = OkHttpClient.Builder()
             .dispatcher(dispatcher)
-            .dns(AndroidIpv4FirstDns())
+            .dns(dns)
             .cookieJar(cookieJar)
             .connectionPool(ConnectionPool(6, 5L, TimeUnit.MINUTES))
             .protocols(protocols)
@@ -33,6 +36,10 @@ class OkHttpTransportFactory(
             .writeTimeout(30L, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build()
-        return OkHttpSourceTransport(client, ioDispatcher)
+        return OkHttpSourceTransport(
+            client,
+            ioDispatcher,
+            routeDns = { offset -> AndroidIpv4FirstDns(fixedAddressOffset = offset) },
+        )
     }
 }

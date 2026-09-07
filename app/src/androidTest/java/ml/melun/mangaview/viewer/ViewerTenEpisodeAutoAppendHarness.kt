@@ -3,28 +3,49 @@ package ml.melun.mangaview.viewer
 import android.app.Instrumentation
 import android.content.Intent
 import android.graphics.Rect
+import android.os.Looper
 import android.os.SystemClock
 import androidx.test.core.app.ActivityScenario
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
-import java.util.concurrent.atomic.AtomicReference
 import ml.melun.mangaview.activity.ViewerActivity
 import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.viewer.runtime.NativePresentationEvidence
 import ml.melun.mangaview.viewer.runtime.NativePresentationEvidencePacking
 import ml.melun.mangaview.viewer.runtime.ViewerStartupTiming
+import ml.melun.mangaview.viewer.runtime.PresentationTimestampKind
+import org.json.JSONArray
+import org.json.JSONObject
 
 internal class ViewerTenEpisodeAutoAppendHarness(
     private val instrumentation: Instrumentation,
     artifactPrefix: String,
     private val requiredEpisodes: Int = 10,
+    private val expectedEpisodes: List<EpisodeId>? = null,
+    private val checkpoint: () -> Unit = {},
+    private val externalDisplay: Boolean = false,
+    artifactParent: java.io.File? = null,
+    private val timingPolicy: QualificationTimingPolicy = QualificationTimingPolicy(android.os.Build.FINGERPRINT),
+    private val diagnosticMode: Boolean = false,
+    private val runTimeoutMillis: Long = RUN_TIMEOUT_MILLIS,
 ) {
+    init {
+        require(requiredEpisodes > 0)
+        require(runTimeoutMillis > 0L)
+        require(expectedEpisodes == null ||
+            (expectedEpisodes.size == requiredEpisodes && expectedEpisodes.distinct().size == requiredEpisodes))
+    }
+
     private val context = instrumentation.targetContext
     private val device = UiDevice.getInstance(instrumentation)
-    private val artifacts = ViewerUxArtifacts(context, artifactPrefix)
+    private val artifacts = ViewerUxArtifacts(context, artifactPrefix, artifactParent)
     private val violations = mutableListOf<String>()
+    private val caughtFailures = mutableListOf<Throwable>()
+    private val sampleKey = artifactPrefix
+    private val timingObservations = JSONArray()
     private val boundaries = mutableListOf<BoundaryEvidence>()
     private val invalidPendingBoundaries = mutableSetOf<EpisodeId>()
     private val presentations = linkedSetOf<Long>()
@@ -37,54 +58,108 @@ internal class ViewerTenEpisodeAutoAppendHarness(
     private var presentationCursor = 0L
     private var motionCursor = 0L
     private var windowFrameRecorder: ViewerWindowFrameRecorder? = null
+    private val displayedRows = DisplayedRowCoverage()
+    private val navigationRows = DisplayedRowCoverage()
+    private var regionCursor = 0L
+    private var collectionEndAtNanos = 0L
+    private val directedGestures = mutableListOf<PresentationGestureWindow>()
+    private val requestedDirections = mutableListOf<Pair<Long, TelemetryDirection>>()
+    private var currentDirection = TelemetryDirection.FORWARD
 
-    fun run(episode: LiveEpisode) {
-        val startedAtMillis = SystemClock.elapsedRealtime()
-        val startedAtNanos = System.nanoTime()
-        val scenario = ActivityScenario.launch<ViewerActivity>(launchIntent(episode))
+    fun run(episode: LiveEpisode, uiLaunch: ViewerUiLaunch? = null) {
+        val startedAtMillis = uiLaunch?.startedMillis ?: SystemClock.elapsedRealtime()
+        val startedAtNanos = uiLaunch?.startedNanos ?: System.nanoTime()
+        val scenario = if (uiLaunch == null) ActivityScenario.launch<ViewerActivity>(launchIntent(episode)) else null
+        artifacts.directory.resolve("collection.json").writeText(JSONObject()
+            .put("startedAtMillis", startedAtMillis).put("startedAtNanos", startedAtNanos)
+            .put("processPid", android.os.Process.myPid()).put("packageName", context.packageName)
+            .put("requiredEpisodes", requiredEpisodes)
+            .put("sampleKey", sampleKey)
+            .put("mode", if (diagnosticMode) "DIAGNOSTIC_NO_CORPUS_CREDIT" else "QUALIFICATION")
+            .put("externalDisplayVerificationRequired", externalDisplay).toString(2))
         val observedEpisodes = mutableListOf<EpisodeId>()
         var previous: ViewerTelemetrySnapshot? = null
+        var lastEpisodeComplete = false
+        lateinit var activity: ViewerActivity
         try {
             check(ViewerUiConditions.waitForSurface(device, SURFACE_TIMEOUT_MILLIS)) {
                 "Viewer surface did not accept immediate input"
             }
-            scenario.onActivity { activity ->
-                windowFrameRecorder = ViewerWindowFrameRecorder(activity.window)
-            }
+            if (uiLaunch != null) activity = uiLaunch.activity
+            else requireNotNull(scenario).onActivity { activity = it }
+            onMain { windowFrameRecorder = ViewerWindowFrameRecorder(activity.window) }
             val bounds = surfaceBounds()
             var gestureCount = 0
-            harvestActivityEvidence(scenario)
-            while (observedEpisodes.size < requiredEpisodes &&
-                SystemClock.elapsedRealtime() - startedAtMillis < RUN_TIMEOUT_MILLIS &&
+            var backfill = false
+            harvestActivityEvidence(activity)
+            while (!lastEpisodeComplete &&
+                SystemClock.elapsedRealtime() - startedAtMillis < runTimeoutMillis &&
                 gestureCount < MAX_GESTURES
             ) {
-                injectForwardSwipe(bounds)
+                val plannedDirection = if (backfill) gapDirection(previous) else TelemetryDirection.FORWARD
+                injectSwipe(bounds, plannedDirection)
                 gestureCount += 1
-                harvestActivityEvidence(scenario)
-                checkHealth()
-                val current = telemetry(scenario) ?: continue
+                harvestActivityEvidence(activity)
+                checkHealth(activity)
+                if (violations.isNotEmpty()) break
+                val current = telemetry(activity) ?: continue
                 telemetryTimeline += "$gestureCount\t${current.diagnosticSummary()}\tvisible=" +
                     current.visiblePages.joinToString { page ->
                         "${page.pageId.remoteKey}:actual=${page.coveredUnits}/" +
                             "${page.visibleUnits}:loading=${page.loadingUnits}:shown=${page.presented}"
                     }
-                if (gestureCount % PROGRESS_INTERVAL_GESTURES == 0) logProgress(gestureCount, current)
+                if (gestureCount == 1 || gestureCount % PROGRESS_INTERVAL_GESTURES == 0) {
+                    logProgress(gestureCount, current)
+                    checkpoint()
+                }
                 validateManifestChain(current)
-                validateForwardContinuity(previous, current)
-                observeEpisodeTransition(observedEpisodes, previous, current)
+                if (!backfill) {
+                    validateForwardContinuity(previous, current)
+                    observeEpisodeTransition(observedEpisodes, previous, current)
+                }
+                backfill = backfill || reachedLastEpisodeEnd(observedEpisodes, current) || pastLastPage(current)
+                val expectedPages = expectedPages(current)
+                lastEpisodeComplete = backfill && current.manifests.size >= requiredEpisodes &&
+                    expectedPages.isNotEmpty() && navigationRows.firstMissing(expectedPages) == null
                 previous = current
+                if (violations.isNotEmpty()) break
             }
-            ensureDeliveredGestureEvidence(scenario, bounds, gestureCount)
+            checkHealth(activity)
+            ViewerScreenshotEvidence(instrumentation, artifacts.directory)
+                .capture(activity, episode, "ten-episode-before-stop")
+            harvestActivityEvidence(activity)
+            // A real stationary tap ends the final fling; no extra scroll is injected merely to close its evidence window.
+            if (!device.click(bounds.centerX(), bounds.centerY())) violations += "Final stop tap was rejected"
+            ensureDeliveredGestureEvidence(activity, bounds, gestureCount)
+            val finalPages = previous?.let(::expectedPages).orEmpty()
             verifyEpisodeCount(observedEpisodes, previous, gestureCount)
-            verifyFirstContent(scenario, startedAtMillis)
-            violations += ViewerPresentationTraceVerifier.verify(presentationEvidence, gestureWindows)
-            verifyBoundaryPresentations()
+            if (!lastEpisodeComplete) violations += "Final episode's last page was not fully traversed"
+            verifyFirstContent(activity, startedAtMillis)
+            if (!externalDisplay) {
+                violations += displayedRows.violations(finalPages)
+                violations += ViewerPresentationTraceVerifier.verifyDirected(presentationEvidence, directedGestures)
+                verifyBoundaryPresentations()
+            }
+            artifacts.directory.resolve("expected-pages.json").writeText(JSONArray(finalPages.map(::pageJson)).toString(2))
+            artifacts.directory.resolve("displayed-rows.tsv").writeText(displayedRows.report())
+            artifacts.directory.resolve("navigation-rows-NOT-DISPLAY-PROOF.tsv").writeText(navigationRows.report())
             verifyFrameTiming(startedAtNanos)
-            artifacts.screenshot(device, "ten-episode-final")
+            ViewerScreenshotEvidence(instrumentation, artifacts.directory)
+                .capture(activity, episode, "ten-episode-final")
+            harvestActivityEvidence(activity)
         } catch (failure: Throwable) {
-            violations += failure.message ?: failure.javaClass.simpleName
-            runCatching { artifacts.screenshot(device, "ten-episode-failure") }
+            recordFailure(failure)
+            runCatching { ViewerScreenshotEvidence(instrumentation, artifacts.directory)
+                .capture(activity, episode, "ten-episode-failure") }
         } finally {
+            artifacts.directory.resolve("collection.json").writeText(JSONObject()
+                .put("startedAtMillis", startedAtMillis).put("startedAtNanos", startedAtNanos)
+                .put("processPid", android.os.Process.myPid()).put("packageName", context.packageName)
+                .put("completedAtNanos", collectionEndAtNanos).put("collectionEndAtNanos", collectionEndAtNanos)
+                .put("refreshPeriodNanos", refreshPeriodNanos).put("requiredEpisodes", requiredEpisodes)
+                .put("mode", if (diagnosticMode) "DIAGNOSTIC_NO_CORPUS_CREDIT" else "QUALIFICATION")
+                .put("sampleKey", sampleKey).put("externalDisplayVerificationRequired", externalDisplay).toString(2))
+            artifacts.directory.resolve("timing-observations.json").writeText(timingObservations.toString(2))
             runCatching {
                 artifacts.directory.resolve("telemetry-timeline.txt")
                     .writeText(telemetryTimeline.joinToString(separator = "\n", postfix = "\n"))
@@ -93,42 +168,50 @@ internal class ViewerTenEpisodeAutoAppendHarness(
                 ViewerPresentationEvidenceArtifacts.write(
                     artifacts.directory,
                     presentationEvidence.sortedBy(NativePresentationEvidence::presentedNanos),
-                    gestureWindows.map {
-                        PresentationGestureWindow(it, TelemetryDirection.FORWARD)
-                    },
+                    directedGestures,
                 )
             }
-            runCatching { scenario.onActivity { windowFrameRecorder?.close() } }
+            runCatching { onMain { windowFrameRecorder?.close() } }.onFailure(::recordFailure)
             windowFrameRecorder = null
-            scenario.close()
+            runCatching { scenario?.close() }.onFailure(::recordFailure)
+            if (caughtFailures.isNotEmpty()) {
+                artifacts.directory.resolve("failure-stacktraces.txt").writeText(
+                    caughtFailures.mapIndexed { index, failure -> "Failure ${index + 1}:\n${failure.stackTraceToString()}" }
+                        .joinToString("\n\n"),
+                )
+            }
         }
-        check(violations.isEmpty()) {
-            "Ten-episode auto-append violations: ${violations.joinToString()}; " +
-                "evidence=${artifacts.directory.absolutePath}"
+        if (violations.isNotEmpty()) {
+            throw IllegalStateException(
+                "Ten-episode auto-append violations: ${violations.joinToString()}; evidence=${artifacts.directory.absolutePath}",
+                caughtFailures.firstOrNull(),
+            ).also { combined -> caughtFailures.drop(1).forEach(combined::addSuppressed) }
         }
     }
 
-    private fun injectForwardSwipe(bounds: Rect) {
+    private fun injectForwardSwipe(bounds: Rect) = injectSwipe(bounds, TelemetryDirection.FORWARD)
+
+    private fun injectSwipe(bounds: Rect, direction: TelemetryDirection) {
+        currentDirection = direction
+        requestedDirections += System.nanoTime() to direction
+        val start = if (direction == TelemetryDirection.FORWARD) 4 else 2
+        val end = if (direction == TelemetryDirection.FORWARD) 2 else 4
         val dispatched = device.swipe(
             bounds.centerX(),
-            bounds.top + bounds.height() * 5 / 6,
+            bounds.top + bounds.height() * start / 6,
             bounds.centerX(),
-            bounds.top + bounds.height() / 6,
+            bounds.top + bounds.height() * end / 6,
             SWIPE_STEPS,
         )
         if (!dispatched) violations += "Real forward gesture was rejected"
     }
 
     private fun ensureDeliveredGestureEvidence(
-        scenario: ActivityScenario<ViewerActivity>,
+        activity: ViewerActivity,
         bounds: Rect,
         expectedCount: Int,
     ) {
-        harvestActivityEvidence(scenario)
-        if (gestureWindows.size < expectedCount) {
-            injectForwardSwipe(bounds)
-            harvestActivityEvidence(scenario)
-        }
+        harvestActivityEvidence(activity)
         if (gestureWindows.size < expectedCount) {
             violations += "Only ${gestureWindows.size}/$expectedCount gestures reached the viewer"
         }
@@ -136,6 +219,11 @@ internal class ViewerTenEpisodeAutoAppendHarness(
 
     private fun validateManifestChain(current: ViewerTelemetrySnapshot) {
         val manifests = current.manifests
+        expectedEpisodes?.let { expected ->
+            if (manifests.take(requiredEpisodes).map { it.id } != expected.take(manifests.size)) {
+                violations += "Appended episodes differ from independently discovered chain"
+            }
+        }
         if (manifests.map { it.id }.toSet().size != manifests.size) {
             violations += "Duplicate episode manifest was appended"
         }
@@ -238,9 +326,12 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         finalEvidence: ViewerTelemetrySnapshot?,
         gestureCount: Int,
     ) {
-        if (observed.size != requiredEpisodes) {
-            violations += "Observed ${observed.size}/$requiredEpisodes consecutive episode boundaries " +
-                "after $gestureCount gestures; ${finalEvidence?.diagnosticSummary()}"
+        CorpusEpisodeOrderContract.violations(observed, expectedEpisodes, requiredEpisodes).forEach { violation ->
+            violations += if (violation.startsWith("Observed ") && violation.contains("consecutive episode boundaries")) {
+                "$violation after $gestureCount gestures; ${finalEvidence?.diagnosticSummary()}"
+            } else {
+                violation
+            }
         }
         if ((finalEvidence?.manifests?.map { it.id }?.distinct()?.size ?: 0) < requiredEpisodes) {
             violations += "Fewer than $requiredEpisodes distinct manifests were automatically appended"
@@ -257,9 +348,56 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         )
     }
 
+    private fun reachedLastEpisodeEnd(observed: List<EpisodeId>, current: ViewerTelemetrySnapshot): Boolean {
+        if (observed.isEmpty()) return false
+        val lastEpisode = expectedEpisodes?.lastOrNull() ?: observed.last()
+        val lastPage = current.manifests.firstOrNull { it.id == lastEpisode }?.pages?.lastOrNull()?.id
+            ?: return false
+        return EpisodeTraversalEnd.reached(lastPage, current.visiblePages)
+    }
+
+    private fun expectedPages(current: ViewerTelemetrySnapshot): List<PageId> = current.manifests
+        .filter { expectedEpisodes?.contains(it.id) ?: (current.manifests.indexOf(it) < requiredEpisodes) }
+        .flatMap { it.pages }.map { it.id }
+
+    private fun pastLastPage(current: ViewerTelemetrySnapshot): Boolean {
+        if (current.manifests.size < requiredEpisodes) return false
+        val last = expectedPages(current).lastOrNull() ?: return false
+        val ordinal = current.manifests.flatMap { it.pages }.indexOfFirst { it.id == last }
+        return current.anchorOrdinal >= ordinal
+    }
+
+    private fun gapDirection(current: ViewerTelemetrySnapshot?): TelemetryDirection {
+        current ?: return TelemetryDirection.FORWARD
+        val pages = expectedPages(current)
+        val missing = navigationRows.firstMissing(pages) ?: return TelemetryDirection.FORWARD
+        val targetOrdinal = current.manifests.flatMap { it.pages }.indexOfFirst { it.id == missing }
+        if (current.anchorOrdinal != targetOrdinal) return if (current.anchorOrdinal > targetOrdinal)
+            TelemetryDirection.REVERSE else TelemetryDirection.FORWARD
+        val visible = current.visiblePages.firstOrNull { it.pageId == missing }
+            ?: return TelemetryDirection.REVERSE
+        val height = navigationRows.sourceHeight(missing) ?: return TelemetryDirection.REVERSE
+        val target = navigationRows.firstMissingRow(missing).toDouble() / height * visible.pageHeightUnits
+        return if (visible.visibleOffsetInPageUnits.toDouble() > target) TelemetryDirection.REVERSE
+            else TelemetryDirection.FORWARD
+    }
+
+    private fun pageJson(page: PageId): JSONObject = JSONObject()
+        .put("sourceId", page.episodeId.seriesId.sourceId.value)
+        .put("seriesKey", page.episodeId.seriesId.remoteKey)
+        .put("episodeKey", page.episodeId.remoteKey).put("pageKey", page.remoteKey)
+
     private fun ViewerTelemetrySnapshot.diagnosticSummary(): String =
         "anchor=${anchor.pageId.episodeId.remoteKey}/${anchor.pageId.remoteKey} " +
             "offset=$scrollOffsetUnits/$contentHeightUnits manifests=${manifests.size} " +
+            "velocity=$velocityUnitsPerSecond lanes=$activeFetchCount/$networkConcurrency " +
+            "fetches=${activeFetchPageIds.joinToString { id ->
+                "${id.episodeId.remoteKey}/${id.remoteKey}"
+            }} decodes=$activeDecodeCount:${activeDecodePageIds.joinToString { id ->
+                "${id.episodeId.remoteKey}/${id.remoteKey}"
+            }} resident=${residentPageIds.joinToString { id ->
+                "${id.episodeId.remoteKey}/${id.remoteKey}"
+            }} " +
             "verified=${currentEpisodeProgress?.verifiedCount}/${currentEpisodeProgress?.pageCount} " +
             "appends=${episodeAppends.joinToString { append ->
                 "${append.fromEpisodeId.remoteKey}->${append.targetEpisodeId?.remoteKey}:" +
@@ -267,34 +405,33 @@ internal class ViewerTenEpisodeAutoAppendHarness(
             }}"
 
     private fun verifyFirstContent(
-        scenario: ActivityScenario<ViewerActivity>,
+        activity: ViewerActivity,
         startedAtMillis: Long,
     ) {
         val node = device.findObject(By.descStartsWith(FRAME_PREFIX))
         val timestamp = node?.contentDescription?.substringAfter(FRAME_PREFIX)?.toLongOrNull()
+        if (externalDisplay) {
+            artifacts.directory.resolve("first-content.txt").writeText(
+                "externalDisplayVerificationRequired=true\nstartedAtMillis=$startedAtMillis\n" +
+                    "firstReadableDiagnosticNanos=${presentationEvidence.firstOrNull { it.readableActualContent }?.presentedNanos}\n",
+            )
+            return
+        }
         if (timestamp == null) {
             violations += "No real image frame was presented"
             return
         }
         val elapsed = timestamp - startedAtMillis
-        val startup = startupTiming(scenario)
-        ViewerFirstContentPolicy.violation(
-            elapsed,
-            FIRST_CONTENT_LIMIT_MILLIS,
-            startup,
-        )?.let(violations::add)
+        val startup = startupTiming(activity)
+        recordTiming("first-content-ms", elapsed.toDouble(), FIRST_CONTENT_LIMIT_MILLIS.toDouble(), true)
         artifacts.directory.resolve("first-content.txt").writeText(
             "totalMillis=$elapsed\nlimitMillis=$FIRST_CONTENT_LIMIT_MILLIS\nstartup=$startup\n",
         )
     }
 
     private fun startupTiming(
-        scenario: ActivityScenario<ViewerActivity>,
-    ): ViewerStartupTiming? {
-        val result = AtomicReference<ViewerStartupTiming?>()
-        scenario.onActivity { activity -> result.set(activity.viewerStartupTimingSnapshot()) }
-        return result.get()
-    }
+        activity: ViewerActivity,
+    ): ViewerStartupTiming? = onMain { activity.viewerStartupTimingSnapshot() }
 
     private fun verifyBoundaryPresentations() {
         val timestamps = presentations.sorted()
@@ -326,6 +463,12 @@ internal class ViewerTenEpisodeAutoAppendHarness(
             packedMotionEvidence(),
             refreshPeriodNanos,
             windowFrameRecorder?.snapshot() ?: LongArray(0),
+            motionFrames.sortedBy(MotionEvidence::timestampNanos).map(MotionEvidence::appliedAtNanos).toLongArray(),
+            gestureWindows.map { window ->
+                requireNotNull(requestedDirections.lastOrNull { it.first <= window.first }) {
+                    "Observed gesture has no injected start timestamp"
+                }.first
+            }.toLongArray(),
         )
         artifacts.directory.resolve("frame-stats-summary.txt").writeText(
             "render=${stats.render}\n" +
@@ -333,22 +476,18 @@ internal class ViewerTenEpisodeAutoAppendHarness(
                 "motion=${stats.motion}\n" +
                 "surface=${stats.surface}\n",
         )
-        if ((stats.render.p95Nanos ?: Long.MAX_VALUE) >= FRAME_BUDGET_NANOS) {
-            violations += "Native render p95 was ${stats.render.p95Millis}ms"
-        }
-        if (stats.render.freezeCount != 0 || stats.gfx.freezeCount != 0 ||
-            stats.motion.freezeCount != 0 || stats.motion.responseFreezeCount != 0
-        ) {
-            violations += "App/native rendering froze during continuous scroll"
-        }
+        recordTiming("native-render-p95-ms", stats.render.p95Millis ?: Double.NaN, 16.0)
+        recordTiming("native-render-gap-ms", stats.render.maximumMillis ?: Double.NaN, 100.0)
+        if (stats.gfx.sampleCount > 0) recordTiming("window-frame-gap-ms", stats.gfx.maximumMillis ?: Double.NaN, 100.0)
+        recordTiming("motion-gap-ms", maxOf(stats.motion.maximumNanos ?: 0L,
+            stats.motion.maximumResponseNanos ?: 0L, stats.motion.maximumTailNanos ?: 0L) / 1_000_000.0, 100.0)
         if (stats.motion.coveredInteractionWindowCount < stats.motion.interactionWindowCount) {
             violations += "Motion frames missed a real gesture window"
         }
-        if (stats.motion.missedFrameRatio >= MAXIMUM_MISSED_FRAME_RATIO) {
-            violations += "Motion missed-frame ratio was ${stats.motion.missedFrameRatio}"
-        }
+        recordTiming("motion-missed-ratio", stats.motion.missedFrameRatio, MAXIMUM_MISSED_FRAME_RATIO)
+        if (externalDisplay) return // Host verifies actual surface timestamps, gaps and display latency.
         val surface = stats.surface
-        if (surface == null || surface.freezeCount != 0 || surface.responseFreezeCount != 0) {
+        if (surface == null || surface.freezeCount != 0 || surface.responseFreezeCount != 0 || surface.tailFreezeCount != 0) {
             violations += "Surface presentation stalled during continuous scroll"
         } else {
             if (surface.coveredInteractionWindowCount < surface.interactionWindowCount) {
@@ -360,41 +499,77 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         }
     }
 
-    private fun telemetry(scenario: ActivityScenario<ViewerActivity>): ViewerTelemetrySnapshot? {
-        val result = AtomicReference<ViewerTelemetrySnapshot?>()
-        scenario.onActivity { activity -> result.set(activity.viewerTelemetrySnapshot()) }
-        return result.get()
+    private fun recordTiming(gate: String, value: Double, limit: Double, inclusive: Boolean = false) {
+        val observation = TimingObservation(gate, value, limit, inclusive, sampleKey)
+        val decision = timingPolicy.evaluate(observation)
+        val pending = !decision.passed && (diagnosticMode ||
+            (externalDisplay && timingPolicy.canAwaitIndependentAttribution(observation)))
+        timingObservations.put(JSONObject().put("gate", gate).put("value", value.takeIf(Double::isFinite))
+            .put("limit", limit).put("inclusive", inclusive).put("sampleKey", sampleKey)
+            .put("withinGoal", decision.passed).put("requiresIndependentAttribution", pending)
+            .put("diagnosticOnly", diagnosticMode))
+        if (!decision.passed && !pending) violations += decision.reason
     }
 
-    private fun harvestActivityEvidence(scenario: ActivityScenario<ViewerActivity>) {
-        val evidence = activitySnapshot(scenario)
+    private fun telemetry(activity: ViewerActivity): ViewerTelemetrySnapshot? =
+        onMain { activity.viewerTelemetrySnapshot() }
+
+    private fun harvestActivityEvidence(activity: ViewerActivity) {
+        val evidence = activitySnapshot(activity)
         if (evidence.presentationDropped || evidence.motionDropped) {
             violations += "Evidence recorder overran before an incremental harvest"
         }
         val decoded = NativePresentationEvidencePacking.decode(evidence.presentationEvidence)
         presentationEvidence += decoded
-        // Use Android's FrameTimeline cadence exactly like ViewerUxTestHarness. Commit callback
-        // delivery time remains in presentationEvidence for semantic/latency verification, but its
-        // main-thread callback jitter is not an actual missed display slot.
-        presentations += decoded.mapNotNull { sample ->
-            sample.expectedPresentationTimeNanos.takeIf {
-                sample.frameTimelineVsyncId >= 0L && it > 0L
-            }
-        }
-        decoded.filter { it.presentedNanos > 0L && it.renderLatencyNanos >= 0L }.forEach {
-            renderEvidence += RenderEvidence(it.presentedNanos, it.renderLatencyNanos)
+        // The dedicated Surface renderer reports after its buffer has been queued. Unlike the old
+        // View commit callback this timestamp is independent of main-thread callback jitter and
+        // retains real buffer backpressure, so it is the authoritative presentation cadence.
+        presentations += decoded.mapNotNull { sample -> sample.presentedNanos.takeIf { it > 0L } }
+        decoded.filter { it.submittedAtNanos > 0L && it.renderLatencyNanos >= 0L }.forEach {
+            renderEvidence += RenderEvidence(it.submittedAtNanos + it.renderLatencyNanos, it.renderLatencyNanos)
         }
         var motionIndex = 0
         while (motionIndex + 1 < evidence.motionFrames.size) {
             val sequence = evidence.motionFrames[motionIndex]
             val timestamp = evidence.motionFrames[motionIndex + 1]
+            val appliedAt = evidence.motionApplications[motionIndex / 2]
             if (sequence > 0L && timestamp > 0L) {
-                motionFrames += MotionEvidence(sequence, timestamp)
+                motionFrames += MotionEvidence(sequence, timestamp, appliedAt)
             }
             motionIndex += 2
         }
-        gestureWindows += evidence.gestureWindows.filter { it.first > 0L && it.last >= it.first }
+        evidence.gestureWindows.filter { it.first > 0L && it.last >= it.first }.forEach { window ->
+            if (gestureWindows.add(window)) directedGestures += PresentationGestureWindow(window,
+                requestedDirections.lastOrNull { it.first <= window.first }?.second ?: TelemetryDirection.FORWARD)
+        }
+        harvestRegions(activity)
+        collectionEndAtNanos = System.nanoTime()
         refreshPeriodNanos = evidence.refreshPeriodNanos
+    }
+
+    private fun harvestRegions(activity: ViewerActivity) {
+        val batch = onMain { activity.presentedRegionsSince(regionCursor) }
+        regionCursor = batch.nextSequence
+        if (batch.dropped) violations += "Displayed image region recorder overran before harvest"
+        if (batch.regions.isEmpty()) return
+        val lines = batch.regions.joinToString("\n", postfix = "\n") { region ->
+            val actual = region.imageIdentityVerified && region.presentedNanos > 0L &&
+                region.timestampKind == PresentationTimestampKind.DISPLAY_PRESENT
+            displayedRows.record(region.pageId, region.sourceTopRow, region.sourceBottomRowExclusive, region.sourceHeightRows, actual)
+            val mayHaveDisplayed = region.bufferFrameId > 0L && region.timestampKind !in NON_DISPLAY_TERMINALS
+            navigationRows.record(region.pageId, region.sourceTopRow, region.sourceBottomRowExclusive, region.sourceHeightRows,
+                actual || (externalDisplay && region.imageIdentityVerified && mayHaveDisplayed))
+            pageJson(region.pageId).put("rendererIdentity", region.rendererIdentity).put("token", region.token)
+                .put("generation", region.generation).put("bufferFrameId", region.bufferFrameId)
+                .put("submittedAtNanos", region.submittedAtNanos).put("renderLatencyNanos", region.renderLatencyNanos)
+                .put("screenTopPx", region.screenTopPx).put("screenBottomPx", region.screenBottomPx)
+                .put("viewportHeightPx", region.viewportHeightPx).put("viewportWidthPx", region.viewportWidthPx)
+                .put("geometryRevision", region.geometryRevision).put("userInputRevision", region.userInputRevision)
+                .put("sourceTopRow", region.sourceTopRow).put("sourceBottomRowExclusive", region.sourceBottomRowExclusive)
+                .put("sourceHeightRows", region.sourceHeightRows).put("presentedNanos", region.presentedNanos)
+                .put("timestampKind", region.timestampKind.name).put("imageIdentityVerified", region.imageIdentityVerified).toString()
+        }
+        artifacts.directory.resolve("presented-regions.jsonl").appendText(lines)
     }
 
     private fun packedRenderEvidence(): LongArray {
@@ -417,23 +592,32 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         }
     }
 
-    private fun activitySnapshot(scenario: ActivityScenario<ViewerActivity>): ActivityEvidence {
-        val result = AtomicReference<ActivityEvidence>()
-        scenario.onActivity { activity ->
-            val presentations = activity.presentationEvidenceSince(presentationCursor)
-            val motion = activity.motionFramesSince(motionCursor)
-            presentationCursor = presentations.nextSequence
-            motionCursor = motion.nextSequence
-            result.set(ActivityEvidence(
-                presentationEvidence = presentations.packed,
-                motionFrames = motion.packed,
-                gestureWindows = activity.gestureWindowsSnapshot(),
-                refreshPeriodNanos = activity.presentationRefreshPeriodNanos(),
-                presentationDropped = presentations.dropped,
-                motionDropped = motion.dropped,
-            ))
-        }
-        return requireNotNull(result.get())
+    private fun activitySnapshot(activity: ViewerActivity): ActivityEvidence = onMain {
+        val presentations = activity.presentationEvidenceSince(presentationCursor)
+        val motion = activity.motionFramesSince(motionCursor)
+        presentationCursor = presentations.nextSequence
+        motionCursor = motion.nextSequence
+        ActivityEvidence(
+            presentationEvidence = presentations.packed,
+            motionFrames = motion.packed,
+            motionApplications = motion.applicationTimestamps,
+            gestureWindows = activity.gestureWindowsSnapshot(),
+            refreshPeriodNanos = activity.presentationRefreshPeriodNanos(),
+            presentationDropped = presentations.dropped,
+            motionDropped = motion.dropped,
+        )
+    }
+
+    private fun <T> onMain(block: () -> T): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        var result: Result<T>? = null
+        instrumentation.runOnMainSync { result = runCatching(block) }
+        return requireNotNull(result).getOrThrow()
+    }
+
+    private fun recordFailure(failure: Throwable) {
+        caughtFailures += failure
+        violations += failure.message ?: failure.javaClass.simpleName
     }
 
     private fun surfaceBounds(): Rect {
@@ -443,9 +627,11 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         return Rect(node.visibleBounds)
     }
 
-    private fun checkHealth() {
-        if (device.hasObject(By.desc(FAILURE_DESCRIPTION))) violations += "Viewer reported a source failure"
-        if (ANR_SELECTORS.any(device::hasObject)) violations += "System reported an ANR or crash"
+    private fun checkHealth(activity: ViewerActivity) {
+        onMain { activity.viewerFailureSnapshot() }?.let { throw it }
+        if (device.hasObject(By.pkg("android").res(ANDROID_FAILURE_RESOURCE))) {
+            violations += "System reported an ANR or crash"
+        }
     }
 
     private fun launchIntent(episode: LiveEpisode): Intent =
@@ -465,6 +651,7 @@ internal class ViewerTenEpisodeAutoAppendHarness(
     private data class ActivityEvidence(
         val presentationEvidence: LongArray,
         val motionFrames: LongArray,
+        val motionApplications: LongArray,
         val gestureWindows: List<LongRange>,
         val refreshPeriodNanos: Long,
         val presentationDropped: Boolean,
@@ -479,12 +666,12 @@ internal class ViewerTenEpisodeAutoAppendHarness(
     private data class MotionEvidence(
         val sequence: Long,
         val timestampNanos: Long,
+        val appliedAtNanos: Long,
     )
 
     private companion object {
         const val SURFACE_DESCRIPTION = "viewer-surface"
         const val FRAME_PREFIX = "viewer-frame-presented:"
-        const val FAILURE_DESCRIPTION = "viewer-failure"
         const val SURFACE_TIMEOUT_MILLIS = 5_000L
         const val FIRST_CONTENT_LIMIT_MILLIS = 4_000L
         const val RUN_TIMEOUT_MILLIS = 10L * 60L * 1_000L
@@ -494,13 +681,24 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         const val FRAME_BUDGET_NANOS = 16_000_000L
         const val FREEZE_NANOS = 100_000_000L
         const val MAXIMUM_MISSED_FRAME_RATIO = 0.01
-        val ANR_SELECTORS = listOf(
-            By.res("android", "aerr_wait"),
-            By.res("android", "aerr_close"),
-            By.textContains("isn't responding"),
-            By.textContains("응답하지 않음"),
-            By.textContains("keeps stopping"),
-            By.textContains("계속 중단됨"),
-        )
+        val NON_DISPLAY_TERMINALS = setOf(PresentationTimestampKind.CANCELLED,
+            PresentationTimestampKind.DROPPED, PresentationTimestampKind.CONTEXT_LOST)
+        val ANDROID_FAILURE_RESOURCE = java.util.regex.Pattern.compile("android:id/aerr_(wait|close)")
+    }
+}
+
+/** The observed transition trace is authoritative; manifests cannot stand in for missing transitions. */
+internal object CorpusEpisodeOrderContract {
+    fun violations(
+        observed: List<EpisodeId>,
+        expected: List<EpisodeId>?,
+        requiredEpisodes: Int,
+    ): List<String> = buildList {
+        if (observed.size != requiredEpisodes) {
+            add("Observed ${observed.size}/$requiredEpisodes consecutive episode boundaries")
+        }
+        if (expected != null && observed != expected) {
+            add("Observed episode order differs from independently discovered chain")
+        }
     }
 }

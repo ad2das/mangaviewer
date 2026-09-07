@@ -24,6 +24,7 @@ android {
 
 dependencies {
     api project(':source-api')
+    implementation project(':engine-api')
     implementation 'org.jsoup:jsoup:1.15.3'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
     implementation 'androidx.webkit:webkit:1.16.0'

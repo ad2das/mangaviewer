@@ -424,11 +424,9 @@ internal class LibraryViewModel(
     }
 
     private fun cancelGenres() = genreJob?.cancel().also { genreJob = null }
-
     private fun update(transform: (LibraryState) -> LibraryState) {
         mutableState.value = transform(mutableState.value)
     }
-
 }
 
 private suspend fun homeCatalogs(source: ContentSource, kind: SeriesKind): HomeContent.Ready =

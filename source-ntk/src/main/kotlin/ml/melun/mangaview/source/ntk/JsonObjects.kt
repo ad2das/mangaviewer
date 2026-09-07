@@ -63,10 +63,28 @@ internal object JsonObjects {
         }
     }
 
-    fun normalizeEscapes(text: String): String = text
-        .replace("\\u003c", "<", ignoreCase = true)
-        .replace("\\u003e", ">", ignoreCase = true)
-        .replace("\\u0026", "&", ignoreCase = true)
-        .replace("\\/", "/")
-        .replace("\\\"", "\"")
+    fun normalizeEscapes(text: String): String {
+        var slash = text.indexOf('\\')
+        if (slash < 0) return text
+        return buildString(text.length) {
+            var copied = 0
+            while (slash >= 0) {
+                val escape = ESCAPES.firstOrNull { (encoded, _) ->
+                    text.regionMatches(slash, encoded, 0, encoded.length, ignoreCase = true)
+                }
+                val next = if (escape == null) slash + 1 else {
+                    append(text, copied, slash)
+                    append(escape.second)
+                    copied = slash + escape.first.length
+                    copied
+                }
+                slash = text.indexOf('\\', next)
+            }
+            append(text, copied, text.length)
+        }
+    }
+
+    private val ESCAPES = listOf(
+        "\\u003c" to "<", "\\u003e" to ">", "\\u0026" to "&", "\\/" to "/", "\\\"" to "\"",
+    )
 }

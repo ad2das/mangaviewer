@@ -23,6 +23,7 @@ internal class ViewerWindowFrameRecorder(
         synchronized(lock) {
             dropped += droppedSinceLast.coerceAtLeast(0)
             if (intended <= 0L || duration < 0L) return@synchronized
+            if (count == MAX_SAMPLES) dropped += 1
             intendedVsync[writeIndex] = intended
             totalDuration[writeIndex] = duration
             writeIndex = (writeIndex + 1) % MAX_SAMPLES

@@ -39,22 +39,11 @@ internal class NtkCatalogService(
     suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> {
         val page = query.cursor?.toIntOrNull()?.coerceAtLeast(1) ?: 1
         val encoded = URLEncoder.encode(query.text.trim(), Charsets.UTF_8.name())
-        if (query.field == SearchField.AUTHOR) return authorSearch(query, page, encoded)
-        val path = "/api/works?keyword=$encoded&page=$page&pageSize=$searchPageSize&withTotal=1"
-        val api = attempt { parser.searchApi(documents.text(path, json = true), sourceId) }
-        if (api?.recognized == true) {
-            val items = filterKind(api.series, query.kind)
-            val hasNext = api.total?.let { page * searchPageSize < it }
-                ?: (api.series.size == searchPageSize)
-            return SourcePage(items, if (hasNext) (page + 1).toString() else null)
-        }
-        val html = parser.searchHtml(documents.text("/search?q=$encoded&field=title&match=contains", false), sourceId)
-        return SourcePage(filterKind(html, query.kind))
-    }
-
-    private suspend fun authorSearch(query: SourceSearchQuery, page: Int, encoded: String): SourcePage<SourceSeries> {
+        // Follow the provider's actual search form. /api/works ignores keyword and
+        // returns its general catalog, so it cannot establish search results.
         if (page > 1) return SourcePage(emptyList())
-        val path = "/search?q=$encoded&field=author&match=contains"
+        val field = if (query.field == SearchField.AUTHOR) "author" else "title"
+        val path = "/search?q=$encoded&field=$field&match=contains"
         val items = parser.searchHtml(documents.text(path, false), sourceId)
         return SourcePage(filterKind(items, query.kind))
     }
@@ -145,6 +134,16 @@ internal class NtkCatalogService(
             previous = records.getOrNull(index + 1)?.episode?.id,
             next = records.getOrNull(index - 1)?.episode?.id,
         )
+    }
+
+    suspend fun knownAdjacent(episodeId: EpisodeId): AdjacentEpisodes? {
+        val records = mutex.withLock { catalogs[episodeId.seriesId] } ?: return null
+        return adjacent(records, episodeId)
+    }
+
+    suspend fun knownForward(episodeId: EpisodeId, limit: Int): List<EpisodeId> {
+        val records = mutex.withLock { catalogs[episodeId.seriesId] } ?: return emptyList()
+        return ntkForwardEpisodeIds(records.map(NtkEpisodeRecord::episode), episodeId, limit)
     }
 
     fun title(records: List<NtkEpisodeRecord>, episodeId: EpisodeId): String =

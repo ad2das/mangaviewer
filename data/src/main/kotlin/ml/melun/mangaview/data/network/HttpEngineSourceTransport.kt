@@ -9,6 +9,7 @@ import java.io.Closeable
 import java.io.IOException
 import java.net.URI
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
@@ -30,11 +31,15 @@ import ml.melun.mangaview.source.SourceTransport
 class HttpEngineSourceTransport(
     context: Context,
     private val userAgent: String,
+    private val protocolAlternatesEnabled: Boolean = true,
 ) : SourceTransport, Closeable {
     private val appContext = context.applicationContext
     private val callbackExecutor: ExecutorService = Executors.newFixedThreadPool(8) { runnable ->
         Thread(
             {
+                // Response callbacks can arrive on all active image lanes at once. They only
+                // move bytes into the bounded pull bridge, so they must yield CPU to input,
+                // RenderThread and SurfaceFlinger just like the file and decode workers do.
                 Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
                 runnable.run()
             },
@@ -50,10 +55,11 @@ class HttpEngineSourceTransport(
     private val engineLock = Any()
     private val engines = mutableMapOf<String, EngineEntry>()
     private val engineCreations = mutableMapOf<String, CompletableFuture<EngineEntry>>()
-    private val warmedOrigins = linkedSetOf<String>()
+    private val warmedEngines = linkedSetOf<String>()
     private var engineUseSequence = 0L
     private val exchanges = TransportResourceOwner<HttpEngineExchange>()
     private val bodies = TransportResourceOwner<HttpEngineBodyPageStream>()
+    private val bodyReadScheduler = HttpEngineBodyReadScheduler(MAXIMUM_SIMULTANEOUS_BODY_READS)
     private val closed = AtomicBoolean(false)
     private val resourcesClosed = AtomicBoolean(false)
 
@@ -65,29 +71,45 @@ class HttpEngineSourceTransport(
         }
     }
 
+    /** Uses the alternate protocol only when the source explicitly permits protocol racing. */
+    override suspend fun executeOnFreshRoute(request: SourceRequest): SourceResponse =
+        execute(alternateProtocolRequest(request))
+
+    /** HttpEngine owns address selection; a source without protocol racing stays on one pool. */
+    override suspend fun executeOnAlternateRoute(request: SourceRequest): SourceResponse =
+        execute(alternateProtocolRequest(request))
+
+    override fun routeParallelism(): Int = if (protocolAlternatesEnabled) {
+        HTTP_ENGINE_ROUTE_POOLS
+    } else {
+        1
+    }
+
+    override fun supportsProtocolSelection(): Boolean = protocolAlternatesEnabled
+
     override fun warmConnections(urls: List<String>, preferQuic: Boolean) {
         if (closed.get()) return
-        urls.distinctBy { url -> engineKey(url, preferQuic) }.forEach { url ->
-            val key = engineKey(url, preferQuic)
-            val schedule = synchronized(engineLock) {
-                if (closed.get() || key in warmedOrigins) return@synchronized false
-                warmedOrigins += key
-                engines[key] == null && engineCreations[key] == null
-            }
-            if (!schedule) return@forEach
-            runCatching {
-                callbackExecutor.execute {
-                    runCatching { acquireEngine(url, preferQuic) }
-                        .onSuccess { lease -> releaseEngine(lease.key) }
-                        .onFailure {
-                            synchronized(engineLock) { warmedOrigins.remove(key) }
-                        }
-                }
-            }.onFailure {
-                synchronized(engineLock) { warmedOrigins.remove(key) }
-            }
+        val effectivePreferQuic = preferQuic && protocolAlternatesEnabled
+        val endpoints = urls.map(::engineEndpoint).distinctBy(EngineEndpoint::originKey)
+        if (endpoints.isEmpty()) return
+        val key = protocolEngineKey(effectivePreferQuic)
+        val schedule = synchronized(engineLock) {
+            if (closed.get() || key in warmedEngines) return@synchronized false
+            warmedEngines += key
+            engines[key] == null && engineCreations[key] == null
         }
+        if (!schedule) return
+        runCatching {
+            callbackExecutor.execute {
+                runCatching { acquireEngine(key, endpoints, effectivePreferQuic) }
+                    .onSuccess { lease -> releaseEngine(lease.key) }
+                    .onFailure { synchronized(engineLock) { warmedEngines.remove(key) } }
+            }
+        }.onFailure { synchronized(engineLock) { warmedEngines.remove(key) } }
     }
+
+    private fun alternateProtocolRequest(request: SourceRequest): SourceRequest =
+        if (protocolAlternatesEnabled) request.copy(preferQuic = !request.preferQuic) else request
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -102,12 +124,16 @@ class HttpEngineSourceTransport(
         continuation: CancellableContinuation<SourceResponse>,
         startedAtNanos: Long,
     ) {
+        val exchangeExecutor = SerialExecutor(callbackExecutor)
         val exchange = runCatching {
             HttpEngineExchange(
                 continuation = continuation,
                 finished = ::exchangeFinished,
                 registerBody = bodies::register,
                 bodyFinished = ::bodyFinished,
+                callbackExecutor = exchangeExecutor,
+                bodyReadScheduler = bodyReadScheduler,
+                initialPriority = sourceRequest.priority,
             )
         }.getOrElse {
             continuation.resumeWithException(it)
@@ -118,7 +144,7 @@ class HttpEngineSourceTransport(
             return
         }
         val request = runCatching {
-            requestBuilder(sourceRequest, exchange).build()
+            requestBuilder(sourceRequest, exchangeExecutor, exchange).build()
         }.getOrElse {
             exchange.abort(it)
             return
@@ -154,13 +180,14 @@ class HttpEngineSourceTransport(
 
     private fun requestBuilder(
         request: SourceRequest,
+        executor: Executor,
         callback: HttpEngineExchange,
     ): UrlRequest.Builder {
         val lease = acquireEngine(request.url, request.preferQuic)
         callback.attachEngine(lease.key)
         val builder = lease.engine.newUrlRequestBuilder(
             request.url,
-            callbackExecutor,
+            executor,
             callback,
         ).setHttpMethod(request.method.name)
             .setCacheDisabled(true)
@@ -183,10 +210,15 @@ class HttpEngineSourceTransport(
     }
 
     private fun acquireEngine(url: String, preferQuic: Boolean): EngineLease {
-        val uri = URI(url)
-        val host = requireNotNull(uri.host) { "HTTP engine URL has no host" }.lowercase()
-        val port = if (uri.port > 0) uri.port else if (uri.scheme == "https") 443 else 80
-        val key = engineKey(uri, host, port, preferQuic)
+        val endpoint = engineEndpoint(url)
+        return acquireEngine(protocolEngineKey(preferQuic), listOf(endpoint), preferQuic)
+    }
+
+    private fun acquireEngine(
+        key: String,
+        endpoints: List<EngineEndpoint>,
+        preferQuic: Boolean,
+    ): EngineLease {
         val acquisition = synchronized(engineLock) {
             check(!closed.get()) { "HTTP engine transport is closed" }
             engines[key]?.let { entry ->
@@ -200,7 +232,7 @@ class HttpEngineSourceTransport(
             EngineAcquisition(future, true)
         }
         if (acquisition.leader) {
-            createEngineFlight(key, uri.scheme, host, port, preferQuic, acquisition.future)
+            createEngineFlight(key, endpoints, preferQuic, acquisition.future)
         }
         val entry = awaitEngine(acquisition.future)
         return synchronized(engineLock) {
@@ -214,13 +246,11 @@ class HttpEngineSourceTransport(
 
     private fun createEngineFlight(
         key: String,
-        scheme: String?,
-        host: String,
-        port: Int,
+        endpoints: List<EngineEndpoint>,
         preferQuic: Boolean,
         future: CompletableFuture<EngineEntry>,
     ) {
-        val result = runCatching { createEngine(scheme, host, port, preferQuic) }
+        val result = runCatching { createEngine(endpoints, preferQuic) }
         synchronized(engineLock) {
             engineCreations.remove(key, future)
             result.onSuccess { entry ->
@@ -243,9 +273,7 @@ class HttpEngineSourceTransport(
     }
 
     private fun createEngine(
-        scheme: String?,
-        host: String,
-        port: Int,
+        endpoints: List<EngineEndpoint>,
         preferQuic: Boolean,
     ): EngineEntry {
         val builder = HttpEngine.Builder(appContext)
@@ -253,7 +281,11 @@ class HttpEngineSourceTransport(
             .setEnableQuic(preferQuic)
             .setEnableBrotli(true)
             .setUserAgent(userAgent)
-        if (scheme == "https" && preferQuic) builder.addQuicHint(host, port, port)
+        if (preferQuic) {
+            endpoints.filter { it.scheme == "https" }.forEach { endpoint ->
+                builder.addQuicHint(endpoint.host, endpoint.port, endpoint.port)
+            }
+        }
         return EngineEntry(builder.build())
     }
 
@@ -271,7 +303,7 @@ class HttpEngineSourceTransport(
             val victim = engines.entries.filter { it.value.inFlight == 0 }
                 .minByOrNull { it.value.lastUsed } ?: return
             engines.remove(victim.key)
-            warmedOrigins.remove(victim.key)
+            warmedEngines.remove(victim.key)
             runCatching { victim.value.engine.shutdown() }
         }
     }
@@ -299,7 +331,7 @@ class HttpEngineSourceTransport(
         synchronized(engineLock) {
             engines.values.forEach { entry -> runCatching { entry.engine.shutdown() } }
             engines.clear()
-            warmedOrigins.clear()
+            warmedEngines.clear()
         }
         callbackExecutor.shutdown()
         timeoutExecutor.shutdown()
@@ -318,25 +350,78 @@ class HttpEngineSourceTransport(
         var lastUsed: Long = 0L,
     )
 
+    internal data class EngineEndpoint(
+        val scheme: String,
+        val host: String,
+        val port: Int,
+    ) {
+        val originKey: String = "$scheme:$host:$port"
+    }
+
     private companion object {
-        const val MAX_ENGINES = 8
+        const val MAX_ENGINES = 2
+        const val HTTP_ENGINE_ROUTE_POOLS = 2
+        const val MAXIMUM_SIMULTANEOUS_BODY_READS = 3
+    }
+}
+
+/** Serializes one exchange's callbacks and deferred buffer actions on the shared pool. */
+internal class SerialExecutor(private val delegate: Executor) : Executor {
+    private val lock = Any()
+    private val queue = ArrayDeque<Runnable>()
+    private var running = false
+
+    override fun execute(command: Runnable) {
+        val launch = synchronized(lock) {
+            queue.addLast(command)
+            if (running) false else true.also { running = true }
+        }
+        if (launch) launchNext()
+    }
+
+    private fun launchNext() {
+        val next = synchronized(lock) {
+            if (queue.isEmpty()) {
+                running = false
+                return
+            }
+            queue.removeFirst()
+        }
+        try {
+            delegate.execute {
+                try {
+                    next.run()
+                } finally {
+                    launchNext()
+                }
+            }
+        } catch (failure: Throwable) {
+            synchronized(lock) { running = false }
+            throw failure
+        }
     }
 }
 
 @RequiresApi(34)
 internal fun httpEnginePriority(priority: PageFetchPriority): Int = when (priority) {
+    PageFetchPriority.FOCUS -> UrlRequest.REQUEST_PRIORITY_HIGHEST
     PageFetchPriority.VISIBLE -> UrlRequest.REQUEST_PRIORITY_HIGHEST
+    PageFetchPriority.IMMINENT_FORWARD -> UrlRequest.REQUEST_PRIORITY_HIGHEST
     PageFetchPriority.FORWARD -> UrlRequest.REQUEST_PRIORITY_MEDIUM
     PageFetchPriority.NORMAL -> UrlRequest.REQUEST_PRIORITY_LOW
+    PageFetchPriority.DISTANT_FORWARD -> UrlRequest.REQUEST_PRIORITY_LOW
+    PageFetchPriority.ADJACENT_FORWARD -> UrlRequest.REQUEST_PRIORITY_LOWEST
     PageFetchPriority.BACKGROUND -> UrlRequest.REQUEST_PRIORITY_LOWEST
 }
 
-private fun engineKey(url: String, preferQuic: Boolean): String {
+@RequiresApi(34)
+private fun engineEndpoint(url: String): HttpEngineSourceTransport.EngineEndpoint {
     val uri = URI(url)
+    val scheme = requireNotNull(uri.scheme) { "HTTP engine URL has no scheme" }.lowercase()
     val host = requireNotNull(uri.host) { "HTTP engine URL has no host" }.lowercase()
-    val port = if (uri.port > 0) uri.port else if (uri.scheme == "https") 443 else 80
-    return engineKey(uri, host, port, preferQuic)
+    val port = if (uri.port > 0) uri.port else if (scheme == "https") 443 else 80
+    return HttpEngineSourceTransport.EngineEndpoint(scheme, host, port)
 }
 
-private fun engineKey(uri: URI, host: String, port: Int, preferQuic: Boolean): String =
-    "${uri.scheme}:$host:$port:${if (preferQuic) "quic" else "http2"}"
+private fun protocolEngineKey(preferQuic: Boolean): String =
+    if (preferQuic) "shared-protocol:quic" else "shared-protocol:http2"

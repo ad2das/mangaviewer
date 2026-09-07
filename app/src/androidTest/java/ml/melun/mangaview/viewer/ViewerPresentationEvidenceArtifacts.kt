@@ -12,14 +12,15 @@ internal object ViewerPresentationEvidenceArtifacts {
         writeText(buildString {
             appendLine(
                 "kind\tindex\tdirection\twindowStart\twindowEnd\trenderer\ttoken\t" +
-                    "generation\tpresentedNanos\trenderLatencyNanos\tscrollOffsetUnits\t" +
+                    "generation\tpresentedNanos\tsubmittedAtNanos\tframeTimelineVsyncId\t" +
+                    "expectedPresentationTimeNanos\trenderLatencyNanos\tscrollOffsetUnits\t" +
                     "viewportHeightUnits\tanchorOrdinal\tanchorOffsetUnits\treadableActual\t" +
-                    "fullVisual\tfullActual",
+                    "fullVisual\tfullActual\ttimestampKind\tbufferFrameId\tgeometryRevision\tuserInputRevision\tscrollCause",
             )
             gestures.forEachIndexed { index, gesture ->
                 append("gesture\t").append(index).append('\t').append(gesture.direction)
                     .append('\t').append(gesture.range.first).append('\t').append(gesture.range.last)
-                    .appendLine("\t\t\t\t\t\t\t\t\t\t\t")
+                    .appendLine("\t\t\t\t\t\t\t\t\t\t\t\t\t\t")
             }
             evidence.forEach { sample ->
                 val gestureIndex = gestures.indexOfFirst { sample.presentedNanos in it.range }
@@ -30,12 +31,18 @@ internal object ViewerPresentationEvidenceArtifacts {
                     .append(gesture?.range?.last ?: 0L).append('\t')
                     .append(sample.rendererIdentity).append('\t').append(sample.token).append('\t')
                     .append(sample.generation).append('\t').append(sample.presentedNanos).append('\t')
+                    .append(sample.submittedAtNanos).append('\t')
+                    .append(sample.frameTimelineVsyncId).append('\t')
+                    .append(sample.expectedPresentationTimeNanos).append('\t')
                     .append(sample.renderLatencyNanos).append('\t').append(sample.scrollOffsetUnits)
                     .append('\t').append(sample.viewportHeightUnits).append('\t')
                     .append(sample.anchorOrdinal).append('\t').append(sample.anchorOffsetUnits)
                     .append('\t').append(sample.readableActualContent).append('\t')
                     .append(sample.fullVisualCoverage).append('\t')
-                    .append(sample.fullActualCoverage).appendLine()
+                    .append(sample.fullActualCoverage).append('\t')
+                    .append(sample.timestampKind).append('\t').append(sample.bufferFrameId)
+                    .append('\t').append(sample.geometryRevision).append('\t').append(sample.userInputRevision)
+                    .append('\t').append(sample.scrollCause?.name ?: "UNKNOWN").appendLine()
             }
         })
     }

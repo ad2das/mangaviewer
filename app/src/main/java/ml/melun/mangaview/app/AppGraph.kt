@@ -11,9 +11,11 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import ml.melun.mangaview.core.ReadingPosition
+import ml.melun.mangaview.content.RawPagePort
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.data.PageRepository
 import ml.melun.mangaview.data.cache.RawPageStore
+import ml.melun.mangaview.data.cache.CompleteEpisodeSnapshotStore
 import ml.melun.mangaview.data.db.DeferredViewerDatabase
 import ml.melun.mangaview.data.library.UserLibraryRepository
 import ml.melun.mangaview.data.network.OkHttpTransportFactory
@@ -23,23 +25,33 @@ import ml.melun.mangaview.data.offline.OfflineEpisodeStore
 import ml.melun.mangaview.data.settings.ViewerSettingsStoreFactory
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.SourceTransport
+import ml.melun.mangaview.source.ObservedSourceTransport
+import ml.melun.mangaview.source.SourceExchangeObserver
+import ml.melun.mangaview.source.SourceHttpMethod
+import ml.melun.mangaview.source.SourceRequest
+import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.ntk.NtkConfig
 import ml.melun.mangaview.source.ntk.NtkContentSource
-import ml.melun.mangaview.source.ntk.NtkAccessGatewayPool
+import ml.melun.mangaview.source.ntk.NtkBrowserService
+import ml.melun.mangaview.source.ntk.NtkBrowserIdentity
 import ml.melun.mangaview.source.ntk.NtkWebViewAccessGateway
 import ml.melun.mangaview.source.wfwf.WfwfConfig
 import ml.melun.mangaview.source.wfwf.WfwfContentSource
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
+import ml.melun.mangaview.viewer.runtime.PipelineRawPagePort
+import ml.melun.mangaview.viewer.runtime.ViewerCachedResume
 import ml.melun.mangaview.ui.library.SeriesArtworkLoader
 
 internal data class ViewerDependencies(
     val source: ContentSource,
     val repository: PageRepository,
+    val rawPages: RawPagePort,
     val sourceDispatcher: CoroutineDispatcher,
     val ioDispatcher: CoroutineDispatcher,
     val loadPosition: suspend () -> ReadingPosition?,
     val persistPosition: (ReadingPosition) -> Unit,
     val saveBookmark: (ReadingPosition) -> Unit,
+    val cachedResume: ViewerCachedResume,
 )
 
 internal class AppGraph(
@@ -49,27 +61,32 @@ internal class AppGraph(
     private val ioDispatcher: CoroutineDispatcher,
 ) : Closeable {
     private val appContext = context.applicationContext
+    @Volatile var networkEvidenceObserver: SourceExchangeObserver? = null
     val offlineStore = OfflineEpisodeStore(
         File(appContext.applicationInfo.dataDir, "app_offline_episodes_v2"),
         ioDispatcher,
     )
     private val database = DeferredViewerDatabase(appContext, ioDispatcher)
     private val transportFactory = OkHttpTransportFactory(ioDispatcher)
-    // ACK work is deliberately serialized through one resident browser. Two detached WebViews
-    // still share Chromium's UI/renderer resources and caused the adjacent episode to steal
-    // frames from the visible reader. Reusing one warm session is both faster after the first
-    // challenge and gives the current episode an enforceable priority boundary.
-    private val ntkBrowserGateways = listOf(NtkWebViewAccessGateway(appContext, userAgent()))
-    private val ntkGateway = NtkAccessGatewayPool(ntkBrowserGateways)
+    private val ntkBrowserIdentity = NtkBrowserIdentity.forDevice(appContext, "primary")
+    private val ntkGateway = NtkWebViewAccessGateway(
+        appContext,
+        userAgent(),
+        ntkBrowserIdentity,
+        NtkBrowserService::class.java,
+    )
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
+    private val wfwfSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createWfwfSource)
     val sources = SourceRegistry(
         registrations = listOf(
             SourceRegistration(NTK_ID, "NTK") {
-                ntkBrowserGateways.forEach(NtkWebViewAccessGateway::warm)
-                OfflineContentSource(ntkSource.value.also { it.start() }, offlineStore)
+                // Constructing the selected source is cheap. Actual browser/transport startup
+                // is deferred until an operation needs it, so a complete cached resume stays
+                // independent of provider work.
+                OfflineContentSource(ntkSource.value, offlineStore)
             },
             SourceRegistration(WFWF_ID, "WFWF") {
-                OfflineContentSource(createWfwfSource(), offlineStore)
+                OfflineContentSource(wfwfSource.value, offlineStore)
             },
         ),
     )
@@ -82,6 +99,9 @@ internal class AppGraph(
         ioDispatcher = ioDispatcher,
     )
     val repository = PageRepository(applicationScope, sources::require, pageStore, offlineStore)
+    private val resumeSnapshots = CompleteEpisodeSnapshotStore(
+        File(appContext.applicationInfo.dataDir, "app_complete_resume_v1"), pageStore, ioDispatcher,
+    )
     val offlineDownloads = OfflineDownloadManager(applicationScope, sources::require, repository, offlineStore)
     val userLibrary = UserLibraryRepository(
         dao = database.viewer,
@@ -92,21 +112,23 @@ internal class AppGraph(
         ),
     )
     val artworkLoader = SeriesArtworkLoader(sources, ioDispatcher)
+    val engine: EngineAppGraph by lazy {
+        EngineAppGraph(appContext, applicationScope, sourceDispatcher, ioDispatcher, database, userLibrary, userAgent(),
+            java.net.URI(DEFAULT_NTK_ORIGIN), { networkEvidenceObserver })
+    }
 
     init {
-        // Users reach NTK through the library, so starting its browser acknowledgement runtime
-        // and transport while the app shell is appearing removes process/engine construction
-        // from the first visible page without delaying or blocking the UI.
-        ntkBrowserGateways.forEach(NtkWebViewAccessGateway::warm)
-        ntkSource.value.start()
         applicationScope.launch(ioDispatcher) { offlineStore.load() }
     }
 
     fun viewer(spec: ViewerLaunchSpec): ViewerDependencies {
         val source = sources.require(spec.sourceId)
+        val rawPages = PipelineRawPagePort(source, pageStore, offlineStore)
         return ViewerDependencies(
             source = source,
             repository = repository,
+            rawPages = rawPages,
+            cachedResume = ViewerCachedResume(resumeSnapshots, rawPages),
             sourceDispatcher = sourceDispatcher,
             ioDispatcher = ioDispatcher,
             loadPosition = {
@@ -125,11 +147,31 @@ internal class AppGraph(
         )
     }
 
+    /**
+     * Replays the pre-deferred NTK activation schedule for the debug startup comparison only.
+     *
+     * Production code never calls this method. Keeping the guard here prevents an accidental
+     * release invocation from changing the activation policy, while the instrumentation APK can
+     * compare both schedules against the same installed debug APK and app data.
+     */
+    internal fun activateNtkForStartupBenchmarkOnly() {
+        check(appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            "Startup benchmark activation is available only in a debuggable application"
+        }
+        check(ntkSource.value.start()) {
+            "NTK source was already activated; startup comparison requires a fresh target process"
+        }
+    }
+
     override fun close() {
         try {
             if (ntkSource.isInitialized()) ntkSource.value.close()
         } finally {
-            ntkGateway.close()
+            try {
+                if (wfwfSource.isInitialized()) wfwfSource.value.close()
+            } finally {
+                ntkGateway.close()
+            }
         }
     }
 
@@ -137,19 +179,92 @@ internal class AppGraph(
         id = NTK_ID,
         scope = applicationScope,
         start = CoroutineStart.LAZY,
+        preInitializationPrepare = { episodeId, intent ->
+            ntkGateway.prepare(DEFAULT_NTK_ORIGIN, episodeId.remoteKey, intent)
+        },
+        beforeFirstStart = { ntkGateway.warm(DEFAULT_NTK_ORIGIN) },
         initialize = ::initializeNtkSource,
     )
 
     private suspend fun initializeNtkSource(): DeferredSourceResource {
         coroutineContext.ensureActive()
         val transport = createNtkTransport()
+        val documentTransport = ObservedSourceTransport(transportFactory.create(), "catalog-ntk-document") { networkEvidenceObserver }
         try {
             coroutineContext.ensureActive()
             val source = NtkContentSource(
-                NtkConfig(DEFAULT_NTK_ORIGIN, userAgent()),
+                NtkConfig(
+                    initialOrigin = DEFAULT_NTK_ORIGIN,
+                    userAgent = userAgent(),
+                    browserIdentity = ntkBrowserIdentity,
+                ),
                 transport,
                 ntkGateway,
+                documentTransport = documentTransport,
             )
+            transport.warmConnections(listOf(DEFAULT_NTK_ORIGIN), preferQuic = false)
+            transport.warmConnections(listOf(DEFAULT_NTK_ORIGIN), preferQuic = true)
+            preconnectNtkDocumentOrigin(documentTransport)
+            return DeferredSourceResource(source) {
+                source.close()
+                (transport as? Closeable)?.close()
+                documentTransport.close()
+            }
+        } catch (failure: Throwable) {
+            (transport as? Closeable)?.close()
+            documentTransport.close()
+            throw failure
+        }
+    }
+
+    /**
+     * HttpEngine construction alone does not resolve DNS or establish TLS. Open one bodyless H2
+     * exchange while the library UI is loading so the first exact episode document does not pay
+     * that cold connection cost. This is deliberately limited to the public document origin;
+     * signed image URLs are never probed or consumed by connection warming.
+     */
+    private fun preconnectNtkDocumentOrigin(transport: SourceTransport) {
+        applicationScope.launch(ioDispatcher) {
+            runCatching {
+                transport.execute(
+                    SourceRequest(
+                        url = DEFAULT_NTK_ORIGIN,
+                        method = SourceHttpMethod.HEAD,
+                        headers = mapOf("Accept" to "text/html,*/*;q=0.1"),
+                        totalTimeoutMillis = NTK_PRECONNECT_TIMEOUT_MILLIS,
+                        preferQuic = false,
+                        priority = PageFetchPriority.BACKGROUND,
+                    ),
+                ).close()
+            }
+        }
+    }
+
+    private fun createNtkTransport(): SourceTransport = ObservedSourceTransport(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            HttpEngineSourceTransport(appContext, userAgent())
+        } else {
+            transportFactory.create()
+        }, "catalog-ntk", { networkEvidenceObserver })
+
+    private fun createWfwfSource(): DeferredContentSource = DeferredContentSource(
+        id = WFWF_ID,
+        scope = applicationScope,
+        start = CoroutineStart.LAZY,
+        initialize = ::initializeWfwfSource,
+    )
+
+    private suspend fun initializeWfwfSource(): DeferredSourceResource {
+        coroutineContext.ensureActive()
+        val transport = createWfwfTransport()
+        try {
+            val source = WfwfContentSource(
+                WfwfConfig(DEFAULT_WFWF_ORIGIN, userAgent()),
+                transport,
+                applicationScope,
+            )
+            transport.warmConnections(listOf(DEFAULT_WFWF_ORIGIN), preferQuic = false)
+            source.warm()
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
             }
@@ -159,18 +274,16 @@ internal class AppGraph(
         }
     }
 
-    private fun createNtkTransport(): SourceTransport =
+    private fun createWfwfTransport(): SourceTransport = ObservedSourceTransport(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            HttpEngineSourceTransport(appContext, userAgent())
+            HttpEngineSourceTransport(
+                appContext,
+                userAgent(),
+                protocolAlternatesEnabled = false,
+            )
         } else {
             transportFactory.create()
-        }
-
-    private fun createWfwfSource(): ContentSource = WfwfContentSource(
-        WfwfConfig(DEFAULT_WFWF_ORIGIN, userAgent()),
-        transportFactory.create(),
-        applicationScope,
-    )
+        }, "catalog-wfwf", { networkEvidenceObserver })
 
     private fun userAgent(): String =
         "Mozilla/5.0 (Linux; Android ${android.os.Build.VERSION.RELEASE}; " +
@@ -179,7 +292,8 @@ internal class AppGraph(
 
     private companion object {
         const val DEFAULT_NTK_ORIGIN = "https://toki31.com"
-        const val DEFAULT_WFWF_ORIGIN = "https://wfwf487.com"
+        const val DEFAULT_WFWF_ORIGIN = ml.melun.mangaview.source.wfwf.DEFAULT_WFWF_ORIGIN
+        const val NTK_PRECONNECT_TIMEOUT_MILLIS = 4_000L
         val NTK_ID = SourceId("ntk")
         val WFWF_ID = SourceId("wfwf")
     }

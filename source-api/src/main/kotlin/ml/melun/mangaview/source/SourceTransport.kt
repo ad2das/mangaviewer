@@ -10,9 +10,13 @@ enum class SourceHttpMethod {
 
 /** End-to-end page urgency. It is a scheduling hint only; bytes and validation stay identical. */
 enum class PageFetchPriority {
+    FOCUS,
     VISIBLE,
+    IMMINENT_FORWARD,
     FORWARD,
     NORMAL,
+    DISTANT_FORWARD,
+    ADJACENT_FORWARD,
     BACKGROUND,
 }
 
@@ -61,6 +65,16 @@ fun interface SourceTransport {
 
     /** Executes after a route failure without reusing the failed connection pool. */
     suspend fun executeOnFreshRoute(request: SourceRequest): SourceResponse = execute(request)
+
+    /** Last-resort route for multi-address origins after both primary paths stay silent. */
+    suspend fun executeOnAlternateRoute(request: SourceRequest): SourceResponse =
+        executeOnFreshRoute(request)
+
+    /** Number of genuinely independent route pools available for a small header race. */
+    fun routeParallelism(): Int = 1
+
+    /** True only when preferQuic selects a genuinely independent protocol engine. */
+    fun supportsProtocolSelection(): Boolean = false
 
     /** Optionally prepares transport state without issuing an HTTP request. */
     fun warmConnections(urls: List<String>, preferQuic: Boolean = false) = Unit

@@ -1,14 +1,24 @@
-# New viewer entry, immutable coordinator, and physical Surface rendering are the cold UX path.
+# New viewer entry, single-owner session, and physical Surface rendering are the cold UX path.
 # These production profile rules compile code only; they do not execute a viewer, fetch content,
 # create a connection, or populate an image/content cache.
 HSPLml/melun/mangaview/activity/ViewerActivity;->**(**)**
-HSPLml/melun/mangaview/viewer/runtime/ViewerRuntime;->**(**)**
-HSPLml/melun/mangaview/viewer/runtime/ViewerCanvasView;->**(**)**
-HSPLml/melun/mangaview/viewer/ViewerPipelineCoordinator;->**(**)**
-HSPLml/melun/mangaview/viewer/ViewerReducer;->**(**)**
-HSPLml/melun/mangaview/viewer/ScrollController;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/SessionViewerRuntime;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/ViewerSurfaceHost;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/ViewerFlingDriver;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/ViewerVsyncScheduler;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/PointerDeltaLedger;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/DragFramePacer;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/OwnedSurfaceRenderer;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/OwnedScenePacker;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/NativeCpuDecodePort;->**(**)**
+HSPLml/melun/mangaview/viewer/runtime/OwnedTextureUploadPort;->**(**)**
+HSPLml/melun/mangaview/activity/ViewerPresentationRecorder;->**(**)**
+HSPLml/melun/mangaview/viewer/session/ViewerSession;->**(**)**
+HSPLml/melun/mangaview/viewer/session/ScrollModel;->**(**)**
+HSPLml/melun/mangaview/viewer/session/DemandEngine;->**(**)**
+HSPLml/melun/mangaview/viewer/session/SceneBuilder;->**(**)**
 HSPLml/melun/mangaview/viewer/LayoutLedger;->**(**)**
-HSPLml/melun/mangaview/viewer/WorkScheduler;->**(**)**
+HSPLml/melun/mangaview/content/ViewerContentPipeline;->**(**)**
 HSPLml/melun/mangaview/source/ntk/NtkContentSource;->**(**)**
 
 # These library methods were the remaining 30-96 ms cold JIT slices in the measured trace.

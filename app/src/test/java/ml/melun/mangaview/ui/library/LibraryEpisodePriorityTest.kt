@@ -4,11 +4,13 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.PageSpec
+import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.app.SourceOption
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.PageFetchPriority
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -55,31 +57,52 @@ class LibraryEpisodePriorityTest {
         val pages = List(5) { PageSpec(PageId.at(episode, it), it) }
         val manifest = EpisodeManifest(episode, "episode", pages)
 
-        assertEquals(pages[2].id, warmTargetPage(manifest, pages[2].id))
+        val saved = ReadingPosition(pages[2].id, 900L)
+        assertEquals(pages[2].id, warmTargetPage(manifest, saved))
         assertEquals(
             pages[0].id,
-            warmTargetPage(manifest, PageId.at(episode("stale", 2.0).id, 2)),
+            warmTargetPage(
+                manifest,
+                ReadingPosition(PageId.at(episode("stale", 2.0).id, 2), 900L),
+            ),
         )
     }
 
     @Test
-    fun warmerFinishesTheVisiblePageBeforeOnlyTheNextTwoPages() {
+    fun warmerSelectsTheAnchorAndUpToFiveForwardPagesAsOneOpeningGroup() {
         val episode = episode("1", 1.0).id
         val pages = List(6) { PageSpec(PageId.at(episode, it), it) }
         val manifest = EpisodeManifest(episode, "episode", pages)
 
         assertEquals(
-            listOf(pages[2].id, pages[3].id, pages[4].id),
-            warmPageOrder(manifest, pages[2].id),
+            listOf(pages[2].id, pages[3].id, pages[4].id, pages[5].id),
+            warmPageOrder(manifest, ReadingPosition(pages[2].id, 900L)),
         )
         assertEquals(
             listOf(pages[5].id),
-            warmPageOrder(manifest, pages[5].id),
+            warmPageOrder(manifest, ReadingPosition(pages[5].id, 900L)),
         )
         assertEquals(
-            listOf(pages[0].id, pages[1].id, pages[2].id),
+            pages.map { it.id },
             warmPageOrder(manifest, null),
         )
+    }
+
+    @Test
+    fun warmerGivesOnlyTheLandingPageTransportFocus() {
+        assertEquals(PageFetchPriority.FOCUS, warmPagePriority(0))
+        assertEquals(PageFetchPriority.FORWARD, warmPagePriority(1))
+        assertEquals(PageFetchPriority.FORWARD, warmPagePriority(2))
+    }
+
+    @Test
+    fun adjacentWarmupRequiresTheEntireLikelyForwardTail() {
+        val episode = episode("1", 1.0).id
+        val pages = List(8) { PageSpec(PageId.at(episode, it), it) }
+        val manifest = EpisodeManifest(episode, "episode", pages)
+
+        assertEquals(false, warmCoversForwardTail(manifest, pages.take(6).map { it.id }))
+        assertEquals(true, warmCoversForwardTail(manifest, pages.drop(2).map { it.id }))
     }
 
     private fun episode(key: String, sequence: Double?): SourceEpisode = SourceEpisode(

@@ -6,5 +6,8 @@ internal object NtkDeliveryRedrivePolicy {
         exactRedelivery: Boolean,
         completed: Boolean,
         previousRedrives: Int,
-    ): Boolean = exactRedelivery && !completed && previousRedrives == 0
+        state: NtkAckPreparationState,
+        authorizationProgressed: Boolean,
+    ): Boolean = exactRedelivery && !completed && previousRedrives == 0 &&
+        !authorizationProgressed && state.ordinal < NtkAckPreparationState.CHALLENGE_READY.ordinal
 }

@@ -15,15 +15,18 @@ internal object NtkBrowserResourcePolicy {
             ?.value
             .orEmpty()
             .lowercase()
-        return when {
-            path.endsWith(".css") || "text/css" in accept -> empty("text/css")
-            FONT_EXTENSIONS.any(path::endsWith) || "font/" in accept -> empty("font/woff2")
-            url.host.equals("whoas.xyz", ignoreCase = true) -> empty("application/javascript")
-            path == "/init/theme.js" || path == "/init/auth-modal.js" -> {
-                empty("application/javascript")
-            }
-            else -> null
-        }
+        val blockedMimeType = blockedMimeType(url.host.orEmpty(), path, accept) ?: return null
+        return empty(blockedMimeType)
+    }
+
+    internal fun blockedMimeType(host: String, path: String, accept: String): String? = when {
+        path.startsWith("/api/") || path.startsWith("/wasm/ad-guard/") ||
+            path == "/init/block.js" -> null
+        path.endsWith(".css") || "text/css" in accept -> "text/css"
+        FONT_EXTENSIONS.any(path::endsWith) || "font/" in accept -> "font/woff2"
+        host.equals("whoas.xyz", ignoreCase = true) -> "application/javascript"
+        path == "/init/theme.js" || path == "/init/auth-modal.js" -> "application/javascript"
+        else -> null
     }
 
     private fun empty(mimeType: String): WebResourceResponse = WebResourceResponse(

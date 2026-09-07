@@ -5,6 +5,7 @@ import ml.melun.mangaview.core.PageDimensions
 data class ImageHeader(
     val mediaType: String,
     val dimensions: PageDimensions,
+    val supportsVerifiedPrefixDecode: Boolean = false,
 )
 
 object ImageHeaderProbe {
@@ -21,7 +22,15 @@ object ImageHeaderProbe {
         val width = int32(bytes, 16)
         val height = int32(bytes, 20)
         if (width <= 0 || height <= 0) return null
-        return ImageHeader("image/png", PageDimensions(width, height))
+        val bitDepth = if (count > PNG_BIT_DEPTH_OFFSET) u8(bytes, PNG_BIT_DEPTH_OFFSET) else -1
+        val colorType = if (count > PNG_COLOR_TYPE_OFFSET) u8(bytes, PNG_COLOR_TYPE_OFFSET) else -1
+        val interlace = if (count > PNG_INTERLACE_OFFSET) u8(bytes, PNG_INTERLACE_OFFSET) else -1
+        return ImageHeader(
+            "image/png",
+            PageDimensions(width, height),
+            supportsVerifiedPrefixDecode = bitDepth == 8 && interlace == 0 &&
+                colorType in PNG_SUPPORTED_PREFIX_COLOR_TYPES,
+        )
     }
 
     private fun inspectJpeg(bytes: ByteArray, count: Int): ImageHeader? {
@@ -62,7 +71,11 @@ object ImageHeaderProbe {
         val height = u16(bytes, cursor + 3)
         val width = u16(bytes, cursor + 5)
         if (width <= 0 || height <= 0) return null
-        return ImageHeader("image/jpeg", PageDimensions(width, height))
+        return ImageHeader(
+            "image/jpeg",
+            PageDimensions(width, height),
+            supportsVerifiedPrefixDecode = false,
+        )
     }
 
     private fun inspectWebp(bytes: ByteArray, count: Int): ImageHeader? {
@@ -123,4 +136,8 @@ object ImageHeaderProbe {
     private val JPEG_DIMENSION_MARKERS = setOf(
         0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
     )
+    private const val PNG_BIT_DEPTH_OFFSET = 24
+    private const val PNG_COLOR_TYPE_OFFSET = 25
+    private const val PNG_INTERLACE_OFFSET = 28
+    private val PNG_SUPPORTED_PREFIX_COLOR_TYPES = setOf(0, 2, 4, 6)
 }

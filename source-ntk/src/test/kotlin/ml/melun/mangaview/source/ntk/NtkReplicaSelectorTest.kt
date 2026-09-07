@@ -3,10 +3,25 @@ package ml.melun.mangaview.source.ntk
 import java.net.URI
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkReplicaSelectorTest {
+    @Test
+    fun validPrefixCreatesProvisionalRouteConfidence() = runTest {
+        val selector = NtkReplicaSelector(resolveHost = { it.substringAfter("https://").substringBefore('/') })
+        val candidate = selector.prepare(listOf("https://a.example/page")).single()
+        val lease = selector.acquireCandidate(candidate)
+
+        selector.accepted(lease, 25L)
+
+        assertTrue(selector.hasAcceptedPrefix(candidate))
+        assertFalse(selector.isVerified(candidate))
+        selector.abandoned(lease)
+    }
+
     @Test
     fun failedHostMovesBehindHealthyAlternativeWithoutDroppingCandidates() = runTest {
         var now = 1_000L
@@ -66,7 +81,7 @@ class NtkReplicaSelectorTest {
     }
 
     @Test
-    fun verifiedPrefixUnblocksHostBeforeTheBodyFinishesWithoutReleasingItsLease() = runTest {
+    fun validPrefixKeepsAnotherReplicaAvailableUntilTheBodyFinishes() = runTest {
         val selector = NtkReplicaSelector()
         val verified = "https://verified.example/page"
         val alternative = "https://alternative.example/page"
@@ -77,7 +92,7 @@ class NtkReplicaSelectorTest {
         selector.accepted(retry, 70L)
 
         val concurrent = selector.acquire(listOf(verified, alternative))
-        assertEquals(verified, concurrent)
+        assertEquals(alternative, concurrent)
         selector.release(concurrent)
         selector.completed(retry, 90L)
         assertEquals(verified, selector.acquire(listOf(verified, alternative)))

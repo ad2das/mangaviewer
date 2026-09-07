@@ -19,6 +19,26 @@ import org.junit.Test
 
 class NtkContentSourceTest {
     @Test
+    fun titleSearchUsesProviderFormWithoutGeneralCatalogRequest() = runTest {
+        val transport = NtkQueueTransport(
+            """<a href="/webtoon/57451201"><h3>역대급 창기사의 회귀</h3></a>""",
+        )
+        val source = NtkContentSource(NtkConfig("https://ntk.test", "agent"), transport, RecordingGateway(emptyList()))
+        val result = source.search(SourceSearchQuery("역대급 창기사의 회귀", SeriesKind.WEBTOON))
+        assertEquals(listOf("/webtoon/57451201"), result.items.map { it.id.remoteKey })
+        assertTrue(transport.requests.single().url.contains("/search?q="))
+        assertTrue(transport.requests.single().url.contains("field=title&match=contains"))
+    }
+
+    @Test
+    fun emptySearchPageDoesNotIssueGeneralCatalogRequest() = runTest {
+        val transport = NtkQueueTransport("""<div class="search-results-grid"></div>""")
+        val source = NtkContentSource(NtkConfig("https://ntk.test", "agent"), transport, RecordingGateway(emptyList()))
+        assertTrue(source.search(SourceSearchQuery("absent", SeriesKind.WEBTOON)).items.isEmpty())
+        assertEquals(1, transport.requests.size)
+    }
+
+    @Test
     fun adultAndYuriGenresAreImmediateAndUseProviderKeys() = runTest {
         val transport = NtkQueueTransport()
         val source = NtkContentSource(
@@ -114,7 +134,7 @@ class NtkContentSourceTest {
         assertEquals(2, manifest.pages.size)
         assertEquals(listOf("p0000", "p0001"), manifest.pages.map { it.id.remoteKey })
         assertEquals("/webtoon/work-slug/ep-12", manifest.nextEpisodeId?.remoteKey)
-        assertEquals("/webtoon/work-slug/ep-11", gateway.preparedPath)
+        assertTrue("/webtoon/work-slug/ep-11" in gateway.preparedPaths)
         assertTrue(gateway.resolved)
         assertTrue(manifest.pages.map { it.id }.toSet().size == 2)
     }
@@ -150,7 +170,7 @@ class NtkContentSourceTest {
     }
 
     @Test
-    fun prepareDefersNavigationToTheSerializedManifestLane() = runTest {
+    fun prepareStartsAdjacentAckBeforeSerializedManifestResolution() = runTest {
         val gateway = RecordingGateway(listOf(
             NtkPageRequest("https://images.test/manhwa/2/1181/p0001.jpg"),
         ))
@@ -167,7 +187,8 @@ class NtkContentSourceTest {
 
         source.prepare(episode, PreparationIntent.ADJACENT_FORWARD)
 
-        assertEquals(null, gateway.preparedPath)
+        assertEquals(episode.remoteKey, gateway.preparedPath)
+        assertEquals(PreparationIntent.ADJACENT_FORWARD, gateway.preparedIntent)
         runCatching { source.manifest(episode) }
         assertEquals(episode.remoteKey, gateway.preparedPath)
         assertEquals(PreparationIntent.ADJACENT_FORWARD, gateway.preparedIntent)
@@ -180,10 +201,12 @@ private class RecordingGateway(
     var resolved = false
     var preparedPath: String? = null
     var preparedIntent: PreparationIntent? = null
+    val preparedPaths = mutableListOf<String>()
 
     override suspend fun prepare(origin: String, episodePath: String, intent: PreparationIntent) {
         preparedPath = episodePath
         preparedIntent = intent
+        preparedPaths += episodePath
     }
 
     override suspend fun resolve(

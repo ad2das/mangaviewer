@@ -14,8 +14,13 @@ abstract class ArchitectureQualityTask extends DefaultTask {
     @TaskAction
     void verify() {
         List<String> violations = []
+        int webViewConstructions = 0
         productionSources.files.sort { it.path }.each { File source ->
             violations.addAll(ArchitectureQualityScanner.inspect(project.rootDir, source))
+            webViewConstructions += ArchitectureQualityScanner.webViewConstructions(source)
+        }
+        if (webViewConstructions != 1) {
+            violations << "production sources construct WebView ${webViewConstructions} times (required exactly 1)"
         }
         if (!violations.isEmpty()) {
             String report = violations.collect { "  - ${it}" }.join(System.lineSeparator())
@@ -33,6 +38,19 @@ final class ArchitectureQualityScanner {
     private static final Set<String> CONTROL_WORDS = [
         'if', 'for', 'while', 'switch', 'catch', 'when', 'synchronized', 'return', 'new', 'throw'
     ] as Set
+    private static final Map<java.util.regex.Pattern, String> FORBIDDEN_RUNTIME = [
+        (java.util.regex.Pattern.compile('\\b(?:AHardwareBuffer|ASurfaceControl)\\b')):
+            'legacy per-tile native surface ownership is forbidden',
+        (java.util.regex.Pattern.compile('\\bSurfaceControl\\s*\\.\\s*Transaction\\b')):
+            'SurfaceControl.Transaction is forbidden in the viewer',
+        (java.util.regex.Pattern.compile('\\bGlobalScope\\b')):
+            'GlobalScope is forbidden',
+        (java.util.regex.Pattern.compile('\\bChannel\\s*\\.\\s*UNLIMITED\\b')):
+            'unbounded channels are forbidden',
+        (java.util.regex.Pattern.compile(
+            '\\bclass\\s+(?:ViewerRuntime|ViewerPipelineCoordinator|ReaderSession|ReaderSurfaceView)\\b'
+        )): 'retired viewer runtime ownership is forbidden',
+    ]
     private static final java.util.regex.Pattern KOTLIN_FUNCTION = java.util.regex.Pattern.compile(
         '(?m)^[ \\t]*(?:(?:public|private|protected|internal|open|final|abstract|override|suspend|' +
             'inline|tailrec|operator|infix|external|actual|expect)\\s+)*fun\\s+(?:<[^>\\n]+>\\s*)?' +
@@ -92,7 +110,17 @@ final class ArchitectureQualityScanner {
         eachMatch(masked, java.util.regex.Pattern.compile('\\bThread\\s*\\.\\s*sleep\\s*\\(')) { start, ignored ->
             violations << "${relative}:${lineOf(lineStarts, start)} Thread.sleep is forbidden"
         }
+        FORBIDDEN_RUNTIME.each { pattern, reason ->
+            eachMatch(masked, pattern) { start, ignored ->
+                violations << "${relative}:${lineOf(lineStarts, start)} ${reason}"
+            }
+        }
         return violations
+    }
+
+    static int webViewConstructions(File file) {
+        String masked = maskNonCode(file.getText('UTF-8'))
+        return matchCount(masked, java.util.regex.Pattern.compile('\\bWebView\\s*\\('))
     }
 
     private static List<CodeScope> functions(
@@ -417,6 +445,9 @@ def productionRoots = [
     'source-wfwf/src/main',
     'data/src/main',
     'viewer/src/main',
+    'viewer-content/src/main',
+    'engine-api/src/main',
+    'engine-v2/src/main',
     'app/src/main/java',
     'app/src/main/cpp',
 ]

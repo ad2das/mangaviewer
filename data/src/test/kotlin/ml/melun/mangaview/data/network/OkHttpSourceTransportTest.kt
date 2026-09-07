@@ -36,6 +36,23 @@ class OkHttpSourceTransportTest {
     }
 
     @Test
+    fun readAtMostReturnsTheFirstAvailableChunkWithoutWaitingForTheWholeBody() = runTest {
+        MockWebServer().use { server ->
+            val payload = ByteArray(64 * 1_024) { index -> index.toByte() }
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(payload)))
+            val transport = OkHttpSourceTransport(OkHttpClient(), Dispatchers.IO)
+            val response = transport.execute(SourceRequest(server.url("/chunked-page").toString()))
+            val destination = ByteArray(512 * 1_024)
+
+            val count = response.body.readAtMost(destination, 0, destination.size)
+            response.close()
+
+            assertTrue("The first stream read waited for the complete body", count in 1 until payload.size)
+            assertTrue(payload.copyOf(count).contentEquals(destination.copyOf(count)))
+        }
+    }
+
+    @Test
     fun coroutineCancellationCancelsTheUnderlyingCall() = runTest {
         MockWebServer().use { server ->
             server.enqueue(
@@ -52,5 +69,20 @@ class OkHttpSourceTransportTest {
 
             assertTrue(request.isCancelled)
         }
+    }
+
+    @Test
+    fun initialRouteChoiceIsStableForTheSameRequestAndDistributedByUrl() {
+        val first = SourceRequest("https://cdn.example/episode/1/page/1.jpg")
+        val same = SourceRequest("https://cdn.example/episode/1/page/1.jpg")
+        val routes = (1..30).map { page ->
+            initialRouteIndex(
+                SourceRequest("https://cdn.example/episode/1/page/$page.jpg"),
+                routeCount = 3,
+            )
+        }
+
+        assertEquals(initialRouteIndex(first, 3), initialRouteIndex(same, 3))
+        assertEquals(setOf(0, 1, 2), routes.toSet())
     }
 }

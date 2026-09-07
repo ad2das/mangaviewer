@@ -1,6 +1,8 @@
 package ml.melun.mangaview.data.cache
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -18,6 +20,19 @@ class ImageHeaderProbeTest {
         assertThrows(IllegalArgumentException::class.java) { ImageHeaderProbe.inspect(html) }
     }
 
+    @Test
+    fun onlyNonInterlacedEightBitPngHasAProvableIncompleteDecodeBoundary() {
+        val opaquePng = png(1_080, 1_920)
+        val alphaPng = png(1_080, 1_920).also { it[25] = 6 }
+        val interlacedPng = png(1_080, 1_920).also { it[28] = 1 }
+
+        assertTrue(ImageHeaderProbe.inspect(opaquePng).supportsVerifiedPrefixDecode)
+        assertTrue(ImageHeaderProbe.inspect(alphaPng).supportsVerifiedPrefixDecode)
+        assertFalse(ImageHeaderProbe.inspect(interlacedPng).supportsVerifiedPrefixDecode)
+        assertFalse(ImageHeaderProbe.inspect(jpeg(1_080, 1_920)).supportsVerifiedPrefixDecode)
+        assertFalse(ImageHeaderProbe.inspect(webpExtended(1_080, 1_920)).supportsVerifiedPrefixDecode)
+    }
+
     private fun assertHeader(bytes: ByteArray, type: String, width: Int, height: Int) {
         val header = ImageHeaderProbe.inspect(bytes)
         assertEquals(type, header.mediaType)
@@ -32,6 +47,7 @@ class ImageHeaderProbeTest {
             "IHDR".toByteArray().copyInto(bytes, 12)
             putBigEndian(bytes, 16, width)
             putBigEndian(bytes, 20, height)
+            bytes[24] = 8
         }
 
         fun jpeg(width: Int, height: Int): ByteArray = byteArrayOf(

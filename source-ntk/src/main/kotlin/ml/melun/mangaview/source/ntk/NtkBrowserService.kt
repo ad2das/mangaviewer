@@ -1,70 +1,149 @@
 package ml.melun.mangaview.source.ntk
 
-import android.annotation.SuppressLint
 import android.app.Service
 import android.content.Intent
 import android.graphics.Rect
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
-import android.os.Process
-import android.os.RemoteException
 import android.os.SystemClock
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.view.View
 import android.webkit.JavascriptInterface
-import android.webkit.CookieManager
 import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebChromeClient
+import java.io.File
+import java.net.URI
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
-import java.io.IOException
+import androidx.webkit.ProfileStore
 
 /** Runs NTK's official browser acknowledgement outside the reader process. */
 open class NtkBrowserService : Service() {
+    protected open val browserProfileName: String = "ntk_primary"
     private val handler = Handler(Looper.getMainLooper())
+    private val profile by lazy(LazyThreadSafetyMode.NONE) {
+        require(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+            "NTK browser isolation requires WebView multi-profile support"
+        }
+        ProfileStore.getInstance().getOrCreateProfile(browserProfileName)
+    }
+    private val cookieApplier by lazy(LazyThreadSafetyMode.NONE) {
+        NtkBrowserCookieApplier(handler, profile.cookieManager)
+    }
+    private val staticResources = NtkBrowserStaticResourceCache(
+        NtkStaticResourceDiskStore(root = { File(filesDir, "ntk_static_assets_v1") }),
+    )
     private val incoming = Messenger(IncomingHandler())
-    private val startup = NtkBrowserStartup(this, ::startupReady, ::startupFailed)
-    private var browser: WebView? = null
-    private var active: RemoteRequest? = null
-    private val ackPhases = NtkAckPhaseRelay { active }
-    private var isStartupReady = false
-    private var startupFailure: Throwable? = null
-    private var pendingUserAgent: String? = null
-    private var captureScript: ScriptHandler? = null
+    @Volatile private var active: RemoteRequest? = null
+    private val ackPhases = NtkAckPhaseRelay(
+        profileName = { browserProfileName },
+        currentRequest = { active },
+        authorizationReady = ::installManifestDescriptor,
+        cookieManager = { profile.cookieManager },
+    )
+    private val warmRuntime = NtkBrowserWarmRuntime(
+        handler = handler,
+        cookieApplier = cookieApplier,
+        staticResources = staticResources,
+        awaitStartup = { ready, failed -> afterWebViewStartup(ready, failed) },
+        acquireBrowser = { browserHost.acquire(it) },
+        currentRequest = { active },
+        navigate = ::navigate,
+        park = { browserHost.park() },
+        preparationFailed = ::fail,
+        originReady = { challengeController.beginWhileWarm(it) },
+    )
     private var completedDelivery: CompletedDelivery? = null
-
-    override fun onCreate() = super.onCreate().also { startup.begin() }
+    private val cancellation = NtkBrowserRequestCancellation(
+        { active },
+        { request, park -> if (park) quiesce(request) else abort(request) },
+        { requestId -> completedDelivery = completedDelivery?.takeUnless { it.requestId == requestId } },
+    )
+    private val adjacentChallenges = NtkAdjacentChallengeController(
+        handler,
+        { browserProfileName },
+        { active },
+        { browserHost.current },
+        ::parkCompletedBrowser,
+    )
+    private val challengeController: NtkEpisodeChallengeController by lazy(LazyThreadSafetyMode.NONE) {
+        NtkEpisodeChallengeController(
+            handler,
+            { browserProfileName },
+            { active },
+            { browserHost.current },
+            { origin -> warmRuntime.isOriginReady(origin) },
+            { origin -> warmRuntime.isRunning(origin) },
+            ::navigateDocument,
+            adjacentChallenges,
+        )
+    }
+    private val documentController: NtkBrowserDocumentController by lazy(LazyThreadSafetyMode.NONE) {
+        NtkBrowserDocumentController(
+            { active },
+            { origin -> warmRuntime.isRunning(origin) },
+            { origin, cookies, ready ->
+                val request = active
+                cookieApplier.cookies(origin, cookies, isCurrent = { active === request }, completed = ready)
+            },
+            { request -> browserHost.current?.let { challengeController.beginEpisodeNavigation(it, request) } },
+            ::startAuthorization,
+            ::installManifestDescriptor,
+            ::fail,
+        )
+    }
+    private val browserHost: NtkBrowserHost by lazy(LazyThreadSafetyMode.NONE) {
+        NtkBrowserHost(
+            this,
+            { browserProfileName },
+            staticResources,
+            NtkBrowserHostCallbacks(
+                currentRequest = { active },
+                images = { origin, path, payload, requestId, epoch ->
+                    handler.post { accept(origin, path, payload, requestId, epoch) }
+                },
+                phase = { origin, path, phase, status, requestId, epoch ->
+                    handler.post { ackPhases.accept(origin, path, phase, status, requestId, epoch) }
+                },
+                warmPhase = { origin, generation, phase, status ->
+                    handler.post { warmRuntime.phase(origin, generation, phase, status) }
+                },
+                preflightChallenge = { origin, path, requestId, status, payload ->
+                    handler.post { challengeController.accept(origin, path, requestId, status, payload) }
+                },
+                startAuthorization = ::startAuthorization,
+                deliverDescriptor = documentController::deliver,
+                episodeResponse = documentController::intercept,
+                runtimeWarmResponse = warmRuntime::intercept,
+                runtimeWarmFinished = warmRuntime::pageFinished,
+                runtimeWarmFailed = warmRuntime::failed,
+                fail = ::fail,
+                rendererGone = ::rendererGone,
+            ),
+        )
+    }
 
     override fun onBind(intent: Intent?): IBinder = incoming.binder
     override fun onDestroy() {
-        active?.replyError("NTK browser service stopped")
+        active?.let {
+            it.replyError("NTK browser service stopped")
+            it.document?.close()
+        }
         active = null
         completedDelivery = null
+        adjacentChallenges.clear()
+        staticResources.close()
         retireBrowser()
-        startup.close()
         super.onDestroy()
     }
-
-    private fun startupReady() {
-        isStartupReady = true
-        val userAgent = pendingUserAgent ?: active?.userAgent ?: return
-        runCatching { browser(userAgent) }.onFailure(::startupFailed)
-        active?.let(::navigate)
-    }
-
-    private fun startupFailed(failure: Throwable) {
-        startupFailure = failure
-        active?.let { fail(it, "NTK browser startup failed: ${failure.message}") }
-        Log.e(TAG, "browser startup failed", failure)
-    }
-
     private fun resolve(message: Message) {
         val request = runCatching { RemoteRequest.from(message) }.getOrElse { failure ->
             replyError(message, failure.message ?: "Invalid NTK browser request")
@@ -89,44 +168,92 @@ open class NtkBrowserService : Service() {
                     exactRedelivery,
                     completed != null,
                     current.deliveryRedrives,
+                    current.ackState,
+                    current.authorizationStarted || current.authorizationObserved,
                 )) {
                 redriveIncompleteDelivery(current)
             }
             return
         }
-        current?.replyError("NTK browser request was superseded")
+        val requestedChallenge = current?.adjacentChallenges?.get(request.path)
+        if (current != null && current.origin == request.origin && NtkAdjacentChallengeHandoffPolicy.shouldInherit(
+                completedDelivery = current.delivery.completedPayload() != null,
+                challengeStarted = requestedChallenge?.started == true,
+                challengeResolved = requestedChallenge?.resolved == true,
+                challengePath = request.path.takeIf { requestedChallenge != null },
+                requestedPath = request.path,
+            )
+        ) {
+            inheritAdjacentChallenge(current, request)
+            return
+        }
+        current?.takeIf { browserSupersession(it.delivery.completedPayload()) == NtkBrowserSupersession.RETIRE_UNFINISHED_BROWSER }?.let {
+            it.replyError("NTK browser request was superseded")
+            abort(it)
+        } ?: current?.let(::quiesce)
         start(request)
     }
 
-    private fun warm(message: Message) {
-        val userAgent = runCatching {
-            message.data.requiredString(NtkBrowserProtocol.KEY_USER_AGENT).also {
-                require(it.length <= MAX_USER_AGENT_LENGTH) { "NTK user agent is too long" }
+    private fun startWhenWebViewReady(request: RemoteRequest, identity: NtkBrowserIdentity?) {
+        afterWebViewStartup(
+            ready = {
+                cookieApplier.identity(request.origin, identity, { active === request }) { accepted ->
+                    if (active === request) {
+                        if (!accepted) {
+                            fail(request, "NTK identity cookies rejected")
+                            return@identity
+                        }
+                        request.identityCookiesApplied = true
+                        if (warmRuntime.isOriginReady(request.origin)) {
+                            request.advanceAckState(NtkAckPreparationState.ORIGIN_READY)
+                        }
+                        navigate(request)
+                    }
+                }
+            },
+            failed = { failure ->
+                fail(request, "NTK browser startup failed: ${failure.message}")
             }
-        }.getOrElse { failure ->
-            Log.w(TAG, "browser warmup rejected", failure)
-            return
-        }
-        pendingUserAgent = userAgent
-        if (!isStartupReady || startupFailure != null) return
-        runCatching { browser(userAgent) }
-            .onFailure { failure -> Log.w(TAG, "browser warmup failed", failure) }
+        )
     }
 
     private fun start(request: RemoteRequest) {
+        adjacentChallenges.consume(request)
         active = request
-        pendingUserAgent = request.userAgent
-        startupFailure?.let { failure ->
-            fail(request, "NTK browser startup failed: ${failure.message}")
+        staticResources.prepare(request.origin, request.userAgent)
+        if (warmRuntime.isPending(request.origin)) {
             return
         }
-        if (!isStartupReady) return
-        navigate(request)
+        val identity = request.fingerprint?.let { fingerprint ->
+            NtkBrowserIdentity(fingerprint, requireNotNull(request.persistentId))
+        }
+        startWhenWebViewReady(request, identity)
+    }
+
+    private fun inheritAdjacentChallenge(current: RemoteRequest, request: RemoteRequest) {
+        current.document?.close()
+        request.identityCookiesApplied = current.identityCookiesApplied
+        request.inheritedChallengeRequestIds += current.requestId
+        request.inheritedChallengeRequestIds += current.inheritedChallengeRequestIds
+        request.adjacentChallenges.putAll(current.adjacentChallenges)
+        request.challengePreflightStarted = true
+        active = request
+        staticResources.prepare(request.origin, request.userAgent)
+        Log.d(ACK_TAG, "profile=$browserProfileName phase=adjacent-challenge-handoff status=0 ageMs=${request.ageMillis()}")
+        handler.postDelayed(
+            {
+                if (active === request && !request.challengePreflightResolved) {
+                    challengeController.finishIfUnresolved(request)
+                }
+            },
+            NTK_CHALLENGE_TIMEOUT_MILLIS,
+        )
     }
 
     private fun redriveIncompleteDelivery(request: RemoteRequest) {
         if (active !== request) return
         request.deliveryRedrives += 1
+        request.documentNavigationStarted = false
         retireBrowser()
         navigate(request)
     }
@@ -135,104 +262,91 @@ open class NtkBrowserService : Service() {
         if (active !== request) return
         runCatching {
             val adjacent = request.intent != ml.melun.mangaview.source.PreparationIntent.INITIAL_VIEW
-            Process.setThreadPriority(
-                if (adjacent) Process.THREAD_PRIORITY_BACKGROUND else Process.THREAD_PRIORITY_DEFAULT,
-            )
-            browser(request.userAgent).apply {
-                visibility = View.VISIBLE
-                setLayerType(View.LAYER_TYPE_NONE, null)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setRendererPriorityPolicy(
-                        if (adjacent) {
-                            WebView.RENDERER_PRIORITY_WAIVED
-                        } else {
-                            WebView.RENDERER_PRIORITY_BOUND
-                        },
-                        adjacent,
-                    )
-                }
+            browserHost.acquire(request.userAgent).apply {
+                applyRenderPolicy(
+                    this,
+                    if (adjacent) NtkBrowserRenderPhase.ADJACENT_AUTHORIZATION
+                    else NtkBrowserRenderPhase.INITIAL_AUTHORIZATION,
+                )
                 resumeTimers()
                 onResume()
                 settings.userAgentString = request.userAgent
-                // This detached worker exists only to complete the provider's official
-                // document/JavaScript acknowledgement. Letting it fetch <img> resources would
-                // duplicate the viewer-owned page requests and steal bandwidth from HARD pages.
-                // XHR/fetch/script traffic remains enabled, so manifest authorization is intact.
+                // ACK keeps scripts/XHR but never duplicates viewer-owned image requests.
                 settings.blockNetworkImage = true
                 settings.loadsImagesAutomatically = false
                 request.authorizationStarted = false
+                request.authorizationObserved = false
+                request.browserDocumentStarted = false
                 request.descriptorDelivered = false
-                request.descriptorApplying = false
-                request.captureInstalledAtDocumentStart = installNaturalAuthorization(this)
-                loadUrl(request.key)
+                request.manifestDescriptorInstalled = false
+                if (warmRuntime.isOriginReady(request.origin)) {
+                    request.advanceAckState(NtkAckPreparationState.ORIGIN_READY)
+                }
+                challengeController.beginEpisodeNavigation(this, request)
             }
         }.onFailure { failure ->
             fail(request, "NTK browser startup failed: ${failure.message}")
         }
     }
 
-    private fun cancel(message: Message, quiesce: Boolean) {
-        val requestId = message.data.getLong(NtkBrowserProtocol.KEY_REQUEST_ID, INVALID_REQUEST_ID)
-        val request = active?.takeIf { it.contains(requestId) } ?: return
-        request.remove(requestId)
-        if (quiesce || request.isEmpty()) quiesce(request)
+    private fun navigateDocument(view: WebView, request: RemoteRequest) {
+        if (active !== request || request.documentNavigationStarted) return
+        if (request.document == null || !request.documentCookiesApplied) return
+        request.documentNavigationStarted = true
+        request.documentEpoch += 1L
+        request.browserTrace("browser-document-replay-start")
+        Log.d(ACK_TAG, "phase=document-replay-start status=0 ageMs=${request.ageMillis()}")
+        request.captureInstalledAtDocumentStart = browserHost.installAuthorization(view, request)
+        view.loadUrl(request.key)
+        request.browserTrace("browser-document-replay-load-issued")
     }
 
-    private fun accept(origin: String, path: String, payload: String) {
+    private fun accept(origin: String, path: String, payload: String, requestId: Long, epoch: Long) {
         val request = active ?: return
+        if (request.requestId != requestId || request.documentEpoch != epoch) return
         val key = runCatching { validatedKey(origin, path) }.getOrNull() ?: return
         if (request.key != key) return
         val accepted = request.delivery.accept(payload) ?: return
         completedDelivery = CompletedDelivery(request.requestId, request.key, accepted)
         request.replyPayload(accepted)
+        // Manifest capture is the last operation that needs a painted provider document. Keep the
+        // browser request alive until the direct image route proves usable, but stop raster work
+        // immediately so it cannot contend with the reader's first or adjacent frames.
+        if (!adjacentChallenges.begin(request)) parkCompletedBrowser(request)
     }
 
-    private fun descriptor(message: Message) {
-        val requestId = message.data.getLong(NtkBrowserProtocol.KEY_REQUEST_ID, INVALID_REQUEST_ID)
-        val request = active?.takeIf { it.contains(requestId) } ?: return
-        val descriptor = runCatching { RemoteDescriptor.from(message.data) }.getOrElse { failure ->
-            fail(request, "NTK descriptor rejected: ${failure.message}")
-            return
-        }
-        request.descriptor = descriptor
-        deliverDescriptor(request)
-    }
-
-    private fun deliverDescriptor(request: RemoteRequest) {
+    private fun parkCompletedBrowser(request: RemoteRequest) {
         if (active !== request) return
-        val descriptor = request.descriptor ?: return
-        if (request.descriptorDelivered || request.descriptorApplying) return
-        request.descriptorApplying = true
-        applyResponseCookies(request, descriptor, 0)
+        browserHost.current?.let { applyRenderPolicy(it, NtkBrowserRenderPhase.PARKED) }
     }
 
     private fun startAuthorization(request: RemoteRequest) {
-        if (active !== request) return
+        if (active !== request || !request.browserDocumentStarted) return
         if (request.authorizationStarted) return
+        val requiresFallback = shouldEvaluateAuthorizationFallback(
+            browserDocumentStarted = request.browserDocumentStarted,
+            authorizationStarted = request.authorizationStarted,
+            captureInstalledAtDocumentStart = request.captureInstalledAtDocumentStart,
+        )
         request.authorizationStarted = true
-        val source = NtkBrowserCaptureScript.source + "\n" +
-            NtkBrowserChallengeSingleFlight.source + "\n" +
-            NtkBrowserEarlyAck.source
-        browser?.evaluateJavascript(source, null)
+        if (requiresFallback) browserHost.startAuthorization(request)
     }
 
-    private fun applyResponseCookies(
-        request: RemoteRequest,
-        descriptor: RemoteDescriptor,
-        index: Int,
-    ) {
-        if (active !== request) return
-        if (index >= descriptor.responseCookies.size) {
-            request.descriptorApplying = false
-            request.descriptorDelivered = true
-            startAuthorization(request)
-            return
-        }
-        CookieManager.getInstance().setCookie(request.origin, descriptor.responseCookies[index]) {
-            handler.post {
-                if (active === request) {
-                    applyResponseCookies(request, descriptor, index + 1)
-                }
+    private fun installManifestDescriptor(request: RemoteRequest) {
+        if (active !== request || !request.browserDocumentStarted ||
+            request.manifestDescriptorInstalled
+        ) return
+        if (!request.descriptorDelivered) return
+        val descriptor = request.descriptor ?: return
+        val view = browserHost.current ?: return
+        request.manifestDescriptorInstalled = true
+        Log.d(ACK_TAG, "profile=$browserProfileName phase=native-manifest-install status=0 ageMs=${request.ageMillis()}")
+        view.evaluateJavascript(NtkBrowserManifestKick.source(descriptor)) { result ->
+            if (active === request) {
+                Log.d(
+                    ACK_TAG,
+                    "phase=native-manifest-installed status=200 ageMs=${request.ageMillis()} result=$result",
+                )
             }
         }
     }
@@ -245,119 +359,48 @@ open class NtkBrowserService : Service() {
 
     private fun quiesce(request: RemoteRequest) {
         if (active !== request) return
+        request.advanceAckState(NtkAckPreparationState.PARKED)
+        request.document?.close()
         active = null
-        parkBrowser()
+        browserHost.park()
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun browser(userAgent: String): WebView {
-        browser?.let { return it }
-        WebView.setWebContentsDebuggingEnabled(false)
-        return WebView(this).apply {
-            // This service observes network/JavaScript state only. It must never acquire a GPU
-            // layer or raster tiles that can interfere with the visible reader process.
-            // The browser is never attached to a Window, so keeping the normal visible/layer
-            // lifecycle cannot expose pixels or allocate a presentation Surface. Marking this
-            // detached provider worker INVISIBLE/SOFTWARE/no-draw makes Chromium throttle the
-            // official acknowledgement JavaScript and delays the reader manifest.
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.blockNetworkImage = true
-            settings.loadsImagesAutomatically = false
-            settings.mediaPlaybackRequiresUserGesture = true
-            // Provider JavaScript needs a measured viewport, but browser pixels are never shown.
-            // Rasterizing the hidden document competes with the reader's first decoded frame.
-            settings.offscreenPreRaster = false
-            settings.userAgentString = userAgent
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, false)
-            }
-            addJavascriptInterface(
-                BrowserBridge(
-                    images = { origin, path, payload ->
-                        this@NtkBrowserService.handler.post { accept(origin, path, payload) }
-                    },
-                    phase = { origin, path, phase, status ->
-                        this@NtkBrowserService.handler.post {
-                            ackPhases.accept(origin, path, phase, status)
-                        }
-                    },
-                ),
-                NtkBrowserCaptureScript.BRIDGE_NAME,
-            )
-            webChromeClient = QuietChromeClient()
-            webViewClient = NtkBrowserGatewayClient(
-                currentRequest = { active },
-                startAuthorization = ::startAuthorization,
-                deliverDescriptor = ::deliverDescriptor,
-                fail = ::fail,
-                rendererGone = ::rendererGone,
-            )
-            layoutForProviderObservation(this)
-            resumeTimers()
-            onResume()
-        }.also {
-            browser = it
-        }
-    }
-
-    private fun installNaturalAuthorization(view: WebView): Boolean {
-        val source = NtkBrowserCaptureScript.source + "\n" +
-            NtkBrowserChallengeSingleFlight.source + "\n" +
-            NtkBrowserEarlyAck.source
-        return installDocumentStartScript(view, source)
-    }
-
-    private fun installDocumentStartScript(view: WebView, source: String): Boolean {
-        runCatching { captureScript?.remove() }
-        captureScript = null
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return false
-        captureScript = WebViewCompat.addDocumentStartJavaScript(
-            view,
-            source,
-            setOf("*"),
-        )
-        return true
+    /**
+     * Cancellation can happen while the provider's one-use canary is on the wire. Destroy the
+     * old document before another episode is admitted so a late response cannot mutate the shared
+     * WebView cookie jar underneath the next ACK. Normal completed episodes use [quiesce] and keep
+     * the single browser resident.
+     */
+    private fun abort(request: RemoteRequest) {
+        if (active !== request) return
+        request.advanceAckState(NtkAckPreparationState.PARKED)
+        request.document?.close()
+        active = null
+        retireBrowser()
     }
 
     private fun retireBrowser() {
-        runCatching { captureScript?.remove() }
-        captureScript = null
-        browser?.apply {
-            stopLoading()
-            removeJavascriptInterface(NtkBrowserCaptureScript.BRIDGE_NAME)
-            destroy()
-        }
-        browser = null
+        browserHost.retire()
+        warmRuntime.browserRetired()
     }
 
-    private fun parkBrowser() {
-        // Any document or visibility lifecycle transition here runs Chromium cleanup at the exact
-        // instant the reader starts decoding its first hardware buffer. Both about:blank and an
-        // INVISIBLE/onPause transition produced delayed cross-process Surface stalls. Keep the
-        // detached document intact, freeze JavaScript timers, and only waive process priority. The
-        // next ACK replaces it in place; service shutdown remains the sole destruction boundary.
-        runCatching { captureScript?.remove() }
-        captureScript = null
-        browser?.apply {
-            pauseTimers()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, true)
-            }
-        }
-    }
     private fun rendererGone(view: WebView, request: RemoteRequest?) {
-        runCatching { captureScript?.remove() }
-        captureScript = null
-        browser = null
-        view.destroy()
+        browserHost.rendererGone(view)
+        warmRuntime.browserRetired()
         if (request != null && request.rendererRestarts < MAX_RENDERER_RESTARTS) {
             request.rendererRestarts += 1
+            request.documentNavigationStarted = false
             handler.post { if (active === request) navigate(request) }
             Log.w(TAG, "browser renderer restarted attempt=${request.rendererRestarts}")
         } else {
             active = null
+            request?.document?.close()
             request?.replyError("NTK browser renderer stopped")
+            if (request == null) {
+                handler.post {
+                    warmRuntime.restart()
+                }
+            }
         }
     }
 
@@ -365,19 +408,36 @@ open class NtkBrowserService : Service() {
         override fun handleMessage(message: Message) {
             when (message.what) {
                 NtkBrowserProtocol.MSG_RESOLVE -> resolve(message)
-                NtkBrowserProtocol.MSG_WARM -> warm(message)
-                NtkBrowserProtocol.MSG_DESCRIPTOR -> descriptor(message)
-                NtkBrowserProtocol.MSG_CANCEL -> cancel(message, quiesce = false)
-                NtkBrowserProtocol.MSG_QUIESCE -> cancel(message, quiesce = true)
+                NtkBrowserProtocol.MSG_WARM -> warmRuntime.handle(message)
+                NtkBrowserProtocol.MSG_DESCRIPTOR -> documentController.descriptor(message)
+                NtkBrowserProtocol.MSG_CANCEL -> cancellation.cancel(message, quiesce = false)
+                NtkBrowserProtocol.MSG_QUIESCE -> cancellation.cancel(message, quiesce = true)
+                NtkBrowserProtocol.MSG_PREFLIGHT_ADJACENT -> adjacentChallenges.preflight(message)
                 else -> super.handleMessage(message)
             }
         }
     }
-
 }
 
-private class QuietChromeClient : WebChromeClient() {
-    override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean = true
+private fun Service.afterWebViewStartup(ready: () -> Unit, failed: (Throwable) -> Unit) {
+    val owner = application as? NtkWebViewStartupOwner
+    if (owner == null) ready() else owner.ntkWebViewStartup.whenReady(ready, failed)
+}
+
+internal fun applyRenderPolicy(view: WebView, phase: NtkBrowserRenderPhase) {
+    val policy = phase.renderPolicy()
+    view.visibility = if (policy.visible) View.VISIBLE else View.INVISIBLE
+    view.setLayerType(
+        if (policy.hardwareRaster) View.LAYER_TYPE_NONE else View.LAYER_TYPE_SOFTWARE,
+        null,
+    )
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        view.setRendererPriorityPolicy(
+            if (policy.boundRenderer) WebView.RENDERER_PRIORITY_BOUND
+            else WebView.RENDERER_PRIORITY_WAIVED,
+            !policy.boundRenderer,
+        )
+    }
 }
 
 private fun replyError(message: Message, detail: String) {
@@ -386,38 +446,54 @@ private fun replyError(message: Message, detail: String) {
     sendError(requestId, recipient, detail)
 }
 
-private class BrowserBridge(
-    private val images: (String, String, String) -> Unit,
-    private val phase: (String, String, String, Int) -> Unit,
-) {
-    @JavascriptInterface
-    fun onImages(origin: String, path: String, payload: String) = images(origin, path, payload)
-
-    @JavascriptInterface
-    fun onPhase(origin: String, path: String, phase: String, status: Int) =
-        this.phase(origin, path, phase, status)
-}
-
-private class NtkAckPhaseRelay(
+internal class NtkAckPhaseRelay(
+    private val profileName: () -> String,
     private val currentRequest: () -> RemoteRequest?,
+    private val authorizationReady: (RemoteRequest) -> Unit,
+    private val cookieManager: () -> CookieManager,
 ) {
-    fun accept(origin: String, path: String, phase: String, status: Int) {
+    fun accept(origin: String, path: String, phase: String, status: Int, requestId: Long, epoch: Long) {
         val request = currentRequest() ?: return
+        if (request.requestId != requestId || request.documentEpoch != epoch ||
+            !request.documentCookiesApplied || !request.identityCookiesApplied
+        ) return
         val key = runCatching { validatedKey(origin, path) }.getOrNull() ?: return
         if (request.key != key) return
+        traceAckPhase(request, phase, status)
         val safePhase = phase.take(MAX_PHASE_LENGTH).replace('\n', '_').replace('\r', '_')
-        Log.d(ACK_TAG, "phase=$safePhase status=$status ageMs=${request.ageMillis()}")
-        if (isAuthorizationProof(phase, status)) request.replyAckReady()
-    }
-
-    private fun isAuthorizationProof(phase: String, status: Int): Boolean =
-        status in 200..299 && (
-            phase.startsWith("ack-meta:ok=true,acked=true") ||
-                phase.startsWith("challenge-meta:ok=true,ackValid=true")
+        Log.d(
+            ACK_TAG,
+            "profile=${profileName()} path=${request.path} phase=$safePhase " +
+                "status=$status ageMs=${request.ageMillis()}",
+        )
+        request.authorizationObserved = true
+        if (phase == "canary-start" || phase == "ack-start") {
+            val cookieNames = cookieManager().getCookie(origin)
+                .orEmpty()
+                .split(';')
+                .map { it.substringBefore('=').trim() }
+                .filter(String::isNotEmpty)
+                .distinct()
+                .sorted()
+                .joinToString("|")
+            Log.d(
+                ACK_TAG,
+                "profile=${profileName()} path=${request.path} phase=$phase-cookie-names " +
+                    "names=$cookieNames ageMs=${request.ageMillis()}",
             )
+        }
+        if (status in 200..299 && phase.startsWith("challenge-meta:ok=true")) {
+            request.advanceAckState(NtkAckPreparationState.CHALLENGE_READY)
+        }
+        if (isNtkAuthorizationProof(phase, status)) {
+            request.advanceAckState(NtkAckPreparationState.ACK_READY)
+            request.replyAckReady()
+            authorizationReady(request)
+        }
+    }
 }
 
-private fun layoutForProviderObservation(view: WebView) {
+internal fun layoutForProviderObservation(view: WebView) {
     // Give the provider real DOM geometry without rasterizing an invisible device-size page.
     val width = MIN_BROWSER_WIDTH_PX
     val height = MIN_BROWSER_HEIGHT_PX

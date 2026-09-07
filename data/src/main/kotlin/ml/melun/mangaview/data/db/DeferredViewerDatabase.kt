@@ -24,7 +24,7 @@ class DeferredViewerDatabase(
     val rawPages: RawPageDao = DeferredRawPageDao(::database)
     val viewer: ViewerDao = DeferredViewerDao(::database, ioDispatcher)
 
-    private suspend fun database(): ViewerDatabase = opened ?: withContext(ioDispatcher) {
+    suspend fun database(): ViewerDatabase = opened ?: withContext(ioDispatcher) {
         openMutex.withLock {
             opened ?: factory.open(appContext).also { opened = it }
         }

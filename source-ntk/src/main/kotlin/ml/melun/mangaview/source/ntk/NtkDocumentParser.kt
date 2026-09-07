@@ -37,6 +37,7 @@ data class NtkEpisodeResult(
 data class NtkManifestDocument(
     val directPages: List<NtkPageRequest>,
     val viewer: NtkViewerMetadata?,
+    val directPagesOwnedByViewer: Boolean = false,
 ) {
     val descriptor: NtkViewerDescriptor?
         get() = viewer?.descriptor
@@ -154,24 +155,31 @@ class NtkDocumentParser {
     }
 
     fun manifest(document: NtkEpisodeDocument): NtkManifestDocument {
-        val normalized = JsonObjects.normalizeEscapes(document.html)
+        val started = System.nanoTime()
         val baseUrl = document.origin + document.path
-        val parsed = Jsoup.parse(normalized, baseUrl)
-        val pages = linkedMapOf<String, NtkPageRequest>()
-        parsed.select("img").forEach { image ->
-            if (hasBlockedContext(image)) return@forEach
-            IMAGE_ATTRIBUTES.forEach { attribute ->
-                addPage(pages, image.attr(attribute), baseUrl)
-            }
-        }
+        val parsed = Jsoup.parse(document.html, baseUrl)
+        val domAt = System.nanoTime()
         val viewers = mutableListOf<NtkViewerMetadata>()
-        JsonObjects.embedded(normalized).forEach { root ->
-            viewers += viewerMetadata(root, document.path)
-            JsonObjects.strings(root).forEach { value -> addPage(pages, value, baseUrl) }
+        val ownedPages = mutableListOf<List<NtkPageRequest>>()
+        NtkDocumentJsonReader.read(parsed.select("script").map { it.data() }).forEach { root ->
+            viewers += viewerMetadata(root, document.path) { owner ->
+                NtkDirectPageReader.read(owner) { pageUrl(it, baseUrl) }
+                    .takeIf { it.isNotEmpty() }?.let(ownedPages::add)
+            }
         }
         val distinctViewers = viewers.distinct()
         require(distinctViewers.size <= 1) { "NTK document contains conflicting viewer identities" }
-        return NtkManifestDocument(pages.values.toList(), distinctViewers.singleOrNull())
+        val jsonAt = System.nanoTime()
+        // Protected viewers require their owned sequence or the protected image API. The service
+        // never admits DOM images for them, so avoid extracting unowned page chrome on this path.
+        val selected = ownedPages.firstOrNull() ?: if (distinctViewers.isNotEmpty()) emptyList() else {
+            parsed.select("img").filterNot(::hasBlockedContext).mapNotNull { image ->
+                IMAGE_ATTRIBUTES.firstNotNullOfOrNull { pageUrl(image.attr(it), baseUrl) }?.let(::NtkPageRequest)
+            }
+        }
+        require(ownedPages.all { it == selected }) { "NTK document contains conflicting page sequences" }
+        logManifestParsing(started, domAt, jsonAt, System.nanoTime())
+        return NtkManifestDocument(selected, distinctViewers.singleOrNull(), ownedPages.isNotEmpty())
     }
 
     fun episodePageCount(payload: String): Int {
@@ -261,7 +269,9 @@ class NtkDocumentParser {
         )
     }
 
-    private fun viewerMetadata(root: JSONObject, episodePath: String): List<NtkViewerMetadata> {
+    private fun viewerMetadata(
+        root: Any, episodePath: String, onViewer: (JSONObject) -> Unit,
+    ): List<NtkViewerMetadata> {
         val path = EpisodePath.parse(episodePath) ?: return emptyList()
         val results = mutableListOf<NtkViewerMetadata>()
         JsonObjects.walk(root) { candidate ->
@@ -297,6 +307,7 @@ class NtkDocumentParser {
                 previousKnown = previousKnown,
                 nextKnown = nextKnown,
             )
+            onViewer(candidate)
         }
         return results.distinct()
     }
@@ -318,18 +329,21 @@ class NtkDocumentParser {
         return maximum.takeIf { it > 0 }
     }
 
-    private fun addPage(target: MutableMap<String, NtkPageRequest>, candidate: String, baseUrl: String) {
+    private fun pageUrl(candidate: String, baseUrl: String): String? {
         val trimmed = candidate.trim().replace("\\/", "/")
-        if (!isPageImage(trimmed)) return
-        val resolved = runCatching { URI(baseUrl).resolve(trimmed).toString() }.getOrNull() ?: return
-        target.putIfAbsent(resolved, NtkPageRequest(resolved))
+        if (!isPageImage(trimmed)) return null
+        return runCatching {
+            URI(baseUrl).resolve(trimmed).takeIf {
+                it.scheme in setOf("http", "https") && !it.host.isNullOrBlank()
+            }?.toString()
+        }.getOrNull()
     }
 
     private fun isPageImage(value: String): Boolean {
         val lower = value.lowercase()
         if (!lower.startsWith("http") && !lower.startsWith("//") && !lower.startsWith('/')) return false
         if (BLOCKED_IMAGE_TOKENS.any(lower::contains)) return false
-        if (!lower.matches(Regex(".*\\.(?:jpe?g|png|webp)(?:[?#].*)?$"))) return false
+        if (!lower.matches(IMAGE_FILE)) return false
         return CONTENT_PATH_TOKENS.any(lower::contains) || HASH_FILE.containsMatchIn(lower)
     }
 
@@ -413,6 +427,7 @@ class NtkDocumentParser {
             "/webtoon_uploads/", "/manhwa_uploads/", "/comic_uploads/", "/episodes/", "/token/",
         )
         val HASH_FILE = Regex("/[A-Za-z0-9_-]{16,}\\.(?:jpe?g|png|webp)(?:[?#].*)?$")
+        val IMAGE_FILE = Regex(".*\\.(?:jpe?g|png|webp)(?:[?#].*)?$")
     }
 
     private data class EpisodePath(
@@ -433,6 +448,14 @@ class NtkDocumentParser {
             )
         }
     }
+}
+
+private fun logManifestParsing(started: Long, dom: Long, json: Long, images: Long) {
+    runCatching { android.util.Log.d("NtkNative",
+        "phase=parser-stages normalizeMs=0 " +
+            "domMs=${(dom - started) / 1_000_000L} imagesMs=${(images - json) / 1_000_000L} " +
+            "jsonMs=${(json - dom) / 1_000_000L}",
+    ) }
 }
 
 private fun embeddedArray(payload: String, key: String): JSONArray? {

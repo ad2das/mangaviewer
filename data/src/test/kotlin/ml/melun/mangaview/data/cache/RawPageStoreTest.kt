@@ -15,6 +15,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -22,6 +23,18 @@ import org.junit.rules.TemporaryFolder
 class RawPageStoreTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
+
+    @Test
+    fun transferBufferIsReusedInsteadOfAllocatedPerPage() = runTest {
+        val pool = PageTransferBufferPool(bufferBytes = 128 * 1_024, maximumConcurrentTransfers = 2)
+        val identities = buildList {
+            repeat(100) {
+                pool.use { buffer -> add(System.identityHashCode(buffer)) }
+            }
+        }
+
+        assertEquals(1, identities.distinct().size)
+    }
 
     @Test
     fun writesVerifiesAndPublishesExactlyOneFinalFile() = runTest {
@@ -38,6 +51,27 @@ class RawPageStoreTest {
         assertEquals(9_000, written.dimensions.heightPx)
         assertNotNull(found)
         assertEquals(listOf(written.file.name), root.listFiles().orEmpty().map(File::getName))
+    }
+
+    @Test
+    fun opaquePngPublishesFlushedStablePrefixesWhileTheBodyIsStillStreaming() = runTest {
+        val root = temporaryFolder.newFolder("cache-preview")
+        val store = store(root, InMemoryRawPageDao())
+        val bytes = ByteArray(1_100_000).also { body ->
+            ImageHeaderProbeTest.png(1_080, 9_000).copyInto(body)
+        }
+        val previews = mutableListOf<Pair<PageTransferPreview, Long>>()
+
+        store.write(pageId(), opened(bytes)) { preview -> previews += preview to preview.file.length() }
+
+        assertEquals(3, previews.size)
+        assertEquals(
+            listOf(512L * 1_024L, 1_024L * 1_024L, bytes.size.toLong()),
+            previews.map { it.first.byteCount },
+        )
+        assertEquals(previews.map { it.first.byteCount }, previews.map { it.second })
+        assertTrue(previews.all { it.first.header.supportsVerifiedPrefixDecode })
+        assertEquals("page", previews.last().first.file.extension)
     }
 
     @Test

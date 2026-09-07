@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
@@ -30,6 +31,13 @@ internal inline fun <T> withProductionDetailWarmup(
         library = application.graph.userLibrary,
     )
     return try {
+        // A real detail screen has already loaded this list before an episode can be tapped.
+        // Reproduce that production precondition without warming viewer pixels or waiting on ACK.
+        runBlocking(Dispatchers.IO) {
+            val episodeId = episode.episodeId()
+            application.graph.sources.require(episodeId.seriesId.sourceId)
+                .episodes(episodeId.seriesId)
+        }
         warmer.warm(episode.episodeId())
         waitFixedDetailDwell(instrumentation)
         block()

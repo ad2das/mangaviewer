@@ -8,8 +8,8 @@ android {
 
     defaultConfig {
         applicationId 'ml.melun.mangaview'
-        // The native viewer decodes directly into AHardwareBuffer tiles through the NDK
-        // AImageDecoder API, whose complete contract starts at Android 11 (API 30).
+        // The native viewer decodes full-quality bands with the NDK AImageDecoder API and uploads
+        // them to one EGL/GLES scene. AImageDecoder's complete contract starts at API 30.
         minSdkVersion 30
         targetSdkVersion 35
         versionCode 2147000000
@@ -92,6 +92,9 @@ dependencies {
     implementation project(':source-wfwf')
     implementation project(':data')
     implementation project(':viewer')
+    implementation project(':viewer-content')
+    implementation project(':engine-api')
+    implementation project(':engine-v2')
 
     implementation 'androidx.activity:activity-compose:1.10.0'
     implementation 'androidx.compose.ui:ui:1.9.0'

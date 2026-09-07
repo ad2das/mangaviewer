@@ -16,6 +16,7 @@ import okhttp3.Dns
 
 internal class AndroidIpv4FirstDns(
     private val fallback: Dns = Dns.SYSTEM,
+    private val fixedAddressOffset: Int? = null,
 ) : Dns {
     private val rotations = ConcurrentHashMap<String, AtomicInteger>()
 
@@ -28,6 +29,7 @@ internal class AndroidIpv4FirstDns(
             emptyList()
         }
         val resolved = ipv4.ifEmpty { fallback.lookup(hostname) }
+        fixedAddressOffset?.let { return rotatedAddressOrder(resolved, it) }
         val cursor = rotations.computeIfAbsent(hostname.lowercase()) { AtomicInteger() }
             .getAndIncrement()
         if (rotations.size > MAX_TRACKED_HOSTS) rotations.clear()

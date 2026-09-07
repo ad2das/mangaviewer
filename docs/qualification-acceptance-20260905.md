@@ -1,0 +1,11 @@
+# Accepted qualification update — 2026-09-05
+
+The user approved letting the coordinator choose between retaining exact physical display timestamp proof and explicitly reporting that measurement as unavailable. The selected policy reports exact physical presentation time as **measurement unavailable** on the designated emulator and qualifies accurate completion against the observable evidence. This supersedes the earlier rule that missing physical presentation timestamps alone prevent final qualification.
+
+Unchanged requirements: emulator-5554 / MangaViewerApi35, wired network, unchanged AVD RAM/security, fresh fixed random 4×10×5 corpus, required historical regressions, real UI entry/gestures, all page source rows and final stop, independent episode order, original image quality, correct positions and resource ownership, and final tests/builds/CI. Missing/wrong images, page gaps, automatic position changes, crashes, leaks, unresolved application stalls and ultimately unfetched images are not accepted as successful completion. No cache injection, readiness waits, sample replacement or fabricated evidence is authorized.
+
+The measured stages must keep their real names. Swap completion, buffer submission, composition latch and SurfaceFlinger fallback events must not be renamed physical presentation. Missing physical metrics are null/unavailable, never zero. A successful result under this policy must retain `exactPhysicalPresentationTimeVerified=false` when real evidence is absent and explicitly state this limit.
+
+Image identity, buffer/session/generation ownership, page coverage, input/position consistency and resource checks remain independently required. This update alone does not permit unknown or conflicting buffer ownership, failed RGB checks, incomplete row coverage, missing artifacts or unexplained delays to pass. First-image and rendering targets remain optimization targets; observed values and attributable delays must be reported, and improvement/mandatory-cost claims still need the approved comparison evidence.
+
+No historical diagnostic receives retroactive corpus credit. The final 200 attempt must use the policy and verifier frozen before that attempt and the same final code/APK candidate as the recorded checks. Current qualification count remains 0/200 until that attempt actually succeeds.

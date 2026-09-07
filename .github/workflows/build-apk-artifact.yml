@@ -43,6 +43,9 @@ jobs:
             /source-ntk/
             /source-wfwf/
             /viewer/
+            /viewer-content/
+            /engine-api/
+            /engine-v2/
             /config/
             /gradle/
             /build.gradle

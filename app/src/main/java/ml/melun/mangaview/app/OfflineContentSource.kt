@@ -54,6 +54,16 @@ internal class OfflineContentSource(
         else AdjacentEpisodes(manifest.previousEpisodeId, manifest.nextEpisodeId)
     }
 
+    override suspend fun knownAdjacent(episodeId: EpisodeId): AdjacentEpisodes? {
+        val manifest = offline.manifest(episodeId)
+        return if (manifest == null) online.knownAdjacent(episodeId)
+        else AdjacentEpisodes(manifest.previousEpisodeId, manifest.nextEpisodeId)
+    }
+
+    override suspend fun knownForward(episodeId: EpisodeId, limit: Int): List<EpisodeId> =
+        if (offline.manifest(episodeId) == null) online.knownForward(episodeId, limit)
+        else emptyList()
+
     override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) {
         if (offline.manifest(episodeId) != null) return
         try {

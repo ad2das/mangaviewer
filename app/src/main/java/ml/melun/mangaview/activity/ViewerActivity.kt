@@ -16,6 +16,8 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +26,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.app.AndroidWorkDispatcher
+import ml.melun.mangaview.app.EngineAppGraph
+import ml.melun.mangaview.app.EngineViewerWork
+import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
+import ml.melun.mangaview.engine.api.EngineViewport
+import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.source.ContentSource
@@ -31,9 +38,14 @@ import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.viewer.FixedPx
 import ml.melun.mangaview.viewer.Viewport
 import ml.melun.mangaview.viewer.ViewerTelemetrySnapshot
+import ml.melun.mangaview.viewer.runtime.ViewerCachedResume
 import ml.melun.mangaview.viewer.runtime.ViewerChromeState
+import ml.melun.mangaview.viewer.runtime.ViewerCachedResumeDiagnostic
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
-import ml.melun.mangaview.viewer.runtime.ViewerRuntime
+import ml.melun.mangaview.viewer.runtime.EngineViewerRuntime
+import ml.melun.mangaview.viewer.runtime.EngineSurfacePresentation
+import ml.melun.mangaview.viewer.runtime.EngineViewerDiagnostics
+import ml.melun.mangaview.viewer.runtime.EngineInputObservations
 import ml.melun.mangaview.viewer.runtime.ViewerStartupTiming
 import kotlin.math.max
 
@@ -48,27 +60,27 @@ class ViewerActivity : ComponentActivity() {
     private val sessionJob = SupervisorJob()
     private val sessionScope = CoroutineScope(sessionJob + Dispatchers.Main.immediate)
     private val hardDecodeWork = AndroidWorkDispatcher(
-        name = "viewer-decode-hard",
-        threads = 1,
-        // A visible decode is latency-sensitive, but running CPU-heavy native decode at the
-        // same Linux priority as Android's display pipeline can steal the exact VSYNC that must
-        // present the gesture. Default priority keeps it ahead of warm/background work while
-        // leaving RenderThread and input delivery uncontested.
-        linuxPriority = Process.THREAD_PRIORITY_DEFAULT,
-    )
-    private val warmDecodeWork = AndroidWorkDispatcher(
-        name = "viewer-decode-warm",
-        threads = 1,
+        name = "viewer-engine-decode",
+        threads = 2,
+        // Native decode is latency-sensitive but still must yield to input, UI and RenderThread.
+        // A dedicated background-priority lane keeps it independent from warm decode without
+        // stealing VSYNC CPU time on lower-core emulators and phones.
         linuxPriority = Process.THREAD_PRIORITY_BACKGROUND,
     )
-    private var runtime: ViewerRuntime? = null
+    private var runtime: EngineViewerRuntime? = null
     private val presentationRecorder = ViewerPresentationRecorder()
+    private val presentedRegionRecorder = PresentedRegionRecorder()
     private lateinit var progress: ProgressBar
     private lateinit var failureText: TextView
+    private var reportedFailure: Throwable? = null
     private lateinit var chrome: ViewerChromeController
-    private var contentSource: ContentSource? = null
-    private var saveBookmark: ((ReadingPosition) -> Unit)? = null
+    private var contentSource: EngineViewerWork? = null
+    private lateinit var engine: EngineAppGraph
+    private val engineClosed = CompletableDeferred<Unit>()
+    private val engineDiagnostics = EngineViewerDiagnostics()
+    private val engineInputObservations = EngineInputObservations()
     private var episodeListJob: Job? = null
+    @Volatile private var episodePickerFailure: Throwable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,47 +89,41 @@ class ViewerActivity : ComponentActivity() {
             finishWithFailure(it)
             return
         }
-        val dependencies = runCatching {
-            (application as ViewerApplication).graph.viewer(spec)
+        val source = runCatching {
+            engine = (application as ViewerApplication).graph.engine
+            engine.session(spec)
         }.getOrElse {
             finishWithFailure(it)
             return
         }
         val viewport = initialViewport()
-        contentSource = dependencies.source
-        saveBookmark = dependencies.saveBookmark
-        val createdRuntime = ViewerRuntime(
+        contentSource = source
+        val createdRuntime = EngineViewerRuntime(
             context = this,
             scope = sessionScope,
-            sourceDispatcher = dependencies.sourceDispatcher,
-            ioDispatcher = dependencies.ioDispatcher,
-            hardDecodeDispatcher = hardDecodeWork.coroutineDispatcher,
-            warmDecodeDispatcher = warmDecodeWork.coroutineDispatcher,
-            source = dependencies.source,
-            repository = dependencies.repository,
+            coordinator = engine.coordinator,
+            source = source,
+            positions = engine.positions,
+            decodeDispatcher = hardDecodeWork.coroutineDispatcher,
             episodeId = spec.episodeId,
-            loadPosition = dependencies.loadPosition,
-            persistPosition = dependencies.persistPosition,
-            initialViewport = viewport,
+            initialViewport = EngineViewport(Math.toIntExact(viewport.width.units / 1024),
+                Math.toIntExact(viewport.height.units / 1024)),
             reportGestureBoundary = ::recordGestureBoundary,
             reportMotionFrame = presentationRecorder::recordMotionFrame,
-            reportOpened = { runOnUiThread(::onViewerOpened) },
-            reportPresentedFrame = { evidence ->
-                if (recordPresentation(evidence)) {
-                    val presentedAtMillis = SystemClock.elapsedRealtime()
-                    runOnUiThread {
-                        runtime?.surface?.contentDescription =
-                            "viewer-frame-presented:$presentedAtMillis"
-                        progress.visibility = android.view.View.GONE
-                    }
-                }
+            reportSnapshot = { snapshot ->
+                engineDiagnostics.snapshot(snapshot, System.nanoTime())
+                onViewerOpened()
             },
-            reportFailure = { failure -> runOnUiThread { showFailure(failure) } },
+            reportPresented = engineDiagnostics::presented,
+            reportRendererClosed = engineDiagnostics::rendererClosed,
+            inputObservations = engineInputObservations,
+            reportFailure = ::showFailure,
         )
         runtime = createdRuntime
         val root = content(createdRuntime)
         setContentView(root)
         root.requestApplyInsets()
+        engineDiagnostics.opened(System.nanoTime())
         createdRuntime.open()
     }
 
@@ -134,6 +140,8 @@ class ViewerActivity : ComponentActivity() {
                 android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
         }
     }
+
+    internal fun presentedRegionsSince(sequence: Long) = presentedRegionRecorder.since(sequence)
 
     internal fun presentationNanosSnapshot(): LongArray = presentationRecorder.presentationSnapshot()
 
@@ -168,10 +176,29 @@ class ViewerActivity : ComponentActivity() {
     internal fun gestureWindowsSnapshot(): List<LongRange> = presentationRecorder.gestureSnapshot()
 
     internal fun userInputRevisionSnapshot(): Long = runtime?.userInputRevisionSnapshot() ?: 0L
+    internal fun engineInputObservationsSince(ordinal: Long) = engineInputObservations.since(ordinal)
+    internal fun engineInputCloseProof() = engineInputObservations.closeProof()
+    internal fun engineFramesSince(ordinal: Long) = engineDiagnostics.framesSince(ordinal)
+    internal fun engineFrameCloseProof() = engineDiagnostics.frameCloseProof()
 
-    internal fun viewerTelemetrySnapshot(): ViewerTelemetrySnapshot? = runtime?.telemetrySnapshot()
+    // The old global-offset telemetry cannot represent source-anchor coordinates. Keep unknown
+    // data absent until callers migrate to the engine's exact snapshot and frame identities.
+    internal fun viewerTelemetrySnapshot(): ViewerTelemetrySnapshot? = null
 
-    internal fun viewerStartupTimingSnapshot(): ViewerStartupTiming? = runtime?.startupTimingSnapshot()
+    internal fun viewerStartupTimingSnapshot(): ViewerStartupTiming? = engineDiagnostics.startup()
+
+    internal fun viewerCachedResumeSnapshot(): ViewerCachedResumeDiagnostic? =
+        null
+
+    internal fun viewerEngineSnapshot(): EngineRuntimeSnapshot? = engineDiagnostics.state
+    internal fun viewerEngineFrameSnapshot(): EngineSurfacePresentation? = engineDiagnostics.frame
+    internal suspend fun awaitEngineClosed() = engineClosed.await()
+    internal fun engineDecodeWorkersTerminated(): Boolean = hardDecodeWork.isTerminated
+    internal fun episodePickerFailureSnapshot(): Throwable? = episodePickerFailure
+    internal suspend fun captureNextEngineFrame(top: Int, bottom: Int) = requireNotNull(runtime).captureNextFrame(top, bottom)
+    internal suspend fun captureNextEngineViewportFrame() = requireNotNull(runtime).captureNextViewportFrame()
+
+    internal fun viewerFailureSnapshot(): Throwable? = reportedFailure
 
     internal fun isViewerInputSurfaceReady(): Boolean = runtime?.surface?.let { surface ->
         surface.isAttachedToWindow && surface.isShown && surface.width > 0 && surface.height > 0
@@ -197,25 +224,38 @@ class ViewerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        episodeListJob?.cancel()
         val activeRuntime = runtime
         runtime = null
-        activeRuntime?.close {
-            closeDecodeWorkers()
-            sessionJob.cancel()
-        }
-        if (activeRuntime == null) {
-            closeDecodeWorkers()
-            sessionJob.cancel()
+        sessionScope.launch(NonCancellable) {
+            var closeFailure: Throwable? = null
+            try {
+                activeRuntime?.close()
+            } catch (failure: Throwable) {
+                closeFailure = failure
+            }
+            try {
+                closeDecodeWorkers()
+            } catch (failure: Throwable) {
+                val primary = closeFailure
+                if (primary == null) closeFailure = failure else if (primary !== failure) primary.addSuppressed(failure)
+            } finally {
+                val failure = closeFailure
+                if (failure == null) engineClosed.complete(Unit) else {
+                    reportedFailure = failure
+                    engineClosed.completeExceptionally(failure)
+                }
+                sessionJob.cancel()
+            }
         }
         super.onDestroy()
     }
 
-    private fun closeDecodeWorkers() {
-        hardDecodeWork.close()
-        warmDecodeWork.close()
+    private suspend fun closeDecodeWorkers() {
+        hardDecodeWork.closeAndAwait()
     }
 
-    private fun content(runtime: ViewerRuntime): FrameLayout =
+    private fun content(runtime: EngineViewerRuntime): FrameLayout =
         ViewerTouchRoot(this).apply {
         onSurfaceTap = { if (::chrome.isInitialized) chrome.toggle() }
         setBackgroundColor(Color.BLACK)
@@ -226,6 +266,7 @@ class ViewerActivity : ComponentActivity() {
         ))
         progress = ProgressBar(this@ViewerActivity).apply {
             contentDescription = "viewer-loading"
+            visibility = android.view.View.GONE
             isClickable = false
             isFocusable = false
         }
@@ -248,7 +289,7 @@ class ViewerActivity : ComponentActivity() {
         installChrome(this, runtime)
         }
 
-    private fun installChrome(root: ViewerTouchRoot, runtime: ViewerRuntime) {
+    private fun installChrome(root: ViewerTouchRoot, runtime: EngineViewerRuntime) {
         chrome = ViewerChromeController(
             activity = this,
             surface = runtime.surface,
@@ -284,25 +325,39 @@ class ViewerActivity : ComponentActivity() {
     }
 
     private fun bookmarkCurrentPosition() {
-        val position = runtime?.chromeSnapshot()?.position ?: return
-        saveBookmark?.invoke(position)
-        Toast.makeText(this, "현재 위치를 책갈피에 저장했습니다", Toast.LENGTH_SHORT).show()
+        val (anchor, position) = runtime?.bookmarkSnapshot() ?: return
+        sessionScope.launch(NonCancellable) {
+            try {
+                engine.saveBookmark(anchor, position.offsetInPageUnits)
+                if (!isFinishing && !isDestroyed) Toast.makeText(this@ViewerActivity,
+                    "현재 위치를 책갈피에 저장했습니다", Toast.LENGTH_SHORT).show()
+            } catch (failure: Throwable) {
+                if (!isFinishing && !isDestroyed) Toast.makeText(this@ViewerActivity,
+                    "책갈피를 저장하지 못했습니다", Toast.LENGTH_SHORT).show()
+                android.util.Log.e("ViewerActivity", "bookmark save failed", failure)
+            }
+        }
     }
 
     private fun loadEpisodePicker() {
         if (episodeListJob?.isActive == true) return
         val state = runtime?.chromeSnapshot() ?: return
         val source = contentSource ?: return
+        episodePickerFailure = null
         Toast.makeText(this, "회차 목록을 불러오는 중입니다", Toast.LENGTH_SHORT).show()
         episodeListJob = sessionScope.launch {
             try {
-                val episodes = withContext(Dispatchers.Default) {
-                    ViewerEpisodeListLoader(source).load(state.episodeId.seriesId)
+                val subscription = engine.coordinator.submit(source.episodes(state.episodeId.seriesId, WorkPriority.INTERACTIVE))
+                val episodes = try { subscription.await().episodes } finally {
+                    subscription.close()
+                    withContext(NonCancellable) { subscription.awaitReleased() }
                 }
                 showEpisodePicker(state, episodes)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
+                episodePickerFailure = failure
+                android.util.Log.e("ViewerActivity", "episode picker failed", failure)
                 Toast.makeText(
                     this@ViewerActivity,
                     failure.message ?: "회차 목록을 불러오지 못했습니다",
@@ -376,6 +431,7 @@ class ViewerActivity : ComponentActivity() {
     }
 
     private fun showFailure(failure: Throwable) {
+        reportedFailure = failure
         progress.visibility = android.view.View.GONE
         failureText.text = failure.message?.takeIf(String::isNotBlank) ?: "페이지를 불러오지 못했습니다"
         failureText.visibility = android.view.View.VISIBLE

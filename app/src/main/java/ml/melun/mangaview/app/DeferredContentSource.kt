@@ -33,11 +33,15 @@ internal class DeferredContentSource(
     override val id: SourceId,
     scope: CoroutineScope,
     start: CoroutineStart = CoroutineStart.LAZY,
+    private val preInitializationPrepare: (suspend (EpisodeId, PreparationIntent) -> Unit)? = null,
+    private val beforeFirstStart: (() -> Unit)? = null,
     initialize: suspend () -> DeferredSourceResource,
 ) : ContentSource, Closeable {
+    private val activationLock = Any()
+    private var activationStarted = false
     private val publicationLock = Any()
     private var published: DeferredSourceResource? = null
-    private var closed = false
+    @Volatile private var closed = false
     private val delegate: Deferred<ContentSource> = scope.async(start = start) {
         val candidate = initialize()
         try {
@@ -58,7 +62,7 @@ internal class DeferredContentSource(
     }
 
     /** Starts provider initialization without waiting for it on the caller thread. */
-    fun start(): Boolean = delegate.start()
+    fun start(): Boolean = activate()
 
     override fun close() {
         val resource = synchronized(publicationLock) {
@@ -91,8 +95,19 @@ internal class DeferredContentSource(
     override suspend fun adjacent(episodeId: EpisodeId): AdjacentEpisodes =
         source().adjacent(episodeId)
 
-    override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) =
+    override suspend fun knownAdjacent(episodeId: EpisodeId): AdjacentEpisodes? =
+        source().knownAdjacent(episodeId)
+
+    override suspend fun knownForward(episodeId: EpisodeId, limit: Int): List<EpisodeId> =
+        source().knownForward(episodeId, limit)
+
+    override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) {
+        // Start the lazy delegate before the provider-specific preparation request. This keeps
+        // transport construction concurrent with browser ACK preparation on a cold entry.
+        activate()
+        preInitializationPrepare?.invoke(episodeId, intent)
         source().prepare(episodeId, intent)
+    }
 
     override suspend fun openPage(
         pageId: PageId,
@@ -111,7 +126,24 @@ internal class DeferredContentSource(
     override suspend fun seriesUrl(seriesId: SeriesId): String? =
         source().seriesUrl(seriesId)
 
-    private suspend fun source(): ContentSource = delegate.await()
+    private suspend fun source(): ContentSource {
+        activate()
+        return delegate.await()
+    }
+
+    private fun activate(): Boolean = synchronized(activationLock) {
+        if (activationStarted || closed) return@synchronized false
+        activationStarted = true
+        try {
+            beforeFirstStart?.invoke()
+            delegate.start()
+        } catch (failure: Throwable) {
+            // A failed warm/bind hook must not permanently strand the lazy source. A later
+            // operation can retry activation, matching the delegate's pre-hook behavior.
+            activationStarted = false
+            throw failure
+        }
+    }
 }
 
 internal class DeferredSourceResource(

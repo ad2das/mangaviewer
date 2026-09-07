@@ -46,6 +46,8 @@ webtoon-classification-audit-details.json
 app/.cxx/
 artifacts/
 .artifacts/
+__pycache__/
+*.pyc
 .playwright-cli/
 tmp-codex-emulator/
 tmp-*
@@ -60,6 +62,7 @@ adjacent*
 cold_struct*
 instant*
 viewer-*
+!/viewer-content/
 transition-*
 app-current*
 app-gundo-*

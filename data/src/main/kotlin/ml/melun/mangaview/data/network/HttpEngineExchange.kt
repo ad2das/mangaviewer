@@ -5,9 +5,11 @@ import android.net.http.UploadDataProvider
 import android.net.http.UploadDataSink
 import android.net.http.UrlRequest
 import android.net.http.UrlResponseInfo
+import android.util.Log
 import androidx.annotation.RequiresApi
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.util.concurrent.Executor
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resumeWithException
@@ -20,6 +22,9 @@ internal class HttpEngineExchange(
     private val finished: (HttpEngineExchange) -> Unit,
     private val registerBody: (HttpEngineBodyPageStream) -> Boolean,
     private val bodyFinished: (HttpEngineBodyPageStream) -> Unit,
+    private val callbackExecutor: Executor,
+    private val bodyReadScheduler: HttpEngineBodyReadScheduler,
+    private val initialPriority: ml.melun.mangaview.source.PageFetchPriority,
 ) : UrlRequest.Callback {
     private val lifecycleLock = Any()
     private val request = AtomicReference<UrlRequest?>()
@@ -87,6 +92,9 @@ internal class HttpEngineExchange(
                 requestRead = request::read,
                 cancelExchange = ::abort,
                 finished = bodyFinished,
+                dispatchRead = { action -> callbackExecutor.execute(Runnable(action)) },
+                initialPriority = initialPriority,
+                readScheduler = bodyReadScheduler,
             )
         }.getOrElse {
             abort(it)
@@ -143,10 +151,10 @@ internal class HttpEngineExchange(
     }
 
     override fun onFailed(request: UrlRequest, info: UrlResponseInfo?, error: HttpException) =
-        completeFailure(error)
+        completeFailure(error, "engine_failure_callback")
 
     override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) =
-        completeFailure(IOException("HTTP engine request was canceled"))
+        completeFailure(IOException("HTTP engine request was canceled"), "engine_cancel_callback")
 
     fun abort(failure: Throwable) {
         val activeRequest = synchronized(startLock) { request.get()?.takeIf { started } }
@@ -154,8 +162,13 @@ internal class HttpEngineExchange(
         completeFailure(failure)
     }
 
-    private fun completeFailure(failure: Throwable) {
+    private fun completeFailure(failure: Throwable, origin: String = "local_abort") {
         val completion = takeCompletion() ?: return
+        // Log only the winning terminal event, not a callback arriving after local cancellation.
+        runCatching {
+            Log.d("SourceHttpEngine", "terminal=$origin headers=${completion.responseDelivered} " +
+                "error=${failure.javaClass.simpleName} reason=${failure.message}")
+        }
         completion.timeout?.cancel(false)
         completion.body?.fail(failure)
         resumeHeaderFailure(failure, completion)
@@ -191,7 +204,9 @@ internal class HttpEngineUploadProvider(private val bytes: ByteArray) : UploadDa
         val count = minOf(destination.remaining(), bytes.size - offset)
         if (count > 0) destination.put(bytes, offset, count)
         offset += count
-        sink.onReadSucceeded(offset == bytes.size)
+        // getLength() declares a fixed-length upload. Cronet rejects `finalChunk=true` for this
+        // mode; the engine detects completion from the declared byte count.
+        sink.onReadSucceeded(false)
     }
 
     override fun rewind(sink: UploadDataSink) {

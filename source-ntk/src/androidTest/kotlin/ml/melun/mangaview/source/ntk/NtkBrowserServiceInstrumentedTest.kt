@@ -36,6 +36,37 @@ class NtkBrowserServiceInstrumentedTest {
 
     @Test
     fun messengerRejectsMalformedRequestAndEchoesItsIdentity() {
+        exchange(NtkBrowserProtocol.MSG_ERROR, REQUEST_ID) { callback ->
+            Message.obtain(null, NtkBrowserProtocol.MSG_RESOLVE).apply {
+                replyTo = callback
+                data = Bundle().apply {
+                    putLong(NtkBrowserProtocol.KEY_REQUEST_ID, REQUEST_ID)
+                    putString(NtkBrowserProtocol.KEY_ORIGIN, "file:///invalid")
+                    putString(NtkBrowserProtocol.KEY_PATH, "/episode")
+                    putString(NtkBrowserProtocol.KEY_USER_AGENT, "test-agent")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun cancellationOfAbsentRequestAcknowledgesOnlyThatRequest() {
+        exchange(NtkBrowserProtocol.MSG_REQUEST_DETACHED, REQUEST_ID) { callback ->
+            NtkBrowserIpcMessages.control(NtkBrowserProtocol.MSG_CANCEL, REQUEST_ID, callback)
+        }
+        exchange(NtkBrowserProtocol.MSG_REQUEST_DETACHED, REQUEST_ID) { callback ->
+            NtkBrowserIpcMessages.control(NtkBrowserProtocol.MSG_QUIESCE, REQUEST_ID, callback)
+        }
+    }
+
+    @Test
+    fun invalidCancellationCannotReceiveSuccessfulDetachAcknowledgement() {
+        exchange(NtkBrowserProtocol.MSG_ERROR, INVALID_REQUEST_ID) { callback ->
+            NtkBrowserIpcMessages.control(NtkBrowserProtocol.MSG_CANCEL, INVALID_REQUEST_ID, callback)
+        }
+    }
+
+    private fun exchange(expectedWhat: Int, expectedId: Long, request: (Messenger) -> Message) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val connected = CountDownLatch(1)
         val replied = CountDownLatch(1)
@@ -67,18 +98,10 @@ class NtkBrowserServiceInstrumentedTest {
         try {
             assertTrue(bound)
             assertTrue(connected.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
-            remote?.send(Message.obtain(null, NtkBrowserProtocol.MSG_RESOLVE).apply {
-                replyTo = callback
-                data = Bundle().apply {
-                    putLong(NtkBrowserProtocol.KEY_REQUEST_ID, REQUEST_ID)
-                    putString(NtkBrowserProtocol.KEY_ORIGIN, "file:///invalid")
-                    putString(NtkBrowserProtocol.KEY_PATH, "/episode")
-                    putString(NtkBrowserProtocol.KEY_USER_AGENT, "test-agent")
-                }
-            })
+            requireNotNull(remote).send(request(callback))
             assertTrue(replied.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
-            assertEquals(NtkBrowserProtocol.MSG_ERROR, responseWhat.get())
-            assertEquals(REQUEST_ID, responseId.get())
+            assertEquals(expectedWhat, responseWhat.get())
+            assertEquals(expectedId, responseId.get())
         } finally {
             if (bound) context.unbindService(connection)
             callbackThread.quitSafely()

@@ -29,3 +29,9 @@
 
 -keep class com.google.gson.reflect.TypeToken { *; }
 -keep class * extends com.google.gson.reflect.TypeToken
+
+# gl_presentation_callback.cpp resolves this callback by name/signature through JNI.
+# Its only caller is native code, so R8 cannot infer that the method is live.
+-keepclassmembers class ml.melun.mangaview.viewer.runtime.OwnedRendererCallback {
+    public void onFramePresented(long, long, int, long);
+}

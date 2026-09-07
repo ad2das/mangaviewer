@@ -13,11 +13,10 @@ import android.widget.TextView
 import java.util.ArrayDeque
 import kotlin.math.abs
 import ml.melun.mangaview.viewer.runtime.ViewerChromeState
-import ml.melun.mangaview.viewer.runtime.ViewerCanvasView
 
 internal class ViewerChromeController(
     private val activity: ViewerActivity,
-    private val surface: ViewerCanvasView,
+    private val surface: View,
     private val snapshot: () -> ViewerChromeState?,
     private val actions: Actions,
 ) {

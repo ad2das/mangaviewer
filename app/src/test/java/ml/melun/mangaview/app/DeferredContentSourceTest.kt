@@ -50,7 +50,12 @@ class DeferredContentSourceTest {
     @Test
     fun closeBeforeLazyUsePreventsInitialization() = runTest {
         val initializations = AtomicInteger()
-        val source = DeferredContentSource(SOURCE_ID, this) {
+        val activations = AtomicInteger()
+        val source = DeferredContentSource(
+            id = SOURCE_ID,
+            scope = this,
+            beforeFirstStart = { activations.incrementAndGet() },
+        ) {
             initializations.incrementAndGet()
             DeferredSourceResource(FakeContentSource()) {}
         }
@@ -60,6 +65,7 @@ class DeferredContentSourceTest {
 
         assertTrue(failure is CancellationException)
         assertEquals(0, initializations.get())
+        assertEquals(0, activations.get())
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -119,8 +125,13 @@ class DeferredContentSourceTest {
     @Test
     fun concurrentCallersShareOnePublishedResource() = runTest {
         val initializations = AtomicInteger()
+        val activations = AtomicInteger()
         val closes = AtomicInteger()
-        val source = DeferredContentSource(SOURCE_ID, this) {
+        val source = DeferredContentSource(
+            id = SOURCE_ID,
+            scope = this,
+            beforeFirstStart = { activations.incrementAndGet() },
+        ) {
             initializations.incrementAndGet()
             DeferredSourceResource(FakeContentSource()) { closes.incrementAndGet() }
         }
@@ -130,11 +141,64 @@ class DeferredContentSourceTest {
         source.close()
 
         assertEquals(1, initializations.get())
+        assertEquals(1, activations.get())
         assertEquals(1, closes.get())
+    }
+
+    @Test
+    fun failedFirstStartHookCanRetryBeforeInitializingTheDelegate() = runTest {
+        val activations = AtomicInteger()
+        val initializations = AtomicInteger()
+        val source = DeferredContentSource(
+            id = SOURCE_ID,
+            scope = this,
+            beforeFirstStart = {
+                if (activations.incrementAndGet() == 1) {
+                    throw IllegalStateException("warm failed")
+                }
+            },
+        ) {
+            initializations.incrementAndGet()
+            DeferredSourceResource(FakeContentSource()) {}
+        }
+
+        assertTrue(
+            runCatching { source.manifest(EPISODE_ID) }.exceptionOrNull() is IllegalStateException,
+        )
+        assertEquals(1, activations.get())
+        assertEquals(0, initializations.get())
+
+        assertEquals(EPISODE_ID, source.manifest(EPISODE_ID).id)
+        assertEquals(2, activations.get())
+        assertEquals(1, initializations.get())
+        source.close()
+    }
+
+    @Test
+    fun prepareActivatesBeforeProviderSpecificPreparation() = runTest {
+        val events = mutableListOf<String>()
+        val source = DeferredContentSource(
+            id = SOURCE_ID,
+            scope = this,
+            preInitializationPrepare = { _, _ -> events += "provider-prepare" },
+            beforeFirstStart = { events += "first-start" },
+        ) {
+            events += "initialize"
+            DeferredSourceResource(FakeContentSource { events += "source-prepare" }) {}
+        }
+
+        source.prepare(EPISODE_ID, PreparationIntent.INITIAL_VIEW)
+
+        assertEquals(
+            listOf("first-start", "provider-prepare", "initialize", "source-prepare"),
+            events,
+        )
+        source.close()
     }
 
     private class FakeContentSource(
         override val id: SourceId = SOURCE_ID,
+        private val onPrepare: () -> Unit = {},
     ) : ContentSource {
         override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest = EpisodeManifest(
             episodeId,
@@ -152,7 +216,7 @@ class DeferredContentSourceTest {
 
         override suspend fun adjacent(episodeId: EpisodeId): AdjacentEpisodes = unsupported()
 
-        override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) = Unit
+        override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) = onPrepare()
 
         override suspend fun openPage(
             pageId: PageId,

@@ -129,10 +129,24 @@ class NtkDocumentParserTest {
 
         val result = parser.manifest(NtkEpisodeDocument("https://ntk.test", "/webtoon/18190/1518441", html))
 
-        assertEquals(1, result.directPages.size)
+        assertTrue(result.directPages.isEmpty())
         assertNotNull(result.descriptor)
         assertEquals(3, result.descriptor?.expectedPageCount)
-        assertTrue(result.directPages.single().url.contains("real-page-001.jpg"))
+    }
+
+    @Test
+    fun unprotectedDomPagesRetainOrderSourcePrecedenceAndBlockedContextFilter() {
+        val html = """
+            <aside class="advert"><img src="https://cdn.test/webtoon_uploads/wrong.jpg"></aside>
+            <img data-src="https://cdn.test/webtoon_uploads/p2.jpg"
+                 src="https://cdn.test/webtoon_uploads/p2-small.jpg">
+            <img src="/webtoon_uploads/p1.jpg">
+        """.trimIndent()
+        val result = parser.manifest(NtkEpisodeDocument("https://ntk.test", "/webtoon/work/episode", html))
+
+        assertNull(result.descriptor)
+        assertEquals(listOf("https://cdn.test/webtoon_uploads/p2.jpg",
+            "https://ntk.test/webtoon_uploads/p1.jpg"), result.directPages.map { it.url })
     }
 
     @Test

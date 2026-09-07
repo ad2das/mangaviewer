@@ -11,28 +11,34 @@ import java.net.URI
 
 internal class NtkBrowserGatewayClient(
     private val currentRequest: () -> RemoteRequest?,
+    private val staticResources: NtkBrowserStaticResourceCache?,
     private val startAuthorization: (RemoteRequest) -> Unit,
     private val deliverDescriptor: (RemoteRequest) -> Unit,
+    private val episodeResponse: (WebResourceRequest) -> WebResourceResponse?,
+    private val runtimeWarmResponse: (WebResourceRequest) -> WebResourceResponse?,
+    private val runtimeWarmFinished: (String) -> Unit,
+    private val runtimeWarmFailed: () -> Unit,
     private val fail: (RemoteRequest, String) -> Unit,
     private val rendererGone: (WebView, RemoteRequest?) -> Unit,
 ) : WebViewClient() {
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
         currentRequest()?.let { request ->
-            val redirected = runCatching { URI(url) }.getOrNull()
-            val expected = runCatching { URI(request.key) }.getOrNull()
-            if (redirected?.scheme in HTTP_SCHEMES && redirected?.path == expected?.path) {
-                request.key = validatedKey(
-                    "${redirected?.scheme}://${redirected?.authority}",
-                    requireNotNull(redirected?.path),
-                )
-            }
+            if (!request.documentNavigationStarted || !request.documentCookiesApplied || keyOf(url) != request.key) return
+            request.browserDocumentStarted = true
+            startAuthorization(request)
+            deliverDescriptor(request)
             if (!request.captureInstalledAtDocumentStart) {
-                view.evaluateJavascript(NtkBrowserCaptureScript.source, null)
+                view.evaluateJavascript(
+                    NtkBrowserCaptureScript.boundSource(request,
+                        NtkBrowserCaptureScript.source + "\n" + NtkBrowserManifestRequest.source),
+                    null,
+                )
             }
         }
     }
 
     override fun onPageFinished(view: WebView, url: String) {
+        runtimeWarmFinished(url)
         val request = currentRequest() ?: return
         if (keyOf(url) != request.key) return
         view.clearHistory()
@@ -46,7 +52,10 @@ internal class NtkBrowserGatewayClient(
     override fun shouldInterceptRequest(
         view: WebView,
         request: WebResourceRequest,
-    ): WebResourceResponse? = NtkBrowserResourcePolicy.intercept(request)
+    ): WebResourceResponse? = episodeResponse(request)
+        ?: runtimeWarmResponse(request)
+        ?: staticResources?.intercept(request)
+        ?: NtkBrowserResourcePolicy.intercept(request)
 
     override fun onReceivedError(
         view: WebView,
@@ -54,6 +63,7 @@ internal class NtkBrowserGatewayClient(
         error: WebResourceError,
     ) {
         if (!request.isForMainFrame) return
+        runtimeWarmFailed()
         currentRequest()?.takeIf { it.key == request.url.withoutQuery() }?.let {
             fail(it, "NTK browser load failed: ${error.errorCode}")
         }

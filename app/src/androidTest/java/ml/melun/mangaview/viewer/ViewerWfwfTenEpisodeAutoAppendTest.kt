@@ -9,15 +9,30 @@ import org.junit.runner.RunWith
 class ViewerWfwfTenEpisodeAutoAppendTest {
     @Test
     fun tenConsecutiveEpisodesAppendUnderContinuousRealGestures() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val arguments = InstrumentationRegistry.getArguments()
         ViewerTenEpisodeAutoAppendHarness(
-            instrumentation = InstrumentationRegistry.getInstrumentation(),
-            artifactPrefix = "wfwf-ten-episode-auto-append",
+            instrumentation = instrumentation,
+            artifactPrefix = arguments.getString(ARG_ARTIFACT_PREFIX)
+                ?: "wfwf-ten-episode-auto-append",
+            requiredEpisodes = arguments.getString(ARG_REQUIRED_EPISODES)
+                ?.toIntOrNull()
+                ?.takeIf { it > 0 }
+                ?: DEFAULT_REQUIRED_EPISODES,
         ).run(
             LiveEpisode(
                 sourceId = "wfwf",
-                seriesKey = "comic:10007",
-                episodeKey = "28",
+                seriesKey = arguments.getString(ARG_SERIES_KEY) ?: "comic:10007",
+                episodeKey = arguments.getString(ARG_EPISODE_KEY) ?: "28",
             ),
         )
+    }
+
+    private companion object {
+        const val ARG_SERIES_KEY = "wfwfSeriesKey"
+        const val ARG_EPISODE_KEY = "wfwfEpisodeKey"
+        const val ARG_ARTIFACT_PREFIX = "wfwfArtifactPrefix"
+        const val ARG_REQUIRED_EPISODES = "wfwfRequiredEpisodes"
+        const val DEFAULT_REQUIRED_EPISODES = 10
     }
 }

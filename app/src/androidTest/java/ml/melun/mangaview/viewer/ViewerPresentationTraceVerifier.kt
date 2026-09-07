@@ -1,6 +1,7 @@
 package ml.melun.mangaview.viewer
 
 import ml.melun.mangaview.viewer.runtime.NativePresentationEvidence
+import ml.melun.mangaview.viewer.runtime.PresentationTimestampKind
 
 internal object ViewerPresentationTraceVerifier {
     fun verify(
@@ -16,11 +17,26 @@ internal object ViewerPresentationTraceVerifier {
         gestureWindows: Collection<PresentationGestureWindow>,
     ): List<String> {
         val violations = mutableListOf<String>()
+        evidence.firstOrNull { it.timestampKind != PresentationTimestampKind.DISPLAY_PRESENT }?.let {
+            violations += "Actual display presentation is unverified: timestampKind=${it.timestampKind}"
+        }
+        val firstReadablePresentation = evidence.asSequence()
+            .filter(NativePresentationEvidence::readableActualContent)
+            .minOfOrNull(NativePresentationEvidence::presentedNanos)
         gestureWindows.sortedBy { it.range.first }.forEach { window ->
             val active = evidence.filter { it.presentedNanos in window.range }
             if (active.isEmpty()) {
                 violations.addOnce(
                     "A real gesture window had no Surface presentation evidence: ${window.range}",
+                )
+            }
+            val firstPixelsAreDue = firstReadablePresentation == null ||
+                window.range.last >= firstReadablePresentation
+            if (firstPixelsAreDue && active.isNotEmpty() &&
+                active.none(NativePresentationEvidence::readableActualContent)
+            ) {
+                violations.addOnce(
+                    "A real gesture window never presented readable image pixels: ${window.range}",
                 )
             }
             active.firstOrNull { !it.fullVisualCoverage }?.let { sample ->
@@ -52,6 +68,18 @@ internal object ViewerPresentationTraceVerifier {
     ) {
         trace.zipWithNext().forEach { (before, after) ->
             if (before.anchorOrdinal < 0 || after.anchorOrdinal < 0) return@forEach
+            if (before.scrollCause != null && after.scrollCause != null &&
+                before.userInputRevision == after.userInputRevision
+            ) {
+                val unchangedGeometry = before.geometryRevision == after.geometryRevision
+                if (unchangedGeometry && before.scrollOffsetUnits != after.scrollOffsetUnits) {
+                    violations.addOnce("Presented position changed without input or geometry change: ${before.describe()} -> ${after.describe()}")
+                } else if (!unchangedGeometry && before.anchorOrdinal == after.anchorOrdinal &&
+                    before.anchorOffsetUnits != after.anchorOffsetUnits
+                ) {
+                    violations.addOnce("Geometry correction moved the preserved intra-page anchor without input: ${before.describe()} -> ${after.describe()}")
+                }
+            }
             val comparison = semanticPositionComparison(before, after)
             if (direction == TelemetryDirection.FORWARD && comparison < 0) {
                 violations.addOnce(
@@ -88,7 +116,14 @@ internal object ViewerPresentationTraceVerifier {
         before: NativePresentationEvidence,
         after: NativePresentationEvidence,
     ): Boolean {
-        val delta = absoluteDifference(after.scrollOffsetUnits, before.scrollOffsetUnits)
+        // Global content offsets legitimately change when dimensions above the preserved anchor
+        // resolve. Within one semantic page, the anchor-local offset is geometry-independent and
+        // therefore the only sound distance proof available in this trace.
+        val stableGeometry = before.scrollCause != null && after.scrollCause != null &&
+            before.geometryRevision == after.geometryRevision
+        if (!stableGeometry && before.anchorOrdinal != after.anchorOrdinal) return false
+        val delta = if (stableGeometry) absoluteDifference(after.scrollOffsetUnits, before.scrollOffsetUnits)
+            else absoluteDifference(after.anchorOffsetUnits, before.anchorOffsetUnits)
         if (delta == 0L) return false
         val elapsed = (after.presentedNanos - before.presentedNanos).coerceAtLeast(0L)
         val velocityAllowance = multiplyDivideSaturated(

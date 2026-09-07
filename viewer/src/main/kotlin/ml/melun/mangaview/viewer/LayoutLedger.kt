@@ -33,6 +33,16 @@ class LayoutLedger private constructor(
 
     fun heightOf(pageId: PageId): FixedPx? = indexById[pageId]?.let { entries[it].height }
 
+    /** A saved pixel can be deeper than an unknown page's estimate; metadata alone resolves it. */
+    fun reserveUnknownHeight(pageId: PageId, minimum: FixedPx): LayoutLedger {
+        val index = indexById[pageId] ?: return this
+        val current = entries[index]
+        if (current.resolvedDimensions != null || current.height >= minimum) return this
+        val replacement = current.copy(height = minimum)
+        return LayoutLedger(viewportWidth, entries.set(index, replacement), indexById,
+            heights.update(index, minimum.units))
+    }
+
     fun pageAt(contentOffset: FixedPx): PageId? {
         if (entries.isEmpty()) return null
         val target = contentOffset.units.coerceIn(0L, (totalHeight.units - 1L).coerceAtLeast(0L))
@@ -82,7 +92,9 @@ class LayoutLedger private constructor(
         if (width == viewportWidth) return this
         val resized = entries.map { entry ->
             val dimensions = entry.resolvedDimensions ?: entry.spec.dimensions
-            entry.copy(height = dimensions?.let { scaledHeight(width, it) } ?: fallbackHeight(width))
+            entry.copy(height = dimensions?.let { scaledHeight(width, it) } ?: FixedPx(
+                multiplyDivideFloorExact(entry.height.units, width.units, viewportWidth.units),
+            ))
         }
         return rebuild(resized, width)
     }

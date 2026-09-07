@@ -26,6 +26,12 @@ interface ContentSource {
 
     suspend fun adjacent(episodeId: EpisodeId): AdjacentEpisodes
 
+    /** Returns only already-known adjacency; implementations must not start network I/O here. */
+    suspend fun knownAdjacent(episodeId: EpisodeId): AdjacentEpisodes? = null
+
+    /** Returns an already-loaded forward sequence without starting catalog network I/O. */
+    suspend fun knownForward(episodeId: EpisodeId, limit: Int): List<EpisodeId> = emptyList()
+
     suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent)
 
     suspend fun openPage(

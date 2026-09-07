@@ -4,8 +4,9 @@ import java.util.ArrayDeque
 import kotlin.math.max
 import ml.melun.mangaview.viewer.runtime.NativePresentationEvidence
 import ml.melun.mangaview.viewer.runtime.NativePresentationEvidencePacking
+import ml.melun.mangaview.viewer.runtime.PresentationTimestampKind
 
-internal class ViewerPresentationRecorder {
+internal class ViewerPresentationRecorder(private val nanoTime: () -> Long = System::nanoTime) {
     private val presentationLock = Any()
     private val motionLock = Any()
     private val gestureLock = Any()
@@ -22,10 +23,15 @@ internal class ViewerPresentationRecorder {
     private val expectedPresentationTimes = LongArray(MAX_PRESENTATION_SAMPLES)
     private val presentationLatencies = LongArray(MAX_PRESENTATION_SAMPLES)
     private val presentationSubmittedAt = LongArray(MAX_PRESENTATION_SAMPLES)
+    private val presentationBufferIds = LongArray(MAX_PRESENTATION_SAMPLES)
+    private val presentationGeometryRevisions = LongArray(MAX_PRESENTATION_SAMPLES)
+    private val presentationInputRevisions = LongArray(MAX_PRESENTATION_SAMPLES)
+    private val presentationScrollCauses = LongArray(MAX_PRESENTATION_SAMPLES)
     private val renderAt = LongArray(MAX_PRESENTATION_SAMPLES)
     private val renderLatency = LongArray(MAX_PRESENTATION_SAMPLES)
     private val motionSequences = LongArray(MAX_PRESENTATION_SAMPLES)
     private val motionFrames = LongArray(MAX_PRESENTATION_SAMPLES)
+    private val motionAppliedAt = LongArray(MAX_PRESENTATION_SAMPLES)
     private var presentationWriteIndex = 0
     private var presentationCount = 0
     private var presentationSequence = 0L
@@ -44,7 +50,6 @@ internal class ViewerPresentationRecorder {
     }
 
     fun recordPresentation(evidence: NativePresentationEvidence): Boolean {
-        if (evidence.presentedNanos <= 0L) return false
         return synchronized(presentationLock) {
             val index = presentationWriteIndex
             presentations[index] = evidence.presentedNanos
@@ -60,13 +65,19 @@ internal class ViewerPresentationRecorder {
             expectedPresentationTimes[index] = evidence.expectedPresentationTimeNanos
             presentationLatencies[index] = evidence.renderLatencyNanos
             presentationSubmittedAt[index] = evidence.submittedAtNanos
+            presentationBufferIds[index] = evidence.bufferFrameId
+            presentationGeometryRevisions[index] = evidence.geometryRevision
+            presentationInputRevisions[index] = evidence.userInputRevision
+            presentationScrollCauses[index] = evidence.scrollCause?.ordinal?.toLong() ?: -1L
             presentationWriteIndex = (presentationWriteIndex + 1) % MAX_PRESENTATION_SAMPLES
             presentationCount = minOf(presentationCount + 1, MAX_PRESENTATION_SAMPLES)
             presentationSequence += 1L
-            if (evidence.renderLatencyNanos >= 0L) {
+            if (evidence.renderLatencyNanos >= 0L && evidence.presentedNanos > 0L) {
                 recordRender(evidence.presentedNanos, evidence.renderLatencyNanos)
             }
-            if (!evidence.readableActualContent || reportedUiEpoch == requestedUiEpoch) false else {
+            if (evidence.presentedNanos <= 0L || !evidence.readableActualContent ||
+                evidence.timestampKind != PresentationTimestampKind.DISPLAY_PRESENT ||
+                reportedUiEpoch == requestedUiEpoch) false else {
                 reportedUiEpoch = requestedUiEpoch
                 true
             }
@@ -87,11 +98,15 @@ internal class ViewerPresentationRecorder {
         }
     }
 
-    fun recordMotionFrame(sequence: Long, atNanos: Long) {
-        if (sequence <= 0L || atNanos <= 0L) return
+    fun recordMotionFrame(sequence: Long, frameTimeNanos: Long) {
+        // The callback runs on main after applying the scroll. Choreographer's VSYNC can
+        // precede the input event, so it cannot measure when the input actually took effect.
+        val appliedAtNanos = nanoTime()
+        if (sequence <= 0L || frameTimeNanos <= 0L) return
         synchronized(motionLock) {
             motionSequences[motionWriteIndex] = sequence
-            motionFrames[motionWriteIndex] = atNanos
+            motionFrames[motionWriteIndex] = frameTimeNanos
+            motionAppliedAt[motionWriteIndex] = appliedAtNanos
             motionWriteIndex = (motionWriteIndex + 1) % MAX_PRESENTATION_SAMPLES
             motionCount = minOf(motionCount + 1, MAX_PRESENTATION_SAMPLES)
             motionSequence += 1L
@@ -133,6 +148,10 @@ internal class ViewerPresentationRecorder {
             output[target + 10] = presentationVsyncIds[source]
             output[target + 11] = expectedPresentationTimes[source]
             output[target + 12] = presentationSubmittedAt[source]
+            output[target + 13] = presentationBufferIds[source]
+            output[target + 14] = presentationGeometryRevisions[source]
+            output[target + 15] = presentationInputRevisions[source]
+            output[target + 16] = presentationScrollCauses[source]
         }
         output
     }
@@ -157,6 +176,10 @@ internal class ViewerPresentationRecorder {
                 output[target + 10] = presentationVsyncIds[source]
                 output[target + 11] = expectedPresentationTimes[source]
                 output[target + 12] = presentationSubmittedAt[source]
+                output[target + 13] = presentationBufferIds[source]
+                output[target + 14] = presentationGeometryRevisions[source]
+                output[target + 15] = presentationInputRevisions[source]
+                output[target + 16] = presentationScrollCauses[source]
             }
             ViewerPresentationBatch(presentationSequence, output, range.dropped)
         }
@@ -186,12 +209,14 @@ internal class ViewerPresentationRecorder {
     fun motionFramesSince(afterSequence: Long): ViewerMotionBatch = synchronized(motionLock) {
         val range = unreadRange(afterSequence, motionSequence, motionCount)
         val output = LongArray(range.count * 2)
+        val appliedAt = LongArray(range.count)
         repeat(range.count) { offset ->
             val source = ringIndex(range.firstSequence + offset)
             output[offset * 2] = motionSequences[source]
             output[offset * 2 + 1] = motionFrames[source]
+            appliedAt[offset] = motionAppliedAt[source]
         }
-        ViewerMotionBatch(motionSequence, output, range.dropped)
+        ViewerMotionBatch(motionSequence, output, range.dropped, appliedAt)
     }
 
     fun gestureSnapshot(): List<LongRange> = synchronized(gestureLock) { gestureWindows.toList() }
@@ -243,4 +268,5 @@ internal data class ViewerMotionBatch(
     val nextSequence: Long,
     val packed: LongArray,
     val dropped: Boolean,
+    val applicationTimestamps: LongArray,
 )

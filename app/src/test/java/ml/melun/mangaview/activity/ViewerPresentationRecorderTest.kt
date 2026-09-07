@@ -2,11 +2,37 @@ package ml.melun.mangaview.activity
 
 import ml.melun.mangaview.viewer.runtime.NativePresentationEvidence
 import ml.melun.mangaview.viewer.runtime.NativePresentationEvidencePacking
+import ml.melun.mangaview.viewer.runtime.PresentationTimestampKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ViewerPresentationRecorderTest {
+    @Test
+    fun terminalMissingTimestampIsPreservedAsFailureEvidence() {
+        val recorder = ViewerPresentationRecorder()
+        val sample = evidence(true).copy(presentedNanos = 0L,
+            timestampKind = PresentationTimestampKind.UNAVAILABLE)
+        assertEquals(false, recorder.recordPresentation(sample))
+        assertEquals(sample, NativePresentationEvidencePacking.decode(
+            recorder.presentationEvidenceSnapshot(),
+        ).single())
+    }
+
+    @Test
+    fun fallbackTimingIsRetainedButNeverReportsAFirstDisplayedImage() {
+        PresentationTimestampKind.entries.filter { it != PresentationTimestampKind.DISPLAY_PRESENT }
+            .forEach { kind ->
+                val recorder = ViewerPresentationRecorder()
+                recorder.beginUiEpoch()
+                val sample = evidence(true).copy(timestampKind = kind)
+                assertEquals(false, recorder.recordPresentation(sample))
+                assertEquals(sample, NativePresentationEvidencePacking.decode(
+                    recorder.presentationEvidenceSnapshot(),
+                ).single())
+            }
+    }
+
     @Test
     fun boundedEvidenceSnapshotPreservesTokenSemanticsAndCoverage() {
         val recorder = ViewerPresentationRecorder()
@@ -41,14 +67,38 @@ class ViewerPresentationRecorderTest {
 
     @Test
     fun incrementalMotionBatchesUseAnIndependentCursor() {
-        val recorder = ViewerPresentationRecorder()
+        var callbackTime = 150L
+        val recorder = ViewerPresentationRecorder { callbackTime }
         recorder.recordMotionFrame(1L, 100L)
         val first = recorder.motionFramesSince(0L)
+        callbackTime = 450L
         recorder.recordMotionFrame(2L, 200L)
         val second = recorder.motionFramesSince(first.nextSequence)
 
         assertEquals(listOf(1L, 100L), first.packed.toList())
         assertEquals(listOf(2L, 200L), second.packed.toList())
+        assertEquals(listOf(150L), first.applicationTimestamps.toList())
+        assertEquals(listOf(450L), second.applicationTimestamps.toList())
+    }
+
+    @Test
+    fun wrappedMotionEvidenceKeepsActualApplicationTimesAlignedWithVsyncSamples() {
+        var callbackTime = 0L
+        val recorder = ViewerPresentationRecorder { callbackTime }
+        repeat(8_200) { index ->
+            callbackTime = (index + 1L) * 100L + 37L
+            recorder.recordMotionFrame(index + 1L, (index + 1L) * 100L)
+        }
+
+        val batch = recorder.motionFramesSince(0L)
+        assertTrue(batch.dropped)
+        assertEquals(8_192, batch.applicationTimestamps.size)
+        batch.applicationTimestamps.forEachIndexed { index, applied ->
+            assertEquals(batch.packed[index * 2 + 1] + 37L, applied)
+        }
+        val unread = recorder.motionFramesSince(batch.nextSequence)
+        assertTrue(unread.packed.isEmpty())
+        assertTrue(unread.applicationTimestamps.isEmpty())
     }
 
     private fun decodeTimes(packed: LongArray): List<Long> =
@@ -67,5 +117,6 @@ class ViewerPresentationRecorderTest {
         readableActualContent = readable,
         fullVisualCoverage = true,
         fullActualCoverage = false,
+        timestampKind = PresentationTimestampKind.DISPLAY_PRESENT,
     )
 }

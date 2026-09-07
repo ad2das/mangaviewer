@@ -104,14 +104,12 @@ class WfwfHtmlParser {
     fun pageImages(document: Document): List<String> {
         val primary = document.select(CONTENT_IMAGE_SELECTORS)
             .filterNot(::hasBlockedContext)
-            .flatMap(::imageCandidates)
-            .filter(::isPageImage)
+            .mapNotNull(::pageImage)
         val candidates = if (primary.isNotEmpty()) primary else {
             document.select("body img")
                 .filter(::hasLazyPageSource)
                 .filterNot(::hasBlockedContext)
-                .flatMap(::imageCandidates)
-                .filter(::isPageImage)
+                .mapNotNull(::pageImage)
         }
         return candidates.map { URI(document.baseUri()).resolve(it).toString() }.distinct()
     }
@@ -158,6 +156,14 @@ class WfwfHtmlParser {
 
     private fun imageCandidates(element: Element): List<String> = IMAGE_ATTRIBUTES.mapNotNull { attribute ->
         element.attr(attribute).trim().takeIf(String::isNotEmpty)
+    }
+
+    private fun pageImage(element: Element): String? = imageCandidates(element).firstNotNullOfOrNull { candidate ->
+        if (!isPageImage(candidate)) null else runCatching {
+            URI(element.baseUri()).resolve(candidate).takeIf {
+                it.scheme in setOf("http", "https") && !it.host.isNullOrBlank()
+            }?.toString()
+        }.getOrNull()
     }
 
     private fun hasLazyPageSource(element: Element): Boolean =
@@ -222,7 +228,7 @@ class WfwfHtmlParser {
     }
 
     private fun episodeTitle(link: Element): String =
-        link.selectFirst(".subject")?.ownText()?.clean() ?: link.ownText().clean()
+        link.selectFirst(".ep-title, .subject")?.text()?.clean() ?: link.ownText().clean()
 
     private fun isEpisodeEntry(link: Element, title: String): Boolean {
         if (NON_EPISODE_LABELS.any(title::contains)) return false
@@ -299,7 +305,7 @@ class WfwfHtmlParser {
             "최신화 보기", "첫화부터", "처음부터", "정주행", "이어보기", "전체보기", "목록으로",
         )
         val NON_EPISODE_CONTEXT = listOf(
-            "quick-read", "quick_read", "shortcut", "hero-action", "read-action",
+            "quick-read", "quick_read", "shortcut", "hero-action", "read-action", "title-btns", "tbtn-first",
         )
         val NON_SERIES_TITLES = setOf(
             "업데이트", "최신 업데이트", "전체", "웹툰", "만화", "목록", "더보기",

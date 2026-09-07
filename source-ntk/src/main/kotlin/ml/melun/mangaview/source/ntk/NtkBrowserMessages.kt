@@ -11,26 +11,46 @@ import ml.melun.mangaview.source.PreparationIntent
 
 internal data class RemoteRequest(
     val requestId: Long,
-    var key: String,
+    val key: String,
     val userAgent: String,
     val intent: PreparationIntent,
+    val fingerprint: String?,
+    val persistentId: String?,
     val startedAtMillis: Long,
     val recipients: MutableMap<Long, Messenger>,
     val delivery: NtkManifestDelivery = NtkManifestDelivery(),
     var captureInstalledAtDocumentStart: Boolean = false,
     var authorizationStarted: Boolean = false,
-    var descriptor: RemoteDescriptor? = null,
+    var authorizationObserved: Boolean = false,
+    @Volatile var descriptor: RemoteDescriptor? = null,
+    @Volatile var document: NtkBrowserDocumentPayload? = null,
+    var documentCookiesApplied: Boolean = false,
+    var identityCookiesApplied: Boolean = false,
+    var documentEpoch: Long = 0L,
     var descriptorDelivered: Boolean = false,
-    var descriptorApplying: Boolean = false,
     var rendererRestarts: Int = 0,
     var deliveryRedrives: Int = 0,
     var ackReadyReported: Boolean = false,
+    var manifestDescriptorInstalled: Boolean = false,
+    var challengePreflightStarted: Boolean = false,
+    var challengePreflightResolved: Boolean = false,
+    var challengePayload: String? = null,
+    var challengeReceivedAtMillis: Long = 0L,
+    val adjacentChallenges: MutableMap<String, NtkAdjacentChallengeFlight> = linkedMapOf(),
+    val inheritedChallengeRequestIds: MutableSet<Long> = linkedSetOf(),
+    var documentNavigationStarted: Boolean = false,
+    var browserDocumentStarted: Boolean = false,
+    var ackState: NtkAckPreparationState = NtkAckPreparationState.COLD,
+    val captureEvidence: Boolean = false,
 ) {
     val primaryRecipient: Messenger
         get() = requireNotNull(recipients[requestId])
 
     val origin: String
         get() = URI(key).let { uri -> "${uri.scheme}://${uri.authority}" }
+
+    val path: String
+        get() = requireNotNull(URI(key).path)
 
     fun add(id: Long, recipient: Messenger) {
         recipients[id] = recipient
@@ -58,6 +78,10 @@ internal data class RemoteRequest(
         recipients.forEach { (id, recipient) -> sendAckReady(id, recipient) }
     }
 
+    fun advanceAckState(next: NtkAckPreparationState) {
+        if (next.ordinal > ackState.ordinal) ackState = next
+    }
+
     fun ageMillis(): Long = SystemClock.elapsedRealtime() - startedAtMillis
 
     companion object {
@@ -71,18 +95,48 @@ internal data class RemoteRequest(
             val intent = PreparationIntent.valueOf(
                 message.data.requiredString(NtkBrowserProtocol.KEY_PREPARATION_INTENT),
             )
+            val fingerprint = message.data.getString(NtkBrowserProtocol.KEY_FINGERPRINT)
+            val persistentId = message.data.getString(NtkBrowserProtocol.KEY_PERSISTENT_ID)
+            require((fingerprint == null) == (persistentId == null)) {
+                "NTK browser identity is incomplete"
+            }
+            require(fingerprint == null || HEX_BROWSER_ID.matches(fingerprint)) {
+                "NTK browser fingerprint is invalid"
+            }
+            require(persistentId == null || HEX_BROWSER_ID.matches(persistentId)) {
+                "NTK browser persistent id is invalid"
+            }
             require(userAgent.length <= MAX_USER_AGENT_LENGTH) { "NTK user agent is too long" }
             return RemoteRequest(
                 requestId = requestId,
                 key = validatedKey(origin, path),
                 userAgent = userAgent,
                 intent = intent,
+                fingerprint = fingerprint,
+                persistentId = persistentId,
                 startedAtMillis = SystemClock.elapsedRealtime(),
+                captureEvidence = message.data.getBoolean(NtkBrowserProtocol.KEY_CAPTURE_EVIDENCE, false),
                 recipients = linkedMapOf(requestId to recipient),
-            )
+            ).also { request ->
+                NtkTrace.emit(
+                    "browser-request-admitted",
+                    NtkTraceContext(
+                        requestId = request.requestId,
+                        sourceEpisodeId = request.path,
+                        episodePath = request.path,
+                        documentEpoch = request.documentEpoch,
+                    ),
+                    role = "browser",
+                )
+            }
         }
     }
 }
+
+internal data class NtkAdjacentChallengeFlight(
+    var started: Boolean = false,
+    var resolved: Boolean = false,
+)
 
 internal data class RemoteDescriptor(
     val workId: String,
@@ -90,27 +144,18 @@ internal data class RemoteDescriptor(
     val token: String,
     val apiPath: String,
     val expectedPageCount: Int?,
-    val responseCookies: List<String>,
 ) {
     companion object {
         fun from(data: Bundle): RemoteDescriptor {
             val expected = data.getInt(NtkBrowserProtocol.KEY_EXPECTED_COUNT, UNKNOWN_PAGE_COUNT)
             val apiPath = data.requiredString(NtkBrowserProtocol.KEY_API_PATH)
             require(apiPath in IMAGE_API_PATHS) { "NTK descriptor API path is invalid" }
-            val cookies = data.getStringArrayList(NtkBrowserProtocol.KEY_RESPONSE_COOKIES)
-                .orEmpty()
-                .filter(String::isNotBlank)
-            require(cookies.size <= MAX_RESPONSE_COOKIES) { "NTK descriptor supplied too many cookies" }
-            require(cookies.all { it.length <= MAX_COOKIE_LENGTH }) {
-                "NTK descriptor supplied an oversized cookie"
-            }
             return RemoteDescriptor(
                 workId = data.requiredString(NtkBrowserProtocol.KEY_WORK_ID),
                 episodeId = data.requiredString(NtkBrowserProtocol.KEY_EPISODE_ID),
                 token = data.requiredString(NtkBrowserProtocol.KEY_TOKEN),
                 apiPath = apiPath,
                 expectedPageCount = expected.takeIf { it > 0 },
-                responseCookies = cookies,
             )
         }
     }
@@ -156,6 +201,38 @@ internal fun sendAckReady(requestId: Long, recipient: Messenger) {
     sendResponse(NtkBrowserProtocol.MSG_ACK_READY, requestId, recipient) {}
 }
 
+internal fun sendRequestDetached(requestId: Long, recipient: Messenger) {
+    sendResponse(NtkBrowserProtocol.MSG_REQUEST_DETACHED, requestId, recipient) {}
+}
+
+internal fun sendDocumentRetired(requestId: Long, recipient: Messenger) {
+    sendResponse(NtkBrowserProtocol.MSG_DOCUMENT_RETIRED, requestId, recipient) {}
+}
+
+internal fun sendDocumentRequestReady(requestId: Long, recipient: Messenger) {
+    sendResponse(NtkBrowserProtocol.MSG_DOCUMENT_REQUEST_READY, requestId, recipient) {}
+}
+
+internal fun sendWarmPhase(
+    recipient: Messenger,
+    phase: String,
+    status: Int,
+    ageMillis: Long,
+) {
+    val response = Message.obtain(null, NtkBrowserProtocol.MSG_WARM_PHASE).apply {
+        data = Bundle().apply {
+            putString(NtkBrowserProtocol.KEY_PHASE, phase.take(MAX_PHASE_LENGTH))
+            putInt(NtkBrowserProtocol.KEY_STATUS, status)
+            putLong(NtkBrowserProtocol.KEY_AGE_MILLIS, ageMillis.coerceAtLeast(0L))
+        }
+    }
+    try {
+        recipient.send(response)
+    } catch (failure: RemoteException) {
+        Log.w(TAG, "warm phase recipient disappeared", failure)
+    }
+}
+
 private fun sendResponse(
     what: Int,
     requestId: Long,
@@ -181,9 +258,9 @@ internal const val MIN_BROWSER_WIDTH_PX = 360
 internal const val MIN_BROWSER_HEIGHT_PX = 640
 internal const val MAX_USER_AGENT_LENGTH = 2_048
 internal const val UNKNOWN_PAGE_COUNT = -1
-internal const val MAX_RESPONSE_COOKIES = 24
-internal const val MAX_COOKIE_LENGTH = 4_096
 internal const val MAX_RENDERER_RESTARTS = 1
 private const val MAX_ERROR_LENGTH = 1_024
+private const val MAX_PHASE_LENGTH = 96
 internal val IMAGE_API_PATHS = setOf("/api/webtoon-images", "/api/manhwa-images")
 internal val HTTP_SCHEMES = setOf("http", "https")
+private val HEX_BROWSER_ID = Regex("^[a-f0-9]{32}$")

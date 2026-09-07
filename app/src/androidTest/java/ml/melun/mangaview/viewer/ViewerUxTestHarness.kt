@@ -583,6 +583,8 @@ internal class ViewerUxTestHarness(
             motionFrameSamples = presentation.motionFrames,
             refreshPeriodNanos = presentation.refreshPeriodNanos,
             windowFrameSamples = windowFrameRecorder?.snapshot() ?: LongArray(0),
+            motionApplicationTimestamps = presentation.motionApplications,
+            injectedGestureStarts = gestures.map(GestureMeasurement::startedAtNanos).toLongArray(),
         )
     }
 
@@ -608,12 +610,14 @@ internal class ViewerUxTestHarness(
     ): PresentationSnapshot {
         val result = AtomicReference<PresentationSnapshot>()
         scenario.onActivity { activity ->
+            val motion = activity.motionFramesSince(0L)
             result.set(PresentationSnapshot(
                 activity.presentationNanosSnapshot(),
                 activity.presentationCadenceNanosSnapshot(),
                 activity.presentationEvidenceSnapshot(),
                 activity.renderSamplesSnapshot(),
-                activity.motionFrameNanosSnapshot(),
+                motion.packed,
+                motion.applicationTimestamps,
                 activity.presentationRefreshPeriodNanos(),
                 activity.gestureWindowsSnapshot(),
             ))
@@ -677,7 +681,7 @@ internal class ViewerUxTestHarness(
             violations += "Motion missed-frame ratio ${motion.missedFrameRatio} is not below 1%"
         }
         if (motion.freezeCount > limits.maximumFreezeCount ||
-            motion.responseFreezeCount > limits.maximumFreezeCount
+            motion.responseFreezeCount > limits.maximumFreezeCount || motion.tailFreezeCount > limits.maximumFreezeCount
         ) {
             violations += "Choreographer motion stalled during a real gesture"
         }
@@ -698,6 +702,9 @@ internal class ViewerUxTestHarness(
         }
         if (surface.responseFreezeCount > limits.maximumFreezeCount) {
             violations += "${surface.responseFreezeCount} gestures waited at least 100ms for their first Surface presentation"
+        }
+        if (surface.tailFreezeCount > limits.maximumFreezeCount) {
+            violations += "${surface.tailFreezeCount} gesture tails froze after their last Surface presentation"
         }
     }
 
@@ -748,6 +755,7 @@ internal class ViewerUxTestHarness(
         val presentationEvidence: LongArray,
         val renderSamples: LongArray,
         val motionFrames: LongArray,
+        val motionApplications: LongArray,
         val refreshPeriodNanos: Long,
         val gestureWindows: List<LongRange>,
     )

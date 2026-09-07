@@ -69,8 +69,9 @@ internal data class ViewerUxResult(
 internal class ViewerUxArtifacts(
     context: Context,
     prefix: String,
+    parentDirectory: File? = null,
 ) {
-    val directory: File = requireNotNull(context.getExternalFilesDir("ux-evidence"))
+    val directory: File = (parentDirectory ?: requireNotNull(context.getExternalFilesDir("ux-evidence")))
         .resolve("$prefix-${SystemClock.elapsedRealtime()}")
         .apply { check(mkdirs() || isDirectory) }
 
@@ -184,6 +185,8 @@ internal class ViewerUxArtifacts(
         .put("p95ResponseNanos", p95ResponseNanos)
         .put("maximumResponseNanos", maximumResponseNanos)
         .put("responseFreezeCount", responseFreezeCount)
+        .put("maximumTailNanos", maximumTailNanos)
+        .put("tailFreezeCount", tailFreezeCount)
 
     private fun HomeRoundTripMeasurement.toJson(): JSONObject = JSONObject()
         .put("previousDescriptionTimestampMillis", previousDescriptionTimestampMillis)

@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <service
+            android:name="ml.melun.mangaview.source.ntk.NtkEngineBrowserService"
+            android:exported="false"
+            android:process=":ntk_browser"
+            android:stopWithTask="true" />
+        <service
             android:name="ml.melun.mangaview.source.ntk.NtkBrowserService"
             android:exported="false"
             android:process=":ntk_browser"

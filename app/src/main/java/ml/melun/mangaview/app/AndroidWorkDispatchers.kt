@@ -4,20 +4,24 @@ import android.os.Process
 import java.io.Closeable
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.withContext
 
 internal class AndroidWorkDispatcher(
     name: String,
     threads: Int,
     linuxPriority: Int = Process.THREAD_PRIORITY_BACKGROUND,
 ) : Closeable {
-    private val dispatcher: ExecutorCoroutineDispatcher = Executors.newFixedThreadPool(
+    private val executor = Executors.newFixedThreadPool(
         threads,
         AndroidPriorityThreadFactory(name, linuxPriority),
-    ).asCoroutineDispatcher()
+    )
+    private val dispatcher: ExecutorCoroutineDispatcher = executor.asCoroutineDispatcher()
 
     init {
         require(threads > 0) { "Worker thread count must be positive" }
@@ -27,6 +31,18 @@ internal class AndroidWorkDispatcher(
         get() = dispatcher
 
     override fun close() = dispatcher.close()
+
+    val isTerminated: Boolean get() = executor.isTerminated
+
+    suspend fun closeAndAwait(timeoutMillis: Long = 5_000) {
+        require(timeoutMillis > 0)
+        close()
+        withContext(Dispatchers.IO) {
+            check(executor.awaitTermination(timeoutMillis, TimeUnit.MILLISECONDS)) {
+                "Worker dispatcher did not terminate within ${timeoutMillis}ms"
+            }
+        }
+    }
 }
 
 internal class AppWorkDispatchers : Closeable {
@@ -45,7 +61,9 @@ internal class AppWorkDispatchers : Closeable {
     }
 
     private companion object {
-        const val SOURCE_THREADS = 2
+        // PageRepository can own six network flights. Fewer source workers serialized blocking
+        // response-prefix validation before the transport scheduler could apply its priorities.
+        const val SOURCE_THREADS = 6
         const val IO_THREADS = 6
     }
 }

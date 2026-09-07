@@ -2,6 +2,7 @@ package ml.melun.mangaview.source.wfwf
 
 import java.util.ArrayDeque
 import java.io.IOException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.core.EpisodeId
@@ -14,6 +15,7 @@ import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
+import ml.melun.mangaview.source.SourcePageUnavailableException
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.SeriesKind
@@ -24,7 +26,35 @@ import org.junit.Test
 
 class WfwfContentSourceTest {
     @Test
-    fun deadReusableImageRouteIsRetiredBeforeOneSequentialRetry() = runTest {
+    fun oneImageElementContributesOnePageDespiteMultipleValidSources() {
+        val document = org.jsoup.Jsoup.parse("""
+            <div class="viewer-wrap">
+              <img data-original="/pages/p1.jpg" data-src="/pages/p1-alt.jpg" src="/pages/p1-small.jpg">
+              <img data-src="/assets/loading.png" src="/pages/p2.jpg">
+              <img data-lazy-src="/pages/p3.jpg" src="/assets/blank.png">
+            </div>
+        """, "https://wfwf.test/view?toon=1&num=2")
+        assertEquals(listOf(1, 2, 3).map { "https://wfwf.test/pages/p$it.jpg" },
+            WfwfHtmlParser().pageImages(document))
+    }
+
+    @Test
+    fun refreshedProvider404IsReportedAsUnavailableInsteadOfRetriedForever() = runTest {
+        val transport = MissingPageTransport()
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
+        val episode = EpisodeId(series, "1")
+        val page = source.manifest(episode).pages.single().id
+
+        val failure = runCatching { source.openPage(page).close() }.exceptionOrNull()
+
+        assertTrue(failure is SourcePageUnavailableException)
+        assertEquals(2, transport.documentRequests)
+        assertEquals(1, transport.pageRequests)
+    }
+
+    @Test
+    fun deadReusableImageRouteFallsThroughToTheFreshHedge() = runTest {
         val transport = RouteRecoveryTransport()
         val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
         val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
@@ -34,12 +64,12 @@ class WfwfContentSourceTest {
         source.openPage(PageId.at(episode, 0), null, PageFetchPriority.VISIBLE).close()
 
         assertEquals(2, transport.pageAttempts)
-        assertEquals(1, transport.retiredRoutes)
+        assertEquals(0, transport.retiredRoutes)
         assertEquals(1, transport.freshRouteAttempts)
     }
 
     @Test
-    fun silentVisibleImageRouteIsCanceledBeforeFreshSequentialRetry() = runTest {
+    fun silentVisibleImageRouteLosesToTheFreshParallelHedge() = runTest {
         val transport = RouteRecoveryTransport(hangFirstPage = true)
         val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
         val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
@@ -49,8 +79,57 @@ class WfwfContentSourceTest {
         source.openPage(PageId.at(episode, 0), null, PageFetchPriority.VISIBLE).close()
 
         assertEquals(2, transport.pageAttempts)
-        assertEquals(1, transport.retiredRoutes)
+        assertEquals(0, transport.retiredRoutes)
         assertEquals(1, transport.freshRouteAttempts)
+    }
+
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun focusImageUsesAllIndependentRoutesWithoutAStagger() = runTest {
+        val transport = IndependentVisibleRoutesTransport()
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
+        val episode = EpisodeId(series, "1")
+        source.manifest(episode)
+
+        source.openPage(PageId.at(episode, 0), null, PageFetchPriority.FOCUS).close()
+
+        assertEquals(listOf("primary", "fresh", "alternate"), transport.pageRoutes.sortedBy {
+            listOf("primary", "fresh", "alternate").indexOf(it)
+        })
+        assertEquals(0L, testScheduler.currentTime)
+    }
+
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun focusImageRacesIndependentProtocolPoolsWithoutAStagger() = runTest {
+        val transport = IndependentProtocolRoutesTransport()
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
+        val episode = EpisodeId(series, "1")
+        source.manifest(episode)
+
+        source.openPage(PageId.at(episode, 0), null, PageFetchPriority.FOCUS).close()
+
+        assertEquals(listOf("primary", "fresh"), transport.pageRoutes.sortedBy {
+            listOf("primary", "fresh").indexOf(it)
+        })
+        assertEquals(0L, testScheduler.currentTime)
+    }
+
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun visibleNeighborDoesNotDuplicateAHealthyPrimaryRoute() = runTest {
+        val transport = HealthyIndependentRoutesTransport()
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
+        val episode = EpisodeId(series, "1")
+        source.manifest(episode)
+
+        source.openPage(PageId.at(episode, 0), null, PageFetchPriority.VISIBLE).close()
+
+        assertEquals(listOf("primary"), transport.pageRoutes)
+        assertEquals(0L, testScheduler.currentTime)
     }
 
     @Test
@@ -351,6 +430,41 @@ class WfwfContentSourceTest {
     }
 }
 
+private class MissingPageTransport : SourceTransport {
+    var documentRequests = 0
+    var pageRequests = 0
+
+    override suspend fun execute(request: SourceRequest): SourceResponse {
+        return if (java.net.URI(request.url).host == "cdn.example") {
+            pageRequests += 1
+            SourceResponse(
+                statusCode = 404,
+                finalUrl = request.url,
+                headers = emptyMap(),
+                body = BytesStream(ByteArray(0)),
+                contentLength = 0L,
+                contentType = null,
+            )
+        } else {
+            documentRequests += 1
+            val bytes = """
+                <div class="viewer-wrap">
+                  <img data-src="https://cdn.example/missing.jpg">
+                </div>
+                <div class="vnav-row"></div>
+            """.trimIndent().toByteArray()
+            SourceResponse(
+                statusCode = 200,
+                finalUrl = request.url,
+                headers = mapOf("Content-Type" to listOf("text/html; charset=utf-8")),
+                body = BytesStream(bytes),
+                contentLength = bytes.size.toLong(),
+                contentType = "text/html; charset=utf-8",
+            )
+        }
+    }
+}
+
 private class RouteRecoveryTransport(
     private val hangFirstPage: Boolean = false,
 ) : SourceTransport {
@@ -382,6 +496,110 @@ private class RouteRecoveryTransport(
             <div class="vnav-row"></div>
         """.trimIndent().toByteArray()
         return response(request.url, document, "text/html; charset=utf-8")
+    }
+
+    private fun response(url: String, bytes: ByteArray, type: String) = SourceResponse(
+        statusCode = 200,
+        finalUrl = url,
+        headers = mapOf("Content-Type" to listOf(type)),
+        body = BytesStream(bytes),
+        contentLength = bytes.size.toLong(),
+        contentType = type,
+    )
+}
+
+private class IndependentVisibleRoutesTransport : SourceTransport {
+    val pageRoutes = mutableListOf<String>()
+
+    override fun routeParallelism(): Int = 3
+
+    override suspend fun execute(request: SourceRequest): SourceResponse = page(request, "primary")
+
+    override suspend fun executeOnFreshRoute(request: SourceRequest): SourceResponse = page(request, "fresh")
+
+    override suspend fun executeOnAlternateRoute(request: SourceRequest): SourceResponse = page(request, "alternate")
+
+    private suspend fun page(request: SourceRequest, route: String): SourceResponse {
+        if (java.net.URI(request.url).host != "cdn.example") {
+            val document = """
+                <div class="viewer-wrap"><img data-src="https://cdn.example/page.jpg"></div>
+                <div class="vnav-row"></div>
+            """.trimIndent().toByteArray()
+            return response(request.url, document, "text/html; charset=utf-8")
+        }
+        pageRoutes += route
+        if (route != "alternate") awaitCancellation()
+        return response(request.url, byteArrayOf(1, 2, 3), "image/jpeg")
+    }
+
+    private fun response(url: String, bytes: ByteArray, type: String) = SourceResponse(
+        statusCode = 200,
+        finalUrl = url,
+        headers = mapOf("Content-Type" to listOf(type)),
+        body = BytesStream(bytes),
+        contentLength = bytes.size.toLong(),
+        contentType = type,
+    )
+}
+
+private class IndependentProtocolRoutesTransport : SourceTransport {
+    val pageRoutes = mutableListOf<String>()
+
+    override fun routeParallelism(): Int = 2
+
+    override fun supportsProtocolSelection(): Boolean = true
+
+    override suspend fun execute(request: SourceRequest): SourceResponse = page(request, "primary")
+
+    override suspend fun executeOnFreshRoute(request: SourceRequest): SourceResponse = page(request, "fresh")
+
+    override suspend fun executeOnAlternateRoute(request: SourceRequest): SourceResponse =
+        page(request, "alternate")
+
+    private suspend fun page(request: SourceRequest, route: String): SourceResponse {
+        if (java.net.URI(request.url).host != "cdn.example") {
+            val document = """
+                <div class="viewer-wrap"><img data-src="https://cdn.example/page.jpg"></div>
+                <div class="vnav-row"></div>
+            """.trimIndent().toByteArray()
+            return response(request.url, document, "text/html; charset=utf-8")
+        }
+        pageRoutes += route
+        if (route != "fresh") awaitCancellation()
+        return response(request.url, byteArrayOf(1, 2, 3), "image/jpeg")
+    }
+
+    private fun response(url: String, bytes: ByteArray, type: String) = SourceResponse(
+        statusCode = 200,
+        finalUrl = url,
+        headers = mapOf("Content-Type" to listOf(type)),
+        body = BytesStream(bytes),
+        contentLength = bytes.size.toLong(),
+        contentType = type,
+    )
+}
+
+private class HealthyIndependentRoutesTransport : SourceTransport {
+    val pageRoutes = mutableListOf<String>()
+
+    override fun routeParallelism(): Int = 3
+
+    override suspend fun execute(request: SourceRequest): SourceResponse = page(request, "primary")
+
+    override suspend fun executeOnFreshRoute(request: SourceRequest): SourceResponse = page(request, "fresh")
+
+    override suspend fun executeOnAlternateRoute(request: SourceRequest): SourceResponse = page(request, "alternate")
+
+    private fun page(request: SourceRequest, route: String): SourceResponse {
+        if (java.net.URI(request.url).host != "cdn.example") {
+            val document = """
+                <div class="viewer-wrap"><img data-src="https://cdn.example/page.jpg"></div>
+                <div class="vnav-row"></div>
+            """.trimIndent().toByteArray()
+            return response(request.url, document, "text/html; charset=utf-8")
+        }
+        pageRoutes += route
+        return response(request.url, byteArrayOf(1, 2, 3), "image/jpeg")
     }
 
     private fun response(url: String, bytes: ByteArray, type: String) = SourceResponse(

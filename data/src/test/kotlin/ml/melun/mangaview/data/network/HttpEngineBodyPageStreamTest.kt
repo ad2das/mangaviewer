@@ -22,6 +22,33 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class HttpEngineBodyPageStreamTest {
     @Test
+    fun directReadBufferReturnsOnlyAfterNetworkAndConsumerBothFinish() = runTest {
+        val buffer = ByteBuffer.allocateDirect(HttpEngineBodyPageStream.READ_BUFFER_BYTES)
+        var released = 0
+        lateinit var stream: HttpEngineBodyPageStream
+        stream = HttpEngineBodyPageStream(
+            expectedLength = 1L,
+            requestRead = { destination ->
+                destination.put(1)
+                stream.onReadCompleted(destination)
+            },
+            cancelExchange = stream@{ failure -> stream.fail(failure) },
+            finished = {},
+            readBuffer = buffer,
+            releaseReadBuffer = { released += 1 },
+        )
+        val destination = ByteArray(1)
+
+        assertEquals(1, stream.readAtMost(destination, 0, 1))
+        stream.completeSuccess()
+        assertEquals(0, released)
+        stream.close()
+        assertEquals(1, released)
+        stream.close()
+        assertEquals(1, released)
+    }
+
+    @Test
     fun totalTimeoutIncludesSetupTimeAndCannotOverflow() {
         assertEquals(45_000_000_000L, httpEngineRemainingTimeoutNanos(45_000L, 10L, 10L))
         assertEquals(1L, httpEngineRemainingTimeoutNanos(1L, 10L, 1_000_009L))
@@ -80,6 +107,32 @@ class HttpEngineBodyPageStreamTest {
         assertEquals(0, fixture.cancelCount)
         fixture.stream.close()
         assertEquals(1, fixture.finishedCount)
+    }
+
+    @Test
+    fun readBufferIsNotMutatedUntilTheCallbackSerialDispatcherRuns() = runTest {
+        val queued = ArrayDeque<() -> Unit>()
+        val buffer = ByteBuffer.allocateDirect(HttpEngineBodyPageStream.READ_BUFFER_BYTES)
+        var requested = false
+        val stream = HttpEngineBodyPageStream(
+            expectedLength = null,
+            requestRead = { requested = true },
+            cancelExchange = {},
+            finished = {},
+            readBuffer = buffer,
+            dispatchRead = queued::addLast,
+        )
+
+        val read = async { stream.readAtMost(ByteArray(7), 0, 7) }
+        runCurrent()
+
+        assertEquals(buffer.capacity(), buffer.limit())
+        assertTrue(!requested)
+        queued.removeFirst().invoke()
+        assertEquals(7, buffer.limit())
+        assertTrue(requested)
+        read.cancelAndJoin()
+        stream.close()
     }
 
     @Test

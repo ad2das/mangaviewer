@@ -19,6 +19,8 @@ internal data class FrameTimingSummary(
     val p95ResponseNanos: Long? = null,
     val maximumResponseNanos: Long? = null,
     val responseFreezeCount: Int = 0,
+    val maximumTailNanos: Long? = null,
+    val tailFreezeCount: Int = 0,
 ) {
     val p95Millis: Double? get() = p95Nanos?.div(NANOS_PER_MILLISECOND)
     val maximumMillis: Double? get() = maximumNanos?.div(NANOS_PER_MILLISECOND)
@@ -57,6 +59,8 @@ internal class ViewerFrameStats(
         motionFrameSamples: LongArray,
         refreshPeriodNanos: Long,
         windowFrameSamples: LongArray,
+        motionApplicationTimestamps: LongArray,
+        injectedGestureStarts: LongArray,
     ): FrameStatsSnapshot {
         val gfxRaw = shell("dumpsys gfxinfo $packageName framestats")
         val gfxFile = File(artifactDirectory, "gfxinfo-framestats.txt").apply {
@@ -79,8 +83,21 @@ internal class ViewerFrameStats(
                 .filter { it.size == 2 }
                 .joinToString("\n") { "${it[0]}\t${it[1]}" },
         )
+        require(motionApplicationTimestamps.size * 2 == motionFrameSamples.size)
+        File(artifactDirectory, "motion-input-application-timestamps.tsv").writeText(
+            "motionSequence\tframeTimeNanos\tappliedAtNanos\n" +
+                motionApplicationTimestamps.indices.joinToString("\n") { index ->
+                    "${motionFrameSamples[index * 2]}\t${motionFrameSamples[index * 2 + 1]}\t" +
+                        motionApplicationTimestamps[index]
+                },
+        )
+        File(artifactDirectory, "injected-input-starts.txt").writeText(
+            injectedGestureStarts.joinToString("\n"),
+        )
         return FrameStatsSnapshot(
-            gfx = ViewerFrameStatsParser.parseGfx(gfxRaw, startedAtNanos, interactionWindows),
+            gfx = ViewerFrameStatsParser.parseWindowFrames(
+                windowFrameSamples, startedAtNanos, interactionWindows, refreshPeriodNanos,
+            ),
             render = ViewerFrameStatsParser.parseRender(
                 renderSamples,
                 startedAtNanos,
@@ -92,16 +109,17 @@ internal class ViewerFrameStats(
                 startedAtNanos,
                 interactionWindows,
                 refreshPeriodNanos,
+                motionApplicationTimestamps,
+                injectedGestureStarts,
             ),
-            surface = ViewerFrameStatsParser.parseWindowFrames(
-                windowFrameSamples,
+            surface = ViewerFrameStatsParser.parseSurface(
+                surfaceRaw,
                 startedAtNanos,
                 interactionWindows,
-                refreshPeriodNanos,
             ),
             surfaceLayer = NATIVE_PRESENTATION_SOURCE,
             gfxRawFile = gfxFile,
-            surfaceRawFile = windowFrameFile,
+            surfaceRawFile = surfaceFile,
         )
     }
 
@@ -119,7 +137,7 @@ internal class ViewerFrameStats(
     }
 
     private companion object {
-        const val NATIVE_PRESENTATION_SOURCE = "HWUI Window FrameMetrics"
+        const val NATIVE_PRESENTATION_SOURCE = "Viewer Surface buffer posts"
     }
 }
 
@@ -173,26 +191,34 @@ internal object ViewerFrameStatsParser {
         startedAtNanos: Long,
         interactionWindows: List<LongRange>,
         refreshPeriodNanos: Long,
+        applicationTimestamps: LongArray,
+        injectedGestureStarts: LongArray,
     ): FrameTimingSummary {
-        val windows = interactionWindows.validAfter(startedAtNanos)
-        val groupedFrames = motionSamples(packedSamples, startedAtNanos)
-            .groupBy(MotionFrameSample::sequence)
-            .mapValues { (_, samples) -> samples.map(MotionFrameSample::timestamp).distinct().sorted() }
-        val frames = groupedFrames.values.asSequence().flatten()
-            .distinct()
-            .sorted()
-            .toList()
-        val responseSamples = presentationSamples(frames, windows)
-        val cadence = groupedFrames.values.flatMap { sequenceFrames ->
-            presentationSamples(sequenceFrames, windows).cadence
+        require(applicationTimestamps.size * 2 == packedSamples.size) {
+            "Every motion frame needs its actual application timestamp"
         }
+        require(injectedGestureStarts.size == interactionWindows.size) {
+            "Every observed gesture needs its injected start timestamp"
+        }
+        val windows = interactionWindows.validAfter(startedAtNanos)
+        // Sequence identifies a drained motion batch, not an entire gesture. A new batch can
+        // arrive on every VSYNC; gesture windows define the independent cadence intervals.
+        val frames = motionSamples(packedSamples, startedAtNanos)
+            .map(MotionFrameSample::timestamp).distinct().sorted()
+        val applied = applicationTimestamps.filter { it >= startedAtNanos }.distinct().sorted()
+        val responses = interactionWindows.mapIndexedNotNull { index, window ->
+            val injectedAt = injectedGestureStarts[index]
+            require(injectedAt > 0L && injectedAt <= window.first)
+            applied.firstOrNull { it in window }?.minus(injectedAt)
+        }
+        val cadence = presentationSamples(frames, windows).cadence
         return summarize(
             source = MOTION_FRAME_SOURCE,
             durations = cadence,
             refreshPeriodNanos = refreshPeriodNanos,
             windows = windows,
-            sampleTimestamps = frames,
-            responses = responseSamples.firstResponses,
+            sampleTimestamps = applied,
+            responses = responses,
             missedFrameCounting = MissedFrameCounting.CADENCE,
         )
     }
@@ -351,13 +377,18 @@ internal object ViewerFrameStatsParser {
         val sorted = durations.sorted()
         val sortedResponses = responses.sorted()
         val budget = refreshPeriodNanos ?: DEFAULT_REFRESH_PERIOD_NANOS
+        val tails = if (missedFrameCounting == MissedFrameCounting.CADENCE) {
+            windows.mergeOverlaps().map { window ->
+                window.last - (sampleTimestamps.lastOrNull { it in window } ?: window.first)
+            }
+        } else emptyList()
         return FrameTimingSummary(
             source = source,
             sampleCount = sorted.size,
             refreshPeriodNanos = refreshPeriodNanos,
             p95Nanos = sorted.percentile(95),
             maximumNanos = sorted.lastOrNull(),
-            missedFrameCount = sorted.fold(0L) { total, duration ->
+            missedFrameCount = (sorted + tails).fold(0L) { total, duration ->
                 (total + missedFrames(duration, budget, missedFrameCounting))
                     .coerceAtMost(Int.MAX_VALUE.toLong())
             }.toInt(),
@@ -368,6 +399,8 @@ internal object ViewerFrameStatsParser {
             p95ResponseNanos = sortedResponses.percentile(95),
             maximumResponseNanos = sortedResponses.lastOrNull(),
             responseFreezeCount = sortedResponses.count { it >= FREEZE_NANOS },
+            maximumTailNanos = tails.maxOrNull(),
+            tailFreezeCount = tails.count { it >= FREEZE_NANOS },
         )
     }
 

@@ -10,7 +10,9 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.data.db.RawPageDao
 import ml.melun.mangaview.data.db.RawPageEntity
@@ -30,6 +32,7 @@ class RawPageStore(
     private val trimMutex = Mutex()
     private val activeWriteKeys = mutableSetOf<String>()
     private val activeWriteLock = Any()
+    private val transferBuffers = PageTransferBufferPool(BUFFER_SIZE, MAX_CONCURRENT_TRANSFERS)
     @Volatile
     private var bootstrapState = CacheBootstrapState.UNKNOWN
 
@@ -53,7 +56,11 @@ class RawPageStore(
         entity.toCachedPage(pageId, file).also { recent[key] = it }
     }
 
-    override suspend fun write(pageId: PageId, openedPage: OpenedPage): CachedPage =
+    override suspend fun write(
+        pageId: PageId,
+        openedPage: OpenedPage,
+        onPreview: ((PageTransferPreview) -> Unit)?,
+    ): CachedPage =
         withContext(ioDispatcher) {
             ensureRoot()
             val key = PageCacheKey.of(pageId)
@@ -62,9 +69,17 @@ class RawPageStore(
             val staging = File(root, "$key.${UUID.randomUUID()}.part")
             var published = false
             try {
-                val result = streamToFile(openedPage, staging)
+                val result = streamToFile(pageId, openedPage, staging, onPreview)
                 publisher.publish(staging, destination)
                 published = true
+                // Streaming previews point at the staging pathname. Publishing is an atomic
+                // rename, so a decoder that was queued behind network I/O can no longer open
+                // that pathname after the transfer finishes. Publish one final notification
+                // with the stable cache pathname; the conflated preview queue then replaces any
+                // stale staging notification without copying the encoded body.
+                if (onPreview != null && result.header.supportsVerifiedPrefixDecode) {
+                    onPreview(PageTransferPreview(pageId, destination, result.byteCount, result.header))
+                }
                 val entity = result.toEntity(pageId, key, destination.name, nowMillis())
                 indexWriter.upsert(entity)
                 val cached = entity.toCachedPage(pageId, destination).also { recent[key] = it }
@@ -115,21 +130,39 @@ class RawPageStore(
     private fun multiplyFraction(value: Long, percent: Int): Long =
         (value / 100L) * percent + (value % 100L) * percent / 100L
 
-    private suspend fun streamToFile(openedPage: OpenedPage, destination: File): WriteResult {
+    private suspend fun streamToFile(
+        pageId: PageId,
+        openedPage: OpenedPage,
+        destination: File,
+        onPreview: ((PageTransferPreview) -> Unit)?,
+    ): WriteResult {
         val digest = MessageDigest.getInstance("SHA-256")
         val headerProbe = IncrementalHeaderProbe(MAX_HEADER_BYTES)
         var total = 0L
+        var nextPreviewAt = PREVIEW_INTERVAL_BYTES
         FileOutputStream(destination).use { output ->
-            val buffer = ByteArray(BUFFER_SIZE)
             while (true) {
-                val count = openedPage.stream.readAtMost(buffer, 0, buffer.size)
-                if (count < 0) break
-                require(count > 0) { "Page stream returned zero bytes" }
-                total = Math.addExact(total, count.toLong())
-                require(total <= MAX_PAGE_BYTES) { "Encoded page exceeds the size limit" }
-                digest.update(buffer, 0, count)
-                headerProbe.accept(buffer, count)
-                output.write(buffer, 0, count)
+                openedPage.stream.awaitReadable()
+                val finished = transferBuffers.use read@ { buffer ->
+                    val count = openedPage.stream.readAtMost(buffer, 0, buffer.size)
+                    if (count < 0) return@read true
+                    require(count > 0) { "Page stream returned zero bytes" }
+                    total = Math.addExact(total, count.toLong())
+                    require(total <= MAX_PAGE_BYTES) { "Encoded page exceeds the size limit" }
+                    digest.update(buffer, 0, count)
+                    headerProbe.accept(buffer, count)
+                    output.write(buffer, 0, count)
+                    val previewHeader = headerProbe.value
+                    if (onPreview != null && previewHeader?.supportsVerifiedPrefixDecode == true &&
+                        total >= nextPreviewAt
+                    ) {
+                        output.flush()
+                        onPreview(PageTransferPreview(pageId, destination, total, previewHeader))
+                        nextPreviewAt = Math.addExact(total, PREVIEW_INTERVAL_BYTES)
+                    }
+                    false
+                }
+                if (finished) break
             }
         }
         validateLength(openedPage, total)
@@ -145,7 +178,10 @@ class RawPageStore(
     }
 
     private fun ensureRoot() {
-        require(root.exists() && root.isDirectory || root.mkdirs()) { "Page cache root is unavailable" }
+        if (root.isDirectory || root.mkdirs()) return
+        // Concurrent first writes may both observe a missing directory. One mkdir wins and the
+        // other returns false even though the required directory now exists.
+        require(root.isDirectory) { "Page cache root is unavailable" }
     }
 
     private fun wasEmptyAtFirstLookup(): Boolean {
@@ -222,7 +258,9 @@ class RawPageStore(
     )
 
     private companion object {
-        const val BUFFER_SIZE = 128 * 1_024
+        const val BUFFER_SIZE = 512 * 1_024
+        const val MAX_CONCURRENT_TRANSFERS = 6
+        const val PREVIEW_INTERVAL_BYTES = 128L * 1_024L
         const val HEADER_INITIAL_BYTES = 4 * 1_024
         const val MAX_HEADER_BYTES = 1 * 1_024 * 1_024
         const val MAX_PAGE_BYTES = 512L * 1_024L * 1_024L
@@ -234,6 +272,31 @@ class RawPageStore(
         UNKNOWN,
         EMPTY,
         INDEXED,
+    }
+}
+
+/** Keeps large transfer arrays out of the managed-heap allocation/GC path during long episodes. */
+internal class PageTransferBufferPool(
+    private val bufferBytes: Int,
+    maximumConcurrentTransfers: Int,
+) {
+    private val lanes = Semaphore(maximumConcurrentTransfers)
+    private val available = ArrayDeque<ByteArray>(maximumConcurrentTransfers)
+
+    init {
+        require(bufferBytes > 0)
+        require(maximumConcurrentTransfers > 0)
+    }
+
+    suspend fun <T> use(block: suspend (ByteArray) -> T): T = lanes.withPermit {
+        val buffer = synchronized(available) {
+            if (available.isEmpty()) ByteArray(bufferBytes) else available.removeFirst()
+        }
+        try {
+            block(buffer)
+        } finally {
+            synchronized(available) { available.addLast(buffer) }
+        }
     }
 }
 
@@ -307,13 +370,16 @@ internal class RawPageIndexWriter(private val dao: RawPageDao) {
     }
 }
 
-private class IncrementalHeaderProbe(private val maximumBytes: Int) {
+internal class IncrementalHeaderProbe(private val maximumBytes: Int) {
     private var bytes = ByteArray(minOf(INITIAL_BYTES, maximumBytes))
     private var used = 0
     private var header: ImageHeader? = null
 
     val complete: Boolean
         get() = header != null || used == maximumBytes
+
+    val value: ImageHeader?
+        get() = header
 
     fun accept(source: ByteArray, count: Int) {
         require(count in 0..source.size)

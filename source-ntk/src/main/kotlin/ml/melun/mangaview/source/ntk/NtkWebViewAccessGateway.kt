@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import ml.melun.mangaview.source.PreparationIntent
 
@@ -27,6 +26,7 @@ import ml.melun.mangaview.source.PreparationIntent
 class NtkWebViewAccessGateway(
     context: Context,
     private val userAgent: String,
+    private val identity: NtkBrowserIdentity? = null,
     private val serviceClass: Class<out android.app.Service> = NtkBrowserService::class.java,
 ) : NtkAccessGateway {
     private val appContext = context.applicationContext
@@ -35,19 +35,22 @@ class NtkWebViewAccessGateway(
     private val requestIds = AtomicLong(SystemClock.elapsedRealtimeNanos().coerceAtLeast(1L))
     private val parser = NtkBrowserManifestParser()
     private val callbackThread = HandlerThread("ntk-browser-ipc").apply { start() }
-    private val callback = Messenger(IncomingHandler(callbackThread.looper))
+    private val callback = Messenger(NtkGatewayIncomingHandler(callbackThread.looper, ::accept))
     private var remote: Messenger? = null
     private var bound = false
     private var binding = false
     private var warmRequested = false
     private var warmSent = false
+    private var warmOrigin: String? = null
     private var active: BrowserRequest? = null
 
     /** Starts the isolated browser runtime without navigating or touching the caller UI thread. */
-    fun warm() {
+    fun warm(origin: String) {
         if (closed.get()) return
+        val validatedOrigin = validatedKey(origin, "/").removeSuffix("/")
         synchronized(lock) {
             warmRequested = true
+            warmOrigin = validatedOrigin
             ensureBoundLocked()
             sendWarmLocked()
         }
@@ -61,6 +64,15 @@ class NtkWebViewAccessGateway(
         val key = runCatching { validatedKey(origin, episodePath) }.getOrNull() ?: return false
         val pending = synchronized(lock) { active?.takeIf { it.key == key } } ?: return false
         return pending.awaitAuthorization()
+    }
+
+    override fun isAuthorizationReady(origin: String, episodePath: String): Boolean {
+        val key = runCatching { validatedKey(origin, episodePath) }.getOrNull() ?: return false
+        return synchronized(lock) {
+            active?.takeIf { it.key == key }?.authorization?.let { authorization ->
+                authorization.isCompleted && !authorization.isCancelled
+            } == true
+        }
     }
 
     override suspend fun resolve(
@@ -88,20 +100,11 @@ class NtkWebViewAccessGateway(
     }
 
     private suspend fun awaitPayload(pending: BrowserRequest): String {
-        val first = withTimeoutOrNull(DELIVERY_RETRY_MILLIS) { pending.result.await() }
-        if (first != null) return first
-        synchronized(lock) {
-            if (active === pending && !pending.result.isCompleted) {
-                pending.sent = false
-                pending.descriptorSent = false
-                sendRequestLocked(pending)
-                sendDescriptorLocked(pending)
-                Log.w(TAG, "manifest delivery retry id=${pending.requestId} ageMs=${pending.ageMillis()}")
-            }
-        }
-        return withTimeout(RESOLVE_TIMEOUT_MILLIS - DELIVERY_RETRY_MILLIS) {
+        return withTimeoutOrNull(RESOLVE_TIMEOUT_MILLIS) {
             pending.result.await()
-        }
+        } ?: throw IOException(
+            "NTK browser manifest exceeded ${RESOLVE_TIMEOUT_MILLIS}ms for ${pending.path}",
+        )
     }
 
     override suspend fun documentAvailable(
@@ -109,29 +112,25 @@ class NtkWebViewAccessGateway(
         descriptor: NtkViewerDescriptor,
     ) {
         val pending = request(document.origin, document.path, PreparationIntent.INITIAL_VIEW)
-        val responseCookies = document.responseHeaders.entries
-            .filter { (name, _) -> name.equals("Set-Cookie", ignoreCase = true) }
-            .flatMap(Map.Entry<String, List<String>>::value)
-            .filter(String::isNotBlank)
-        require(responseCookies.size <= MAX_RESPONSE_COOKIES) {
-            "NTK response supplied too many cookies"
+        val delivered = browserDescriptor(descriptor)
+        val payload = NtkBrowserDocumentPayload.create(appContext.cacheDir, document)
+        try {
+            synchronized(lock) {
+                if (active !== pending || pending.document != null) return
+                pending.document = payload
+                pending.descriptor = delivered
+                pending.descriptorSent = false
+                sendDescriptorLocked(pending)
+            }
+        } finally {
+            if (pending.document !== payload) payload.close()
         }
-        require(responseCookies.all { it.length <= MAX_COOKIE_LENGTH }) {
-            "NTK response supplied an oversized cookie"
-        }
-        val delivered = BrowserDescriptor(
-            workId = descriptor.workId,
-            episodeId = descriptor.episodeId,
-            token = descriptor.token,
-            apiPath = descriptor.apiPath,
-            expectedPageCount = descriptor.expectedPageCount,
-            responseCookies = responseCookies,
-        )
-        synchronized(lock) {
-            if (active !== pending) return
-            pending.descriptor = delivered
-            pending.descriptorSent = false
-            sendDescriptorLocked(pending)
+    }
+
+    internal fun ntkTraceContext(origin: String, path: String): NtkTraceContext? {
+        val key = runCatching { validatedKey(origin, path) }.getOrNull() ?: return null
+        return synchronized(lock) {
+            active?.takeIf { it.key == key }?.traceContext()
         }
     }
 
@@ -144,6 +143,29 @@ class NtkWebViewAccessGateway(
         }
     }
 
+    override fun preflightAdjacentChallenge(
+        origin: String,
+        episodePath: String,
+        adjacentEpisodePath: String,
+    ) {
+        val key = runCatching { validatedKey(origin, episodePath) }.getOrNull() ?: return
+        val adjacentKey = runCatching {
+            validatedKey(origin, adjacentEpisodePath)
+        }.getOrNull() ?: return
+        if (adjacentKey == key) return
+        synchronized(lock) {
+            val pending = active?.takeIf { it.key == key && it.sent } ?: return
+            val target = remote ?: return
+            runCatching {
+                target.send(NtkBrowserIpcMessages.preflightAdjacent(pending, adjacentEpisodePath))
+                pending.adjacentPreflightPaths += adjacentEpisodePath
+            }.onFailure {
+                remote = null
+                reconnectLocked(it)
+            }
+        }
+    }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         synchronized(lock) {
@@ -151,6 +173,7 @@ class NtkWebViewAccessGateway(
                 sendControlLocked(NtkBrowserProtocol.MSG_CANCEL, pending.requestId)
                 pending.result.cancel()
                 pending.authorization.cancel()
+                pending.document?.close()
             }
             active = null
             remote = null
@@ -170,11 +193,14 @@ class NtkWebViewAccessGateway(
         return synchronized(lock) {
             active?.takeIf { it.key == key && !it.consumed }?.let { return@synchronized it }
             active?.let { previous ->
-                sendControlLocked(NtkBrowserProtocol.MSG_CANCEL, previous.requestId)
+                if (path !in previous.adjacentPreflightPaths) {
+                    sendControlLocked(browserSupersessionControl(previous.consumed), previous.requestId)
+                }
                 previous.result.completeExceptionally(IOException("NTK browser request was superseded"))
                 previous.authorization.completeExceptionally(
                     IOException("NTK browser request was superseded"),
                 )
+                previous.document?.close()
             }
             BrowserRequest(
                 requestId = nextRequestId(),
@@ -186,6 +212,7 @@ class NtkWebViewAccessGateway(
                 authorization = CompletableDeferred(),
                 startedAtMillis = SystemClock.elapsedRealtime(),
             ).also { pending ->
+                NtkTrace.emit("browser-request-created", pending.traceContext(), role = "main")
                 active = pending
                 ensureBoundLocked()
                 sendRequestLocked(pending)
@@ -219,19 +246,11 @@ class NtkWebViewAccessGateway(
     private fun sendRequestLocked(pending: BrowserRequest) {
         val target = remote ?: return
         if (pending.sent) return
-        val request = Message.obtain(null, NtkBrowserProtocol.MSG_RESOLVE).apply {
-            replyTo = this@NtkWebViewAccessGateway.callback
-            data = Bundle().apply {
-                putLong(NtkBrowserProtocol.KEY_REQUEST_ID, pending.requestId)
-                putString(NtkBrowserProtocol.KEY_ORIGIN, pending.origin)
-                putString(NtkBrowserProtocol.KEY_PATH, pending.path)
-                putString(NtkBrowserProtocol.KEY_USER_AGENT, userAgent)
-                putString(NtkBrowserProtocol.KEY_PREPARATION_INTENT, pending.intent.name)
-            }
-        }
+        val request = NtkBrowserIpcMessages.resolve(pending, callback, userAgent, identity)
         try {
             target.send(request)
             pending.sent = true
+            NtkTrace.emit("browser-request-ipc-sent", pending.traceContext(), role = "main")
         } catch (failure: RemoteException) {
             pending.sent = false
             remote = null
@@ -242,11 +261,12 @@ class NtkWebViewAccessGateway(
     private fun sendWarmLocked() {
         val target = remote ?: return
         if (!warmRequested || warmSent) return
-        val request = Message.obtain(null, NtkBrowserProtocol.MSG_WARM).apply {
-            data = Bundle().apply {
-                putString(NtkBrowserProtocol.KEY_USER_AGENT, userAgent)
-            }
-        }
+        val request = NtkBrowserIpcMessages.warm(
+            callback,
+            userAgent,
+            requireNotNull(warmOrigin),
+            identity,
+        )
         try {
             target.send(request)
             warmSent = true
@@ -261,26 +281,16 @@ class NtkWebViewAccessGateway(
         val target = remote ?: return
         val descriptor = pending.descriptor ?: return
         if (!pending.sent || pending.descriptorSent) return
-        val request = Message.obtain(null, NtkBrowserProtocol.MSG_DESCRIPTOR).apply {
-            data = Bundle().apply {
-                putLong(NtkBrowserProtocol.KEY_REQUEST_ID, pending.requestId)
-                putString(NtkBrowserProtocol.KEY_WORK_ID, descriptor.workId)
-                putString(NtkBrowserProtocol.KEY_EPISODE_ID, descriptor.episodeId)
-                putString(NtkBrowserProtocol.KEY_TOKEN, descriptor.token)
-                putString(NtkBrowserProtocol.KEY_API_PATH, descriptor.apiPath)
-                putInt(
-                    NtkBrowserProtocol.KEY_EXPECTED_COUNT,
-                    descriptor.expectedPageCount ?: UNKNOWN_PAGE_COUNT,
-                )
-                putStringArrayList(
-                    NtkBrowserProtocol.KEY_RESPONSE_COOKIES,
-                    ArrayList(descriptor.responseCookies),
-                )
-            }
-        }
+        val request = NtkBrowserIpcMessages.descriptor(pending, descriptor)
         try {
             target.send(request)
             pending.descriptorSent = true
+            NtkTrace.emit(
+                "native-document-ipc-sent",
+                pending.traceContext(),
+                role = "main",
+                detail = "descriptor",
+            )
         } catch (failure: RemoteException) {
             pending.descriptorSent = false
             remote = null
@@ -290,9 +300,7 @@ class NtkWebViewAccessGateway(
 
     private fun sendControlLocked(what: Int, requestId: Long) {
         val target = remote ?: return
-        val message = Message.obtain(null, what).apply {
-            data = Bundle().apply { putLong(NtkBrowserProtocol.KEY_REQUEST_ID, requestId) }
-        }
+        val message = NtkBrowserIpcMessages.control(what, requestId)
         runCatching { target.send(message) }.onFailure {
             remote = null
             active?.sent = false
@@ -302,7 +310,7 @@ class NtkWebViewAccessGateway(
 
     private fun reconnectLocked(cause: Throwable?) {
         if (closed.get()) return
-        Log.w(TAG, "remote browser disconnected; rebinding", cause)
+        Log.w(GATEWAY_TAG, "remote browser disconnected; rebinding", cause)
         safeUnbindLocked()
         warmSent = false
         ensureBoundLocked()
@@ -321,6 +329,7 @@ class NtkWebViewAccessGateway(
             active = null
             pending.result.cancel()
             pending.authorization.cancel()
+            pending.document?.close()
         }
     }
 
@@ -331,7 +340,10 @@ class NtkWebViewAccessGateway(
             val pending = active?.takeIf { it.requestId == requestId } ?: return
             when (message.what) {
                 NtkBrowserProtocol.MSG_PAYLOAD -> acceptPayloadLocked(pending, data)
-                NtkBrowserProtocol.MSG_ACK_READY -> pending.authorization.complete(Unit)
+                NtkBrowserProtocol.MSG_ACK_READY -> {
+                    NtkTrace.emit("browser-ack-ready-received", pending.traceContext(), role = "main")
+                    pending.authorization.complete(Unit)
+                }
                 NtkBrowserProtocol.MSG_ERROR -> {
                     val detail = data.getString(NtkBrowserProtocol.KEY_ERROR).orEmpty()
                     failActiveLocked(IOException(detail.ifBlank { "NTK browser request failed" }))
@@ -345,6 +357,12 @@ class NtkWebViewAccessGateway(
         if (payload.isNullOrBlank()) {
             failActiveLocked(IOException("NTK browser returned an empty manifest"))
         } else {
+            NtkTrace.emit(
+                "browser-manifest-payload-received",
+                pending.traceContext(),
+                role = "main",
+                outcome = "accepted",
+            )
             pending.authorization.complete(Unit)
             pending.result.complete(payload)
         }
@@ -353,6 +371,7 @@ class NtkWebViewAccessGateway(
     private fun failActiveLocked(failure: Throwable) {
         active?.result?.completeExceptionally(failure)
         active?.authorization?.completeExceptionally(failure)
+        active?.document?.close()
         active = null
     }
 
@@ -366,8 +385,12 @@ class NtkWebViewAccessGateway(
                 if (closed.get()) return
                 binding = false
                 remote = Messenger(service)
+                val pending = active
                 sendWarmLocked()
-                active?.apply { sent = false }?.let(::sendRequestLocked)
+                if (pending != null) {
+                    pending.sent = false
+                    sendRequestLocked(pending)
+                }
                 active?.apply { descriptorSent = false }?.let(::sendDescriptorLocked)
             }
         }
@@ -399,31 +422,39 @@ class NtkWebViewAccessGateway(
         }
     }
 
-    private inner class IncomingHandler(looper: android.os.Looper) : Handler(looper) {
-        override fun handleMessage(message: Message) {
-            if (message.what == NtkBrowserProtocol.MSG_PAYLOAD ||
-                message.what == NtkBrowserProtocol.MSG_ERROR ||
-                message.what == NtkBrowserProtocol.MSG_ACK_READY
-            ) {
-                accept(message)
-            } else {
-                super.handleMessage(message)
-            }
-        }
-    }
+}
 
-    private companion object {
-        const val TAG = "NtkGateway"
-        const val RESOLVE_TIMEOUT_MILLIS = 25_000L
-        const val DELIVERY_RETRY_MILLIS = 6_000L
-        const val INVALID_REQUEST_ID = -1L
-        const val UNKNOWN_PAGE_COUNT = -1
-        const val MAX_RESPONSE_COOKIES = 24
-        const val MAX_COOKIE_LENGTH = 4_096
+private class NtkGatewayIncomingHandler(
+    looper: android.os.Looper,
+    private val accept: (Message) -> Unit,
+) : Handler(looper) {
+    override fun handleMessage(message: Message) {
+        when (message.what) {
+            NtkBrowserProtocol.MSG_PAYLOAD,
+            NtkBrowserProtocol.MSG_ERROR,
+            NtkBrowserProtocol.MSG_ACK_READY,
+            -> accept(message)
+            NtkBrowserProtocol.MSG_WARM_PHASE -> Log.d(
+                GATEWAY_TAG,
+                "warm phase=${message.data.getString(NtkBrowserProtocol.KEY_PHASE).orEmpty()} " +
+                    "status=${message.data.getInt(NtkBrowserProtocol.KEY_STATUS)} " +
+                    "ageMs=${message.data.getLong(NtkBrowserProtocol.KEY_AGE_MILLIS)}",
+            )
+            else -> super.handleMessage(message)
+        }
     }
 }
 
-private data class BrowserRequest(
+private fun browserDescriptor(descriptor: NtkViewerDescriptor): BrowserDescriptor =
+    BrowserDescriptor(
+        workId = descriptor.workId,
+        episodeId = descriptor.episodeId,
+        token = descriptor.token,
+        apiPath = descriptor.apiPath,
+        expectedPageCount = descriptor.expectedPageCount,
+    )
+
+internal data class BrowserRequest(
     val requestId: Long,
     val key: String,
     val origin: String,
@@ -437,8 +468,17 @@ private data class BrowserRequest(
     var quiesced: Boolean = false,
     var descriptor: BrowserDescriptor? = null,
     var descriptorSent: Boolean = false,
+    var document: NtkBrowserDocumentPayload? = null,
+    val adjacentPreflightPaths: MutableSet<String> = linkedSetOf(),
 ) {
     fun ageMillis(): Long = SystemClock.elapsedRealtime() - startedAtMillis
+
+    fun traceContext(): NtkTraceContext = NtkTraceContext(
+        requestId = requestId,
+        sourceEpisodeId = path,
+        episodePath = path,
+        providerEpisodeId = descriptor?.episodeId ?: "unknown",
+    )
 
     suspend fun awaitAuthorization(): Boolean {
         if (authorization.isCompleted) return runCatching { authorization.await() }.isSuccess
@@ -452,13 +492,14 @@ private data class BrowserRequest(
     }
 }
 
-private data class BrowserDescriptor(
+internal data class BrowserDescriptor(
     val workId: String,
     val episodeId: String,
     val token: String,
     val apiPath: String,
     val expectedPageCount: Int?,
-    val responseCookies: List<String>,
 )
 
 private const val ACK_READY_DEADLINE_MILLIS = 15_000L
+private const val GATEWAY_TAG = "NtkGateway"
+private const val RESOLVE_TIMEOUT_MILLIS = 8_000L

@@ -7,23 +7,30 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import ml.melun.mangaview.source.PageByteStream
+import ml.melun.mangaview.source.PageFetchPriority
 
-/** One direct buffer and one consumer read form a bounded pull bridge to HttpEngine. */
+/** One pooled direct buffer and one consumer read form a bounded pull bridge to HttpEngine. */
 internal class HttpEngineBodyPageStream(
     private val expectedLength: Long?,
     private val requestRead: (ByteBuffer) -> Unit,
     private val cancelExchange: (Throwable) -> Unit,
     private val finished: (HttpEngineBodyPageStream) -> Unit,
     private val maximumBytes: Long = MAX_BODY_BYTES,
+    private val readBuffer: ByteBuffer = ByteBuffer.allocateDirect(READ_BUFFER_BYTES),
+    private val releaseReadBuffer: (ByteBuffer) -> Unit = {},
+    private val dispatchRead: ((() -> Unit) -> Unit) = { action -> action() },
+    initialPriority: PageFetchPriority = PageFetchPriority.NORMAL,
+    private val readScheduler: HttpEngineBodyReadScheduler = HttpEngineBodyReadScheduler(1),
 ) : PageByteStream {
     private val lock = Any()
-    private val readBuffer = ByteBuffer.allocateDirect(READ_BUFFER_BYTES)
     private val cancelSignaled = AtomicBoolean(false)
+    private val bufferReleased = AtomicBoolean(false)
     private var pending: PendingRead? = null
     private var receivedBytes = 0L
     private var requestComplete = false
     private var failure: Throwable? = null
     private var closed = false
+    private var priority = initialPriority
 
     init {
         require(maximumBytes > 0L) { "HTTP engine body limit must be positive" }
@@ -40,6 +47,15 @@ internal class HttpEngineBodyPageStream(
         return suspendCancellableCoroutine { continuation ->
             enqueue(PendingRead(destination, offset, byteCount, continuation))
         }
+    }
+
+    override fun promote(priority: PageFetchPriority) {
+        val promoted = synchronized(lock) {
+            if (priority.ordinal >= this.priority.ordinal) return
+            this.priority = priority
+            priority
+        }
+        readScheduler.promote(this, promoted)
     }
 
     fun onReadCompleted(buffer: ByteBuffer) {
@@ -79,7 +95,7 @@ internal class HttpEngineBodyPageStream(
 
     fun completeSuccess() {
         val outcome = synchronized(lock) {
-            if (requestComplete || closed) return
+            if (requestComplete) return
             requestComplete = true
             val lengthFailure = when {
                 receivedBytes == 0L -> IOException("HTTP engine response body is empty")
@@ -97,17 +113,19 @@ internal class HttpEngineBodyPageStream(
             }.also { pending = null }
         }
         complete(outcome)
+        releaseBufferIfFinished()
     }
 
     fun fail(cause: Throwable) {
         val outcome = synchronized(lock) {
-            if (requestComplete || closed) return
+            if (requestComplete) return
             requestComplete = true
             failure = cause
             pending?.let { ReadOutcome.Failed(it, cause, cancel = false) }
                 ?.also { pending = null } ?: ReadOutcome.Ignore
         }
         complete(outcome)
+        releaseBufferIfFinished()
     }
 
     override fun close() {
@@ -122,6 +140,7 @@ internal class HttpEngineBodyPageStream(
         }
         complete(outcome)
         finished(this)
+        releaseBufferIfFinished()
     }
 
     private fun enqueue(waiter: PendingRead) {
@@ -137,8 +156,6 @@ internal class HttpEngineBodyPageStream(
                 )
                 else -> {
                     pending = waiter
-                    readBuffer.clear()
-                    readBuffer.limit(minOf(readBuffer.capacity(), waiter.byteCount))
                     null
                 }
             }
@@ -148,20 +165,35 @@ internal class HttpEngineBodyPageStream(
             return
         }
         waiter.continuation.invokeOnCancellation { cancelPending(waiter) }
-        if (synchronized(lock) { pending === waiter && !closed && failure == null }) {
-            runCatching { requestRead(readBuffer) }.onFailure(::failFromBody)
+        val scheduled = readScheduler.schedule(this, synchronized(lock) { priority }) {
+            runCatching { dispatchRead { beginRead(waiter) } }.onFailure(::failFromBody)
         }
+        val retained = synchronized(lock) {
+            (pending === waiter).also { if (it) waiter.readLease = scheduled }
+        }
+        if (!retained) scheduled.cancel()
+    }
+
+    /** Buffer mutation and UrlRequest.read run after the callback that delivered prior bytes. */
+    private fun beginRead(waiter: PendingRead) {
+        val eligible = synchronized(lock) {
+            if (pending !== waiter || closed || failure != null || requestComplete) return
+            readBuffer.clear()
+            readBuffer.limit(minOf(readBuffer.capacity(), waiter.byteCount))
+            true
+        }
+        if (eligible) runCatching { requestRead(readBuffer) }.onFailure(::failFromBody)
     }
 
     private fun cancelPending(waiter: PendingRead) {
         val cause = IOException("HTTP engine body consumer was canceled")
-        val shouldCancel = synchronized(lock) {
+        val outcome = synchronized(lock) {
             if (pending !== waiter || requestComplete || closed) return
             pending = null
             failure = cause
-            true
+            ReadOutcome.Failed(waiter, cause, cancel = true)
         }
-        if (shouldCancel) signalCancel(cause)
+        complete(outcome)
     }
 
     private fun failFromBody(cause: Throwable) {
@@ -185,9 +217,16 @@ internal class HttpEngineBodyPageStream(
 
     private fun complete(outcome: ReadOutcome) {
         when (outcome) {
-            is ReadOutcome.Bytes -> resume(outcome.waiter, outcome.count)
-            is ReadOutcome.End -> resume(outcome.waiter, -1)
+            is ReadOutcome.Bytes -> {
+                releaseRead(outcome.waiter)
+                resume(outcome.waiter, outcome.count)
+            }
+            is ReadOutcome.End -> {
+                releaseRead(outcome.waiter)
+                resume(outcome.waiter, -1)
+            }
             is ReadOutcome.Failed -> {
+                releaseRead(outcome.waiter)
                 resumeFailure(outcome.waiter, outcome.cause)
                 if (outcome.cancel) signalCancel(outcome.cause)
             }
@@ -196,8 +235,18 @@ internal class HttpEngineBodyPageStream(
         }
     }
 
+    private fun releaseRead(waiter: PendingRead) {
+        waiter.readLease?.finish()
+        waiter.readLease = null
+    }
+
     private fun signalCancel(cause: Throwable) {
         if (cancelSignaled.compareAndSet(false, true)) cancelExchange(cause)
+    }
+
+    private fun releaseBufferIfFinished() {
+        val releasable = synchronized(lock) { closed && requestComplete }
+        if (releasable && bufferReleased.compareAndSet(false, true)) releaseReadBuffer(readBuffer)
     }
 
     private fun resume(waiter: PendingRead, value: Int) {
@@ -215,6 +264,7 @@ internal class HttpEngineBodyPageStream(
         val offset: Int,
         val byteCount: Int,
         val continuation: CancellableContinuation<Int>,
+        var readLease: HttpEngineBodyReadScheduler.Lease? = null,
     )
 
     private sealed interface ReadOutcome {
@@ -231,6 +281,8 @@ internal class HttpEngineBodyPageStream(
 
     companion object {
         const val MAX_BODY_BYTES = 512L * 1_024L * 1_024L
-        private const val READ_BUFFER_BYTES = 128 * 1_024
+        // Match progressive preview cadence. A larger read window reduced callback overhead but
+        // withheld several independently decodable PNG row groups until one 512 KiB read ended.
+        internal const val READ_BUFFER_BYTES = 128 * 1_024
     }
 }

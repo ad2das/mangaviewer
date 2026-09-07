@@ -1,5 +1,9 @@
 package ml.melun.mangaview.source.ntk
 
+import java.io.Closeable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Deferred
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -23,6 +27,7 @@ data class NtkConfig(
     val initialOrigin: String,
     val userAgent: String,
     val searchPageSize: Int = 80,
+    val browserIdentity: NtkBrowserIdentity? = null,
 ) {
     init {
         require(searchPageSize in 10..200) { "NTK search page size is invalid" }
@@ -34,9 +39,10 @@ class NtkContentSource(
     transport: SourceTransport,
     accessGateway: NtkAccessGateway,
     parser: NtkDocumentParser = NtkDocumentParser(),
-) : ContentSource {
+    documentTransport: SourceTransport = transport,
+) : ContentSource, Closeable {
     override val id = SourceId("ntk")
-    private val documents = NtkDocumentClient(config, transport)
+    private val documents = NtkDocumentClient(config, documentTransport)
     private val catalog = NtkCatalogService(id, config.searchPageSize, documents, parser)
     private val pages = NtkPageService(
         transport,
@@ -62,17 +68,34 @@ class NtkContentSource(
         return catalog.episodes(seriesId, cursor)
     }
 
-    override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest {
+    override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest = coroutineScope {
         requireSource(episodeId)
-        val prepared = pages.resolve(episodeId)
-        val fallback = if (prepared.previousKnown && prepared.nextKnown) null else {
-            val records = catalog.records(episodeId.seriesId, force = false)
-            ManifestFallback(
-                title = catalog.title(records, episodeId),
-                adjacent = catalog.adjacent(records, episodeId),
-            )
+        val fallbackLock = Any()
+        var fallbackFlight: Deferred<ManifestFallback>? = null
+        fun startFallback(): Deferred<ManifestFallback> = synchronized(fallbackLock) {
+            fallbackFlight ?: async {
+                val records = catalog.records(episodeId.seriesId, force = false)
+                val fallback = ManifestFallback(
+                    title = catalog.title(records, episodeId),
+                    adjacent = catalog.adjacent(records, episodeId),
+                )
+                fallback
+            }.also { fallbackFlight = it }
         }
-        return EpisodeManifest(
+        // The document parser reports missing adjacency before the protected image API completes
+        // its minimum-seen ACK, so only a genuinely necessary catalog fallback overlaps that wait.
+        val prepared = pages.resolve(episodeId) { startFallback() }
+        val fallback = if (prepared.previousKnown && prepared.nextKnown) {
+            null
+        } else {
+            startFallback().await()
+        }
+        val nextEpisodeId = if (prepared.nextKnown) {
+            prepared.nextEpisodeId
+        } else {
+            fallback?.adjacent?.next
+        }
+        EpisodeManifest(
             id = episodeId,
             title = prepared.title ?: fallback?.title ?: episodeId.remoteKey.substringAfterLast('/'),
             pages = prepared.pages,
@@ -81,17 +104,23 @@ class NtkContentSource(
             } else {
                 fallback?.adjacent?.previous
             },
-            nextEpisodeId = if (prepared.nextKnown) {
-                prepared.nextEpisodeId
-            } else {
-                fallback?.adjacent?.next
-            },
+            nextEpisodeId = nextEpisodeId,
         )
     }
 
     override suspend fun adjacent(episodeId: EpisodeId): AdjacentEpisodes {
         requireSource(episodeId)
         return catalog.adjacent(catalog.records(episodeId.seriesId, force = false), episodeId)
+    }
+
+    override suspend fun knownAdjacent(episodeId: EpisodeId): AdjacentEpisodes? {
+        requireSource(episodeId)
+        return catalog.knownAdjacent(episodeId)
+    }
+
+    override suspend fun knownForward(episodeId: EpisodeId, limit: Int): List<EpisodeId> {
+        requireSource(episodeId)
+        return catalog.knownForward(episodeId, limit)
     }
 
     override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) {
@@ -124,6 +153,8 @@ class NtkContentSource(
         return documents.url(seriesId.remoteKey)
     }
 
+    override fun close() = Unit
+
     private fun requireSource(episodeId: EpisodeId) {
         require(episodeId.seriesId.sourceId == id) { "Episode belongs to another source" }
     }
@@ -132,4 +163,5 @@ class NtkContentSource(
         val title: String,
         val adjacent: AdjacentEpisodes,
     )
+
 }

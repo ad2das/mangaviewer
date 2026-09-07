@@ -14,16 +14,19 @@ internal data class ViewerStartupTiming(
 ) {
     init {
         require(openStartedAtNanos > 0L)
-        val stages = listOfNotNull(
-            manifestReadyAtNanos,
-            initialResponseStartedAtNanos,
-            initialVerifiedAtNanos,
-            initialDecodedAtNanos,
-            firstActualSubmittedAtNanos,
-            firstActualPresentedAtNanos,
-        )
-        require(stages.zipWithNext().all { (left, right) -> right >= left }) {
-            "Viewer startup stages are out of order"
+        requireAfter(openStartedAtNanos, manifestReadyAtNanos)
+        requireAfter(manifestReadyAtNanos, initialResponseStartedAtNanos)
+        requireAfter(initialResponseStartedAtNanos, initialVerifiedAtNanos)
+        requireAfter(initialResponseStartedAtNanos, initialDecodedAtNanos)
+        requireAfter(initialDecodedAtNanos, firstActualSubmittedAtNanos)
+        requireAfter(firstActualSubmittedAtNanos, firstActualPresentedAtNanos)
+    }
+
+    private fun requireAfter(earlier: Long?, later: Long?) {
+        if (earlier != null && later != null) {
+            require(later >= earlier) {
+                "Viewer startup stages are out of order: earlier=$earlier later=$later"
+            }
         }
     }
 }
@@ -70,11 +73,24 @@ internal class ViewerStartupTracker {
         stages.decoded = mark(stages.decoded, atNanos)
     }
 
-    fun markPresented(pageId: PageId, submittedAtNanos: Long, presentedAtNanos: Long) = synchronized(lock) {
+    fun markPresented(
+        pageId: PageId,
+        submittedAtNanos: Long,
+        presentedAtNanos: Long,
+        timestampKind: PresentationTimestampKind,
+    ) = synchronized(lock) {
+        if (timestampKind != PresentationTimestampKind.DISPLAY_PRESENT) return@synchronized
         require(submittedAtNanos > 0L && presentedAtNanos >= submittedAtNanos)
         if (presentation == null) {
             presentation = Presentation(pageId, submittedAtNanos, presentedAtNanos)
         }
+    }
+
+    fun needsPresentation(): Boolean = synchronized(lock) { presentation == null }
+
+    fun wasDecodedBy(pageId: PageId, atNanos: Long): Boolean = synchronized(lock) {
+        val decoded = pages[pageId]?.decoded ?: return@synchronized false
+        decoded > 0L && decoded <= atNanos
     }
 
     fun snapshot(): ViewerStartupTiming? = synchronized(lock) {

@@ -7,6 +7,7 @@ data class NtkPageRequest(
     val url: String,
     val alternateUrls: List<String> = emptyList(),
     val headers: Map<String, String> = emptyMap(),
+    val episodeOrigin: String? = null,
 ) {
     val candidates: List<String> = (listOf(url) + alternateUrls).distinct()
 
@@ -31,9 +32,14 @@ data class NtkEpisodeDocument(
     val responseHeaders: Map<String, List<String>> = emptyMap(),
     val contentType: String? = null,
     val finalUrl: String = origin + path,
+    val originTicket: NtkOriginTicket? = null,
 )
 
 interface NtkAccessGateway : Closeable {
+    /** Number of episode preparations that can coexist without superseding one another. */
+    val parallelPreparationCapacity: Int
+        get() = 1
+
     suspend fun prepare(origin: String, episodePath: String, intent: PreparationIntent)
 
     /**
@@ -42,6 +48,9 @@ interface NtkAccessGateway : Closeable {
      * deadline; callers must retain their normal transport fallback in that case.
      */
     suspend fun awaitAuthorization(origin: String, episodePath: String): Boolean = true
+
+    /** True only when a new image request can start with an already completed ACK. */
+    fun isAuthorizationReady(origin: String, episodePath: String): Boolean = true
 
     suspend fun resolve(
         document: NtkEpisodeDocument,
@@ -59,6 +68,13 @@ interface NtkAccessGateway : Closeable {
      * could occupy the pool forever even though document parsing had already finished.
      */
     fun manifestResolutionFinished(origin: String, episodePath: String) = Unit
+
+    /** Ages only the adjacent episode's official one-use challenge after this manifest completes. */
+    fun preflightAdjacentChallenge(
+        origin: String,
+        episodePath: String,
+        adjacentEpisodePath: String,
+    ) = Unit
 
     /** Releases provider browser work once the direct page path has proved usable. */
     fun pageAccessEstablished(origin: String, episodePath: String) = Unit

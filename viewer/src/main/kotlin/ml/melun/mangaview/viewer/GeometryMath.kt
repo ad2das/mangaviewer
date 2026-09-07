@@ -1,6 +1,7 @@
 package ml.melun.mangaview.viewer
 
 import java.math.BigInteger
+import ml.melun.mangaview.core.toLongExact
 
 internal fun saturatingAdd(left: Long, right: Long): Long = when {
     right > 0L && left > Long.MAX_VALUE - right -> Long.MAX_VALUE
@@ -27,7 +28,7 @@ internal fun multiplyDivideFloorExact(value: Long, multiplier: Long, divisor: Lo
     require(value >= 0L && multiplier >= 0L && divisor > 0L)
     if (value == 0L || multiplier == 0L) return 0L
     if (value <= Long.MAX_VALUE / multiplier) return value * multiplier / divisor
-    return bigProduct(value, multiplier).divide(BigInteger.valueOf(divisor)).longValueExact()
+    return bigProduct(value, multiplier).divide(BigInteger.valueOf(divisor)).toLongExact()
 }
 
 internal fun multiplyDivideCeilExact(value: Long, multiplier: Int, divisor: Int): Long =
@@ -41,7 +42,7 @@ internal fun multiplyDivideCeilExact(value: Long, multiplier: Long, divisor: Lon
         product / divisor to product % divisor
     } else {
         val parts = bigProduct(value, multiplier).divideAndRemainder(BigInteger.valueOf(divisor))
-        parts[0].longValueExact() to parts[1].longValueExact()
+        parts[0].toLongExact() to parts[1].toLongExact()
     }
     return if (division.second == 0L) division.first else Math.addExact(division.first, 1L)
 }
