@@ -54,6 +54,7 @@ tmp-*
 smoke-*
 stress-*
 surface_*
+!/app/src/debug/cpp/surface_transaction_probe.cpp
 emu-*
 codex-*
 dungeon_*
