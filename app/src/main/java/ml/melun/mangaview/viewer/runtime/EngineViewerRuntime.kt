@@ -26,11 +26,19 @@ import ml.melun.mangaview.core.toLongExact
 import ml.melun.mangaview.engine.api.*
 import ml.melun.mangaview.engine.content.EngineTileWork
 import ml.melun.mangaview.engine.runtime.EngineRenderRuntime
+import ml.melun.mangaview.engine.runtime.EngineRenderRuntimeDiagnosticSnapshot
 import ml.melun.mangaview.engine.runtime.EngineSessionRuntime
+import ml.melun.mangaview.engine.runtime.EngineSessionRuntimeDiagnosticSnapshot
 import ml.melun.mangaview.engine.runtime.EngineTilePlanner
 import ml.melun.mangaview.engine.session.EngineSession
 import ml.melun.mangaview.viewer.FixedPx
 import ml.melun.mangaview.viewer.Viewport
+
+internal data class EngineViewerRuntimeDiagnosticSnapshot(
+    val capturedAtNanos: Long,
+    val content: EngineSessionRuntimeDiagnosticSnapshot,
+    val render: EngineRenderRuntimeDiagnosticSnapshot,
+)
 
 /** Android surface/input adapter for the new session, work and GL owners. */
 internal class EngineViewerRuntime(
@@ -60,23 +68,28 @@ internal class EngineViewerRuntime(
     private var inputSequence = 0L
     private var gesture = 1L
     private var lastSaved: Pair<SourceAnchor, Long>? = null
+    private var startupFrameSubmitted = false
     private val renderer: EngineSurfaceOwner = EngineSurfaceOwner(budget.glResidentBytes,
-        { value -> onMain { reportPresented(value) } }, { error -> onMain { reportFailure(error) } },
+        { value -> onMain { onPresented(value) } }, { error -> onMain { reportFailure(error) } },
         { onMain { if (!closing) graphics.rendererChanged() } },
         { onMain { if (!closing) { graphics.enabled(false); surface.rendererUnavailable() } } })
-    private val reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime)
+    private val reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime).apply {
+        engageStartupInputBarrier()
+    }
     private val content: EngineSessionRuntime = EngineSessionRuntime(scope, coordinator, reducer, source, episodeId,
         { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },
-        { _, failure -> reportFailure(failure) })
+        { _, failure -> reportFailure(failure) }, requireVisualReadiness = true)
     private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator, EngineTilePlanner(budget.glResidentBytes),
         EngineTileWork(NativeEngineImageDecoder(), decodeDispatcher, renderer), renderer, content::pageRequest,
-        renderer::offer, renderer::clearScene, { _, failure -> reportFailure(failure) })
+        { scene -> renderer.offer(scene); content.visualReady(scene.session, scene.completeCoverage) }, renderer::clearScene, { _, failure -> reportFailure(failure) })
     val surface = ViewerSurfaceHost(context, this)
 
     init { graphics.enabled(false) }
 
     fun open() { if (!closing) content.open() }
     fun snapshot(): EngineRuntimeSnapshot = content.snapshot
+    fun diagnosticSnapshot() = EngineViewerRuntimeDiagnosticSnapshot(
+        System.nanoTime(), content.diagnosticSnapshot(), graphics.diagnosticSnapshot())
     fun userInputRevisionSnapshot(): Long = content.snapshot.session.inputRevision
     suspend fun captureNextFrame(top: Int, bottom: Int) = renderer.captureNextFrame(top, bottom)
     suspend fun captureNextViewportFrame() = renderer.captureNextViewportFrame()
@@ -191,6 +204,15 @@ internal class EngineViewerRuntime(
         reportSnapshot(value)
     }
 
+    private fun onPresented(value: EngineSurfacePresentation) {
+        reportPresented(value)
+        if (startupFrameSubmitted || closing) return
+        val state = content.snapshot.session
+        if (!releasesStartupInput(value, state)) return
+        startupFrameSubmitted = true
+        content.releaseStartupInput()
+    }
+
     private fun position(): Pair<SourceAnchor, Long>? {
         val state = content.snapshot.session
         val anchor = state.anchor ?: return null
@@ -215,4 +237,24 @@ internal class EngineViewerRuntime(
         check(main.post { continuation.resume(Unit) }) { "Main callback queue is unavailable" }
     }
     private companion object { val nextSession = AtomicLong() }
+}
+
+/** Successful submitted source must overlap what the exactly matching session currently exposes. */
+internal fun releasesStartupInput(
+    value: EngineSurfacePresentation,
+    state: EngineSessionSnapshot,
+): Boolean {
+    if (!value.swapSucceeded || value.scene.sessionId != state.sessionId ||
+        value.scene.generation != state.generation ||
+        value.scene.anchor != state.anchor || value.scene.viewport != state.viewport
+    ) return false
+    return value.scene.placements.any { placement ->
+        val tile = placement.texture.tile
+        val tileTopQ32 = tile.sourceTop.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val tileBottomQ32 = tile.sourceBottom.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        state.visibleRegions.any { region ->
+            region.pageId == tile.pageId && tileTopQ32 < region.sourceBottomQ32 &&
+                tileBottomQ32 > region.sourceTopQ32
+        }
+    }
 }

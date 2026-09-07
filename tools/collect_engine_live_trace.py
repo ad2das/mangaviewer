@@ -23,6 +23,10 @@ def _sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def _engine_diagnostics_args(enabled):
+    return ['-e', 'captureEngineDiagnostics', 'true'] if enabled else []
+
+
 def main():
     collection_started_ns = time.perf_counter_ns()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -46,6 +50,7 @@ def main():
     parser.add_argument('--memory-sampling', action='store_true', help='Collect owned-process PSS boundaries and asynchronous active samples')
     parser.add_argument('--navigation-idle-ms', type=int, help='Experimental UI navigation idle timeout only; restored before viewer input')
     parser.add_argument('--navigation-async-moves', action='store_true', help='Real navigation swipes with asynchronous MOVE injection and synchronous UP')
+    parser.add_argument('--engine-diagnostics', action='store_true', help='Export observation-only stopped engine diagnostic state')
     args = parser.parse_args()
     if args.navigation_idle_ms is not None and (not args.catalog_ui or not 0 <= args.navigation_idle_ms <= 10_000):
         parser.error('navigation idle override requires catalog UI and 0..10000 milliseconds')
@@ -62,6 +67,7 @@ def main():
                         '-e', 'captureMemory', str(args.memory_sampling).lower(),
                         '-e', 'captureTraversalSeconds', str(args.traversal_seconds),
                         '-e', 'captureMaximumFrames', str(args.maximum_captures)]
+    measurement_args += _engine_diagnostics_args(args.engine_diagnostics)
     if args.navigation_idle_ms is not None:
         measurement_args += ['-e', 'captureNavigationIdleMillis', str(args.navigation_idle_ms)]
     if args.navigation_async_moves:
@@ -143,6 +149,7 @@ def main():
         report['maximumCaptures'] = args.maximum_captures
         report['readbackEnabled'] = not args.no_readback
         report['memorySamplingEnabled'] = args.memory_sampling
+        report['engineDiagnosticsEnabled'] = args.engine_diagnostics
         report['fixedGesturePlanSha256'] = hashlib.sha256(gesture_raw).hexdigest() if args.gesture_plan else None
         report['catalogUi'] = args.catalog_ui
         report['requestedEpisode'] = {'sourceId': args.source, 'seriesKey': args.series_key,

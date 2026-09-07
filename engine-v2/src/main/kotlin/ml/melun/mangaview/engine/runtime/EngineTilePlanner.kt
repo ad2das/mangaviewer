@@ -27,15 +27,23 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         val speculative = linkedSetOf<EngineTileSpec>()
         val placements = mutableListOf<EngineTilePlacement>()
         var complete = snapshot.session.completeViewport
+        var previousRegion: VisiblePageRegion? = null
+        var previousLastPlacement: Int? = null
         for (region in snapshot.session.visibleRegions) {
             val page = snapshot.pages[region.pageId]
-            if (page == null) { complete = false; continue }
+            if (page == null) {
+                complete = false
+                previousRegion = null
+                previousLastPlacement = null
+                continue
+            }
             require(page.dimensions == region.dimensions)
             val count = bandCount(page, snapshot.session.viewport.widthPx)
             val firstRow = region.sourceTopQ32 / SourceAnchor.SOURCE_UNITS_PER_PIXEL
             val endRow = (region.sourceBottomQ32 - 1) / SourceAnchor.SOURCE_UNITS_PER_PIXEL + 1
             val first = (((firstRow + 1) * count - 1) / page.dimensions.heightPx).toInt()
             val last = ((endRow * count - 1) / page.dimensions.heightPx).toInt()
+            val firstPlacement = placements.size
             for (band in first..last) {
                 val tile = tile(page, band, count, snapshot.session.viewport.widthPx)
                 val anchor = snapshot.session.anchor
@@ -45,6 +53,9 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
                 visible[tile] = if (focus) WorkPriority.FOCUS else WorkPriority.VISIBLE
                 placements += placement(tile, region)
             }
+            stitchBoundary(placements, previousRegion, previousLastPlacement, region, firstPlacement)
+            previousRegion = region
+            previousLastPlacement = placements.lastIndex
             if (first > 0) speculative += tile(page, first - 1, count, snapshot.session.viewport.widthPx)
             if (last + 1 < count) speculative += tile(page, last + 1, count, snapshot.session.viewport.widthPx)
             if (first == 0) adjacentTile(snapshot, region.pageId, -1)?.let(speculative::add)
@@ -62,6 +73,25 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         return EngineTilePlan(demands, placements, complete, bytes)
     }
 
+    private fun stitchBoundary(
+        placements: MutableList<EngineTilePlacement>,
+        previousRegion: VisiblePageRegion?,
+        previousLastPlacement: Int?,
+        region: VisiblePageRegion,
+        firstPlacement: Int,
+    ) {
+        if (previousRegion == null || previousLastPlacement == null || previousRegion.pageId == region.pageId ||
+            previousRegion.sourceBottomQ32 != previousRegion.dimensions.heightPx.toLong() *
+                SourceAnchor.SOURCE_UNITS_PER_PIXEL ||
+            region.sourceTopQ32 != 0L ||
+            placements[previousLastPlacement].tile.sourceBottom != previousRegion.dimensions.heightPx ||
+            placements[firstPlacement].tile.sourceTop != 0
+        ) return
+        val seam = region.screenTopUnits
+        placements[previousLastPlacement] = placements[previousLastPlacement].copy(bottomScreenUnits = seam)
+        placements[firstPlacement] = placements[firstPlacement].copy(topScreenUnits = seam)
+    }
+
     private fun adjacentTile(
         snapshot: EngineRuntimeSnapshot,
         pageId: ml.melun.mangaview.core.PageId,
@@ -70,7 +100,11 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         val manifest = snapshot.plans[pageId.episodeId]?.manifest ?: return null
         val index = manifest.pages.indexOfFirst { it.id == pageId }
         if (index < 0) return null
-        val adjacent = manifest.pages.getOrNull(index + direction)?.id ?: return null
+        val adjacent = manifest.pages.getOrNull(index + direction)?.id ?: run {
+            val next = if (direction > 0) manifest.nextEpisodeId else manifest.previousEpisodeId
+            val neighbor = snapshot.plans[next]?.manifest ?: return null
+            if (direction > 0) neighbor.pages.firstOrNull()?.id else neighbor.pages.lastOrNull()?.id
+        } ?: return null
         // Only speculate from bytes already verified by the session. Visible tiles
         // are budgeted first, and this edge is never placed until actually visible.
         val page = snapshot.pages[adjacent] ?: return null

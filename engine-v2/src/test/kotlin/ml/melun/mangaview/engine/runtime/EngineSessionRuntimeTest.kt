@@ -197,30 +197,191 @@ class EngineSessionRuntimeTest {
         coordinator.close()
     }
 
+    @Test fun forwardPagesFinishBeforeEarlierPagesAndNextEpisodeStartsBeforeBoundary() = runTest {
+        val source = Source().apply {
+            pageCount = 6
+            initialAnchor = SourceAnchor(PageId.at(episode, 2), 0)
+            nextEpisode = episode.copy(remoteKey = "2")
+        }
+        val requested = mutableListOf<PageId>()
+        val gate = CompletableDeferred<Unit>()
+        source.beforePage = { id ->
+            requested += id
+            if (id == PageId.at(episode, 4)) gate.await()
+        }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures)
+        runtime.open()
+        runCurrent()
+        assertEquals(listOf(2, 3, 4).map { PageId.at(episode, it) }, requested.distinct())
+        assertFalse(source.requestedEpisodes.contains(source.nextEpisode))
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(listOf(2, 3, 4, 5, 1, 0).map { PageId.at(episode, it) },
+            requested.filter { it.episodeId == episode }.distinct())
+        assertTrue(source.requestedEpisodes.contains(source.nextEpisode))
+        assertEquals(PageId.at(episode, 2), runtime.snapshot.session.anchor!!.pageId)
+        assertTrue(failures.toString(), failures.isEmpty())
+        assertEquals((0 until source.pageCount).map { PageId.at(source.nextEpisode!!, it) },
+            requested.filter { it.episodeId == source.nextEpisode }.distinct())
+        runtime.close()
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
+    @Test fun readAheadWaitsForCurrentVisualCoverageAndIgnoresStaleReadiness() = runTest {
+        val source = Source()
+        val requested = mutableListOf<PageId>()
+        val gate = CompletableDeferred<Unit>()
+        source.beforePage = { id ->
+            requested += id
+            if (id != PageId.at(episode, 0)) gate.await()
+        }
+        val (runtime, coordinator) = runtime(source, requireVisualReadiness = true)
+        runtime.open()
+        runCurrent()
+        assertEquals(listOf(PageId.at(episode, 0)), requested)
+        val state = runtime.snapshot.session
+        runtime.visualReady(state.copy(inputRevision = state.inputRevision + 1), true)
+        runCurrent()
+        assertEquals(1, requested.size)
+        runtime.visualReady(state, true)
+        runCurrent()
+        assertEquals(listOf(PageId.at(episode, 0), PageId.at(episode, 1)), requested)
+        runtime.close()
+        assertEquals(0, source.livePages)
+        coordinator.close()
+    }
+
+    @Test fun failedReadAheadDoesNotInterruptReadingOrSpinAndVisibleDemandRetries() = runTest {
+        val source = Source()
+        val failedPage = PageId.at(episode, 1)
+        var attempts = 0
+        source.beforePage = { id ->
+            if (id == failedPage) { attempts++; error("unavailable original") }
+        }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures)
+        runtime.open()
+        runCurrent()
+        assertTrue(runtime.snapshot.session.completeViewport)
+        assertTrue(failures.isEmpty())
+        assertEquals(1, attempts)
+        repeat(3) { runtime.resize(EngineViewport(100, 100)); runCurrent() }
+        assertEquals(1, attempts)
+        runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
+        runCurrent()
+        assertEquals(2, attempts)
+        assertEquals(1, failures.size)
+        source.beforePage = {}
+        runtime.retryFailures()
+        runCurrent()
+        assertTrue(runtime.snapshot.session.completeViewport)
+        assertEquals(failedPage, runtime.snapshot.session.anchor!!.pageId)
+        runtime.close()
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
+    @Test fun promotedReadAheadFailureIsReportedForTheNowVisiblePage() = runTest {
+        val source = Source()
+        val gate = CompletableDeferred<Unit>()
+        source.beforePage = { id ->
+            if (id == PageId.at(episode, 1)) { gate.await(); error("visible failure") }
+        }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures)
+        runtime.open()
+        runCurrent()
+        runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(1, failures.size)
+        runtime.close()
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
+    @Test fun nextManifestFailureWaitsForExplicitRetryWithoutInterruptingCurrentEpisode() = runTest {
+        val source = Source().apply { nextEpisode = episode.copy(remoteKey = "2") }
+        var attempts = 0
+        source.beforeEpisode = { id ->
+            if (id == source.nextEpisode) { attempts++; error("next episode offline") }
+        }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures)
+        runtime.open()
+        runCurrent()
+        assertEquals(1, attempts)
+        assertTrue(failures.isEmpty())
+        assertTrue(runtime.snapshot.session.completeViewport)
+        repeat(3) { runtime.resize(EngineViewport(100, 100)); runCurrent() }
+        assertEquals(1, attempts)
+        source.beforeEpisode = {}
+        runtime.retryFailures()
+        runCurrent()
+        assertTrue(runtime.snapshot.plans.containsKey(source.nextEpisode))
+        runtime.close()
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
+    @Test fun closeCancelsInputHeldForTheStartupFrameWithoutApplyingIt() = runTest {
+        val source = Source()
+        val receipts = mutableListOf<InputReceipt>()
+        val coordinator = WorkCoordinator(this)
+        val session = EngineSession(2, episode, EngineViewport(100, 100),
+            { testScheduler.currentTime * 1_000_000L }).apply { engageStartupInputBarrier() }
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
+            { _, values -> receipts += values }, { _, failure -> throw failure })
+        runtime.open()
+        val sample = InputSample(1, 1, 0, 150 * 1_024L)
+        runtime.input(sample)
+        runCurrent()
+        assertEquals(InputOutcome.DEFERRED, receipts.last { it.sample == sample }.outcome)
+
+        runtime.close()
+
+        val cancelled = receipts.last { it.sample == sample }
+        assertEquals(InputOutcome.CANCELLED, cancelled.outcome)
+        assertEquals(0L, cancelled.appliedScreenUnits)
+        coordinator.close()
+    }
+
     private fun TestScope.runtime(source: Source, receipts: MutableList<InputReceipt> = mutableListOf(),
-        failures: MutableList<Throwable> = mutableListOf()): Pair<EngineSessionRuntime, WorkCoordinator> {
+        failures: MutableList<Throwable> = mutableListOf(), requireVisualReadiness: Boolean = false): Pair<EngineSessionRuntime, WorkCoordinator> {
         val coordinator = WorkCoordinator(this)
         val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
         return EngineSessionRuntime(this, coordinator, session, source, episode,
-            { _: EngineRuntimeSnapshot, values -> receipts += values }, { _, failure -> failures += failure }) to coordinator
+            { _: EngineRuntimeSnapshot, values -> receipts += values }, { _, failure -> failures += failure },
+            requireVisualReadiness = requireVisualReadiness) to coordinator
     }
 
     private inner class Source : EngineSessionWork {
         var beforePage: suspend (PageId) -> Unit = {}
+        var beforeEpisode: suspend (EpisodeId) -> Unit = {}
         var livePages = 0
+        var pageCount = 3
+        var initialAnchor: SourceAnchor? = null
+        var nextEpisode: EpisodeId? = null
+        val requestedEpisodes = mutableListOf<EpisodeId>()
 
         fun plan(id: EpisodeId): EpisodeAccessPlan {
-            val pages = (0..2).map { PageSpec(PageId.at(id, it), it) }
-            val manifest = EpisodeManifest(id, id.remoteKey, pages)
+            val pages = (0 until pageCount).map { PageSpec(PageId.at(id, it), it) }
+            val manifest = EpisodeManifest(id, id.remoteKey, pages, previousEpisodeId = episode.takeIf { id == nextEpisode },
+                nextEpisodeId = nextEpisode.takeIf { id == episode })
             return EpisodeAccessPlan(manifest, "revision", "0".repeat(64), URI("https://test.example/read"), 0,
                 pages.map { PageAccessPlan(it.id, it.ordinal.toString(), listOf(URI("https://test.example/page.png"))) })
         }
 
         override fun position(episodeId: EpisodeId) = request(episodeId.toString(), "position",
-            SessionPosition::class.java, WorkDomain.STORAGE, WorkPriority.FOCUS) { SessionPosition(null) }
+            SessionPosition::class.java, WorkDomain.STORAGE, WorkPriority.FOCUS) { SessionPosition(initialAnchor) }
 
         override fun episode(episodeId: EpisodeId, priority: WorkPriority) = request(episodeId.toString(),
-            "episode", EpisodeAccessPlan::class.java, WorkDomain.CONTROL, priority) { plan(episodeId) }
+            "episode", EpisodeAccessPlan::class.java, WorkDomain.CONTROL, priority) { requestedEpisodes += episodeId; beforeEpisode(episodeId); plan(episodeId) }
 
         override fun navigation(episodeId: EpisodeId, priority: WorkPriority) = request(episodeId.toString(),
             "navigation", AdjacentEpisodes::class.java, WorkDomain.NETWORK, priority) { AdjacentEpisodes(null, null) }

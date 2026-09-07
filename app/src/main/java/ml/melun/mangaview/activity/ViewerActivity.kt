@@ -43,6 +43,7 @@ import ml.melun.mangaview.viewer.runtime.ViewerChromeState
 import ml.melun.mangaview.viewer.runtime.ViewerCachedResumeDiagnostic
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.viewer.runtime.EngineViewerRuntime
+import ml.melun.mangaview.viewer.runtime.EngineViewerRuntimeDiagnosticSnapshot
 import ml.melun.mangaview.viewer.runtime.EngineSurfacePresentation
 import ml.melun.mangaview.viewer.runtime.EngineViewerDiagnostics
 import ml.melun.mangaview.viewer.runtime.EngineInputObservations
@@ -191,6 +192,8 @@ class ViewerActivity : ComponentActivity() {
         null
 
     internal fun viewerEngineSnapshot(): EngineRuntimeSnapshot? = engineDiagnostics.state
+    internal suspend fun viewerEngineDiagnosticSnapshot(): EngineViewerRuntimeDiagnosticSnapshot? =
+        withContext(Dispatchers.Main.immediate) { runtime?.diagnosticSnapshot() }
     internal fun viewerEngineFrameSnapshot(): EngineSurfacePresentation? = engineDiagnostics.frame
     internal suspend fun awaitEngineClosed() = engineClosed.await()
     internal fun engineDecodeWorkersTerminated(): Boolean = hardDecodeWork.isTerminated

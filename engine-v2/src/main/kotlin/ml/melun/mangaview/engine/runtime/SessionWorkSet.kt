@@ -17,6 +17,7 @@ import ml.melun.mangaview.engine.api.WorkSubscription
 
 internal class SessionDemand<T : Any>(
     val request: WorkRequest<T>,
+    val onFailure: ((Throwable) -> Unit)? = null,
     val accept: (T) -> Unit,
 ) {
     suspend fun subscribe(coordinator: WorkCoordinatorPort): WorkSubscription<T> = coordinator.submit(request)
@@ -99,7 +100,7 @@ internal class SessionWorkSet(
             throw cancelled
         } catch (failure: Throwable) {
             entry.failed = true
-            if (!entry.retiring && !closed) notifyFailure(entry.key, failure)
+            if (!entry.retiring && !closed) notifyFailure(entry.key, failure, desired[entry.key]?.onFailure)
         } finally {
             finish(entry)
         }
@@ -119,8 +120,8 @@ internal class SessionWorkSet(
         }
     }
 
-    private fun notifyFailure(key: WorkKey<*>, failure: Throwable) {
-        try { reportFailure(key, failure) } catch (observerFailure: Throwable) {
+    private fun notifyFailure(key: WorkKey<*>, failure: Throwable, handler: ((Throwable) -> Unit)? = null) {
+        try { if (handler != null) handler(failure) else reportFailure(key, failure) } catch (observerFailure: Throwable) {
             if (observerFailure !== failure) observerFailure.addSuppressed(failure)
             registerCleanupFailure(observerFailure)
         }

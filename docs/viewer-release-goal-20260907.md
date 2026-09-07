@@ -1,6 +1,12 @@
 # Viewer release goal — user-approved replacement, 2026-09-07
 
-This goal replaces the earlier 200-episode and practical-20 acceptance plans at the user's explicit request. Work remains solo. Complete the portable viewer improvements, validate the actual minified release, review and commit/push the implementation, and inspect CI. Preserve original image quality, input semantics, reading positions, existing work, and the designated emulator's RAM/security configuration.
+## Later user correction: optimization remains active
+
+The user subsequently clarified that this release-readiness gate is insufficient: optimize image appearance and scroll stutter as far as evidence supports on the designated emulator; disregard physical-phone testing and physically unavailable measurements. Passing tests or shipping an intermediate build does not finish that optimization. The earlier commit ac9e7ed20 is an intermediate result. The restriction below to experiments only after a newly reproduced failure is superseded: investigate measurable remaining app costs even when correctness tests pass, use short comparisons, retain useful improvements and document rejected candidates. Do not resume exhaustive corpus/catalog loops. The earlier no-worker rule was later superseded by explicit final Daybreak worker orchestration, with root retaining command and review ownership.
+
+CI follow-up: run 34082096686 failed because the broad `surface_*` ignore pattern omitted the debug CMake source. Commit 7e8e34bdc adds the existing locally tested source and an exact ignore exception. Every CMake source was verified present in HEAD. [Replacement run 34082412896](https://github.com/ad2das/mangaviewer/actions/runs/34082412896) completed successfully. Main optimization remains active after this CI repair.
+
+This goal replaces the earlier 200-episode and practical-20 acceptance plans at the user's explicit request. Complete the portable viewer improvements, validate the actual minified release, review and commit/push the implementation, and inspect CI. Preserve original image quality, input semantics, reading positions, existing work, and the designated emulator's RAM/security configuration.
 
 ## Acceptance and evidence
 
@@ -12,14 +18,24 @@ This goal replaces the earlier 200-episode and practical-20 acceptance plans at 
 - Fix any newly reproduced release crash, incorrect image, input/resume corruption or confirmed leak. Do not hide failures by rebooting. Record emulator runtime state when comparing performance.
 - Commit only project implementation, tests, build/workflow settings and reviewable reports/tools. Keep local captures, content, credentials and transient experiment outputs out of Git. Push main after the checks pass and report CI's actual result.
 
-## Deliverable
+## Earlier deliverable (superseded below)
 
 Corrected minified release APK: `.artifacts/viewer-focus-20260907/candidate-release-jni-callback/app.apk`, SHA-256 `d8712bf4564b3f42c24000bdfbe8d69ad5cd495b7224d5c5a4bcd641a284b699`, Android 11+, arm64-v8a/x86_64. The earlier release `8dd777af...` is superseded because its JNI callback was removed by R8 and it crashed on viewer launch. Real-phone performance remains unmeasured.
 
 Detailed retained experiments and their limitations: [viewer performance focus](viewer-performance-focus-20260907.md). Local artifact paths are provenance references, not claims that raw captures are published in the repository.
 
-## Final local validation
+## Earlier published baseline validation
 
 `gradlew test lint :app:assembleDebug :app:assembleRelease verifyArchitectureQuality --max-workers=2` passed in 40 seconds, 329 tasks (30 executed, 299 up-to-date). Current XML reports contain 908 unit-test executions across ten modules, including Android variant repeats: zero failures, errors or skips. Architecture gate passed over 291 production files. Lint passed with existing warnings; it is not warning-free. Release APK hash still exactly matches the smoke-tested d8712bf4... binary.
 
 `python -X utf8 -m unittest discover -s tools -p 'test_*.py'` passed 344 tests in 5.814 seconds. Staged diff whitespace check passed. Both APK workflows include all modules referenced by settings.gradle, including viewer-content, engine-api and engine-v2. No captured images, APKs, databases, native binaries or private-key/token pattern matches were found in the staged additions/modifications. Local logs: final-realistic-checks.txt, final-unit-summary.json, final-tool-tests.txt under `.artifacts/viewer-focus-20260907/`.
+
+## Superseding final candidate
+
+The final local candidate holds startup input behind a reducer barrier until a successfully submitted source frame overlaps the exact current session, then replays every accepted startup input in order. After current visual coverage is ready, it prepares current-episode originals one at a time in forward-first order, resolves and attaches the next manifest only after the current episode's originals are prepared, and prepares next-episode originals before the boundary. Background original, manifest and speculative-decode failures remain isolated until foreground demand naturally retries them. The renderer keeps a bounded nearby prepared neighborhood under the existing budget. The last narrow page-boundary correction makes consecutive full-page placements share the next visible region's exact top coordinate, eliminating the recorded one-unit seam without changing clipped or multi-band mapping. A behavior-preserving `EngineSession` extraction keeps the production file within the architecture gate. Final validation passed 100 engine tests, 80 app unit tests, debug/test/release APK builds, `lintDebug`, the 291-file architecture gate and scoped diff checks. The focused collector diagnostics-forwarding unit test also passed.
+
+Deliverable release APK: `.artifacts/viewer-focus-20260907/candidate-ux-final/release.apk`, 6,461,895 bytes, SHA-256 `06a7d3c05873532fe829ab7b0b4806e6bd869b2b6884c9d38b08967883330c8b`. Debug and Android-test hashes are `427b22a2cce91c89f6a25e875b05eff30769a59a448629751ea9c501fe77786e` and `5d6055ba70336497e3e5cae37fd0d8d2dcbf1e91630291b6a69c2b63c3208a9e`.
+
+The exact release was installed with `adb install -r` and its installed hash verified. A fresh same-process smoke alternated WFWF/NTK four times, injected four real swipes per iteration, closed each viewer with Back, and retained PID `11689` throughout. All eight original before/after screenshots were inspected and show source content without the earlier large upper black band, a blank viewport, or a missing horizontal strip. Launch, visible-failure, close and fatal-log checks passed. Post-close main-process PSS was 53,924, 49,636, 50,046 and 50,411 KiB. This bounded sample does not establish long-duration or whole-process-tree memory behavior, full-episode coverage, exact physical scanout, or real-phone performance.
+
+Numeric status remains explicit. The controlled no-readback diagnostic used the pre-seam debug hash `8a3f6084420d8a4d119b507618d5357907cc13bb14638061f983792031db8261`: open-to-first-source was `3348.4624 ms`, manifest-to-first-source `95.3415 ms`, and native submission p95 `6.9275 ms`; exact final response, settled coverage, input and closure also passed. Its canonical motion-progress cadence still fails p95 at `36.4842 ms` versus `33.3 ms`, while its over-50-ms ratio passes at `0/157`. The separate 50/50 exact-strip comparison is also pre-seam debug evidence. Nine of ten slow accepted-input pairs are paced by the synchronous injection harness, while the remaining post-UP natural-fling interval is unclassified. The earlier roughly `3904 ms` stopped incomplete interval remains historical risk. No cadence threshold or correctness tolerance was loosened, and the final release smoke is not physical-presentation or exact-pixel evidence. Exact-SHA CI remains pending until publication creates the final commit.

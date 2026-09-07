@@ -23,6 +23,11 @@ import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.engine.api.WorkRequest
 import ml.melun.mangaview.source.AdjacentEpisodes
 
+data class EngineSessionRuntimeDiagnosticSnapshot(
+    val runtime: EngineRuntimeSnapshot,
+    val work: SessionWorkOwnership,
+)
+
 /** Main-thread session effects. The reducer alone changes position; the coordinator alone executes work. */
 class EngineSessionRuntime(
     scope: CoroutineScope,
@@ -32,11 +37,15 @@ class EngineSessionRuntime(
     initialEpisode: EpisodeId,
     private val reportUpdate: (EngineRuntimeSnapshot, List<InputReceipt>) -> Unit,
     reportFailure: (WorkKey<*>, Throwable) -> Unit,
+    private val requireVisualReadiness: Boolean = false,
 ) {
     private val owner = Thread.currentThread()
     private val work = SessionWorkSet(scope, coordinator, reportFailure)
     private val plans = linkedMapOf<EpisodeId, EpisodeAccessPlan>()
     private val pages = linkedMapOf<PageId, PageContentIdentity>()
+    private val prepared = linkedSetOf<PageId>()
+    private val failedReadAheadPages = linkedSetOf<PageId>()
+    private val failedReadAheadEpisodes = linkedSetOf<EpisodeId>()
     private val receipts = mutableListOf<InputReceipt>()
     private var targetEpisode = initialEpisode
     private var positionResolved = false
@@ -45,6 +54,7 @@ class EngineSessionRuntime(
     private var closed = false
     private var processing = false
     private var dirty = false
+    private var visualReadyState: EngineSessionSnapshot? = null
 
     val snapshot: EngineRuntimeSnapshot get() {
         checkOwner()
@@ -75,6 +85,9 @@ class EngineSessionRuntime(
         work.clear()
         plans.clear()
         pages.clear()
+        prepared.clear()
+        failedReadAheadPages.clear()
+        failedReadAheadEpisodes.clear()
         positionResolved = true
         targetEpisode = episodeId
         process(update)
@@ -84,13 +97,33 @@ class EngineSessionRuntime(
         checkOwner()
         if (closed || foreground == enabled) return
         foreground = enabled
-        if (!enabled) pages.clear()
+        if (!enabled) { pages.clear(); prepared.clear(); visualReadyState = null }
         process(SessionUpdate(session.snapshot))
     }
 
+    fun visualReady(state: EngineSessionSnapshot, ready: Boolean) {
+        checkOwner()
+        val current = session.snapshot
+        if (closed || state.generation != current.generation || state.inputRevision != current.inputRevision ||
+            state.geometryRevision != current.geometryRevision) return
+        if (ready == isVisualReady(current)) return
+        visualReadyState = if (ready) state else null
+        if (started) process(SessionUpdate(current))
+    }
+
+    private fun isVisualReady(state: EngineSessionSnapshot): Boolean = visualReadyState?.let {
+        it.generation == state.generation && it.inputRevision == state.inputRevision &&
+            it.geometryRevision == state.geometryRevision
+    } == true
+
     fun retryFailures() {
         checkOwner()
-        if (!closed) work.retryFailures()
+        if (!closed) {
+            failedReadAheadPages.clear()
+            failedReadAheadEpisodes.clear()
+            work.retryFailures()
+            process(SessionUpdate(session.snapshot))
+        }
     }
 
     fun pageRequest(pageId: PageId, priority: WorkPriority): WorkRequest<StoredPage> {
@@ -101,11 +134,26 @@ class EngineSessionRuntime(
 
     fun ownership(): SessionWorkOwnership = work.ownership()
 
+    /** Pull-only owner-thread evidence; never collected from the update or frame path. */
+    fun diagnosticSnapshot(): EngineSessionRuntimeDiagnosticSnapshot {
+        checkOwner()
+        return EngineSessionRuntimeDiagnosticSnapshot(snapshot, work.ownership())
+    }
+
+    fun releaseStartupInput() {
+        checkOwner()
+        if (closed) return
+        val before = session.snapshot
+        val update = session.dispatch(SessionEvent.ReleaseStartupInput)
+        if (update.receipts.isNotEmpty() || update.snapshot != before) process(update)
+    }
+
     suspend fun close() {
         checkOwner()
         if (!closed) {
             closed = true
             pages.clear()
+            prepared.clear()
             process(session.dispatch(SessionEvent.Close))
         }
         work.close()
@@ -150,7 +198,11 @@ class EngineSessionRuntime(
         }
         adjacentPrefetch(state)?.let { if (it !in plans) wantedEpisodes.putIfAbsent(it, WorkPriority.NEXT_EPISODE) }
         wantedEpisodes.forEach { (id, priority) ->
-            if (id !in plans) result += SessionDemand(source.episode(id, priority)) { plan ->
+            if (id !in plans) result += SessionDemand(source.episode(id, priority), onFailure =
+                if (priority == WorkPriority.NEXT_EPISODE) ({ _: Throwable ->
+                    failedReadAheadEpisodes += id
+                    process(SessionUpdate(session.snapshot))
+                }) else null) { plan ->
                 if (isCurrent(generation)) acceptPlan(generation, id, plan)
             }
         }
@@ -163,7 +215,11 @@ class EngineSessionRuntime(
         }
         wantedPages.forEach { (id, priority) ->
             val plan = plans[id.episodeId] ?: return@forEach
-            result += SessionDemand(source.page(plan, id, priority)) { page ->
+            result += SessionDemand(source.page(plan, id, priority), onFailure =
+                if (priority == WorkPriority.NEXT_IMAGE || priority == WorkPriority.NEXT_EPISODE) ({ _: Throwable ->
+                    failedReadAheadPages += id
+                    process(SessionUpdate(session.snapshot))
+                }) else null) { page ->
                 if (isCurrent(generation)) acceptPage(generation, id, plan, page)
             }
         }
@@ -179,6 +235,8 @@ class EngineSessionRuntime(
 
     private fun acceptPage(generation: Long, expected: PageId, plan: EpisodeAccessPlan, page: StoredPage) {
         require(page.pageId == expected && page.contentRevision == plan.contentRevision)
+        prepared += expected
+        failedReadAheadPages -= expected
         val update = session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
         pages[expected] = PageContentIdentity(expected, page.contentRevision, page.sha256, page.dimensions, page.byteCount)
         process(update)
@@ -199,26 +257,49 @@ class EngineSessionRuntime(
         state.visibleRegions.forEach { region ->
             result.putIfAbsent(region.pageId, if (region.pageId == state.anchor?.pageId) WorkPriority.FOCUS else WorkPriority.VISIBLE)
         }
-        // One neighboring original in each direction. This is ordinary demand-driven speculation.
-        state.visibleRegions.firstOrNull()?.pageId?.let { neighbor(it, -1)?.let { id ->
-            result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
-        } }
-        state.visibleRegions.lastOrNull()?.pageId?.let { neighbor(it, 1)?.let { id ->
-            result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
-        } }
+        addReadAhead(state, result)
         return result
     }
 
-    private fun neighbor(pageId: PageId, direction: Int): PageId? {
-        val manifest = plans[pageId.episodeId]?.manifest ?: return null
-        val index = manifest.pages.indexOfFirst { it.id == pageId }
-        return manifest.pages.getOrNull(index + direction)?.id
+    private fun addReadAhead(state: EngineSessionSnapshot, result: LinkedHashMap<PageId, WorkPriority>) {
+        val anchor = state.anchor?.pageId ?: return
+        val manifest = plans[anchor.episodeId]?.manifest ?: return
+        val index = manifest.pages.indexOfFirst { it.id == anchor }
+        if (index < 0) return
+        // Keep a small prepared neighborhood available to the tile planner. Originals
+        // elsewhere stay in disk storage; never retain an entire episode's textures.
+        for (offset in listOf(1, 2, -1)) {
+            val id = manifest.pages.getOrNull(index + offset)?.id ?: continue
+            if (id in prepared) result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
+        }
+        if (!state.completeViewport || (requireVisualReadiness && !isVisualReady(state)) ||
+            result.keys.any { it !in pages }) return
+        // One speculative original at a time, forward first. Previously viewed pages
+        // are filled only after the forward pages; reverse input remains foreground.
+        val pending = ((index + 1 until manifest.pages.size).asSequence() +
+            (index - 1 downTo 0).asSequence()).map { manifest.pages[it].id }.firstOrNull { it !in prepared && it !in failedReadAheadPages }
+        if (pending != null) {
+            result.putIfAbsent(pending, WorkPriority.NEXT_IMAGE)
+            return
+        }
+        if (manifest.pages.any { it.id !in prepared }) return
+        val next = manifest.nextEpisodeId?.let { plans[it]?.manifest } ?: return
+        next.pages.take(2).filter { it.id in prepared }.forEach {
+            result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
+        }
+        next.pages.firstOrNull { it.id !in prepared && it.id !in failedReadAheadPages }?.id?.let {
+            result.putIfAbsent(it, WorkPriority.NEXT_EPISODE)
+        }
     }
 
     private fun adjacentPrefetch(state: EngineSessionSnapshot): EpisodeId? {
-        val pageId = state.visibleRegions.lastOrNull()?.pageId ?: return null
-        val plan = plans[pageId.episodeId] ?: return null
-        return plan.manifest.nextEpisodeId.takeIf { plan.manifest.pages.lastOrNull()?.id == pageId }
+        val episode = state.anchor?.pageId?.episodeId ?: return null
+        val plan = plans[episode] ?: return null
+        if (!state.completeViewport || (requireVisualReadiness && !isVisualReady(state)) ||
+            plan.manifest.pages.any { it.id !in prepared }) return null
+        // Resolve and attach the next episode before reaching its boundary, only
+        // after every current-episode original has completed preparation.
+        return plan.manifest.nextEpisodeId?.takeUnless { it in failedReadAheadEpisodes }
     }
 
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation

@@ -66,21 +66,84 @@ class EngineRenderRuntimeTest {
         fixture.coordinator.close()
     }
 
-    private inner class Fixture(scope: TestScope) {
+    @Test fun speculativeDecodeFailureIsRetriedAndReportedOnlyWhenVisible() = runTest {
+        val fixture = Fixture(this, 240_000)
+        var attempts = 0
+        fixture.beforeDecode = { tile ->
+            if (tile.sourceTop == 400) { attempts++; error("decode failed") }
+        }
+        fixture.runtime.update(snapshot())
+        runCurrent()
+        assertTrue(fixture.scenes.last().completeCoverage)
+        assertEquals(1, attempts)
+        assertTrue(fixture.failures.isEmpty())
+        repeat(3) { fixture.runtime.update(snapshot()); runCurrent() }
+        assertEquals(1, attempts)
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val next = snapshot().let { it.copy(session = it.session.copy(
+            anchor = SourceAnchor(id, 450 * q), inputRevision = 2,
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 450 * q, 550 * q, 0, 102400)))) }
+        fixture.runtime.update(next)
+        runCurrent()
+        assertEquals(2, attempts)
+        assertEquals(1, fixture.failures.size)
+        assertFalse(fixture.scenes.last().completeCoverage)
+        fixture.beforeDecode = {}
+        fixture.runtime.retryFailures()
+        runCurrent()
+        assertTrue(fixture.scenes.last().completeCoverage)
+        fixture.close()
+        assertEquals(0, fixture.files)
+    }
+
+    @Test fun diagnosticSnapshotDistinguishesHeldVisibleDecodeFromResidentCoverage() = runTest {
+        val fixture = Fixture(this)
+        val entered = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = {
+            entered.complete(Unit)
+            gate.await()
+        }
+        fixture.runtime.update(snapshot())
+        runCurrent()
+        entered.await()
+
+        val held = fixture.runtime.diagnosticSnapshot()
+        assertEquals(setOf(id), held.plannedVisibleTiles.map { it.pageId }.toSet())
+        assertTrue(held.residentTextureTiles.isEmpty())
+        assertTrue(held.completeGeometry)
+        assertFalse(held.completeCoverage)
+        assertEquals(1, held.work.active)
+        assertEquals(0, held.work.ready)
+
+        gate.complete(Unit)
+        runCurrent()
+
+        val released = fixture.runtime.diagnosticSnapshot()
+        assertEquals(released.plannedVisibleTiles, released.residentTextureTiles)
+        assertTrue(released.completeCoverage)
+        assertEquals(1, released.work.ready)
+        fixture.close()
+    }
+
+    private inner class Fixture(scope: TestScope, textureBudget: Long = 80_000) {
         val coordinator = WorkCoordinator(scope)
         val uploader = Uploader()
         val scenes = mutableListOf<EngineDrawScene>()
         var files = 0
         var pixelCloses = 0
         var failScene = false
+        var beforeDecode: suspend (EngineTileSpec) -> Unit = {}
+        val failures = mutableListOf<Throwable>()
         private val tileWork = EngineTileWork(EngineImageDecoder { _, tile ->
+            beforeDecode(tile)
             object : EnginePixels {
                 override val tile = tile
                 override val byteCount = tile.byteCount
                 override fun close() { pixelCloses++ }
             }
         }, StandardTestDispatcher(scope.testScheduler), uploader)
-        val runtime = EngineRenderRuntime(scope, coordinator, EngineTilePlanner(80_000, 202), tileWork, uploader,
+        val runtime = EngineRenderRuntime(scope, coordinator, EngineTilePlanner(textureBudget, 202), tileWork, uploader,
             { _, priority ->
                 WorkRequest(WorkKey("test", "page", "read", "1", StoredPage::class.java), WorkDomain.STORAGE, priority,
                     execute = { files++; StoredPage(id, "1", File("original.png"), 1, "1".repeat(64), dimensions, "image/png") },
@@ -89,7 +152,7 @@ class EngineRenderRuntimeTest {
                 if (failScene) error("frame callback failed")
                 scenes += scene
                 uploader.scene(scene.quads.map { it.texture.key }.toSet())
-            }, { uploader.scene(emptySet()) }, { _, failure -> throw failure })
+            }, { uploader.scene(emptySet()) }, { _, failure -> failures += failure })
 
         suspend fun close() { runtime.close(); coordinator.close(); assertTrue(uploader.live.isEmpty()) }
     }

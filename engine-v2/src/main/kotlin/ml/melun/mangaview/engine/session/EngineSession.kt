@@ -34,6 +34,7 @@ class EngineSession(
     private var inputRevisionValue = 0L
     private var lastSequence = 0L
     private var phaseValue = EngineSessionPhase.OPENING
+    private var startupInputHeld = false
 
     init {
         require(sessionId > 0L) { "Session id must be positive" }
@@ -54,6 +55,7 @@ class EngineSession(
             is SessionEvent.NavigationResolved -> navigationResolved(event)
             is SessionEvent.DimensionsResolved -> dimensionsResolved(event.generation, event.pageId, event.dimensions)
             is SessionEvent.Input -> input(event.sample)
+            SessionEvent.ReleaseStartupInput -> releaseStartupInput()
             is SessionEvent.Resize -> resize(event.viewport)
             is SessionEvent.Navigate -> navigate(event.episodeId)
             SessionEvent.Close -> close()
@@ -152,6 +154,19 @@ class EngineSession(
         return receipts
     }
 
+    /** Must be engaged before input; pending samples remain ordinary reducer-owned inputs. */
+    fun engageStartupInputBarrier() {
+        checkOwner()
+        check(phaseValue == EngineSessionPhase.OPENING && lastSequence == 0L && pendingInputs.isEmpty())
+        startupInputHeld = true
+    }
+
+    private fun releaseStartupInput(): List<InputReceipt> {
+        if (!startupInputHeld || phaseValue == EngineSessionPhase.CLOSED) return emptyList()
+        startupInputHeld = false
+        return replayPending(emptySet())
+    }
+
     private fun resize(viewport: EngineViewport): List<InputReceipt> {
         if (phaseValue == EngineSessionPhase.CLOSED) return emptyList()
         if (geometry.viewport != viewport) {
@@ -191,15 +206,8 @@ class EngineSession(
 
     private fun replayPending(forceSequences: Set<Long>): List<InputReceipt> {
         val receipts = mutableListOf<InputReceipt>()
-        if (!isReadyForInput()) {
-            pendingInputs.firstOrNull()?.let { pending ->
-                pending.blocker = readinessBlocker()
-                if (forceSequences.contains(pending.sample.sequence)) {
-                    receipts += deferredReceipt(pending, geometryRevisionValue)
-                }
-            }
-            return receipts
-        }
+        if (startupInputHeld) return receipts
+        receiptsUntilReady(forceSequences)?.let { return it }
         while (pendingInputs.isNotEmpty()) {
             val pending = pendingInputs.first
             val beforeApplied = pending.applied
@@ -238,6 +246,18 @@ class EngineSession(
                     return receipts
                 }
                 else -> return receipts
+            }
+        }
+        return receipts
+    }
+
+    private fun receiptsUntilReady(forceSequences: Set<Long>): List<InputReceipt>? {
+        if (isReadyForInput()) return null
+        val receipts = mutableListOf<InputReceipt>()
+        pendingInputs.firstOrNull()?.let { pending ->
+            pending.blocker = readinessBlocker()
+            if (forceSequences.contains(pending.sample.sequence)) {
+                receipts += deferredReceipt(pending, geometryRevisionValue)
             }
         }
         return receipts

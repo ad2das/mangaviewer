@@ -16,6 +16,9 @@ import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.viewer.runtime.EngineReadbackPacket
 import ml.melun.mangaview.viewer.runtime.EngineCapturedFrame
 import ml.melun.mangaview.viewer.runtime.EngineFrameObservation
+import ml.melun.mangaview.viewer.runtime.EngineViewerRuntimeDiagnosticSnapshot
+import ml.melun.mangaview.engine.api.EngineTileSpec
+import ml.melun.mangaview.engine.api.SessionWorkOwnership
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
@@ -35,6 +38,7 @@ class EngineViewerCaptureTest {
         val context = instrumentation.targetContext
         val device = UiDevice.getInstance(instrumentation)
         val arguments = InstrumentationRegistry.getArguments()
+        val captureEngineDiagnostics = arguments.getString("captureEngineDiagnostics") == "true"
         val episode = EpisodeId(SeriesId(SourceId(arguments.getString("captureSource") ?: "wfwf"),
             arguments.getString("captureSeries") ?: "comic:10001"), arguments.getString("captureEpisode") ?: "1")
         val kind = SeriesKind.valueOf(arguments.getString("captureKind") ?: "COMIC")
@@ -148,6 +152,18 @@ class EngineViewerCaptureTest {
                     maximumCaptures = (arguments.getString("captureMaximumFrames") ?: "512").toLong())
                 File(output, "summary.json").writeText(report.put("capturedFrames", number)
                     .put("fullViewportCapture", readback).put("physicalPresentationVerified", false).toString(2))
+                val diagnostic = if (captureEngineDiagnostics) activity.viewerEngineDiagnosticSnapshot() else null
+                (diagnostic?.content?.runtime ?: activity.viewerEngineSnapshot())?.let { state ->
+                    File(output, "stopped-engine-state.json").writeText(JSONObject().apply {
+                        put("session", state.session.toString())
+                        put("preparedPageIdentities", org.json.JSONArray(state.pages.keys.map { it.toString() }))
+                        put("failure", activity.viewerFailureSnapshot()?.stackTraceToString() ?: JSONObject.NULL)
+                    }.toString(2))
+                }
+                diagnostic?.let {
+                    File(output, "stopped-engine-diagnostic.json").writeText(engineDiagnostic(it,
+                        activity.viewerFailureSnapshot()).toString(2))
+                }
                 activity.viewerStartupTimingSnapshot()?.let { startup ->
                     File(output, "startup-timing.json").writeText(JSONObject().apply {
                         put("clock", "System.nanoTime")
@@ -286,6 +302,40 @@ class EngineViewerCaptureTest {
     private fun page(id: PageId) = JSONObject().apply {
         put("sourceId", id.episodeId.seriesId.sourceId.value); put("seriesKey", id.episodeId.seriesId.remoteKey)
         put("episodeKey", id.episodeId.remoteKey); put("pageKey", id.remoteKey)
+    }
+
+    private fun engineDiagnostic(value: EngineViewerRuntimeDiagnosticSnapshot, failure: Throwable?) = JSONObject().apply {
+        val state = value.content.runtime
+        val render = value.render
+        put("capturedAtNanos", value.capturedAtNanos)
+        put("session", state.session.toString())
+        put("completeViewport", state.session.completeViewport)
+        put("visiblePageIdentities", org.json.JSONArray(state.session.visibleRegions.map { it.pageId.toString() }))
+        put("preparedPageIdentities", org.json.JSONArray(state.pages.keys.map { it.toString() }))
+        put("contentWork", work(false, value.content.work))
+        put("renderSession", render.session?.toString() ?: JSONObject.NULL)
+        put("renderEnabled", render.enabled)
+        put("completeGeometry", render.completeGeometry)
+        put("completeCoverage", render.completeCoverage)
+        put("plannedVisibleTiles", org.json.JSONArray(render.plannedVisibleTiles.map(::tile)))
+        put("residentTextureTiles", org.json.JSONArray(render.residentTextureTiles.map(::tile)))
+        put("missingVisibleTiles", org.json.JSONArray((render.plannedVisibleTiles - render.residentTextureTiles).map(::tile)))
+        put("renderWork", work(true, render.work))
+        put("failure", failure?.stackTraceToString() ?: JSONObject.NULL)
+    }
+
+    private fun work(render: Boolean, value: SessionWorkOwnership) = JSONObject().apply {
+        put("owner", if (render) "render" else "content")
+        put("active", value.active); put("ready", value.ready)
+        put("retiring", value.retiring); put("failed", value.failed)
+    }
+
+    private fun tile(value: EngineTileSpec) = JSONObject().apply {
+        put("pageIdentity", page(value.pageId)); put("pageId", value.pageId.toString())
+        put("contentRevision", value.contentRevision); put("sha256", value.sha256)
+        put("sourceTop", value.sourceTop); put("sourceBottom", value.sourceBottom)
+        put("displayWidth", value.displayWidth)
+        put("sourceWidth", value.dimensions.widthPx); put("sourceHeight", value.dimensions.heightPx)
     }
 
     private fun anchor(value: SourceAnchor?): Any = value?.let { JSONObject().apply {

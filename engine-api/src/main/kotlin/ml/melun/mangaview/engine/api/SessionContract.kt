@@ -105,6 +105,8 @@ sealed interface SessionEvent {
         val dimensions: PageDimensions,
     ) : SessionEvent
     data class Input(val sample: InputSample) : SessionEvent
+    /** Releases inputs accepted during the one-time initial visual-readiness barrier. */
+    data object ReleaseStartupInput : SessionEvent
     data class Resize(val viewport: EngineViewport) : SessionEvent
     data class Navigate(val episodeId: EpisodeId) : SessionEvent
     data object Close : SessionEvent

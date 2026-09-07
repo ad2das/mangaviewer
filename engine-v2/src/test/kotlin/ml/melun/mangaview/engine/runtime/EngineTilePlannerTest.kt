@@ -8,6 +8,7 @@ import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineSessionPhase
 import ml.melun.mangaview.engine.api.EngineSessionSnapshot
+import ml.melun.mangaview.engine.api.EngineTileSpec
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.PageContentIdentity
 import ml.melun.mangaview.engine.api.SourceAnchor
@@ -38,11 +39,52 @@ class EngineTilePlannerTest {
         assertEquals(1_520_792L, placement.bottomScreenUnits)
     }
 
+    @Test fun consecutiveFullPagesShareTheNextRegionsExactTopBoundary() {
+        val dimensions = PageDimensions(622, 900)
+        val previousId = PageId.at(pageId.episodeId, 6)
+        val nextId = PageId.at(pageId.episodeId, 7)
+        val previous = PageContentIdentity(previousId, "1", "1".repeat(64), dimensions, 1)
+        val next = PageContentIdentity(nextId, "1", "2".repeat(64), dimensions, 1)
+        val previousTop = 417_587L
+        val independentlyMappedPreviousBottom = previousTop + 900L * 1080L * 1024L / 622L
+        val seam = 2_017_793L
+        val outwardRoundedPreviousBottom = 2_017_794L
+        assertEquals(2_017_792L, independentlyMappedPreviousBottom)
+
+        val session = EngineSessionSnapshot(1, 1, EngineSessionPhase.ACTIVE, EngineViewport(1080, 4000),
+            SourceAnchor(previousId, 0), 1, 1, 0,
+            listOf(
+                VisiblePageRegion(previousId, dimensions, 0, 900L * q,
+                    previousTop, outwardRoundedPreviousBottom),
+                VisiblePageRegion(nextId, dimensions, 0, 900L * q, seam, 3_618_000L),
+            ), emptySet(), emptySet(), true)
+        val placements = EngineTilePlanner(20_000_000, 2000).plan(
+            EngineRuntimeSnapshot(session, emptyMap(), mapOf(previousId to previous, nextId to next)),
+        ).placements
+
+        assertEquals(listOf(
+            EngineTileSpec(previousId, "1", "1".repeat(64), dimensions, 0, 900, 1080),
+            EngineTileSpec(nextId, "1", "2".repeat(64), dimensions, 0, 900, 1080),
+        ), placements.map { it.tile })
+        assertTrue(placements.all { it.tile.rasterHeight == 1563 && it.tile.decodedHeight == 1563 })
+        assertEquals(seam, placements[0].bottomScreenUnits)
+        assertEquals(seam, placements[1].topScreenUnits)
+        assertNotEquals(outwardRoundedPreviousBottom, placements[0].bottomScreenUnits)
+        assertTrue(placements.all { it.bottomScreenUnits > it.topScreenUnits })
+    }
+
     @Test fun allOriginalRowsAreCoveredAndRasterPaddingDoesNotCreateGaps() {
         val plan = EngineTilePlanner(10_000_000, 302).plan(snapshot(101, 1000, 150, 0, 1000 * q))
         assertEquals(5, plan.placements.size)
         assertEquals(0, plan.placements.first().tile.sourceTop)
         assertEquals(1000, plan.placements.last().tile.sourceBottom)
+        assertEquals(listOf(
+            0L to 304_977L,
+            303_953L to 608_930L,
+            607_907L to 912_884L,
+            911_861L to 1_216_838L,
+            1_215_814L to 1_520_792L,
+        ), plan.placements.map { it.topScreenUnits to it.bottomScreenUnits })
         plan.placements.zipWithNext().forEach { (first, next) ->
             assertEquals(first.tile.sourceBottom, next.tile.sourceTop)
             assertTrue(first.bottomScreenUnits >= next.topScreenUnits)
@@ -91,6 +133,26 @@ class EngineTilePlannerTest {
             center.copy(plans = full.plans, pages = full.pages)
         }
         assertTrue(EngineTilePlanner(1_000_000, 202).plan(middle).demands.all { it.tile.pageId == pageId })
+    }
+
+    @Test fun nextEpisodeFirstBandIsPreparedBeforeItBecomesVisible() {
+        val state = neighboringSnapshot(false)
+        val nextId = pageId.episodeId.copy(remoteKey = "next")
+        val nextPage = PageId.at(nextId, 0)
+        fun plan(id: ml.melun.mangaview.core.EpisodeId, page: PageId,
+            next: ml.melun.mangaview.core.EpisodeId?) = ml.melun.mangaview.engine.api.EpisodeAccessPlan(
+            ml.melun.mangaview.core.EpisodeManifest(id, "episode",
+                listOf(ml.melun.mangaview.core.PageSpec(page, 0, PageDimensions(100, 1000))), nextEpisodeId = next),
+            "1", "0".repeat(64), java.net.URI("https://test.example/read"), 0,
+            listOf(ml.melun.mangaview.engine.api.PageAccessPlan(page, page.remoteKey,
+                listOf(java.net.URI("https://test.example/page")))))
+        val prepared = state.copy(plans = mapOf(pageId.episodeId to plan(pageId.episodeId, pageId, nextId),
+            nextId to plan(nextId, nextPage, null)), pages = mapOf(pageId to state.pages.getValue(pageId),
+                nextPage to state.pages.getValue(pageId).copy(pageId = nextPage)))
+        val output = EngineTilePlanner(1_000_000, 202).plan(prepared)
+        assertEquals(0, output.demands.single { it.tile.pageId == nextPage }.tile.sourceTop)
+        assertTrue(output.placements.all { it.tile.pageId == pageId })
+        assertTrue(EngineTilePlanner(80_000, 202).plan(prepared).demands.all { it.tile.pageId == pageId })
     }
 
     private fun neighboringSnapshot(previous: Boolean): EngineRuntimeSnapshot {
