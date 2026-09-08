@@ -85,7 +85,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.homeRows(
     }
 }
 
-private fun androidx.compose.foundation.lazy.LazyListScope.seriesGrid(
+internal fun androidx.compose.foundation.lazy.LazyListScope.seriesGrid(
     series: List<SourceSeries>,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
@@ -153,53 +153,6 @@ private fun GenreRow(
             }
         }
         repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
-    }
-}
-
-@Composable
-internal fun GenreCatalogScreen(
-    state: LibraryState,
-    artworkLoader: SeriesArtworkLoader,
-    colors: LibraryColors,
-    accept: (LibraryIntent) -> Unit,
-) {
-    val genre = state.selectedGenre ?: return
-    Column(
-        Modifier.fillMaxSize().semantics {
-            contentDescription = "장르 목록: ${genre.label}"
-        },
-    ) {
-        Row(
-            Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier.size(44.dp).clip(CircleShape).clickable { accept(LibraryIntent.Back) },
-                contentAlignment = Alignment.Center,
-            ) {
-                LibraryIconView(LibraryIcon.BACK, colors.secondary, Modifier.size(26.dp))
-            }
-            BasicText(
-                genre.label,
-                Modifier.weight(1f).padding(horizontal = 8.dp),
-                titleStyle(colors, 21),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        when (val catalog = state.genreCatalog) {
-            LibraryContent.Empty, LibraryContent.Loading ->
-                LibraryMessage("${genre.label} 작품을 불러오는 중…", colors, Modifier.weight(1f))
-            is LibraryContent.Failure ->
-                LibraryMessage(catalog.message, colors, Modifier.weight(1f))
-            is LibraryContent.Series -> LazyColumn(
-                Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp),
-            ) {
-                seriesGrid(catalog.items, artworkLoader, colors, accept)
-            }
-            is LibraryContent.Episodes -> Unit
-        }
     }
 }
 

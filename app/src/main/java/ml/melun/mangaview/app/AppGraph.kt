@@ -68,6 +68,8 @@ internal class AppGraph(
     )
     private val database = DeferredViewerDatabase(appContext, ioDispatcher)
     private val transportFactory = OkHttpTransportFactory(ioDispatcher)
+    private val origins by lazy { ProviderOriginDirectory(appContext, ioDispatcher, userAgent()) }
+    private fun resilient(transport: SourceTransport) = ProviderOriginTransport(transportFactory.protect(transport), origins)
     private val ntkBrowserIdentity = NtkBrowserIdentity.forDevice(appContext, "primary")
     private val ntkGateway = NtkWebViewAccessGateway(
         appContext,
@@ -118,7 +120,7 @@ internal class AppGraph(
         }
     val engine: EngineAppGraph by lazy {
         EngineAppGraph(appContext, applicationScope, sourceDispatcher, ioDispatcher, database, userLibrary, userAgent(),
-            java.net.URI(DEFAULT_NTK_ORIGIN), { networkEvidenceObserver })
+            java.net.URI(DEFAULT_NTK_ORIGIN), { networkEvidenceObserver }, origins)
     }
 
     init {
@@ -193,7 +195,7 @@ internal class AppGraph(
     private suspend fun initializeNtkSource(): DeferredSourceResource {
         coroutineContext.ensureActive()
         val transport = createNtkTransport()
-        val documentTransport = ObservedSourceTransport(transportFactory.create(), "catalog-ntk-document") { networkEvidenceObserver }
+        val documentTransport = ObservedSourceTransport(resilient(transportFactory.create()), "catalog-ntk-document") { networkEvidenceObserver }
         try {
             coroutineContext.ensureActive()
             val source = NtkContentSource(
@@ -245,11 +247,11 @@ internal class AppGraph(
     }
 
     private fun createNtkTransport(): SourceTransport = ObservedSourceTransport(
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        resilient(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             HttpEngineSourceTransport(appContext, userAgent())
         } else {
             transportFactory.create()
-        }, "catalog-ntk", { networkEvidenceObserver })
+        }), "catalog-ntk", { networkEvidenceObserver })
 
     private fun createWfwfSource(): DeferredContentSource = DeferredContentSource(
         id = WFWF_ID,
@@ -279,7 +281,7 @@ internal class AppGraph(
     }
 
     private fun createWfwfTransport(): SourceTransport = ObservedSourceTransport(
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        resilient(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             HttpEngineSourceTransport(
                 appContext,
                 userAgent(),
@@ -287,7 +289,7 @@ internal class AppGraph(
             )
         } else {
             transportFactory.create()
-        }, "catalog-wfwf", { networkEvidenceObserver })
+        }), "catalog-wfwf", { networkEvidenceObserver })
 
     private fun userAgent(): String =
         "Mozilla/5.0 (Linux; Android ${android.os.Build.VERSION.RELEASE}; " +
@@ -295,7 +297,7 @@ internal class AppGraph(
             "Chrome/124.0 Mobile Safari/537.36"
 
     private companion object {
-        const val DEFAULT_NTK_ORIGIN = "https://toki31.com"
+        const val DEFAULT_NTK_ORIGIN = ml.melun.mangaview.source.ntk.NtkOriginResolver.DEFAULT_ORIGIN
         const val DEFAULT_WFWF_ORIGIN = ml.melun.mangaview.source.wfwf.DEFAULT_WFWF_ORIGIN
         const val NTK_PRECONNECT_TIMEOUT_MILLIS = 4_000L
         val NTK_ID = SourceId("ntk")

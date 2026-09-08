@@ -93,7 +93,12 @@ internal sealed interface GenreContent {
 internal sealed interface LibraryContent {
     data object Empty : LibraryContent
     data object Loading : LibraryContent
-    data class Series(val items: List<SourceSeries>) : LibraryContent
+    data class Series(
+        val items: List<SourceSeries>,
+        val nextCursor: String? = null,
+        val loadingNext: Boolean = false,
+        val nextFailure: String? = null,
+    ) : LibraryContent
     data class Episodes(val series: SourceSeries, val items: List<SourceEpisode>) : LibraryContent
     data class Failure(val message: String) : LibraryContent
 }
@@ -111,6 +116,7 @@ internal sealed interface LibraryIntent {
     data class SearchFieldSelected(val value: SearchField) : LibraryIntent
     data object Search : LibraryIntent
     data object RetryHome : LibraryIntent
+    data object LoadMoreGenre : LibraryIntent
     data object ToggleSettings : LibraryIntent
     data object TogglePreferences : LibraryIntent
     data object AccountSignIn : LibraryIntent
@@ -126,6 +132,7 @@ internal sealed interface LibraryIntent {
     data class SeriesSelected(val series: SourceSeries) : LibraryIntent
     data class EpisodeSelected(val episodeId: EpisodeId) : LibraryIntent
     data class SavedSeriesSelected(val series: SavedSeries) : LibraryIntent
+    data class RemoveSavedItem(val item: SavedItemRemoval) : LibraryIntent
     data class OfflineSeriesSelected(val series: SourceSeries) : LibraryIntent
     data class SavedEpisodeSelected(val position: ReadingPosition) : LibraryIntent
     data class FavoriteToggled(val series: SourceSeries) : LibraryIntent

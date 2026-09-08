@@ -28,6 +28,16 @@ internal class LibraryActions(
         library.updateSettings(transform)
     }
 
+    suspend fun removeSaved(item: SavedItemRemoval) = withContext(ioDispatcher) {
+        if (item.tab == SavedTab.ALL || item.tab == SavedTab.OFFLINE) downloads.removeSeries(item.series.id)
+        when (item.tab) {
+            SavedTab.ALL -> library.removeHistory(item.series.id, removeFavorite = true)
+            SavedTab.RECENT -> library.removeHistory(item.series.id)
+            SavedTab.FAVORITES -> library.setFavorite(item.series.id, item.series.title, item.series.thumbnailKey, false)
+            SavedTab.OFFLINE -> Unit
+        }
+    }
+
     fun recordOpened(series: SourceSeries, episode: SourceEpisode) = persist {
         library.recordOpened(series.id, series.title, series.thumbnailKey, episode.id)
     }

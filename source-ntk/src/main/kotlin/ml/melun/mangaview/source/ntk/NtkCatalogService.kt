@@ -14,6 +14,7 @@ import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.AdjacentEpisodes
 import ml.melun.mangaview.source.CatalogOrder
+import ml.melun.mangaview.source.CatalogStatusCursor
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceEpisode
@@ -58,10 +59,12 @@ internal class NtkCatalogService(
     }
 
     suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
-        val page = query.cursor?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+        val includeCompleted = query.genre != null
+        val cursor = CatalogStatusCursor.parse(query.cursor, includeCompleted)
+        val page = cursor.page
         val endpoint = if (query.kind == SeriesKind.COMIC) "manhwa-list" else "works"
         val parameters = buildList {
-            add("status=${if (query.kind == SeriesKind.WEBTOON) "ing" else ""}")
+            add("status=${if (cursor.completed) "completed" else "ongoing"}")
             when (query.order) {
                 CatalogOrder.POPULAR -> add("sort=hot")
                 CatalogOrder.LATEST -> add("sort=recent")
@@ -82,11 +85,12 @@ internal class NtkCatalogService(
             )
         }
         if (parsed?.recognized == true) {
-            val hasNext = parsed.total?.let { page * searchPageSize < it }
+            val hasNext = parsed.total?.let { page.toLong() * searchPageSize < it }
                 ?: (parsed.series.size == searchPageSize)
-            return SourcePage(parsed.series, if (hasNext) (page + 1).toString() else null)
+            check(parsed.series.isNotEmpty() || !hasNext) { "NTK returned an empty page before the catalog end" }
+            return SourcePage(parsed.series, cursor.next(if (hasNext) (page + 1).toString() else null, includeCompleted))
         }
-        if (page > 1) return SourcePage(emptyList())
+        check(query.genre == null && page == 1) { "NTK 목록을 불러오지 못했습니다. 다시 시도해 주세요." }
         return SourcePage(parser.searchHtml(
             documents.text(catalogPath(query), false),
             sourceId,

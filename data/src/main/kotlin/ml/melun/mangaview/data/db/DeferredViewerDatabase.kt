@@ -57,6 +57,12 @@ private class DeferredViewerDao(
     private val database: suspend () -> ViewerDatabase,
     private val ioDispatcher: CoroutineDispatcher,
 ) : ViewerDao {
+    override suspend fun deleteProgress(source: String, series: String) = database().viewer().deleteProgress(source, series)
+    override suspend fun deleteReadingAnchor(source: String, series: String) = database().viewer().deleteReadingAnchor(source, series)
+    override suspend fun clearFavorite(source: String, series: String, at: Long) = database().viewer().clearFavorite(source, series, at)
+    override suspend fun removeHistory(source: String, series: String, removeFavorite: Boolean, at: Long) =
+        database().viewer().removeHistory(source, series, removeFavorite, at)
+
     override suspend fun touchMatchingReadingAnchor(source: String, series: String, at: Long) =
         database().viewer().touchMatchingReadingAnchor(source, series, at)
 

@@ -16,6 +16,9 @@ internal class LibraryStateObservers(
     private val downloads: OfflineDownloadManager,
 ) {
     private var restoredDestination = false
+    private var destinationSelected = false
+
+    fun destinationSelected() { destinationSelected = true }
 
     fun start(
         scope: CoroutineScope,
@@ -47,7 +50,7 @@ internal class LibraryStateObservers(
                     reload = sourceId != state.selectedSourceId || kind != state.homeKind
                     state.copy(
                         saved = snapshot,
-                        destination = MainDestination.fromStored(snapshot.settings.startTab),
+                        destination = if (destinationSelected) state.destination else MainDestination.fromStored(snapshot.settings.startTab),
                         selectedSourceId = sourceId,
                         homeKind = kind,
                     )

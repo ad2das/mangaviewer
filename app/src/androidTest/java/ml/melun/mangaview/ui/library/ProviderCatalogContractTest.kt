@@ -18,6 +18,31 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ProviderCatalogContractTest {
+    @Test fun representativeGenresReachTheirRealLastPageIncludingCompletedCatalogs() = runBlocking {
+        val graph = (InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as ViewerApplication).graph
+        val cases = listOf(Triple("ntk", SeriesKind.WEBTOON, "기타"), Triple("ntk", SeriesKind.COMIC, "음악"),
+            Triple("wfwf", SeriesKind.WEBTOON, "스포츠"), Triple("wfwf", SeriesKind.COMIC, "SF"))
+        for ((provider, kind, label) in cases) withTimeout(90_000) {
+            val source = graph.sources.require(SourceId(provider))
+            val genre = source.genres(kind).single { it.label == label }
+            val cursors = mutableSetOf<String?>()
+            val ids = mutableSetOf<ml.melun.mangaview.core.SeriesId>()
+            var completedItems = 0
+            var cursor: String? = null
+            do {
+                check(cursors.add(cursor)) { "Provider repeated cursor: $provider/$kind/$cursor" }
+                val page = source.catalog(CatalogQuery(kind, CatalogOrder.LATEST, genre, cursor))
+                if (cursor?.startsWith("end:") == true) completedItems += page.items.size
+                ids.addAll(page.items.map { it.id })
+                Log.i("GenrePagination", "$provider/$kind/$label cursor=$cursor count=${page.items.size} next=${page.nextCursor}")
+                cursor = page.nextCursor
+            } while (cursor != null)
+            assertTrue("No real genre works", ids.isNotEmpty())
+            if (provider == "ntk" || kind == SeriesKind.WEBTOON) assertTrue("Completed genre works were omitted", completedItems > 0)
+            Log.i("GenrePagination", "$provider/$kind/$label complete=true pages=${cursors.size} unique=${ids.size} completed=$completedItems")
+        }
+    }
+
     @Test
     fun everyProviderKindExposesItsFullGenreSet() = runBlocking {
         val graph = (InstrumentationRegistry.getInstrumentation().targetContext.applicationContext

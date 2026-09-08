@@ -42,6 +42,10 @@ internal fun LibraryScreen(
     val colors = libraryColors(state.saved.settings.darkTheme)
     val focus = LocalFocusManager.current
     LaunchedEffect(state.settingsVisible) { if (state.settingsVisible) focus.clearFocus() }
+    val genreScroll = androidx.compose.runtime.saveable.rememberSaveable(state.selectedSourceId, state.homeKind,
+        state.selectedGenre, saver = androidx.compose.foundation.lazy.LazyListState.Saver) {
+        androidx.compose.foundation.lazy.LazyListState()
+    }
     val detailVisible = state.activeSeries != null
     val genreCatalogVisible = state.selectedGenre != null
     BackHandler(
@@ -52,7 +56,7 @@ internal fun LibraryScreen(
         if (detailVisible) {
             SeriesDetailScreen(state, artworkLoader, colors, accept)
         } else if (genreCatalogVisible) {
-            GenreCatalogScreen(state, artworkLoader, colors, accept)
+            GenreCatalogScreen(state, artworkLoader, colors, genreScroll, accept)
         } else {
             MainShell(state, artworkLoader, colors, accept)
         }

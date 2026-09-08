@@ -37,6 +37,7 @@ internal class EngineAppGraph(
     private val userAgent: String,
     private val ntkOrigin: URI,
     networkEvidenceObserver: () -> SourceExchangeObserver? = { null },
+    private val origins: ProviderOriginDirectory = ProviderOriginDirectory(context, ioDispatcher, userAgent),
 ) {
     private val workLimits = WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12)
     val coordinator: WorkCoordinatorPort = WorkCoordinator(scope, workLimits)
@@ -60,13 +61,15 @@ internal class EngineAppGraph(
     private val positionStore = EnginePositionStore(database::database, ioDispatcher)
     val positions: EnginePositionPort = positionStore
     private val transportFactory = OkHttpTransportFactory(ioDispatcher, parallelism = workLimits.network)
-    private val transport = ObservedSourceTransport(transportFactory.create(), "engine", networkEvidenceObserver)
+    private fun resilient(transport: ml.melun.mangaview.source.SourceTransport) =
+        ProviderOriginTransport(transportFactory.protect(transport), origins)
+    private val transport = ObservedSourceTransport(resilient(transportFactory.create()), "engine", networkEvidenceObserver)
     private val ntkPageTransport = lazy {
         // Match NTK's existing Chromium TLS transport for its image CDN hosts.
         // Construction is lazy and does not preconnect or request page content.
-        ObservedSourceTransport(if (Build.VERSION.SDK_INT >= 34) {
+        ObservedSourceTransport(resilient(if (Build.VERSION.SDK_INT >= 34) {
             HttpEngineSourceTransport(context.applicationContext, userAgent, maximumSimultaneousBodyReads = workLimits.bodies)
-        } else transportFactory.create(), "engine", networkEvidenceObserver)
+        } else transportFactory.create()), "engine", networkEvidenceObserver)
     }
     private val storage = EngineRawStorage(File(context.applicationInfo.dataDir, "app_engine_pages_v1"),
         RoomEnginePublicationIndex(database::database), ioDispatcher, positions)

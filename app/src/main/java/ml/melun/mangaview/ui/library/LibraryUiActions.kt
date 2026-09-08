@@ -1,6 +1,7 @@
 package ml.melun.mangaview.ui.library
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.data.offline.OfflineDownloadManager
@@ -15,6 +16,14 @@ internal class LibraryUiActions(
     private val update: (((LibraryState) -> LibraryState) -> Unit),
     private val emit: (LibraryEffect) -> Unit,
 ) {
+    fun removeSaved(item: SavedItemRemoval) {
+        scope.launch {
+            try { actions.removeSaved(item); showMessage("${item.series.title} 삭제 완료") }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { showMessage("삭제하지 못했습니다. 다시 시도해 주세요") }
+        }
+    }
+
     fun toggleDownloadSelection() {
         val snapshot = current()
         when {

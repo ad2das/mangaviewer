@@ -18,6 +18,7 @@ import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.AdjacentEpisodes
 import ml.melun.mangaview.source.CatalogOrder
+import ml.melun.mangaview.source.CatalogStatusCursor
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.OpenedPage
@@ -89,19 +90,21 @@ class WfwfContentSource(
     }
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
-        val page = WfwfCatalogPagination.page(query.cursor)
+        val includeCompleted = query.genre != null && query.kind == SeriesKind.WEBTOON
+        val cursor = CatalogStatusCursor.parse(query.cursor, includeCompleted)
+        val page = cursor.page
         if (query.kind == SeriesKind.COMIC && query.order == CatalogOrder.LATEST && query.genre == null) {
             val live = fetchComicCatalogPage(page)
             comicSearch.record(live)
             return SourcePage(live.items, live.nextCursor)
         }
-        val firstPagePath = WfwfCatalogPagination.path(query, page = 1)
-        val catalogDocument = document(WfwfCatalogPagination.path(query, page))
+        val firstPagePath = WfwfCatalogPagination.path(query, page = 1, completed = cursor.completed)
+        val catalogDocument = document(WfwfCatalogPagination.path(query, page, completed = cursor.completed))
         val items = parser.search(catalogDocument, ::seriesId).filter { item ->
             runCatching { WfwfSeriesKey.decode(item.id).kind }.getOrNull().matches(query.kind)
         }
         val nextCursor = WfwfCatalogPagination.nextPageCursor(catalogDocument, firstPagePath, page)
-        return SourcePage(items, nextCursor)
+        return SourcePage(items, cursor.next(nextCursor, includeCompleted))
     }
 
     override suspend fun genres(kind: SeriesKind): List<SourceGenre> = when (kind) {
@@ -398,6 +401,10 @@ class WfwfContentSource(
             "WFWF document identity changed"
         }
         val document = Jsoup.parse(ByteArrayInputStream(bytes), null, finalUrl)
+        if (requested.path in setOf("/ing", "/end", "/cm") &&
+            document.select(".thumb-grid, a[href*=toon=]").isEmpty()) {
+            throw IOException("WFWF catalog document is unavailable")
+        }
         if (requested.path == "/view" || requested.path == "/cv") {
             require(parser.pageImages(document).isNotEmpty()) { "WFWF document contains no episode pages" }
         }

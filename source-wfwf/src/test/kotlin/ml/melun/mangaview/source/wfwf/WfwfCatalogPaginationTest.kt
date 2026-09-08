@@ -43,9 +43,11 @@ class WfwfCatalogPaginationTest {
     fun catalogCarriesSameFilterAndOrderAcrossEvidenceBackedPages() = runTest {
         val firstPath = "/ing?o=n&pg=1&t1=&t2=3&t3="
         val secondPath = "/ing?o=n&pg=2&t1=&t2=3&t3="
+        val completedPath = "/end?o=n&pg=1&t1=&t2=3&t3="
         val transport = CatalogPaginationTransport(mapOf(
             firstPath to catalogPage("webtoon:10001", "첫 작품", "/ing?t1=&t2=3&t3=&o=n&pg=2"),
             secondPath to catalogPage("webtoon:10002", "둘째 작품", "/ing?t1=&t2=3&t3=&o=n&pg=1"),
+            completedPath to catalogPage("webtoon:10003", "완결 작품", "/end?t1=&t2=3&t3=&o=n&pg=1"),
         ))
         val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
         val query = CatalogQuery(
@@ -60,8 +62,11 @@ class WfwfCatalogPaginationTest {
         assertEquals(listOf("webtoon:10001"), first.items.map { it.id.remoteKey })
         assertEquals("2", first.nextCursor)
         assertEquals(listOf("webtoon:10002"), second.items.map { it.id.remoteKey })
-        assertNull(second.nextCursor)
-        assertEquals(listOf(firstPath, secondPath), transport.requestPaths)
+        assertEquals("end:1", second.nextCursor)
+        val completed = source.catalog(query.copy(cursor = second.nextCursor))
+        assertEquals(listOf("webtoon:10003"), completed.items.map { it.id.remoteKey })
+        assertNull(completed.nextCursor)
+        assertEquals(listOf(firstPath, secondPath, completedPath), transport.requestPaths)
     }
 
     @Test

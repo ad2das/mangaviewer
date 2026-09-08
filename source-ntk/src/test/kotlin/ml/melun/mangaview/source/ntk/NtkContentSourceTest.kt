@@ -18,6 +18,34 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkContentSourceTest {
+    @Test fun genrePaginationIncludesCompletedWorksAndDoesNotHideApiFailures() = runTest {
+        val first = """{"works":[{"sourceWorkId":"11","title":"Ongoing"}],"total":1}"""
+        val last = """{"works":[{"sourceWorkId":"22","title":"Completed"}],"total":1}"""
+        val transport = NtkQueueTransport(first, "<html>temporary error</html>", last)
+        val source = NtkContentSource(NtkConfig("https://ntk.test", "agent"), transport, RecordingGateway(emptyList()))
+        val query = ml.melun.mangaview.source.CatalogQuery(SeriesKind.WEBTOON,
+            ml.melun.mangaview.source.CatalogOrder.LATEST, ml.melun.mangaview.source.SourceGenre("5", "판타지"))
+        val ongoing = source.catalog(query)
+        assertEquals("end:1", ongoing.nextCursor)
+        try { source.catalog(query.copy(cursor = ongoing.nextCursor)); org.junit.Assert.fail("API failure must not claim end of catalog") }
+        catch (_: IllegalStateException) { }
+        val completed = source.catalog(query.copy(cursor = ongoing.nextCursor))
+        assertEquals(listOf("/webtoon/22"), completed.items.map { it.id.remoteKey })
+        org.junit.Assert.assertNull(completed.nextCursor)
+        assertTrue(transport.requests[0].url.contains("status=ongoing"))
+        assertTrue(transport.requests[1].url.contains("status=completed"))
+        assertTrue(transport.requests.all { it.url.contains("tag=5") })
+        assertEquals(transport.requests[1].url, transport.requests[2].url)
+    }
+
+    @Test fun stableEntryPointsRequireARealCatalogAndFallbackToTheSecondAddress() = runTest {
+        val transport = NtkQueueTransport("<html>address unavailable</html>",
+            """{"works":[{"sourceWorkId":"11","title":"Real work"}],"total":1}""")
+        val resolver = NtkOriginResolver(transport, "agent")
+        assertEquals("https://newtoki1.org", resolver.resolve("https://sbxh9.com"))
+        assertEquals(listOf("sbxh9.com", "newtoki1.org"), transport.requests.map { java.net.URI(it.url).host })
+    }
+
     @Test
     fun titleSearchUsesProviderFormWithoutGeneralCatalogRequest() = runTest {
         val transport = NtkQueueTransport(

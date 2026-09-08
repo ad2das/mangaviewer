@@ -32,6 +32,40 @@ class CloudLibraryRestoreDeviceTest {
         } finally { db.close() }
     }
 
+    @Test fun removingSavedSeriesKeepsBookmarksAndOtherSourcesAndSurvivesCloudRestore() = runBlocking {
+        val db = database()
+        try {
+            val local = LocalCloudLibrary { db }
+            val entry = LibraryEntryEntity("wfwf", "comic:12", "Saved title", null, true, 100)
+            val reading = ReadingProgressEntity("wfwf", "comic:12", "3", "p0002", 987654, 100)
+            val native = EngineReadingAnchorEntity("wfwf", "comic:12", "3", "p0002", 9_876_543_210L, 12345, 987654, 100)
+            val bookmark = BookmarkEntity("wfwf", "comic:12", "3", "p0002", 987654, 100)
+            val bookmarkNative = EngineBookmarkAnchorEntity("wfwf", "comic:12", "3", "p0002", native.sourceYQ32, 12345, 987654, 100)
+            val other = reading.copy(sourceKey = "ntk")
+            db.viewer().saveLibraryEntry(entry)
+            db.viewer().saveProgress(reading)
+            db.viewer().saveProgress(other)
+            db.engine().upsertReadingAnchor(native)
+            db.viewer().saveBookmark(bookmark)
+            db.engine().upsertBookmarkAnchor(bookmarkNative)
+            val before = local.snapshot()
+            db.viewer().removeHistory("wfwf", "comic:12", false, 200)
+            assertTrue(db.viewer().libraryEntry("wfwf", "comic:12")!!.favorite)
+            assertNull(db.viewer().progress("wfwf", "comic:12"))
+            db.viewer().removeHistory("wfwf", "comic:12", true, 201)
+            val merged = local.restore(before, before, 202)
+            assertTrue(merged.any { it.kind == "progress" && it.deleted })
+            assertTrue(merged.any { it.kind == "favorite" && it.deleted })
+            val stored = db.cloudLibrary().snapshot()
+            assertEquals(listOf(other), stored.progress)
+            assertTrue(stored.readingAnchors.isEmpty())
+            assertEquals(listOf(bookmark), stored.bookmarks)
+            assertEquals(listOf(bookmarkNative), stored.bookmarkAnchors)
+            assertEquals(entry.copy(favorite = false, updatedAtEpochMillis = 201),
+                db.viewer().libraryEntry("wfwf", "comic:12"))
+        } finally { db.close() }
+    }
+
     private fun database() = Room.inMemoryDatabaseBuilder(
         InstrumentationRegistry.getInstrumentation().targetContext, ViewerDatabase::class.java).build()
 

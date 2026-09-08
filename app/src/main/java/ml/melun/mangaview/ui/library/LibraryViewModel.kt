@@ -49,6 +49,10 @@ internal class LibraryViewModel(
         update = ::update,
         emit = { effect -> effectChannel.trySend(effect) },
     )
+    private val genrePager = GenreCatalogPager(viewModelScope, ioDispatcher) { catalog ->
+        update { it.copy(genreCatalog = catalog,
+            lastSeries = (catalog as? LibraryContent.Series)?.items ?: it.lastSeries) }
+    }
     private val episodeWarmer = LibraryEpisodeWarmer(openings)
     private var contentJob: Job? = null
     private var homeJob: Job? = null
@@ -105,6 +109,7 @@ internal class LibraryViewModel(
 
     private fun acceptAction(intent: LibraryIntent) {
         when (intent) {
+            LibraryIntent.LoadMoreGenre -> genrePager.next()
             LibraryIntent.Search -> search()
             LibraryIntent.RetryHome -> loadHome()
             LibraryIntent.ToggleSettings -> update { it.copy(settingsVisible = !it.settingsVisible) }
@@ -145,6 +150,13 @@ internal class LibraryViewModel(
             is LibraryIntent.RemoveOfflineEpisode -> update { it.copy(pendingOfflineRemoval = intent.episodeId) }
             LibraryIntent.CancelOfflineRemoval -> update { it.copy(pendingOfflineRemoval = null) }
             LibraryIntent.ConfirmOfflineRemoval -> confirmOfflineRemoval()
+            else -> acceptPersistenceAction(intent)
+        }
+    }
+
+    private fun acceptPersistenceAction(intent: LibraryIntent) {
+        when (intent) {
+            is LibraryIntent.RemoveSavedItem -> { episodeWarmer.cancel(); uiActions.removeSaved(intent.item) }
             is LibraryIntent.StartTabChanged -> actions.updateSettings { it.copy(startTab = intent.value) }
             is LibraryIntent.DarkThemeChanged -> actions.updateSettings { it.copy(darkTheme = intent.enabled) }
             else -> error("Not an action intent: $intent")
@@ -152,6 +164,7 @@ internal class LibraryViewModel(
     }
 
     private fun selectDestination(destination: MainDestination) {
+        observers.destinationSelected()
         update { it.copy(
             destination = destination,
             content = LibraryContent.Empty,
@@ -169,6 +182,7 @@ internal class LibraryViewModel(
         sourceRegistry.require(sourceId)
         cancelContent()
         cancelGenres()
+        genrePager.reset()
         update { it.copy(
             selectedSourceId = sourceId,
             content = LibraryContent.Empty,
@@ -184,6 +198,7 @@ internal class LibraryViewModel(
     private fun selectHomeKind(kind: ml.melun.mangaview.source.SeriesKind) {
         if (mutableState.value.homeKind == kind) return
         cancelGenres()
+        genrePager.reset()
         update { it.copy(
             homeKind = kind,
             homeTab = HomeTab.HOME,
@@ -255,39 +270,12 @@ internal class LibraryViewModel(
     private fun loadGenre(genre: ml.melun.mangaview.source.SourceGenre) {
         cancelHome()
         cancelContent()
-        val snapshot = mutableState.value
-        val version = ++contentVersion
-        update { it.copy(
-            homeTab = HomeTab.GENRES,
-            selectedGenre = genre,
-            genreCatalog = LibraryContent.Loading,
-        ) }
-        contentJob = viewModelScope.launch {
-            try {
-                val items = withContext(ioDispatcher) {
-                    sourceRegistry.require(snapshot.selectedSourceId).catalog(
-                        CatalogQuery(snapshot.homeKind, CatalogOrder.LATEST, genre),
-                    ).items
-                }
-                if (version == contentVersion) update {
-                    it.copy(
-                        genreCatalog = if (items.isEmpty()) {
-                            LibraryContent.Failure("${genre.label} 장르에 등록된 작품이 없습니다")
-                        } else {
-                            LibraryContent.Series(items)
-                        },
-                        lastSeries = items,
-                    )
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Throwable) {
-                if (version == contentVersion) update {
-                    it.copy(genreCatalog = LibraryContent.Failure(
-                        failure.message ?: "장르 작품을 불러오지 못했습니다",
-                    ))
-                }
-            }
+        val snapshot = state.value
+        update { it.copy(homeTab = HomeTab.GENRES, selectedGenre = genre) }
+        genrePager.start { cursor ->
+            sourceRegistry.require(snapshot.selectedSourceId).catalog(
+                CatalogQuery(snapshot.homeKind, CatalogOrder.LATEST, genre, cursor),
+            )
         }
     }
 
@@ -384,6 +372,7 @@ internal class LibraryViewModel(
         }
         if (state.value.selectedGenre != null) {
             cancelContent()
+            genrePager.reset()
             update { it.copy(selectedGenre = null, genreCatalog = LibraryContent.Empty) }
         }
     }

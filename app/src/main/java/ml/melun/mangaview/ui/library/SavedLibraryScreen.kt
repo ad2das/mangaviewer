@@ -3,6 +3,7 @@ package ml.melun.mangaview.ui.library
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -120,7 +125,7 @@ private fun AllSaved(state: LibraryState, query: String, loader: SeriesArtworkLo
         state.offlineEpisodes.map { it.series }.distinctBy { it.id }
             .filterNot { it.id in recentIds || it.id in favoriteIds }
             .map { item -> SavedSeries(item.id, item.title, item.thumbnailKey, false, 0L) }
-    FavoriteSaved(combined, query, loader, colors, accept, "최근 읽거나 보관하거나 저장한 작품이 없습니다")
+    FavoriteSaved(combined, query, loader, colors, accept, "최근 읽거나 보관하거나 저장한 작품이 없습니다", SavedTab.ALL)
 }
 
 @Composable
@@ -129,7 +134,7 @@ private fun RecentSaved(items: List<RecentReading>, query: String, loader: Serie
     if (filtered.isEmpty()) return SavedEmpty("최근 읽은 작품이 없습니다", colors)
     LazyColumn(Modifier.fillMaxSize()) {
         items(filtered, key = { "${it.series.id.sourceId.value}:${it.series.id.remoteKey}" }) { item ->
-            SavedSeriesRow(item.series, item.episodeId.remoteKey, loader, colors) {
+            SavedSeriesRow(item.series, item.episodeId.remoteKey, loader, colors, SavedTab.RECENT, accept) {
                 accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits)))
             }
         }
@@ -144,12 +149,13 @@ private fun FavoriteSaved(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
     empty: String = "좋아요한 작품이 없습니다",
+    removalTab: SavedTab = SavedTab.FAVORITES,
 ) {
     val filtered = items.filter { query.isEmpty() || it.title.contains(query, true) }
     if (filtered.isEmpty()) return SavedEmpty(empty, colors)
     LazyColumn(Modifier.fillMaxSize()) {
         items(filtered, key = { "${it.id.sourceId.value}:${it.id.remoteKey}" }) { item ->
-            SavedSeriesRow(item, item.id.sourceId.value.uppercase(), loader, colors) {
+            SavedSeriesRow(item, item.id.sourceId.value.uppercase(), loader, colors, removalTab, accept) {
                 accept(LibraryIntent.SavedSeriesSelected(item))
             }
         }
@@ -170,24 +176,33 @@ private fun OfflineSaved(
     LazyColumn(Modifier.fillMaxSize()) {
         items(series, key = { "${it.id.sourceId.value}:${it.id.remoteKey}" }) { item ->
             val count = state.offlineEpisodes.count { it.series.id == item.id }
-            SavedSourceSeriesRow(item, "${count}개 회차", loader, colors) {
+            SavedSourceSeriesRow(item, "${count}개 회차", loader, colors, SavedTab.OFFLINE, accept) {
                 accept(LibraryIntent.OfflineSeriesSelected(item))
             }
         }
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun SavedSourceSeriesRow(
     item: SourceSeries,
     subtitle: String,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
+    removalTab: SavedTab,
+    accept: (LibraryIntent) -> Unit,
     click: () -> Unit,
 ) {
+    var removing by remember(item.id) { mutableStateOf(false) }
+    if (removing) SavedItemRemovalDialog(SavedItemRemoval(item, removalTab), colors, { removing = false }) {
+        removing = false
+        accept(LibraryIntent.RemoveSavedItem(SavedItemRemoval(item, removalTab)))
+    }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 5.dp).height(92.dp)
-            .clip(RoundedCornerShape(14.dp)).background(colors.card).clickable(onClick = click).padding(10.dp),
+            .clip(RoundedCornerShape(14.dp)).background(colors.card)
+            .combinedClickable(onClick = click, onLongClickLabel = "삭제", onLongClick = { removing = true }).padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SeriesArtwork(item, loader, colors, Modifier.width(58.dp).height(72.dp).clip(RoundedCornerShape(8.dp)))
@@ -199,19 +214,10 @@ private fun SavedSourceSeriesRow(
 }
 
 @Composable
-private fun SavedSeriesRow(item: SavedSeries, subtitle: String, loader: SeriesArtworkLoader, colors: LibraryColors, click: () -> Unit) {
+private fun SavedSeriesRow(item: SavedSeries, subtitle: String, loader: SeriesArtworkLoader, colors: LibraryColors,
+    removalTab: SavedTab, accept: (LibraryIntent) -> Unit, click: () -> Unit) {
     val series = SourceSeries(item.id, item.title, thumbnailKey = item.thumbnailKey)
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 5.dp).height(92.dp)
-            .clip(RoundedCornerShape(14.dp)).background(colors.card).clickable(onClick = click).padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        SeriesArtwork(series, loader, colors, Modifier.width(58.dp).height(72.dp).clip(RoundedCornerShape(8.dp)))
-        Column(Modifier.padding(start = 14.dp)) {
-            BasicText(item.title, style = bodyStyle(colors, 15), maxLines = 2, overflow = TextOverflow.Ellipsis)
-            BasicText(subtitle, style = hintStyle(colors), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
+    SavedSourceSeriesRow(series, subtitle, loader, colors, removalTab, accept, click)
 }
 
 @Composable

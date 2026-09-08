@@ -54,6 +54,10 @@ class UserLibraryRepository(
         settingsStore.update(transform)
     }
 
+    suspend fun removeHistory(seriesId: SeriesId, removeFavorite: Boolean = false) {
+        dao.removeHistory(seriesId.sourceId.value, seriesId.remoteKey, removeFavorite, clock())
+    }
+
     suspend fun saveProgress(pageId: PageId, offsetInPageUnits: Long) {
         require(offsetInPageUnits >= 0L)
         dao.saveProgress(

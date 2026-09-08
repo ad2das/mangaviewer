@@ -17,6 +17,29 @@ class OkHttpTransportFactory(
     fun create(cookieJar: CookieJar = CookieJar.NO_COOKIES): OkHttpSourceTransport =
         create(cookieJar, listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
 
+    fun protect(primary: ml.melun.mangaview.source.SourceTransport): SniRecoveryTransport =
+        SniRecoveryTransport(primary, createRecovery = { createRecovery() })
+
+    private fun createRecovery(): ml.melun.mangaview.source.SourceTransport {
+        val dns = EncryptedSourceDns()
+        val relay = LocalTlsRelay(dns)
+        val client = OkHttpClient.Builder()
+            .proxy(relay.proxy)
+            .proxyAuthenticator { _, response ->
+                if (response.request.header("Proxy-Authorization") != null) null
+                else response.request.newBuilder().header("Proxy-Authorization", relay.authorization).build()
+            }
+            .connectionPool(ConnectionPool(parallelism, 5L, TimeUnit.MINUTES))
+            .connectTimeout(10L, TimeUnit.SECONDS)
+            .readTimeout(30L, TimeUnit.SECONDS)
+            .writeTimeout(30L, TimeUnit.SECONDS)
+            .build()
+        val transport = OkHttpSourceTransport(client, ioDispatcher)
+        return object : ml.melun.mangaview.source.SourceTransport by transport, java.io.Closeable {
+            override fun close() { transport.close(); relay.close(); dns.close() }
+        }
+    }
+
     private fun create(
         cookieJar: CookieJar,
         protocols: List<Protocol>,

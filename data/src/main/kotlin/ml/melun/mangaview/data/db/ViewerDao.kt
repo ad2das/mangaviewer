@@ -50,6 +50,23 @@ interface ViewerDao {
         "AND p.updatedAtEpochMillis = engine_reading_anchors.updatedAtEpochMillis)")
     suspend fun touchMatchingReadingAnchor(source: String, series: String, at: Long)
 
+    @Query("DELETE FROM reading_progress WHERE sourceKey = :source AND seriesKey = :series")
+    suspend fun deleteProgress(source: String, series: String)
+
+    @Query("DELETE FROM engine_reading_anchors WHERE sourceKey = :source AND seriesKey = :series")
+    suspend fun deleteReadingAnchor(source: String, series: String)
+
+    @Query("UPDATE library_entries SET favorite = 0, updatedAtEpochMillis = :at WHERE sourceKey = :source AND seriesKey = :series")
+    suspend fun clearFavorite(source: String, series: String, at: Long)
+
+    /** Remove only this source/series; bookmark records and their titles remain usable. */
+    @Transaction
+    suspend fun removeHistory(source: String, series: String, removeFavorite: Boolean, at: Long) {
+        deleteReadingAnchor(source, series)
+        deleteProgress(source, series)
+        if (removeFavorite) clearFavorite(source, series, at)
+    }
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveBookmark(bookmark: BookmarkEntity)
 

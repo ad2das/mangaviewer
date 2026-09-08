@@ -16,6 +16,47 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class RestoredLibraryUiSmokeTest {
     @Test
+    fun genreScrollLoadsThroughTheEndAndRetainsItsPositionAfterDetails() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+        instrumentation.targetContext.startActivity(
+            Intent(instrumentation.targetContext, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+        )
+        device.wait(Until.findObject(By.desc("하단 홈")), TIMEOUT)!!.click()
+        dismissAutomaticUpdateNotice(device)
+        ensureNtkSelected(device)
+        openGenreTab(device, "만화")
+        repeat(4) {
+            if (device.findObject(By.text("음악")) == null) scrollCatalog(device)
+        }
+        openDedicatedGenre(device, "음악")
+        assertNotNull(device.wait(Until.findObject(By.descContains("작품:")), CATALOG_TIMEOUT))
+        var reachedEnd = false
+        for (step in 0 until 30) {
+            if (device.findObject(By.textStartsWith("목록 끝 · ")) != null) { reachedEnd = true; break }
+            scrollCatalog(device)
+        }
+        assertTrue("Genre did not reach the provider's final page", reachedEnd)
+        val card = device.findObjects(By.descContains("작품:")).first()
+        val description = card.contentDescription
+        val bounds = card.visibleBounds
+        card.click()
+        assertVisible(device, "회차")
+        device.pressBack()
+        val returned = device.wait(Until.findObject(By.desc(description)), TIMEOUT)
+        assertNotNull("Back lost the scrolled catalog position", returned)
+        org.junit.Assert.assertEquals(bounds, returned!!.visibleBounds)
+        assertNotNull(device.findObject(By.textStartsWith("목록 끝 · ")))
+    }
+
+    private fun scrollCatalog(device: UiDevice) {
+        device.swipe(device.displayWidth / 2, device.displayHeight * 4 / 5,
+            device.displayWidth / 2, device.displayHeight / 3, 30)
+        device.waitForIdle(1000)
+    }
+
+    @Test
     fun adultAndYuriOpenAsImmediateDedicatedCatalogScreens() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
@@ -25,6 +66,7 @@ class RestoredLibraryUiSmokeTest {
         )
 
         device.wait(Until.findObject(By.desc("하단 홈")), TIMEOUT)?.click()
+        dismissAutomaticUpdateNotice(device)
         ensureNtkSelected(device)
         openGenreTab(device, "웹툰")
         assertTrue(
@@ -51,6 +93,7 @@ class RestoredLibraryUiSmokeTest {
         )
 
         device.wait(Until.findObject(By.desc("하단 홈")), TIMEOUT)?.click()
+        dismissAutomaticUpdateNotice(device)
         assertVisible(device, "MangaView")
         assertVisible(device, "읽던 작품으로 바로 이동")
         assertVisible(device, "웹툰")
@@ -71,7 +114,7 @@ class RestoredLibraryUiSmokeTest {
         device.wait(Until.findObject(By.desc("계정")), TIMEOUT)?.click()
         assertVisible(device, "계정으로 이어보기")
         assertVisible(device, "설정 열기")
-        assertVisible(device, "업데이트 확인")
+        assertNotNull("Missing update action", device.wait(Until.findObject(By.text(java.util.regex.Pattern.compile("업데이트 확인|새 업데이트 있음"))), TIMEOUT))
         device.wait(Until.findObject(By.text("설정 열기")), TIMEOUT)?.click()
         assertVisible(device, "기본 설정")
         assertVisible(device, "사이트 변경")
@@ -80,7 +123,13 @@ class RestoredLibraryUiSmokeTest {
     }
 
     private fun assertVisible(device: UiDevice, text: String) {
-        assertNotNull("Missing restored UI text: $text", device.wait(Until.findObject(By.text(text)), TIMEOUT))
+        val found = device.wait(Until.findObject(By.text(text)), TIMEOUT)
+        if (found == null) {
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "navigation-failure.png"))
+            device.dumpWindowHierarchy(java.io.File(context.getExternalFilesDir(null), "navigation-failure.xml"))
+        }
+        assertNotNull("Missing restored UI text: $text", found)
     }
 
     private fun assertDescription(device: UiDevice, description: String) {

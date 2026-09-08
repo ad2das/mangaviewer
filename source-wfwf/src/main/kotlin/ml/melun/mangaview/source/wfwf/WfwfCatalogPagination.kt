@@ -11,7 +11,7 @@ import org.jsoup.nodes.Document
 
 /** Series-catalog pagination only; episode catalog page links use a separate parser contract. */
 internal object WfwfCatalogPagination {
-    fun path(query: CatalogQuery, page: Int): String {
+    fun path(query: CatalogQuery, page: Int, completed: Boolean = false): String {
         require(page > 0) { "WFWF catalog page must be positive" }
         val order = when (query.order) {
             CatalogOrder.LATEST -> "n"
@@ -27,7 +27,8 @@ internal object WfwfCatalogPagination {
             SeriesKind.WEBTOON -> {
                 val t2 = route?.takeIf { it.first == "t2" }?.second.orEmpty()
                 val t3 = route?.takeIf { it.first == "t3" }?.second.orEmpty()
-                "/ing?o=$order&pg=$page&t1=&t2=${encoded(t2)}&t3=${encoded(t3)}"
+                val root = if (completed) "/end" else "/ing"
+                "$root?o=$order&pg=$page&t1=&t2=${encoded(t2)}&t3=${encoded(t3)}"
             }
         }
     }

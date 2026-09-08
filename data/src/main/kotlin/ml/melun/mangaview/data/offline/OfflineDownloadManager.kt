@@ -4,6 +4,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,29 +34,50 @@ class OfflineDownloadManager(
     private val repository: PageRepository,
     private val store: OfflineEpisodeStore,
 ) {
-    private val active = ConcurrentHashMap.newKeySet<EpisodeId>()
+    private val lifecycleLock = Any()
+    private val removing = mutableMapOf<ml.melun.mangaview.core.SeriesId, Int>()
+    private val active = ConcurrentHashMap<EpisodeId, Job>()
     private val episodeSemaphore = Semaphore(MAX_PARALLEL_EPISODES)
     private val stateLock = Any()
     private val mutableStates = MutableStateFlow<Map<EpisodeId, EpisodeDownloadState>>(emptyMap())
     val states: StateFlow<Map<EpisodeId, EpisodeDownloadState>> = mutableStates.asStateFlow()
 
-    fun download(series: SourceSeries, episode: SourceEpisode): Boolean {
-        if (!active.add(episode.id)) return false
-        update(episode.id, EpisodeDownloadState.Queued)
-        scope.launch {
-            try {
-                episodeSemaphore.withPermit { runDownload(series, episode) }
-            } finally {
-                active.remove(episode.id)
-            }
+    fun download(series: SourceSeries, episode: SourceEpisode): Boolean = synchronized(lifecycleLock) {
+        if (series.id in removing) return@synchronized false
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            episodeSemaphore.withPermit { runDownload(series, episode) }
         }
-        return true
+        if (active.putIfAbsent(episode.id, job) != null) { job.cancel(); return@synchronized false }
+        job.invokeOnCompletion { active.remove(episode.id, job) }
+        update(episode.id, EpisodeDownloadState.Queued)
+        job.start()
+        true
     }
 
     fun remove(episodeId: EpisodeId) {
         scope.launch {
+            active[episodeId]?.cancelAndJoin()
             store.remove(episodeId)
             update(episodeId, null)
+        }
+    }
+
+    suspend fun removeSeries(seriesId: ml.melun.mangaview.core.SeriesId) {
+        val pending = synchronized(lifecycleLock) {
+            removing[seriesId] = (removing[seriesId] ?: 0) + 1
+            active.entries.filter { it.key.seriesId == seriesId }.map { it.key to it.value }
+        }
+        try {
+            pending.forEach { it.second.cancel() }
+            pending.forEach { it.second.join() }
+            val ids = (store.episodes(seriesId).map { it.id } + pending.map { it.first } +
+                states.value.keys.filter { it.seriesId == seriesId }).distinct()
+            ids.forEach { store.remove(it); update(it, null) }
+        } finally {
+            synchronized(lifecycleLock) {
+                val count = (removing[seriesId] ?: 1) - 1
+                if (count == 0) removing.remove(seriesId) else removing[seriesId] = count
+            }
         }
     }
 
