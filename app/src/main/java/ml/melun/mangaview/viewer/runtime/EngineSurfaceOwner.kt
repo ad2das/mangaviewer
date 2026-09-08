@@ -31,6 +31,7 @@ internal class EngineSurfaceOwner(
     private val reportSurfaceLost: () -> Unit = {},
     private val maximumPendingForVerification: Int? = null,
     private val presentationPollMillisForVerification: Long? = null,
+    private val reportSubmitted: (EngineSurfaceScene) -> Unit = {},
 ) : EngineTextureUploader {
     init {
         require(textureAllocationLimit > 0 && (maximumPendingForVerification == null || maximumPendingForVerification > 0))
@@ -336,6 +337,7 @@ internal class EngineSurfaceOwner(
         record.submissionResult = result
         if (result > 0) {
             acknowledgeRetirements()
+            reportSubmitted(record.scene)
             deliver(record)
             schedulePoll()
         } else {

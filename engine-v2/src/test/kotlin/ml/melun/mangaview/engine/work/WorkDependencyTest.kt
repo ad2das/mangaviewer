@@ -271,6 +271,92 @@ class WorkDependencyTest {
         assertFails<IllegalStateException> { coordinator.close() }
     }
 
+    @Test fun dependencyWaitsForRetiringOriginalBeforeStartingItsReplacement() = runTest {
+        val coordinator = WorkCoordinator(this)
+        val disposing = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        var executions = 0
+        var disposals = 0
+        val child = work("original", WorkDomain.STORAGE, dispose = {
+            disposing.complete(Unit)
+            gate.await()
+            disposals++
+        }) { "original-${++executions}" }
+        val old = coordinator.submit(child)
+        assertEquals("original-1", old.await())
+        old.close()
+        disposing.await()
+        val parent = coordinator.submit(work("tile") { context ->
+            context.useDependency(child) { "decoded-$it" }
+        })
+        val result = async { parent.await() }
+        runCurrent()
+        assertFalse(result.isCompleted)
+        assertEquals(1, executions)
+        assertEquals(1, coordinator.snapshot().retiring)
+        parent.promote(WorkPriority.FOCUS)
+        gate.complete(Unit)
+        assertEquals("decoded-original-2", result.await())
+        old.awaitReleased()
+        parent.awaitReleased()
+        assertEquals(2, executions)
+        assertEquals(2, disposals)
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
+    @Test fun cancelledRetirementWaitDoesNotOwnTheOldResultOrStartReplacementWork() = runTest {
+        val coordinator = WorkCoordinator(this)
+        val disposing = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        var executions = 0
+        val child = work("original", WorkDomain.STORAGE, dispose = { disposing.complete(Unit); gate.await() }) {
+            executions++
+            "original"
+        }
+        val old = coordinator.submit(child)
+        old.await()
+        old.close()
+        disposing.await()
+        val parent = coordinator.submit(work("tile") { it.dependency(child) })
+        runCurrent()
+        assertEquals(1, coordinator.snapshot().active)
+        parent.awaitReleased()
+        assertEquals(0, coordinator.snapshot().active)
+        assertEquals(1, coordinator.snapshot().retiring)
+        assertEquals(1, executions)
+        gate.complete(Unit)
+        old.awaitReleased()
+        coordinator.close()
+    }
+
+    @Test fun authenticationInvalidationCancelsRetirementWaitBeforeAnyReplacement() = runTest {
+        val coordinator = WorkCoordinator(this)
+        val gate = CompletableDeferred<Unit>()
+        val disposing = CompletableDeferred<Unit>()
+        var executions = 0
+        val child = work("original", WorkDomain.STORAGE, dispose = { disposing.complete(Unit); gate.await() }) {
+            executions++
+            "original"
+        }
+        val old = coordinator.submit(child)
+        old.await()
+        old.close()
+        disposing.await()
+        val parent = coordinator.submit(work("tile") { it.dependency(child) })
+        runCurrent()
+        val invalidated = async { coordinator.invalidate("test", 0) }
+        runCurrent()
+        parent.awaitReleased()
+        assertFalse(invalidated.isCompleted)
+        gate.complete(Unit)
+        invalidated.await()
+        old.awaitReleased()
+        assertEquals(1, executions)
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
     private fun key(name: String) = WorkKey("test", name, "read", "1", String::class.java)
 
     private fun work(

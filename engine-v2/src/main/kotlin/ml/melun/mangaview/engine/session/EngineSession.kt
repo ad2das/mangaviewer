@@ -35,6 +35,7 @@ class EngineSession(
     private var lastSequence = 0L
     private var phaseValue = EngineSessionPhase.OPENING
     private var startupInputHeld = false
+    private val presentation = SessionViewportReadiness()
 
     init {
         require(sessionId > 0L) { "Session id must be positive" }
@@ -56,6 +57,7 @@ class EngineSession(
             is SessionEvent.DimensionsResolved -> dimensionsResolved(event.generation, event.pageId, event.dimensions)
             is SessionEvent.Input -> input(event.sample)
             SessionEvent.ReleaseStartupInput -> releaseStartupInput()
+            is SessionEvent.ViewportReady -> viewportReady(event.snapshot)
             is SessionEvent.Resize -> resize(event.viewport)
             is SessionEvent.Navigate -> navigate(event.episodeId)
             SessionEvent.Close -> close()
@@ -167,11 +169,24 @@ class EngineSession(
         return replayPending(emptySet())
     }
 
+    /** Opt in before opening: ready viewport pixels permit the next movement. */
+    fun engageViewportReadinessBarrier() {
+        checkOwner()
+        check(phaseValue == EngineSessionPhase.OPENING && lastSequence == 0L && pendingInputs.isEmpty())
+        presentation.engage()
+    }
+
+    private fun viewportReady(presented: EngineSessionSnapshot): List<InputReceipt> {
+        if (!presentation.release(presented, buildSnapshot())) return emptyList()
+        return replayPending(emptySet())
+    }
+
     private fun resize(viewport: EngineViewport): List<InputReceipt> {
         if (phaseValue == EngineSessionPhase.CLOSED) return emptyList()
         if (geometry.viewport != viewport) {
             geometry.viewport = viewport
             geometryRevisionValue++
+            presentation.invalidate()
             resolvePositionIfPossible()
             return replayPending(emptySet())
         }
@@ -194,6 +209,7 @@ class EngineSession(
         positionResolved = true
         pendingLegacyPosition = null
         phaseValue = EngineSessionPhase.OPENING
+        presentation.invalidate()
         return receipts
     }
 
@@ -206,49 +222,54 @@ class EngineSession(
 
     private fun replayPending(forceSequences: Set<Long>): List<InputReceipt> {
         val receipts = mutableListOf<InputReceipt>()
-        if (startupInputHeld) return receipts
+        if (startupInputHeld || presentation.held) return receipts
         receiptsUntilReady(forceSequences)?.let { return it }
         while (pendingInputs.isNotEmpty()) {
-            val pending = pendingInputs.first
-            val beforeApplied = pending.applied
-            val beforeRemaining = pending.remaining
-            if (pending.remaining.isZero()) {
-                pendingInputs.removeFirst()
-                receipts += appliedReceipt(pending, clockNanos, geometryRevisionValue)
-                continue
-            }
-            val result = geometry.move(pending.remaining)
-            pending.applied += result.consumed
-            pending.remaining = result.remaining
-            pending.blocker = result.blocker
-            val changed = beforeApplied != pending.applied || beforeRemaining != pending.remaining
-            when {
-                result.boundary != null && pending.remaining.signum() != 0 -> {
-                    pendingInputs.removeFirst()
-                    receipts += clampedReceipt(
-                        pending,
-                        clockNanos,
-                        geometryRevisionValue,
-                        result.boundary,
-                        boundaryPage(result.boundary),
-                    )
-                }
-                pending.remaining.isZero() -> {
-                    pendingInputs.removeFirst()
-                    if (changed || forceSequences.contains(pending.sample.sequence)) {
-                        receipts += appliedReceipt(pending, clockNanos, geometryRevisionValue)
-                    }
-                }
-                result.blocker != null -> {
-                    if (changed || forceSequences.contains(pending.sample.sequence)) {
-                        receipts += deferredReceipt(pending, geometryRevisionValue)
-                    }
-                    return receipts
-                }
-                else -> return receipts
-            }
+            if (advancePending(pendingInputs.first, forceSequences, receipts)) break
         }
         return receipts
+    }
+
+    private fun advancePending(pending: PendingInput, forceSequences: Set<Long>, receipts: MutableList<InputReceipt>): Boolean {
+        val beforeApplied = pending.applied
+        val beforeRemaining = pending.remaining
+        if (pending.remaining.isZero()) {
+            pendingInputs.removeFirst()
+            receipts += appliedReceipt(pending, clockNanos, geometryRevisionValue)
+            return false
+        }
+        val result = geometry.move(pending.remaining)
+        pending.applied += result.consumed
+        pending.remaining = result.remaining
+        pending.blocker = result.blocker
+        val changed = beforeApplied != pending.applied || beforeRemaining != pending.remaining
+        presentation.moved(result.consumed)
+        when {
+            result.boundary != null && pending.remaining.signum() != 0 -> {
+                pendingInputs.removeFirst()
+                receipts += clampedReceipt(
+                    pending,
+                    clockNanos,
+                    geometryRevisionValue,
+                    result.boundary,
+                    boundaryPage(result.boundary),
+                )
+            }
+            pending.remaining.isZero() -> {
+                pendingInputs.removeFirst()
+                if (changed || forceSequences.contains(pending.sample.sequence)) {
+                    receipts += appliedReceipt(pending, clockNanos, geometryRevisionValue)
+                }
+            }
+            result.blocker != null -> {
+                if (changed || forceSequences.contains(pending.sample.sequence)) {
+                    receipts += deferredReceipt(pending, geometryRevisionValue)
+                }
+                return true
+            }
+            else -> return true
+        }
+        return presentation.held
     }
 
     private fun receiptsUntilReady(forceSequences: Set<Long>): List<InputReceipt>? {
@@ -294,6 +315,7 @@ class EngineSession(
                 requiredNavigation = immutableSet(emptySet()),
                 completeViewport = false,
                 anchorDimensions = geometry.anchor?.pageId?.let { geometry.actualDimensions[it] },
+                movementRevision = presentation.revision,
             )
         }
         val visible = geometry.visible()
@@ -327,8 +349,9 @@ class EngineSession(
             requiredDimensions = immutableSet(dimensions),
             requiredEpisodes = immutableSet(episodes),
             requiredNavigation = immutableSet(navigation),
-            completeViewport = visible.complete && dimensions.isEmpty() && episodes.isEmpty(),
+            completeViewport = visible.complete,
             anchorDimensions = geometry.anchor?.pageId?.let { geometry.actualDimensions[it] },
+            movementRevision = presentation.revision,
         )
     }
 

@@ -5,6 +5,11 @@ import android.view.Choreographer
 import androidx.annotation.RequiresApi
 
 /** Delivers the SurfaceFlinger frame timeline that produced a UI motion step. */
+internal interface ViewerFrameScheduler {
+    fun post()
+    fun cancel()
+}
+
 internal class ViewerVsyncScheduler(
     private val choreographer: Choreographer,
     private val callback: (
@@ -12,7 +17,7 @@ internal class ViewerVsyncScheduler(
         vsyncId: Long,
         expectedPresentationTimeNanos: Long,
     ) -> Unit,
-) {
+) : ViewerFrameScheduler {
     private var scheduled = false
     private val legacyCallback = Choreographer.FrameCallback { frameTimeNanos ->
         deliver(frameTimeNanos, NO_FRAME_TIMELINE_VSYNC_ID, frameTimeNanos)
@@ -23,7 +28,7 @@ internal class ViewerVsyncScheduler(
         deliver(frameData.frameTimeNanos, timeline.vsyncId, timeline.expectedPresentationTimeNanos)
     }
 
-    fun post() {
+    override fun post() {
         if (scheduled) return
         scheduled = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -33,7 +38,7 @@ internal class ViewerVsyncScheduler(
         }
     }
 
-    fun cancel() {
+    override fun cancel() {
         if (!scheduled) return
         scheduled = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

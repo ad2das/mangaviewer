@@ -69,18 +69,46 @@ internal class DependencyWorkContext(
         }
     }
 
-    private suspend fun <T : Any> register(request: WorkRequest<T>): Pair<WorkSubscriber, CoordinatorSubscription<T>> =
-        state.mutex.withLock {
-            validateLocked(request)
-            val (child, subscriber) = coordinator.registerLocked(request)
-            coordinator.promoteLocked(child, parent.priority.value)
-            parent.dependencies[subscriber] = child
-            val subscription = CoordinatorSubscription(coordinator, child, subscriber, request.key.resultType).also {
-                subscriptions[subscriber] = it
-                pending += 1
+    private suspend fun <T : Any> register(request: WorkRequest<T>): Pair<WorkSubscriber, CoordinatorSubscription<T>> {
+        state.mutex.withLock { validateLocked(request); pending += 1 }
+        var registered = false
+        try {
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val waitId = Any()
+                var retiring: WorkRecord? = null
+                val result = state.mutex.withLock {
+                    validateLocked(request)
+                    val previous = state.records[request.key]
+                    if (previous != null && (previous.state == WorkRecordState.RETIRING || previous.cancelRequested)) {
+                        retiring = previous
+                        parent.retirementWaits[waitId] = previous
+                        null
+                    } else registerChildLocked(request)
+                }
+                if (result != null) {
+                    registered = true
+                    return result
+                }
+                // No registry lock or child lease is held while its prior owner finishes cleanup.
+                try { checkNotNull(retiring).completion.await() }
+                finally {
+                    withContext(NonCancellable) { state.mutex.withLock { parent.retirementWaits.remove(waitId) } }
+                }
             }
-            subscriber to subscription
+        } finally {
+            if (!registered) finishCall()
         }
+    }
+
+    private fun <T : Any> registerChildLocked(request: WorkRequest<T>): Pair<WorkSubscriber, CoordinatorSubscription<T>> {
+        val (child, subscriber) = coordinator.registerLocked(request)
+        coordinator.promoteLocked(child, parent.priority.value)
+        parent.dependencies[subscriber] = child
+        val subscription = CoordinatorSubscription(coordinator, child, subscriber, request.key.resultType)
+        subscriptions[subscriber] = subscription
+        return subscriber to subscription
+    }
 
     private suspend fun finishCall() = withContext(NonCancellable) {
         state.mutex.withLock { pending -= 1 }
@@ -147,7 +175,10 @@ internal class DependencyWorkContext(
         while (pendingRecords.isNotEmpty()) {
             val current = pendingRecords.removeLast()
             if (current === parent) return true
-            if (visited.add(current)) pendingRecords.addAll(current.dependencies.values)
+            if (visited.add(current)) {
+                pendingRecords.addAll(current.dependencies.values)
+                pendingRecords.addAll(current.retirementWaits.values)
+            }
         }
         return false
     }

@@ -126,7 +126,154 @@ class EngineRenderRuntimeTest {
         fixture.close()
     }
 
-    private inner class Fixture(scope: TestScope, textureBudget: Long = 80_000) {
+    @Test fun forwardAndReverseWithinPreparedDistanceReuseExactTexturesImmediately() = runTest {
+        val fixture = Fixture(this, 400_000, tileHeight = 102, preparationViewports = 2)
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        runCurrent()
+        val originalKeys = fixture.scenes.last().quads.map { it.texture.key }
+        assertTrue(fixture.scenes.last().completeCoverage)
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val forward = initial.copy(session = initial.session.copy(inputRevision = 2,
+            anchor = SourceAnchor(id, 450 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 450 * q, 550 * q, 0, 102400))))
+        fixture.runtime.update(forward)
+        assertTrue("Forward scene must be ready before any new asynchronous work", fixture.scenes.last().completeCoverage)
+        assertEquals(2L, fixture.scenes.last().session.inputRevision)
+        runCurrent()
+        fixture.runtime.update(initial.copy(session = initial.session.copy(inputRevision = 3)))
+        assertTrue("Reverse scene must reuse retained trailing tiles", fixture.scenes.last().completeCoverage)
+        assertEquals(originalKeys, fixture.scenes.last().quads.map { it.texture.key })
+        assertEquals(3L, fixture.scenes.last().session.inputRevision)
+        fixture.close()
+        assertEquals(0, fixture.files)
+    }
+
+    @Test fun returningOutsideThePreparationHorizonReusesTexturesWhenBudgetHasRoom() = runTest {
+        val fixture = Fixture(this, 400_000, tileHeight = 102, preparationViewports = 2)
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        runCurrent()
+        val originalKeys = fixture.scenes.last().quads.map { it.texture.key }
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val far = initial.copy(session = initial.session.copy(inputRevision = 2,
+            anchor = SourceAnchor(id, 850 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 850 * q, 950 * q, 0, 102400))))
+        fixture.runtime.update(far)
+        runCurrent()
+        assertTrue(fixture.scenes.last().completeCoverage)
+        assertTrue(fixture.uploader.live.values.sumOf { it.byteCount } <= 400_000)
+        fixture.beforeDecode = { error("Returning to a retained texture must not decode again") }
+        fixture.runtime.update(initial.copy(session = initial.session.copy(inputRevision = 3)))
+        assertTrue("Spare budget must retain recently displayed original pixels", fixture.scenes.last().completeCoverage)
+        assertEquals(originalKeys, fixture.scenes.last().quads.map { it.texture.key })
+        runCurrent()
+        assertTrue(fixture.failures.isEmpty())
+        fixture.close()
+        assertEquals(0, fixture.files)
+    }
+
+    @Test fun currentPreparationEvictsOldResidencyWhenThereIsNoSpareBudget() = runTest {
+        val fixture = Fixture(this, 160_000, tileHeight = 102, preparationViewports = 2)
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        runCurrent()
+        val originalKeys = fixture.scenes.last().quads.map { it.texture.key }
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val far = initial.copy(session = initial.session.copy(inputRevision = 2,
+            anchor = SourceAnchor(id, 850 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 850 * q, 950 * q, 0, 102400))))
+        fixture.runtime.update(far)
+        runCurrent()
+        assertTrue(fixture.scenes.last().completeCoverage)
+        assertTrue(originalKeys.none { it in fixture.uploader.live })
+        assertTrue(fixture.uploader.live.values.sumOf { it.byteCount } <= 160_000)
+        fixture.runtime.update(initial.copy(session = initial.session.copy(inputRevision = 3)))
+        assertFalse(fixture.scenes.last().completeCoverage)
+        runCurrent()
+        assertTrue(fixture.scenes.last().completeCoverage)
+        assertTrue(fixture.uploader.live.values.sumOf { it.byteCount } <= 160_000)
+        fixture.close()
+    }
+
+    @Test fun heldDecodeKeepsCompleteOldSceneAndItsOwnershipUntilCompleteReplacement() = runTest {
+        val fixture = Fixture(this, 160_000, tileHeight = 102, preparationViewports = 2, waitForComplete = true)
+        val initial = snapshot()
+        val firstGate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { firstGate.await() }
+        fixture.runtime.update(initial)
+        runCurrent()
+        assertTrue("Startup must not submit a partial scene", fixture.scenes.isEmpty())
+        firstGate.complete(Unit)
+        runCurrent()
+        val displayed = fixture.scenes.last()
+        val keys = displayed.quads.map { it.texture.key }
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { gate.await() }
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val far = initial.copy(session = initial.session.copy(inputRevision = 2,
+            anchor = SourceAnchor(id, 850 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 850 * q, 950 * q, 0, 102400))))
+        fixture.runtime.update(far)
+        runCurrent()
+        assertEquals(displayed, fixture.scenes.last())
+        assertTrue(keys.all { it in fixture.uploader.live })
+        assertFalse(fixture.runtime.diagnosticSnapshot().completeCoverage)
+        assertTrue(fixture.runtime.diagnosticSnapshot().residentTextureTiles.containsAll(displayed.quads.map { it.texture.tile }))
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(far.session.anchor, fixture.scenes.last().session.anchor)
+        assertTrue(fixture.scenes.all { it.completeCoverage })
+        assertTrue(fixture.uploader.live.values.sumOf { it.byteCount } <= 160_000)
+        fixture.close()
+        assertEquals(0, fixture.coordinator.snapshot().subscribers)
+    }
+
+    @Test fun disablingWhileWaitingClearsDisplayedReferencesAndCancelsPendingDecode() = runTest {
+        val fixture = Fixture(this, 160_000, tileHeight = 102, waitForComplete = true)
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        runCurrent()
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { gate.await() }
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        fixture.runtime.update(initial.copy(session = initial.session.copy(anchor = SourceAnchor(id, 850 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 850 * q, 950 * q, 0, 102400)))))
+        runCurrent()
+        fixture.runtime.enabled(false)
+        runCurrent()
+        assertTrue(fixture.scenes.last().quads.isEmpty())
+        assertTrue(fixture.uploader.live.isEmpty())
+        fixture.close()
+        assertEquals(0, fixture.files)
+    }
+
+    @Test fun singleViewportBudgetReleasesNativeReferencesWithoutSubmittingABlankFrame() = runTest {
+        val fixture = Fixture(this, 80_000, waitForComplete = true)
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        runCurrent()
+        val displayed = fixture.scenes.last()
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { gate.await() }
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val far = initial.copy(session = initial.session.copy(anchor = SourceAnchor(id, 650 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 650 * q, 750 * q, 0, 102400))))
+        fixture.runtime.update(far)
+        runCurrent()
+        assertEquals("Clearing texture references must not swap an empty buffer", displayed, fixture.scenes.last())
+        assertTrue("Old native references must retire before the pending upload", fixture.uploader.live.isEmpty())
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(far.session.anchor, fixture.scenes.last().session.anchor)
+        assertTrue(fixture.scenes.all { it.completeCoverage })
+        assertTrue(fixture.uploader.live.values.sumOf { it.byteCount } <= 80_000)
+        fixture.close()
+    }
+
+    private inner class Fixture(scope: TestScope, textureBudget: Long = 80_000,
+        tileHeight: Int = 202, preparationViewports: Int = 0, waitForComplete: Boolean = false,
+    ) {
         val coordinator = WorkCoordinator(scope)
         val uploader = Uploader()
         val scenes = mutableListOf<EngineDrawScene>()
@@ -143,7 +290,8 @@ class EngineRenderRuntimeTest {
                 override fun close() { pixelCloses++ }
             }
         }, StandardTestDispatcher(scope.testScheduler), uploader)
-        val runtime = EngineRenderRuntime(scope, coordinator, EngineTilePlanner(textureBudget, 202), tileWork, uploader,
+        val runtime = EngineRenderRuntime(scope, coordinator,
+            EngineTilePlanner(textureBudget, tileHeight, preparationViewports), tileWork, uploader,
             { _, priority ->
                 WorkRequest(WorkKey("test", "page", "read", "1", StoredPage::class.java), WorkDomain.STORAGE, priority,
                     execute = { files++; StoredPage(id, "1", File("original.png"), 1, "1".repeat(64), dimensions, "image/png") },
@@ -152,7 +300,7 @@ class EngineRenderRuntimeTest {
                 if (failScene) error("frame callback failed")
                 scenes += scene
                 uploader.scene(scene.quads.map { it.texture.key }.toSet())
-            }, { uploader.scene(emptySet()) }, { _, failure -> failures += failure })
+            }, { uploader.scene(emptySet()) }, { _, failure -> failures += failure }, waitForComplete)
 
         suspend fun close() { runtime.close(); coordinator.close(); assertTrue(uploader.live.isEmpty()) }
     }

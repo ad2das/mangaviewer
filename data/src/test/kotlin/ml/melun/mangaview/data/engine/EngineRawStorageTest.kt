@@ -266,6 +266,37 @@ class EngineRawStorageTest {
         assertTrue(File(root, "staging").listFiles()!!.isEmpty())
     }
 
+    @Test fun orphanRecoveryBatchesDirectorySyncsAndPreservesIndexedAndUnknownFiles() = runTest {
+        val root = temporary.newFolder()
+        val index = MemoryIndex()
+        val synced = mutableListOf<File>()
+        val ops = object : EngineFilePublication by LocalFileOps() {
+            override fun syncDirectory(directory: File) { synced += directory.canonicalFile }
+        }
+        val original = store(root, index, ops)
+        val committed = original.publish(original.prepare(id, "v1", Body(bytes).opened()))
+        val committedFile = committed.page.file
+        committed.close()
+        val pageDirectory = File(root, "pages")
+        val stagingDirectory = File(root, "staging")
+        repeat(128) { ordinal ->
+            File(pageDirectory, "${ordinal.toString(16).padStart(64, '0')}-${"a".repeat(64)}-${"b".repeat(64)}.page").writeBytes(bytes)
+            File(stagingDirectory, "${java.util.UUID.randomUUID()}.part").writeBytes(bytes)
+        }
+        val unknown = File(pageDirectory, "unrecognized.keep").apply { writeText("preserve") }
+        synced.clear()
+        val restarted = store(root, index, ops)
+        restarted.recover()
+        assertEquals(1, synced.count { it == pageDirectory.canonicalFile })
+        assertEquals(1, synced.count { it == stagingDirectory.canonicalFile })
+        assertEquals(setOf(committedFile.name, unknown.name), pageDirectory.list()!!.toSet())
+        assertTrue(stagingDirectory.list()!!.isEmpty())
+        val pinned = checkNotNull(restarted.find(id, "v1"))
+        assertArrayEquals(bytes, pinned.page.file.readBytes())
+        pinned.close()
+        assertEquals(0, restarted.ownership().fileLeases)
+    }
+
     private fun TestScope.store(root: File, index: MemoryIndex,
         fileOps: EngineFilePublication = LocalFileOps(),
         checkpoint: suspend (EnginePublicationStep) -> Unit = {}) = EngineRawStorage(

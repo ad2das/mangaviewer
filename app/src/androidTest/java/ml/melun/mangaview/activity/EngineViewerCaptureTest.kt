@@ -66,6 +66,7 @@ class EngineViewerCaptureTest {
                 JSONObject().apply {
                     put("ordinal", value.ordinal); put("sessionId", value.sessionId); put("generation", value.generation)
                     put("inputRevision", value.inputRevision); put("geometryRevision", value.geometryRevision)
+                    put("movementRevision", value.movementRevision)
                     put("pendingInputCount", value.pendingInputCount); put("anchorIdentity", anchor(value.anchor))
                     put("sequence", receipt.sample.sequence); put("gestureId", receipt.sample.gestureId)
                     put("eventTimeNanos", receipt.sample.eventTimeNanos); put("deltaScreenUnits", receipt.sample.deltaScreenUnits)
@@ -84,8 +85,6 @@ class EngineViewerCaptureTest {
         suspend fun exportClosedViewer() {
             withTimeout(30_000) { requireNotNull(viewer).awaitEngineClosed() }
             instrumentation.runOnMainSync { }
-            exportInputs()
-            exportFrames()
             val frameClose = requireNotNull(requireNotNull(viewer).engineFrameCloseProof())
             File(output, "renderer-close.json").writeText(JSONObject().apply {
                 put("rendererId", frameClose.rendererId); put("submittedFrameCount", frameClose.submittedFrameCount)
@@ -110,6 +109,15 @@ class EngineViewerCaptureTest {
             assertEquals(0, work.active + work.retiring + work.queued + work.subscribers + work.retainedResults)
             assertEquals(0, storage.fileLeases + storage.preparedPages + storage.pendingPublications)
             assertTrue("Viewer decode workers did not terminate", decodeWorkersTerminated)
+            // A full receipt ring must still fail qualification, but cannot hide independent closure proof.
+            var exportFailure: Throwable? = null
+            for (export in listOf(::exportInputs, ::exportFrames)) {
+                try { export() } catch (failure: Throwable) {
+                    val first = exportFailure
+                    if (first == null) exportFailure = failure else if (first !== failure) first.addSuppressed(failure)
+                }
+            }
+            exportFailure?.let { throw it }
         }
         check(graph.episodeEvidenceObserver == null)
         check(appGraph.networkEvidenceObserver == null)
@@ -129,6 +137,7 @@ class EngineViewerCaptureTest {
                 }
             }) { activity ->
             viewer = activity
+            if (arguments.getString("captureWholePreparation") == "true") activity.reserveWholeTraversalInputEvidence()
             try {
             if (arguments.getString("traverseEpisode") == "true") {
                 var number = 0
@@ -142,17 +151,32 @@ class EngineViewerCaptureTest {
                         values.getBoolean(index)
                     }
                 }
+                val wholePreparationMode = arguments.getString("captureWholePreparation") == "true"
+                if (wholePreparationMode) require(directions == null) {
+                    "Whole-preparation schedule and fixed gesture schedule are mutually exclusive"
+                }
+                fun recordLaunchPreparation(value: ml.melun.mangaview.engine.runtime.EngineLaunchPreparationSnapshot) {
+                    File(output, "launch-preparation.jsonl").appendText(launchPreparation(value).toString() + "\n")
+                }
                 val report = traverseCapturedEpisode(activity, device,
                     episode, documents,
                     { writeCapture(output, number++, it) }, { exportInputs(); exportFrames(); memory?.capture("active") },
                     { captureEngineStoppedScreen(instrumentation, activity, output, it) },
-                    { gesture, forward -> injectEngineTraversalGesture(instrumentation, device, output, gesture, forward) },
-                    readbackEnabled = readback, fixedGestureDirections = directions,
-                    maximumDurationMillis = (arguments.getString("captureTraversalSeconds") ?: "90").toLong() * 1_000,
-                    maximumCaptures = (arguments.getString("captureMaximumFrames") ?: "512").toLong())
+                    { gesture, forward, speed -> injectEngineTraversalGesture(instrumentation, device, output, gesture, forward, speed) },
+                    readbackEnabled = if (wholePreparationMode) false else readback, fixedGestureDirections = directions,
+                    maximumDurationMillis = (arguments.getString("captureTraversalSeconds") ?: if (wholePreparationMode) "150" else "90").toLong() * 1_000,
+                    maximumCaptures = (arguments.getString("captureMaximumFrames") ?: "512").toLong(),
+                    wholePreparationMode = wholePreparationMode,
+                    preparationSnapshot = { activity.viewerEngineDiagnosticSnapshot()?.content?.launchPreparation },
+                    recordPreparation = ::recordLaunchPreparation,
+                    maximumGestures = (arguments.getString("captureMaximumGestures") ?: "512").toInt())
                 File(output, "summary.json").writeText(report.put("capturedFrames", number)
-                    .put("fullViewportCapture", readback).put("physicalPresentationVerified", false).toString(2))
+                    .put("inputEvidenceCapacity", if (wholePreparationMode) 32_768 else 512)
+                    .put("fullViewportCapture", readback && !wholePreparationMode).put("physicalPresentationVerified", false).toString(2))
                 val diagnostic = if (captureEngineDiagnostics) activity.viewerEngineDiagnosticSnapshot() else null
+                activity.viewerEngineDiagnosticSnapshot()?.content?.launchPreparation?.let { preparation ->
+                    File(output, "end-launchprep.json").writeText(launchPreparation(preparation).toString(2))
+                }
                 (diagnostic?.content?.runtime ?: activity.viewerEngineSnapshot())?.let { state ->
                     File(output, "stopped-engine-state.json").writeText(JSONObject().apply {
                         put("session", state.session.toString())
@@ -170,10 +194,14 @@ class EngineViewerCaptureTest {
                         put("openStartedAtNanos", startup.openStartedAtNanos)
                         put("manifestReadyAtNanos", startup.manifestReadyAtNanos ?: JSONObject.NULL)
                         put("firstSourceSubmittedAtNanos", startup.firstActualSubmittedAtNanos ?: JSONObject.NULL)
+                        put("firstCompleteViewportSubmittedAtNanos", startup.firstCompleteViewportSubmittedAtNanos ?: JSONObject.NULL)
+                        put("firstCurrentViewportObservedSubmittedAtNanos", startup.firstCurrentViewportObservedSubmittedAtNanos ?: JSONObject.NULL)
                         put("firstSourcePresentedAtNanos", startup.firstActualPresentedAtNanos ?: JSONObject.NULL)
                         put("physicalPresentationVerified", false)
                     }.toString(2))
                 }
+                check(!report.optBoolean("timeoutFail")) { "Launch episode originals were not all first-verified within 120 seconds" }
+                check(!report.optBoolean("documentEndpointMissFail")) { "Launch episode boundary was crossed without its visible source endpoint" }
             } else {
             val deadline = SystemClock.elapsedRealtime() + 30_000
             var index = 0
@@ -288,6 +316,7 @@ class EngineViewerCaptureTest {
         put("ordinal", value.ordinal); put("rendererId", frame.rendererId)
         put("sessionId", id.sessionId); put("rendererEpoch", id.rendererEpoch); put("surfaceEpoch", id.surfaceEpoch)
         put("token", id.token); put("inputRevision", id.inputRevision); put("geometryRevision", id.geometryRevision)
+        put("movementRevision", frame.scene.movementRevision)
         put("sceneGeneration", frame.scene.generation); put("eglFrameId", frame.eglFrameId)
         put("submittedAtNanos", frame.submittedAtNanos); put("renderSubmissionDurationNanos", frame.renderLatencyNanos)
         put("swapSucceeded", frame.swapSucceeded); put("timestampKind", frame.timestampKind.name); put("timestampNanos", frame.timestampNanos)
@@ -312,6 +341,7 @@ class EngineViewerCaptureTest {
         put("completeViewport", state.session.completeViewport)
         put("visiblePageIdentities", org.json.JSONArray(state.session.visibleRegions.map { it.pageId.toString() }))
         put("preparedPageIdentities", org.json.JSONArray(state.pages.keys.map { it.toString() }))
+        put("launchPreparation", launchPreparation(value.content.launchPreparation))
         put("contentWork", work(false, value.content.work))
         put("renderSession", render.session?.toString() ?: JSONObject.NULL)
         put("renderEnabled", render.enabled)
@@ -322,6 +352,35 @@ class EngineViewerCaptureTest {
         put("missingVisibleTiles", org.json.JSONArray((render.plannedVisibleTiles - render.residentTextureTiles).map(::tile)))
         put("renderWork", work(true, render.work))
         put("failure", failure?.stackTraceToString() ?: JSONObject.NULL)
+    }
+
+    private fun launchPreparation(value: ml.melun.mangaview.engine.runtime.EngineLaunchPreparationSnapshot) = JSONObject().apply {
+        put("generation", value.generation)
+        put("episodeIdentity", JSONObject().apply {
+            put("sourceId", value.episodeId.seriesId.sourceId.value)
+            put("seriesKey", value.episodeId.seriesId.remoteKey)
+            put("episodeKey", value.episodeId.remoteKey)
+        })
+        put("manifestAcceptedAtNanos", value.manifestAcceptedAtNanos ?: JSONObject.NULL)
+        put("manifestPageIdentities", org.json.JSONArray(value.manifestPageIds.map(::page)))
+        put("manifestPageCount", value.manifestPageIds.size)
+        put("verifiedPageCount", value.verifiedPages.size)
+        put("verifiedByteCount", value.verifiedPages.values.fold(0L) { total, item -> Math.addExact(total, item.identity.byteCount) })
+        put("allFirstVerifiedPreparedAtNanos", value.allFirstVerifiedPreparedAtNanos ?: JSONObject.NULL)
+        put("verifiedPages", org.json.JSONArray(value.verifiedPages.values.map { item -> JSONObject().apply {
+            put("pageIdentity", page(item.identity.pageId))
+            put("ordinal", item.ordinal)
+            put("generation", item.generation)
+            put("inputRevision", item.inputRevision)
+            put("geometryRevision", item.geometryRevision)
+            put("contentRevision", item.identity.contentRevision)
+            put("sha256", item.identity.sha256)
+            put("widthPx", item.identity.dimensions.widthPx)
+            put("heightPx", item.identity.dimensions.heightPx)
+            put("byteCount", item.identity.byteCount)
+            put("firstVerifiedAtNanos", item.firstVerifiedAtNanos)
+        } }))
+        put("semantics", "Cumulative first verified identities for the launch manifest; metadata history, not a cache pin or current-cache availability assertion")
     }
 
     private fun work(render: Boolean, value: SessionWorkOwnership) = JSONObject().apply {

@@ -19,12 +19,15 @@ data class EngineTilePlan(
 )
 
 /** Pure original-resolution demand and placement; speculative tiles never displace visible tiles. */
-class EngineTilePlanner(private val textureBudgetBytes: Long, private val targetTileHeightPx: Int = 2048) {
-    init { require(textureBudgetBytes > 0 && targetTileHeightPx > 2) }
+class EngineTilePlanner(private val textureBudgetBytes: Long, private val targetTileHeightPx: Int = 2048,
+    private val preparationViewports: Int = 0,
+) {
+    init { require(textureBudgetBytes > 0 && targetTileHeightPx > 2 && preparationViewports in 0..2) }
 
     fun plan(snapshot: EngineRuntimeSnapshot): EngineTilePlan {
         val visible = linkedMapOf<EngineTileSpec, WorkPriority>()
         val speculative = linkedSetOf<EngineTileSpec>()
+        val distant = mutableListOf<Pair<Long, EngineTileSpec>>()
         val placements = mutableListOf<EngineTilePlacement>()
         var complete = snapshot.session.completeViewport
         var previousRegion: VisiblePageRegion? = null
@@ -60,7 +63,9 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
             if (last + 1 < count) speculative += tile(page, last + 1, count, snapshot.session.viewport.widthPx)
             if (first == 0) adjacentTile(snapshot, region.pageId, -1)?.let(speculative::add)
             if (last == count - 1) adjacentTile(snapshot, region.pageId, 1)?.let(speculative::add)
+            collectDistantBands(snapshot, page, first, last, distant)
         }
+        addPreparedHorizon(snapshot, distant, speculative)
         var bytes = visible.keys.fold(0L) { total, tile -> Math.addExact(total, tile.byteCount) }
         require(bytes <= textureBudgetBytes) { "Visible original-resolution tiles exceed the texture budget" }
         val demands = visible.map { EngineTileDemand(it.key, it.value) }.toMutableList()
@@ -71,6 +76,101 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
             }
         }
         return EngineTilePlan(demands, placements, complete, bytes)
+    }
+
+    /** A held scene takes precedence over speculation; null requires releasing its native references. */
+    internal fun retainDisplayed(plan: EngineTilePlan, displayed: Collection<EngineTileSpec>): EngineTilePlan? {
+        val required = plan.placements.mapTo(linkedSetOf()) { it.tile }.apply { addAll(displayed) }
+        var bytes = required.sumOf { it.byteCount }
+        if (bytes > textureBudgetBytes) return null
+        val priorities = plan.demands.associate { it.tile to it.priority }
+        val demands = required.map { EngineTileDemand(it, priorities[it]?.takeUnless {
+            it == WorkPriority.NEXT_IMAGE } ?: WorkPriority.VISIBLE) }.toMutableList()
+        for (demand in plan.demands) {
+            if (demand.tile in required || demand.tile.byteCount > textureBudgetBytes - bytes) continue
+            required += demand.tile
+            demands += demand
+            bytes += demand.tile.byteCount
+        }
+        return plan.copy(demands = demands, plannedTextureBytes = bytes)
+    }
+
+    /** Keep already resident pixels only after budgeting visible and preparation demands. */
+    internal fun retainReady(plan: EngineTilePlan, snapshot: EngineRuntimeSnapshot,
+        mostRecentFirst: List<EngineTileSpec>,
+    ): EngineTilePlan {
+        val demands = plan.demands.toMutableList()
+        val wanted = demands.mapTo(linkedSetOf()) { it.tile }
+        var bytes = plan.plannedTextureBytes
+        for (tile in mostRecentFirst) {
+            if (tile in wanted || tile.byteCount > textureBudgetBytes - bytes) continue
+            val page = snapshot.pages[tile.pageId] ?: continue
+            if (tile.displayWidth != snapshot.session.viewport.widthPx ||
+                tile.contentRevision != page.contentRevision || tile.sha256 != page.sha256 ||
+                tile.dimensions != page.dimensions) continue
+            wanted += tile
+            demands += EngineTileDemand(tile, WorkPriority.NEXT_IMAGE)
+            bytes += tile.byteCount
+        }
+        return plan.copy(demands = demands, plannedTextureBytes = bytes)
+    }
+
+    private fun collectDistantBands(snapshot: EngineRuntimeSnapshot, page: PageContentIdentity,
+        first: Int, last: Int, distant: MutableList<Pair<Long, EngineTileSpec>>,
+    ) {
+        if (preparationViewports == 0) return
+        for ((direction, start) in listOf(1 to last + 1, -1 to first - 1)) {
+            var distance = 0L
+            val horizon = preparationViewports.toLong() * snapshot.session.viewport.heightPx
+            for (candidate in neighboringBands(snapshot, page, start, direction)) {
+                if (distance >= horizon) break
+                distant += distance to candidate
+                distance += candidate.decodedHeight
+            }
+        }
+    }
+
+    private fun addPreparedHorizon(snapshot: EngineRuntimeSnapshot,
+        distant: List<Pair<Long, EngineTileSpec>>, speculative: MutableSet<EngineTileSpec>,
+    ) {
+        if (preparationViewports > 0) {
+            distant.sortedBy { it.first }.forEach { speculative += it.second }
+            // Missing geometry must not prevent decoding the already verified leading pages.
+            // These remain speculative demands, never placements or a claim of complete coverage.
+            val anchor = snapshot.session.anchor
+            val manifest = anchor?.pageId?.episodeId?.let { snapshot.plans[it]?.manifest }
+            if (!snapshot.session.completeViewport && anchor != null && manifest != null) {
+                val index = manifest.pages.indexOfFirst { it.id == anchor.pageId }
+                val leading = snapshot.session.requiredDimensions.fold(index) { at, id ->
+                    maxOf(at, manifest.pages.indexOfFirst { it.id == id })
+                }
+                if (index >= 0) for (at in leading..minOf(leading + 2, manifest.pages.lastIndex)) {
+                    val page = snapshot.pages[manifest.pages[at].id] ?: continue
+                    speculative += tile(page, 0, bandCount(page, snapshot.session.viewport.widthPx), snapshot.session.viewport.widthPx)
+                }
+            }
+        }
+    }
+
+    private fun neighboringBands(snapshot: EngineRuntimeSnapshot, initial: PageContentIdentity,
+        start: Int, direction: Int,
+    ): Sequence<EngineTileSpec> = sequence {
+        var page = initial
+        var band = start
+        val visited = linkedSetOf(page.pageId)
+        val width = snapshot.session.viewport.widthPx
+        while (true) {
+            var count = bandCount(page, width)
+            if (band !in 0 until count) {
+                val edge = adjacentTile(snapshot, page.pageId, direction) ?: break
+                if (!visited.add(edge.pageId)) break
+                page = snapshot.pages[edge.pageId] ?: break
+                count = bandCount(page, width)
+                band = if (direction > 0) 0 else count - 1
+            }
+            yield(tile(page, band, count, width))
+            band += direction
+        }
     }
 
     private fun stitchBoundary(

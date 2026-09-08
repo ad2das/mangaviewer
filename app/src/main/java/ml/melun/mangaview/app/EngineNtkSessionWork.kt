@@ -2,6 +2,7 @@ package ml.melun.mangaview.app
 
 import java.net.URI
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
@@ -51,20 +52,29 @@ internal class EngineNtkSessionWork(
     override fun episode(episodeId: EpisodeId, priority: WorkPriority): WorkRequest<EpisodeAccessPlan> = WorkRequest(
         WorkKey(principal, episodeId.toString(), "ntk.episode", origin.toString(), EpisodeAccessPlan::class.java),
         WorkDomain.CONTROL, priority, execute = { parent ->
-            parent.useDependency(documents.documentRequest(episodeId, origin, 0, parent.priority.value)) { source ->
-                val parsed = withContext(parsingDispatcher) { planner.parseDocument(episodeId, source, 0) }
-                val completed = if (parsed.descriptor == null) withContext(parsingDispatcher) { planner.complete(parsed) }
-                else parent.useDependency(WorkRequest(
-                    WorkKey(principal, episodeId.toString(), "ntk.browser", source.replaySha256, NtkEngineAuthorization::class.java),
-                    WorkDomain.BROWSER, parent.priority.value, execute = { browser.capture(parsed) },
-                )) { proof -> withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) } }
-                require(completed.manifest.id == episodeId && completed.documentSha256 == source.sha256 &&
-                    completed.finalDocumentUrl == source.finalUrl)
-                observer?.observed(episodeId, source, completed)
-                completed
+            parent.useDependency(WorkRequest(
+                WorkKey(principal, episodeId.toString(), "ntk.browser.prepare", origin.toString(), NtkEngineBrowserPreparation::class.java),
+                WorkDomain.BROWSER, parent.priority.value, execute = { browser.prepareService() },
+                dispose = { withContext(Dispatchers.Main.immediate) { it.close() } },
+            )) {
+                resolveEpisode(parent, episodeId)
             }
         },
     )
+
+    private suspend fun resolveEpisode(parent: WorkContext, episodeId: EpisodeId): EpisodeAccessPlan =
+        parent.useDependency(documents.documentRequest(episodeId, origin, 0, parent.priority.value)) { source ->
+            val parsed = withContext(parsingDispatcher) { planner.parseDocument(episodeId, source, 0) }
+            val completed = if (parsed.descriptor == null) withContext(parsingDispatcher) { planner.complete(parsed) }
+            else parent.useDependency(WorkRequest(
+                WorkKey(principal, episodeId.toString(), "ntk.browser", source.replaySha256, NtkEngineAuthorization::class.java),
+                WorkDomain.BROWSER, parent.priority.value, execute = { browser.capture(parsed) },
+            )) { proof -> withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) } }
+            require(completed.manifest.id == episodeId && completed.documentSha256 == source.sha256 &&
+                completed.finalDocumentUrl == source.finalUrl)
+            observer?.observed(episodeId, source, completed)
+            completed
+        }
 
     override fun page(plan: EpisodeAccessPlan, pageId: PageId, priority: WorkPriority) = pages.request(plan, pageId, priority)
 

@@ -14,6 +14,7 @@ internal data class EngineInputObservation(
     val anchor: SourceAnchor?,
     val pendingInputCount: Int,
     val receipt: InputReceipt,
+    val movementRevision: Long = 0L,
 )
 
 internal data class EngineInputObservationBatch(
@@ -33,11 +34,18 @@ internal data class EngineInputCloseProof(
 )
 
 /** Bounded value-only observations. Overwritten evidence is explicitly reported to readers. */
-internal class EngineInputObservations(private val capacity: Int = 512) {
+internal class EngineInputObservations(private var capacity: Int = 512) {
     init { require(capacity > 0) }
     private val entries = ArrayDeque<EngineInputObservation>()
     private var latest = 0L
     private var closed: EngineInputCloseProof? = null
+
+    /** Diagnostic-only reservation before the first input; ordinary readers retain the default bound. */
+    @Synchronized fun reserveCaptureCapacity(value: Int) {
+        check(latest == 0L && closed == null)
+        require(value in capacity..32_768)
+        capacity = value
+    }
 
     @Synchronized fun record(state: EngineSessionSnapshot, receipts: List<InputReceipt>) {
         check(closed == null) { "Input history is already sealed" }
@@ -45,7 +53,8 @@ internal class EngineInputObservations(private val capacity: Int = 512) {
             latest = Math.incrementExact(latest)
             if (entries.size == capacity) entries.removeFirst()
             entries.addLast(EngineInputObservation(latest, state.sessionId, state.generation,
-                state.inputRevision, state.geometryRevision, state.anchor, state.pendingInputCount, receipt))
+                state.inputRevision, state.geometryRevision, state.anchor, state.pendingInputCount, receipt,
+                state.movementRevision))
         }
     }
 

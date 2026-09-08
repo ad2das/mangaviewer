@@ -76,9 +76,12 @@ data class EngineSessionSnapshot(
     val visibleRegions: List<VisiblePageRegion>,
     val requiredDimensions: Set<PageId>,
     val requiredEpisodes: Set<EpisodeId>,
+    /** Geometry of the current visible regions; pending input may still require future pages. */
     val completeViewport: Boolean,
     val requiredNavigation: Set<EpisodeId> = emptySet(),
     val anchorDimensions: PageDimensions? = null,
+    /** Distinguishes consecutive movements even when queued input returns to an earlier anchor. */
+    val movementRevision: Long = 0L,
 )
 
 sealed interface SessionEvent {
@@ -107,6 +110,8 @@ sealed interface SessionEvent {
     data class Input(val sample: InputSample) : SessionEvent
     /** Releases inputs accepted during the one-time initial visual-readiness barrier. */
     data object ReleaseStartupInput : SessionEvent
+    /** All source tiles for this viewport are ready; stale acknowledgements cannot advance input. */
+    data class ViewportReady(val snapshot: EngineSessionSnapshot) : SessionEvent
     data class Resize(val viewport: EngineViewport) : SessionEvent
     data class Navigate(val episodeId: EpisodeId) : SessionEvent
     data object Close : SessionEvent

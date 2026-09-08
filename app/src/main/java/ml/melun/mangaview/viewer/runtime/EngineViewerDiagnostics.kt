@@ -23,6 +23,8 @@ internal class EngineViewerDiagnostics(private val frameCapacity: Int = 512) {
     private var manifestReady: Long? = null
     private var firstSubmitted: Long? = null
     private var firstPresented: Long? = null
+    private var firstCompleteViewportSubmitted: Long? = null
+    private var firstCurrentViewportObservedSubmitted: Long? = null
     private var presentedPage: String? = null
 
     @Synchronized fun opened(atNanos: Long) { check(opened == 0L && atNanos > 0L); opened = atNanos }
@@ -43,6 +45,21 @@ internal class EngineViewerDiagnostics(private val frameCapacity: Int = 512) {
         frame = value
         if (opened == 0L || !value.swapSucceeded || value.scene.placements.isEmpty()) return
         if (firstSubmitted == null) firstSubmitted = value.submittedAtNanos
+        val fullVisibleScene = value.scene.completeCoverage && value.scene.placements.any {
+            it.bottomPx > 0 && it.topPx < value.scene.viewport.heightPx * value.scene.coordinateUnitsPerPixel
+        }
+        // Callback delivery may follow a newer input. That does not erase an earlier full submission
+        // or the incomplete frames that followed it; current-state matching is separate evidence.
+        if (firstCompleteViewportSubmitted == null && fullVisibleScene) {
+            firstCompleteViewportSubmitted = value.submittedAtNanos
+        }
+        val current = state?.session
+        if (firstCurrentViewportObservedSubmitted == null && fullVisibleScene && current?.completeViewport == true &&
+            value.scene.sessionId == current.sessionId && value.scene.generation == current.generation &&
+            value.scene.inputRevision == current.inputRevision && value.scene.geometryRevision == current.geometryRevision &&
+            value.scene.movementRevision == current.movementRevision &&
+            value.scene.anchor == current.anchor && value.scene.viewport == current.viewport
+        ) firstCurrentViewportObservedSubmitted = value.submittedAtNanos
         if (firstPresented == null && value.timestampKind == PresentationTimestampKind.DISPLAY_PRESENT && value.timestampNanos > 0L) {
             firstPresented = value.timestampNanos
             presentedPage = value.scene.placements.first().texture.tile.pageId.remoteKey
@@ -68,5 +85,7 @@ internal class EngineViewerDiagnostics(private val frameCapacity: Int = 512) {
         presentedPageKey = presentedPage, openStartedAtNanos = opened, manifestReadyAtNanos = manifestReady,
         initialResponseStartedAtNanos = null, initialVerifiedAtNanos = null, initialDecodedAtNanos = null,
         firstActualSubmittedAtNanos = firstSubmitted, firstActualPresentedAtNanos = firstPresented,
+        firstCompleteViewportSubmittedAtNanos = firstCompleteViewportSubmitted,
+        firstCurrentViewportObservedSubmittedAtNanos = firstCurrentViewportObservedSubmitted,
     )
 }

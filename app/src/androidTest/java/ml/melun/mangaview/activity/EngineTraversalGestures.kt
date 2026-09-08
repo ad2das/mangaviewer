@@ -8,6 +8,11 @@ import androidx.test.uiautomator.UiDevice
 import java.io.File
 import org.json.JSONObject
 
+internal enum class EngineTraversalGestureSpeed(val moveSteps: Int, val sampleDelayMillis: Long) {
+    NORMAL(30, 5),
+    FAST(8, 2),
+}
+
 /** Platform-dispatched touchscreen gestures, including ordinary fractional pointer coordinates. */
 internal fun injectEngineTraversalGesture(
     instrumentation: Instrumentation,
@@ -15,6 +20,7 @@ internal fun injectEngineTraversalGesture(
     output: File,
     number: Int,
     forward: Boolean,
+    speed: EngineTraversalGestureSpeed = EngineTraversalGestureSpeed.NORMAL,
 ) {
     val x = device.displayWidth / 2f
     val phase = (number % 4) * 0.25f
@@ -30,6 +36,7 @@ internal fun injectEngineTraversalGesture(
         val accepted = try { instrumentation.uiAutomation.injectInputEvent(event, true) } finally { event.recycle() }
         records.append(JSONObject().apply {
             put("gestureOrdinal", number); put("action", action); put("downTimeMillis", downTime); put("eventTimeMillis", at)
+            put("speed", speed.name); put("moveSteps", speed.moveSteps); put("sampleDelayMillis", speed.sampleDelayMillis)
             put("xBits", x.toRawBits()); put("yBits", y.toRawBits()); put("x", x); put("y", y)
             put("source", InputDevice.SOURCE_TOUCHSCREEN); put("dispatchAccepted", accepted)
             put("dispatchReturnedMonotonicNs", System.nanoTime()); put("receivedByViewerVerified", false)
@@ -38,9 +45,9 @@ internal fun injectEngineTraversalGesture(
     }
     try {
         send(MotionEvent.ACTION_DOWN, start)
-        for (step in 1..30) {
-            SystemClock.sleep(5)
-            send(MotionEvent.ACTION_MOVE, start + (end - start) * step / 30f)
+        for (step in 1..speed.moveSteps) {
+            SystemClock.sleep(speed.sampleDelayMillis)
+            send(MotionEvent.ACTION_MOVE, start + (end - start) * step / speed.moveSteps.toFloat())
         }
         send(MotionEvent.ACTION_UP, end)
         finished = true

@@ -69,7 +69,9 @@ class EngineSurfaceOwnerTest {
     @Test fun sceneRetainsReleasedTextureUntilNativeSceneReferencesAreRemoved() = runBlocking {
         val (page, pixels) = pixels()
         val presented = CompletableDeferred<EngineSurfacePresentation>()
-        val owner = EngineSurfaceOwner(pixels.byteCount, { presented.complete(it) }, { presented.completeExceptionally(it) }, {})
+        val submitted = CompletableDeferred<EngineSurfaceScene>()
+        val owner = EngineSurfaceOwner(pixels.byteCount, { presented.complete(it) }, { presented.completeExceptionally(it) }, {},
+            reportSubmitted = { submitted.complete(it) })
         val consumer = SurfaceTexture(false).apply { setDefaultBufferSize(101, 100) }
         val surface = Surface(consumer)
         try {
@@ -79,6 +81,7 @@ class EngineSurfaceOwnerTest {
                 listOf(EngineTexturePlacement(texture, 0, 100))))
             val frame = withTimeout(5000) { presented.await() }
             assertSuccessfulSwap(frame)
+            assertEquals(frame.scene, withTimeout(5000) { submitted.await() })
             assertEquals(1, frame.identity.surfaceEpoch)
             val release = async(start = CoroutineStart.UNDISPATCHED) { owner.release(texture) }
             val before = owner.ownership()
@@ -89,6 +92,8 @@ class EngineSurfaceOwnerTest {
             withTimeout(5000) { release.await() }
             assertEquals(0, owner.ownership().textures)
             assertEquals(0, owner.ownership().sceneEntries)
+            owner.close()
+            assertEquals("Clearing native references must not submit another buffer", 1L, owner.closedSubmissionCount)
         } finally { owner.close(); surface.release(); consumer.release(); pixels.close(); assertTrue(page.file.delete()) }
     }
 

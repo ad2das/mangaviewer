@@ -37,6 +37,8 @@ def main():
     parser.add_argument('--traverse-episode', action='store_true', help='Traverse the full original episode in both directions')
     parser.add_argument('--traversal-seconds', type=int, default=90, help='Fixed diagnostic collection bound, not a performance acceptance limit (1..300)')
     parser.add_argument('--maximum-captures', type=int, default=512, help='Bounded diagnostic capture storage (1..1024)')
+    parser.add_argument('--maximum-gestures', type=int, default=512, help='Bounded traversal gesture count (1..2048)')
+    parser.add_argument('--whole-preparation', action='store_true', help='Measure all launch originals with immediate and post-preparation scrolling')
     parser.add_argument('--catalog-ui', action='store_true', help='Enter through live catalog/search and the real episode row')
     parser.add_argument('--source', choices=('wfwf', 'ntk'), default='wfwf')
     parser.add_argument('--kind', choices=('COMIC', 'WEBTOON'), default='COMIC')
@@ -52,6 +54,12 @@ def main():
     parser.add_argument('--navigation-async-moves', action='store_true', help='Real navigation swipes with asynchronous MOVE injection and synchronous UP')
     parser.add_argument('--engine-diagnostics', action='store_true', help='Export observation-only stopped engine diagnostic state')
     args = parser.parse_args()
+    if args.whole_preparation and (not args.traverse_episode or not args.no_readback or args.gesture_plan):
+        parser.error('--whole-preparation requires --traverse-episode --no-readback and excludes --gesture-plan')
+    if args.whole_preparation and args.traversal_seconds < 150:
+        args.traversal_seconds = 150
+    if not 1 <= args.maximum_gestures <= 2048:
+        parser.error('--maximum-gestures must be in 1..2048')
     if args.navigation_idle_ms is not None and (not args.catalog_ui or not 0 <= args.navigation_idle_ms <= 10_000):
         parser.error('navigation idle override requires catalog UI and 0..10000 milliseconds')
     if args.navigation_async_moves and not args.catalog_ui:
@@ -66,7 +74,9 @@ def main():
     measurement_args = ['-e', 'captureReadback', str(not args.no_readback).lower(),
                         '-e', 'captureMemory', str(args.memory_sampling).lower(),
                         '-e', 'captureTraversalSeconds', str(args.traversal_seconds),
-                        '-e', 'captureMaximumFrames', str(args.maximum_captures)]
+                        '-e', 'captureMaximumFrames', str(args.maximum_captures),
+                        '-e', 'captureMaximumGestures', str(args.maximum_gestures),
+                        '-e', 'captureWholePreparation', str(args.whole_preparation).lower()]
     measurement_args += _engine_diagnostics_args(args.engine_diagnostics)
     if args.navigation_idle_ms is not None:
         measurement_args += ['-e', 'captureNavigationIdleMillis', str(args.navigation_idle_ms)]
@@ -147,6 +157,8 @@ def main():
         report['traverseEpisode'] = args.traverse_episode
         report['traversalSeconds'] = args.traversal_seconds
         report['maximumCaptures'] = args.maximum_captures
+        report['maximumGestures'] = args.maximum_gestures
+        report['wholePreparationMode'] = args.whole_preparation
         report['readbackEnabled'] = not args.no_readback
         report['memorySamplingEnabled'] = args.memory_sampling
         report['engineDiagnosticsEnabled'] = args.engine_diagnostics

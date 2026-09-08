@@ -19,12 +19,14 @@ import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.readBytes
 
 /** Last provider origin verified with its real catalog and episode documents. */
-const val DEFAULT_WFWF_ORIGIN = "https://wfwf492.com"
+const val DEFAULT_WFWF_ORIGIN = "https://wfwf493.com"
 
 class WfwfOriginResolver(
     private val transport: SourceTransport,
     private val userAgent: String,
+    private val probeParallelism: Int = 4,
 ) {
+    init { require(probeParallelism in 1..4) }
     private val flightLock = Mutex()
     private var inFlight: CompletableDeferred<Result<String?>>? = null
 
@@ -52,8 +54,8 @@ class WfwfOriginResolver(
     private suspend fun resolveNow(currentOrigin: String): String? = coroutineScope {
         val candidates = candidates(currentOrigin)
         val cursor = AtomicInteger()
-        val results = Channel<String?>(PROBE_PARALLELISM)
-        val workerCount = minOf(PROBE_PARALLELISM, candidates.size)
+        val results = Channel<String?>(probeParallelism)
+        val workerCount = minOf(probeParallelism, candidates.size)
         val jobs = List(workerCount) {
             launch {
                 while (true) {
@@ -152,7 +154,6 @@ class WfwfOriginResolver(
         const val MAX_ADDRESS_HOPS = 2
         const val FORWARD_DISTANCE = 36
         const val BACKWARD_DISTANCE = 4
-        const val PROBE_PARALLELISM = 4
         const val PROBE_TIMEOUT_MILLIS = 1_500L
         const val RESOLUTION_TIMEOUT_MILLIS = 6_000L
         const val MAX_PROBE_BYTES = 512 * 1_024

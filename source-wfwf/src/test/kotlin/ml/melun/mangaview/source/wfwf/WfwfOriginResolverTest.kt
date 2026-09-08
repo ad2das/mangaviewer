@@ -12,6 +12,13 @@ import org.junit.Test
 
 class WfwfOriginResolverTest {
     @Test
+    fun viewerCanResolveTheMovedAddressWithOnePhysicalRequestAtATime() = runTest {
+        val transport = ProbeTransport(liveOrigin = "https://wfwf493.com")
+        assertEquals("https://wfwf493.com",
+            WfwfOriginResolver(transport, "agent", probeParallelism = 1).resolve("https://wfwf492.com"))
+    }
+
+    @Test
     fun findsANearbyLiveOriginWithoutDependingOnTheContentKind() = runTest {
         val transport = ProbeTransport(liveOrigin = "https://wfwf457.com")
 

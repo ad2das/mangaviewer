@@ -169,8 +169,15 @@ private class PageWorkIdentity(
 
     private fun hashFields(fields: List<String>): String {
         val bytes = fields.joinToString("") { "${it.length}:$it" }.toByteArray(Charsets.UTF_8)
-        return MessageDigest.getInstance("SHA-256").digest(bytes)
-            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        val alphabet = "0123456789abcdef"
+        return buildString(digest.size * 2) {
+            for (byte in digest) {
+                val value = byte.toInt() and 255
+                append(alphabet[value ushr 4])
+                append(alphabet[value and 15])
+            }
+        }
     }
 }
 

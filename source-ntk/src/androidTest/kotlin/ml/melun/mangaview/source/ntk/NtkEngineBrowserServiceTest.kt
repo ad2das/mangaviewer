@@ -15,6 +15,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import ml.melun.mangaview.source.PreparationIntent
 import org.junit.Assert.*
 import org.junit.Test
@@ -24,6 +27,9 @@ import org.junit.runner.RunWith
 class NtkEngineBrowserServiceTest {
     @Test fun retirementIsIdempotentButCannotRetireTheNextOwnedRequest() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        val preparation = runBlocking {
+            NtkEngineBrowserClient(context, "test-agent", NtkBrowserIdentity("a".repeat(32), "b".repeat(32))).prepareService()
+        }
         val replies = LinkedBlockingQueue<Pair<Int, Long>>()
         val thread = HandlerThread("engine-browser-service-test").apply { start() }
         val recipient = Messenger(object : Handler(thread.looper) {
@@ -62,6 +68,8 @@ class NtkEngineBrowserServiceTest {
             assertTrue(connected.await(10, TimeUnit.SECONDS))
             resolve(501)
             expect(NtkBrowserProtocol.MSG_DOCUMENT_REQUEST_READY, 501)
+            // The preparation connection owns no document and cannot retire the active exchange.
+            runBlocking { withContext(Dispatchers.Main.immediate) { preparation.close() } }
             retire(501)
             expect(NtkBrowserProtocol.MSG_DOCUMENT_RETIRED, 501)
             retire(501)
@@ -73,6 +81,7 @@ class NtkEngineBrowserServiceTest {
             retire(502)
             expect(NtkBrowserProtocol.MSG_DOCUMENT_RETIRED, 502)
         } finally {
+            runBlocking { withContext(Dispatchers.Main.immediate) { preparation.close() } }
             if (bound) context.unbindService(connection)
             thread.quitSafely()
         }

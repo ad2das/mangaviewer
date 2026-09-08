@@ -131,12 +131,26 @@ internal class EnginePageFiles(private val root: File, private val operations: E
         for (directory in listOf("staging", "pages")) {
             val parent = resolve("$directory/probe", directory).parentFile!!
             val entries = checkNotNull(parent.listFiles()) { "Cannot enumerate storage directory" }
-            for (entry in entries) {
-                val relative = "$directory/${entry.name}"
-                val namePattern = if (directory == "staging") STAGING_NAME else PAGE_NAME
-                if (relative in protected || !namePattern.matches(entry.name) || !entry.isFile) continue
-                val owned = resolve(relative, directory)
-                delete(owned)
+            var failure: Throwable? = null
+            try {
+                for (entry in entries) {
+                    val relative = "$directory/${entry.name}"
+                    val namePattern = if (directory == "staging") STAGING_NAME else PAGE_NAME
+                    if (relative in protected || !namePattern.matches(entry.name) || !entry.isFile) continue
+                    val owned = resolve(relative, directory)
+                    if (owned.exists()) check(owned.isFile && owned.delete()) { "Unable to delete storage file" }
+                }
+            } catch (error: Throwable) {
+                failure = error
+                throw error
+            } finally {
+                // Only unreferenced files are removed here. Commit the directory batch once;
+                // publication and leased-file deletion retain their separate durability steps.
+                try { operations.syncDirectory(parent) } catch (syncFailure: Throwable) {
+                    val original = failure
+                    if (original == null) throw syncFailure
+                    if (original !== syncFailure) original.addSuppressed(syncFailure)
+                }
             }
         }
     }

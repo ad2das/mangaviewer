@@ -55,4 +55,39 @@ class EngineViewerDiagnosticsTest {
         assertEquals(110L, diagnostics.startup()?.firstActualSubmittedAtNanos)
         assertNull(diagnostics.startup()?.firstActualPresentedAtNanos)
     }
+
+    @Test fun firstFullSubmissionSurvivesNewerInputWhileCurrentObservationRequiresAnExactMatch() {
+        val episode = EpisodeId(SeriesId(SourceId("test"), "series"), "episode")
+        val page = PageId.at(episode, 0)
+        val anchor = SourceAnchor(page, 0)
+        val viewport = EngineViewport(10, 10)
+        val state = EngineSessionSnapshot(1, 1, EngineSessionPhase.ACTIVE, viewport, anchor,
+            geometryRevision = 2, inputRevision = 3, pendingInputCount = 0,
+            visibleRegions = emptyList(), requiredDimensions = emptySet(), requiredEpisodes = emptySet(),
+            completeViewport = true)
+        val tile = EngineTileSpec(page, "revision", "a".repeat(64), PageDimensions(10, 10), 0, 10, 10)
+        val placement = EngineTexturePlacement(EngineTexture(tile, 1, 1, 1, tile.byteCount), 0, 10)
+        val scene = EngineSurfaceScene(1, 1, 3, 2, viewport, anchor, listOf(placement), completeCoverage = false)
+        fun frame(token: Long, submitted: Long, value: EngineSurfaceScene) = EngineSurfacePresentation(
+            FrameIdentity(1, 1, 1, token, value.inputRevision, value.geometryRevision), value,
+            submitted, 2, true, PresentationTimestampKind.SWAP_RETURN, submitted + 2, token, 9)
+        val diagnostics = EngineViewerDiagnostics()
+        diagnostics.opened(100)
+        diagnostics.snapshot(EngineRuntimeSnapshot(state, emptyMap(), emptyMap()), 101)
+
+        diagnostics.presented(frame(1, 110, scene))
+        assertNull(diagnostics.startup()?.firstCompleteViewportSubmittedAtNanos)
+        diagnostics.presented(frame(2, 115, scene.copy(completeCoverage = true)).copy(swapSucceeded = false))
+        assertNull(diagnostics.startup()?.firstCompleteViewportSubmittedAtNanos)
+        diagnostics.presented(frame(3, 120, scene.copy(inputRevision = 2, completeCoverage = true)))
+        assertEquals(120L, diagnostics.startup()?.firstCompleteViewportSubmittedAtNanos)
+        assertNull(diagnostics.startup()?.firstCurrentViewportObservedSubmittedAtNanos)
+        diagnostics.presented(frame(4, 125, scene))
+        assertEquals(120L, diagnostics.startup()?.firstCompleteViewportSubmittedAtNanos)
+        diagnostics.presented(frame(5, 130, scene.copy(completeCoverage = true)))
+
+        assertEquals(110L, diagnostics.startup()?.firstActualSubmittedAtNanos)
+        assertEquals(120L, diagnostics.startup()?.firstCompleteViewportSubmittedAtNanos)
+        assertEquals(130L, diagnostics.startup()?.firstCurrentViewportObservedSubmittedAtNanos)
+    }
 }

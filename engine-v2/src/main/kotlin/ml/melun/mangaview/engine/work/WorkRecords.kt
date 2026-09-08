@@ -42,6 +42,8 @@ internal interface WorkRecord {
     val cleanupSubscribers: MutableList<WorkSubscriber>
     val completion: CompletableDeferred<Unit>
     val dependencies: MutableMap<WorkSubscriber, WorkRecord>
+    /** Wait edges own no subscriber or result, but still participate in cycle detection. */
+    val retirementWaits: MutableMap<Any, WorkRecord>
     var state: WorkRecordState
     var worker: Job?
     var permit: PermitClaim?
@@ -66,6 +68,7 @@ internal class TypedWorkRecord<T : Any>(
     override val cleanupSubscribers = mutableListOf<WorkSubscriber>()
     override val completion = CompletableDeferred<Unit>()
     override val dependencies = linkedMapOf<WorkSubscriber, WorkRecord>()
+    override val retirementWaits = linkedMapOf<Any, WorkRecord>()
     override var state = WorkRecordState.QUEUED
     override var worker: Job? = null
     override var permit: PermitClaim? = null

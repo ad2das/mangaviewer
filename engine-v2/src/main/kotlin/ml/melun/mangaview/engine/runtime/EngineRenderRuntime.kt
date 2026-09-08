@@ -3,7 +3,10 @@ package ml.melun.mangaview.engine.runtime
 import java.util.Collections
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.engine.api.EngineDrawQuad
@@ -32,16 +35,19 @@ data class EngineRenderRuntimeDiagnosticSnapshot(
 
 /** Owns this renderer's subscriptions; scene replacement precedes retirement of its old textures. */
 class EngineRenderRuntime(
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     coordinator: WorkCoordinatorPort,
     private val planner: EngineTilePlanner,
     private val tiles: EngineTileWork,
     private val uploader: EngineTextureUploader,
     private val pageRequest: (PageId, WorkPriority) -> WorkRequest<StoredPage>,
     private val submitScene: (EngineDrawScene) -> Unit,
-    /** Must remove native scene references before returning, including error exits. */
+    /** Removes native references without swapping a new buffer, including error exits. */
     private val clearScene: suspend () -> Unit,
     reportFailure: (WorkKey<*>, Throwable) -> Unit,
+    private val waitForCompleteViewport: Boolean = false,
+    private val reportSceneFailure: (Throwable) -> Unit = { throw it },
+    private val reportViewportReady: (ml.melun.mangaview.engine.api.EngineSessionSnapshot) -> Unit = {},
 ) {
     private val owner = Thread.currentThread()
     private val work = SessionWorkSet(scope, coordinator, reportFailure)
@@ -54,12 +60,18 @@ class EngineRenderRuntime(
     private var closed = false
     private var processing = false
     private var dirty = false
+    private var displayed: EngineDrawScene? = null
+    private var clearingScene = false
+    private var sceneClearJob: Job? = null
+    private var sceneClearFailed = false
 
     fun update(snapshot: EngineRuntimeSnapshot) {
         checkOwner()
         if (closed) return
         require(current == null || current!!.session.sessionId == snapshot.session.sessionId)
         if (current?.session?.generation != snapshot.session.generation || epoch != uploader.rendererEpoch) {
+            if (displayed != null) submitScene(EngineDrawScene(snapshot.session, emptyList(), false))
+            displayed = null
             work.clear()
             textures.clear()
             failedReadAhead.clear()
@@ -84,6 +96,7 @@ class EngineRenderRuntime(
     fun retryFailures() {
         checkOwner()
         if (!closed) {
+            sceneClearFailed = false
             failedReadAhead.clear()
             work.retryFailures()
             refresh()
@@ -109,6 +122,7 @@ class EngineRenderRuntime(
         if (!closed) {
             closed = true
             var failure: Throwable? = null
+            sceneClearJob?.join()
             try { current?.let { submitScene(EngineDrawScene(it.session, emptyList(), false)) } }
             catch (error: Throwable) { failure = error }
             try { clearScene() } catch (error: Throwable) {
@@ -122,6 +136,7 @@ class EngineRenderRuntime(
             textures.clear()
             failedReadAhead.clear()
             current = null
+            displayed = null
             val result = failure
             if (result == null) closeDone.complete(Unit) else closeDone.completeExceptionally(result)
         }
@@ -130,21 +145,59 @@ class EngineRenderRuntime(
 
     private fun refresh() {
         dirty = true
-        if (processing) return
+        if (processing || clearingScene || sceneClearFailed) return
         processing = true
         try {
             while (dirty && !closed) {
                 dirty = false
                 val snapshot = current ?: break
-                val plan = if (enabled) planner.plan(snapshot) else EngineTilePlan(emptyList(), emptyList(), false, 0)
-                val wanted = plan.demands.mapTo(linkedSetOf()) { it.tile }
-                textures.keys.retainAll(wanted)
-                submitScene(scene(snapshot, plan))
-                if (!dirty) work.reconcile(plan.demands.filter {
-                    it.priority != WorkPriority.NEXT_IMAGE || it.tile !in failedReadAhead
-                }.map { demand(snapshot, it) })
+                if (!refreshSnapshot(snapshot)) break
             }
         } finally { processing = false }
+    }
+
+    private fun refreshSnapshot(snapshot: EngineRuntimeSnapshot): Boolean {
+        val candidatePlan = if (enabled) planner.plan(snapshot) else EngineTilePlan(emptyList(), emptyList(), false, 0)
+        val waiting = enabled && waitForCompleteViewport && !scene(snapshot, candidatePlan).completeCoverage
+        val visiblePlan = if (waiting) planner.retainDisplayed(candidatePlan,
+            displayed?.quads?.map { it.texture.tile }.orEmpty()) else candidatePlan
+        if (visiblePlan == null) {
+            releaseDisplayedReferences()
+            return !clearingScene && !sceneClearFailed
+        }
+        // Access order favors recently displayed pixels over older, speculative residency.
+        visiblePlan.placements.forEach { placement ->
+            textures.remove(placement.tile)?.let { textures[placement.tile] = it }
+        }
+        val plan = if (enabled) planner.retainReady(visiblePlan, snapshot, textures.keys.toList().asReversed())
+            else visiblePlan
+        textures.keys.retainAll(plan.demands.mapTo(linkedSetOf()) { it.tile })
+        if (!waiting) {
+            val next = scene(snapshot, plan)
+            submitScene(next)
+            displayed = next.takeIf { enabled && it.completeCoverage }
+            if (enabled && next.completeCoverage) reportViewportReady(next.session)
+        }
+        if (!dirty) work.reconcile(plan.demands.filter {
+            it.priority != WorkPriority.NEXT_IMAGE || it.tile !in failedReadAhead
+        }.map { demand(snapshot, it) })
+        return true
+    }
+
+    private fun releaseDisplayedReferences() {
+        clearingScene = true
+        sceneClearJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                // The compositor keeps the previously swapped image while its GL texture leases retire.
+                clearScene()
+                displayed = null
+            } catch (failure: Throwable) {
+                sceneClearFailed = true
+                reportSceneFailure(failure)
+                return@launch
+            } finally { clearingScene = false }
+            refresh()
+        }
     }
 
     private fun demand(snapshot: EngineRuntimeSnapshot, demand: EngineTileDemand): SessionDemand<EngineTexture> {

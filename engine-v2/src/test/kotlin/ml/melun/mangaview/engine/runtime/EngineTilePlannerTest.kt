@@ -20,6 +20,29 @@ class EngineTilePlannerTest {
     private val pageId = PageId.at(EpisodeId(SeriesId(SourceId("test"), "1"), "1"), 0)
     private val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
 
+    @Test fun retainedPixelsRequireCurrentContentAndDisplayWidth() {
+        val planner = EngineTilePlanner(400_000, 102)
+        val initial = snapshot(100, 1000, 100, 250 * q, 350 * q)
+        val recent = planner.plan(initial).placements.first().tile
+        val far = snapshot(100, 1000, 100, 850 * q, 950 * q)
+        val plan = planner.plan(far)
+        assertFalse(plan.demands.any { it.tile == recent })
+        val kept = planner.retainReady(plan, far, listOf(recent, recent))
+        assertEquals(1, kept.demands.count { it.tile == recent })
+        assertEquals(plan.placements, kept.placements)
+        val page = far.pages.getValue(pageId)
+        val invalid = listOf(
+            far.copy(pages = emptyMap()),
+            far.copy(pages = mapOf(pageId to page.copy(contentRevision = "new"))),
+            far.copy(pages = mapOf(pageId to page.copy(sha256 = "2".repeat(64)))),
+            far.copy(pages = mapOf(pageId to page.copy(dimensions = PageDimensions(100, 1001)))),
+            far.copy(session = far.session.copy(viewport = EngineViewport(200, 100))),
+        )
+        invalid.forEach { changed ->
+            assertEquals(plan, planner.retainReady(plan, changed, listOf(recent)))
+        }
+    }
+
     @Test fun negativeHalfPixelPlacementPreservesTheSourceAnchor() {
         val plan = EngineTilePlanner(80_000, 202).plan(snapshot(100, 1000, 100, 250 * q + q / 2, 350 * q + q / 2))
         val placement = plan.placements.single()
@@ -153,6 +176,32 @@ class EngineTilePlannerTest {
         assertEquals(0, output.demands.single { it.tile.pageId == nextPage }.tile.sourceTop)
         assertTrue(output.placements.all { it.tile.pageId == pageId })
         assertTrue(EngineTilePlanner(80_000, 202).plan(prepared).demands.all { it.tile.pageId == pageId })
+    }
+
+    @Test fun twoViewportDistanceCrossesPageBoundaryButNeverPlacesPreparedNeighbors() {
+        val base = neighboringSnapshot(false)
+        val state = base.copy(session = base.session.copy(viewport = EngineViewport(100, 200)))
+        val plan = EngineTilePlanner(1_000_000, 202, preparationViewports = 2).plan(state)
+        assertEquals(listOf(0, 200), plan.demands.filter { it.tile.pageId != pageId }.map { it.tile.sourceTop })
+        assertTrue(plan.placements.all { it.tile.pageId == pageId })
+        val tight = EngineTilePlanner(80_000, 202, preparationViewports = 2).plan(state)
+        assertEquals(1, tight.demands.size)
+        assertEquals(80_000L, tight.plannedTextureBytes)
+    }
+
+    @Test fun verifiedLeadingPageCanDecodeWhileCurrentGeometryIsMissingWithoutFalseCoverage() {
+        val base = neighboringSnapshot(false)
+        val next = base.pages.keys.single { it != pageId }
+        val state = base.copy(session = base.session.copy(visibleRegions = emptyList(),
+            completeViewport = false, requiredDimensions = setOf(pageId)), pages = base.pages.filterKeys { it == next })
+        val plan = EngineTilePlanner(1_000_000, 202, preparationViewports = 2).plan(state)
+        assertFalse(plan.completeGeometry)
+        assertTrue(plan.placements.isEmpty())
+        assertEquals(next, plan.demands.single().tile.pageId)
+        assertEquals(0, plan.demands.single().tile.sourceTop)
+        assertEquals(ml.melun.mangaview.engine.api.WorkPriority.NEXT_IMAGE, plan.demands.single().priority)
+        assertTrue(EngineTilePlanner(1_000_000, 202, preparationViewports = 2)
+            .plan(state.copy(pages = emptyMap())).demands.isEmpty())
     }
 
     private fun neighboringSnapshot(previous: Boolean): EngineRuntimeSnapshot {

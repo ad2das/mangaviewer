@@ -11,6 +11,8 @@ internal data class ViewerStartupTiming(
     val initialDecodedAtNanos: Long?,
     val firstActualSubmittedAtNanos: Long?,
     val firstActualPresentedAtNanos: Long?,
+    val firstCompleteViewportSubmittedAtNanos: Long? = null,
+    val firstCurrentViewportObservedSubmittedAtNanos: Long? = null,
 ) {
     init {
         require(openStartedAtNanos > 0L)
@@ -20,6 +22,8 @@ internal data class ViewerStartupTiming(
         requireAfter(initialResponseStartedAtNanos, initialDecodedAtNanos)
         requireAfter(initialDecodedAtNanos, firstActualSubmittedAtNanos)
         requireAfter(firstActualSubmittedAtNanos, firstActualPresentedAtNanos)
+        requireAfter(firstActualSubmittedAtNanos, firstCompleteViewportSubmittedAtNanos)
+        requireAfter(firstCompleteViewportSubmittedAtNanos, firstCurrentViewportObservedSubmittedAtNanos)
     }
 
     private fun requireAfter(earlier: Long?, later: Long?) {

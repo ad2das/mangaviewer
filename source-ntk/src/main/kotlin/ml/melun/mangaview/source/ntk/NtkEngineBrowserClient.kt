@@ -48,6 +48,25 @@ class NtkEngineBrowserClient(
 ) {
     private val app = context.applicationContext
 
+    /** Admitted and disposed by the caller's coordinator, overlapping local startup with document I/O. */
+    suspend fun prepareService(): NtkEngineBrowserPreparation {
+        var owned: NtkEngineBrowserPreparation? = null
+        try {
+            withContext(Dispatchers.Main.immediate) {
+                owned = NtkEngineBrowserPreparation(app)
+                checkNotNull(owned).bind()
+            }
+            return checkNotNull(owned)
+        } catch (failure: Throwable) {
+            withContext(NonCancellable + Dispatchers.Main.immediate) {
+                try { owned?.close() } catch (cleanup: Throwable) {
+                    if (cleanup !== failure) failure.addSuppressed(cleanup)
+                }
+            }
+            throw failure
+        }
+    }
+
     suspend fun capture(document: NtkAccessDocument): NtkEngineAuthorization = withContext(Dispatchers.Main.immediate) {
         requireNotNull(document.descriptor) { "Browser authorization requires a protected document" }
         val payload = NtkBrowserDocumentPayload.create(app.cacheDir, document.browserDocument)

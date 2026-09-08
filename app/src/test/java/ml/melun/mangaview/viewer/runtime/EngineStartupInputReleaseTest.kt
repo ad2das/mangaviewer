@@ -90,6 +90,19 @@ class EngineStartupInputReleaseTest {
         assertEquals(newInput.deltaScreenUnits, applied.appliedScreenUnits)
     }
 
+    @Test fun resumePositionUsesTheSubmittedScenesSourceGeometry() {
+        val state = readySession().snapshot
+        val anchor = SourceAnchor(currentPage, 25 * q, 7)
+        val tile = EngineTileSpec(currentPage, "revision", "a".repeat(64), dimensions, 0, 900, 200)
+        val scene = presentation(state, currentPage, 0, 900).scene.copy(completeCoverage = true,
+            anchor = anchor, viewport = EngineViewport(200, 50), anchorDimensions = dimensions,
+            placements = listOf(EngineTexturePlacement(EngineTexture(tile, 1, 1, 1, tile.byteCount), 0, 1800)))
+        assertEquals(anchor to 50 * 1024L, submittedSourcePosition(scene))
+        assertNull(submittedSourcePosition(scene.copy(completeCoverage = false)))
+        assertNull(submittedSourcePosition(scene.copy(anchorDimensions = null)))
+        assertNull(submittedSourcePosition(scene.copy(anchor = null)))
+    }
+
     private fun readySession(): EngineSession {
         val session = EngineSession(2, current, viewport) { 1_000L }.apply { engageStartupInputBarrier() }
         val generation = session.snapshot.generation

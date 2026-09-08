@@ -68,20 +68,23 @@ internal class EngineViewerRuntime(
     private var inputSequence = 0L
     private var gesture = 1L
     private var lastSaved: Pair<SourceAnchor, Long>? = null
-    private var startupFrameSubmitted = false
+    private var submittedPosition: Pair<SourceAnchor, Long>? = null
     private val renderer: EngineSurfaceOwner = EngineSurfaceOwner(budget.glResidentBytes,
-        { value -> onMain { onPresented(value) } }, { error -> onMain { reportFailure(error) } },
+        { value -> onMain { reportPresented(value) } }, { error -> onMain { reportFailure(error) } },
         { onMain { if (!closing) graphics.rendererChanged() } },
-        { onMain { if (!closing) { graphics.enabled(false); surface.rendererUnavailable() } } })
+        { onMain { if (!closing) { graphics.enabled(false); surface.rendererUnavailable() } } },
+        reportSubmitted = { value -> onMain { onSubmitted(value) } })
     private val reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime).apply {
-        engageStartupInputBarrier()
+        engageViewportReadinessBarrier()
     }
     private val content: EngineSessionRuntime = EngineSessionRuntime(scope, coordinator, reducer, source, episodeId,
         { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },
-        { _, failure -> reportFailure(failure) }, requireVisualReadiness = true)
-    private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator, EngineTilePlanner(budget.glResidentBytes),
+        { _, failure -> reportFailure(failure) })
+    private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator,
+        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 2),
         EngineTileWork(NativeEngineImageDecoder(), decodeDispatcher, renderer), renderer, content::pageRequest,
-        { scene -> renderer.offer(scene); content.visualReady(scene.session, scene.completeCoverage) }, renderer::clearScene, { _, failure -> reportFailure(failure) })
+        renderer::offer, renderer::clearScene, { _, failure -> reportFailure(failure) },
+        waitForCompleteViewport = true, reportSceneFailure = reportFailure, reportViewportReady = content::viewportReady)
     val surface = ViewerSurfaceHost(context, this)
 
     init { graphics.enabled(false) }
@@ -116,11 +119,12 @@ internal class EngineViewerRuntime(
     fun enterBackground() {
         if (closing) return
         surface.cancelMotion()
-        val saved = position()
         graphics.enabled(false)
         content.foreground(false)
         surface.enterBackground()
-        scope.launch(start = CoroutineStart.UNDISPATCHED) { try { persist(saved) } catch (failure: Throwable) { reportFailure(failure) } }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try { flushPresentationCallbacks(); persist(position()) } catch (failure: Throwable) { reportFailure(failure) }
+        }
     }
 
     fun retryFailures() { content.retryFailures(); graphics.retryFailures() }
@@ -131,7 +135,6 @@ internal class EngineViewerRuntime(
             surface.enterBackground()
             closing = true
             surfaceGeneration++
-            val saved = position()
             val failures = mutableListOf<Throwable>()
             coroutineScope {
                 val visual = async { runCatching { graphics.close() } }
@@ -139,11 +142,10 @@ internal class EngineViewerRuntime(
                 visual.await().exceptionOrNull()?.let(failures::add)
                 source.await().exceptionOrNull()?.let(failures::add)
             }
-            try { persist(saved) } catch (failure: Throwable) { failures += failure }
             try { renderer.close() } catch (failure: Throwable) { failures += failure }
             try { memory.close() } catch (failure: Throwable) { failures += failure }
+            try { flushPresentationCallbacks(); persist(position()) } catch (failure: Throwable) { failures += failure }
             if (failures.isEmpty()) try {
-                flushPresentationCallbacks()
                 inputObservations.seal(content.snapshot.session, inputSequence, System.nanoTime())
                 reportRendererClosed(renderer.rendererId, checkNotNull(renderer.closedSubmissionCount), System.nanoTime())
             } catch (failure: Throwable) { failures += failure }
@@ -204,24 +206,12 @@ internal class EngineViewerRuntime(
         reportSnapshot(value)
     }
 
-    private fun onPresented(value: EngineSurfacePresentation) {
-        reportPresented(value)
-        if (startupFrameSubmitted || closing) return
-        val state = content.snapshot.session
-        if (!releasesStartupInput(value, state)) return
-        startupFrameSubmitted = true
-        content.releaseStartupInput()
+    private fun onSubmitted(value: EngineSurfaceScene) {
+        submittedSourcePosition(value)?.let { submittedPosition = it }
+        if (!closing) reportSnapshot(content.snapshot)
     }
 
-    private fun position(): Pair<SourceAnchor, Long>? {
-        val state = content.snapshot.session
-        val anchor = state.anchor ?: return null
-        val dimensions = state.anchorDimensions ?: return null
-        val offset = BigInteger.valueOf(anchor.sourceYQ32).multiply(BigInteger.valueOf(state.viewport.widthPx.toLong()))
-            .multiply(BigInteger.valueOf(1024)).divide(BigInteger.valueOf(dimensions.widthPx.toLong())
-                .multiply(BigInteger.valueOf(SourceAnchor.SOURCE_UNITS_PER_PIXEL))).toLongExact()
-        return anchor to offset
-    }
+    private fun position(): Pair<SourceAnchor, Long>? = submittedPosition
 
     private suspend fun persist(value: Pair<SourceAnchor, Long>?) {
         if (value == null) return
@@ -237,6 +227,17 @@ internal class EngineViewerRuntime(
         check(main.post { continuation.resume(Unit) }) { "Main callback queue is unavailable" }
     }
     private companion object { val nextSession = AtomicLong() }
+}
+
+/** Called only for a successful buffer submission; later logical movement must not change resume position. */
+internal fun submittedSourcePosition(scene: EngineSurfaceScene): Pair<SourceAnchor, Long>? {
+    if (!scene.completeCoverage) return null
+    val anchor = scene.anchor ?: return null
+    val dimensions = scene.anchorDimensions ?: return null
+    val offset = BigInteger.valueOf(anchor.sourceYQ32).multiply(BigInteger.valueOf(scene.viewport.widthPx.toLong()))
+        .multiply(BigInteger.valueOf(1024)).divide(BigInteger.valueOf(dimensions.widthPx.toLong())
+            .multiply(BigInteger.valueOf(SourceAnchor.SOURCE_UNITS_PER_PIXEL))).toLongExact()
+    return anchor to offset
 }
 
 /** Successful submitted source must overlap what the exactly matching session currently exposes. */

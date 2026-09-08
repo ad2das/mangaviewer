@@ -146,28 +146,18 @@ internal class DocumentGeometry(
     }
 
     private fun moveForward(cursor: Cursor, distance: BigRational): MoveResult {
-        val currentPage = page(cursor.pageId)
-        if (currentPage == null) return MoveResult(cursor, BigRational.ZERO, distance,
-            blocker = GeometryBlocker.Episode(cursor.pageId.episodeId))
-        if (currentPage.dimensions == null) return MoveResult(cursor, BigRational.ZERO, distance,
-            blocker = GeometryBlocker.Dimension(cursor.pageId))
-        val limit = endLimit()
-        if (limit.cursor != null) {
-            val toLimit = distanceForward(cursor, limit.cursor)
-            if (toLimit != null) {
-                if (toLimit <= BigRational.ZERO) {
-                    return if (limit.blocker == null) MoveResult(
-                        cursor, BigRational.ZERO, distance, boundary = DocumentBoundary.END,
-                    ) else MoveResult(cursor, BigRational.ZERO, distance, blocker = limit.blocker)
-                }
-                if (distance > toLimit) {
-                    return if (limit.blocker == null) MoveResult(
-                        limit.cursor, toLimit, distance - toLimit, boundary = DocumentBoundary.END,
-                    ) else MoveResult(limit.cursor, toLimit, distance - toLimit, blocker = limit.blocker)
-                }
-            }
-        }
-        return walkForward(cursor, distance, limit.blocker)
+        val tail = BigRational.of((viewportHeightUnits() - viewportOffsetUnits()).coerceAtLeast(0L))
+        // Advance the lower viewport edge first. An unknown trailing page must not let
+        // the anchor pass the scroll limit that its eventual dimensions will establish.
+        val bottom = walkForward(cursor, tail, null)
+        if (bottom.blocker != null) return MoveResult(cursor, BigRational.ZERO, distance,
+            blocker = bottom.blocker)
+        if (bottom.remaining.signum() > 0) return MoveResult(cursor, BigRational.ZERO, distance,
+            boundary = DocumentBoundary.END)
+        val moved = walkForward(bottom.cursor, distance, null)
+        val top = walkBackward(moved.cursor, tail)
+        check(top.blocker == null) { "Forward movement lost its verified viewport geometry" }
+        return moved.copy(cursor = top.cursor ?: cursor)
     }
 
     private fun moveBackward(cursor: Cursor, distance: BigRational): MoveResult {
@@ -244,8 +234,6 @@ internal class DocumentGeometry(
         while (remaining.signum() > 0) {
             val ref = page(current.pageId) ?: return BackwardWalk(null,
                 GeometryBlocker.Episode(current.pageId.episodeId), remaining)
-            val dimensions = ref.dimensions ?: return BackwardWalk(null,
-                GeometryBlocker.Dimension(current.pageId), remaining)
             val source = current.sourceQ32
             if (source.signum() <= 0) {
                 when (val previous = previousPage(current.pageId)) {
@@ -261,6 +249,8 @@ internal class DocumentGeometry(
                 }
                 continue
             }
+            val dimensions = ref.dimensions ?: return BackwardWalk(null,
+                GeometryBlocker.Dimension(current.pageId), remaining)
             val toStart = sourceToScreenUnits(source, dimensions.widthPx, viewport.widthPx)
             if (remaining <= toStart) {
                 val moved = screenToSourceQ32(remaining, dimensions.widthPx, viewport.widthPx)
@@ -279,42 +269,6 @@ internal class DocumentGeometry(
         val walked = walkForward(Cursor(first.pageId, BigRational.ZERO), BigRational.of(viewportOffsetUnits()), null)
         if (walked.blocker != null) return Limit(null, walked.blocker)
         return Limit(walked.cursor, null)
-    }
-
-    private fun endLimit(): Limit {
-        val terminalResult = terminalPageResult()
-        val terminal = terminalResult.first ?: return Limit(null, terminalResult.blocker)
-        val terminalDimensions = page(terminal.pageId)?.dimensions
-            ?: return Limit(null, GeometryBlocker.Dimension(terminal.pageId))
-        val distanceBack = (viewportHeightUnits() - viewportOffsetUnits()).coerceAtLeast(0L)
-        val walked = walkBackward(Cursor(terminal.pageId,
-            BigRational.of(pageSourceExtent(terminalDimensions.heightPx))), BigRational.of(distanceBack))
-        if (walked.blocker != null && walked.remaining.signum() > 0) {
-            return Limit(walked.cursor, walked.blocker)
-        }
-        if (walked.remaining.signum() > 0) {
-            val start = startLimit()
-            if (start.blocker != null) return Limit(start.cursor, start.blocker)
-            if (start.cursor != null) return Limit(start.cursor, terminalResult.blocker)
-        }
-        return Limit(walked.cursor, terminalResult.blocker)
-    }
-
-    private fun distanceForward(from: Cursor, to: Cursor): BigRational? {
-        if (from.pageId == to.pageId) return screenDelta(to.sourceQ32 - from.sourceQ32, from.pageId)
-        var current = from
-        var total = BigRational.ZERO
-        while (current.pageId != to.pageId) {
-            val page = page(current.pageId) ?: return null
-            val dimensions = page.dimensions ?: return null
-            val end = BigRational.of(pageSourceExtent(dimensions.heightPx))
-            val segment = screenDelta(end - current.sourceQ32, current.pageId) ?: return null
-            total += segment
-            val next = nextPage(current.pageId)
-            if (next !is PageStep.Known) return null
-            current = Cursor(next.pageId, BigRational.ZERO)
-        }
-        return total + (screenDelta(to.sourceQ32, to.pageId) ?: return null)
     }
 
     private fun distanceBackward(from: Cursor, to: Cursor): BigRational? {

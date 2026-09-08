@@ -1,0 +1,32 @@
+package ml.melun.mangaview.source.ntk
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
+import android.os.Looper
+import java.io.Closeable
+
+/** A scoped process-start binding. It sends no provider request or authorization message. */
+class NtkEngineBrowserPreparation internal constructor(private val context: Context) : Closeable {
+    private var bound = false
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, service: IBinder) = Unit
+        override fun onServiceDisconnected(name: ComponentName) = Unit
+    }
+
+    internal fun bind() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        check(!bound)
+        bound = context.bindService(Intent(context, NtkEngineBrowserService::class.java), connection, Context.BIND_AUTO_CREATE)
+        check(bound) { "NTK engine browser preparation binding was rejected" }
+    }
+
+    override fun close() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (!bound) return
+        bound = false
+        context.unbindService(connection)
+    }
+}

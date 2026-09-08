@@ -80,9 +80,12 @@ class ViewerActivity : ComponentActivity() {
     private val engineClosed = CompletableDeferred<Unit>()
     private val engineDiagnostics = EngineViewerDiagnostics()
     private val engineInputObservations = EngineInputObservations()
+    internal fun reserveWholeTraversalInputEvidence() {
+        check(applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+        engineInputObservations.reserveCaptureCapacity(32_768)
+    }
     private var episodeListJob: Job? = null
     @Volatile private var episodePickerFailure: Throwable? = null
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         configureWindowInsets()

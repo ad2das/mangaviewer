@@ -3,8 +3,12 @@ package ml.melun.mangaview.viewer.runtime
 import android.view.Choreographer
 import kotlin.math.abs
 
+internal fun interface ViewerFrameSchedulerFactory {
+    fun create(callback: (Long, Long, Long) -> Unit): ViewerFrameScheduler
+}
+
 internal class ViewerFlingDriver(
-    choreographer: Choreographer,
+    schedulerFactory: ViewerFrameSchedulerFactory,
     private val emit: (
         deltaPixels: Double,
         velocityPixelsPerSecond: Double,
@@ -15,7 +19,15 @@ internal class ViewerFlingDriver(
     private val frameObserved: (sequence: Long, frameTimeNanos: Long) -> Unit,
     private val finished: () -> Unit,
 ) {
-    private val frameScheduler = ViewerVsyncScheduler(choreographer, ::doFrame)
+    constructor(
+        choreographer: Choreographer,
+        emit: (Double, Double, Long, Long, Long) -> Boolean,
+        frameObserved: (sequence: Long, frameTimeNanos: Long) -> Unit,
+        finished: () -> Unit,
+    ) : this(ViewerFrameSchedulerFactory { callback -> ViewerVsyncScheduler(choreographer, callback) },
+        emit, frameObserved, finished)
+
+    private val frameScheduler = schedulerFactory.create(::doFrame)
     private var velocity = 0.0
     private var previousFrameNanos = 0L
     private var motionSequence = 0L
@@ -56,6 +68,9 @@ internal class ViewerFlingDriver(
         expectedPresentationTimeNanos: Long,
     ) {
         if (!running) return
+        // Re-arm before synchronous input/content/graphics work so that work cannot
+        // delay requesting the next display slot. Every stop path cancels this arm.
+        frameScheduler.post()
         val previous = previousFrameNanos
         previousFrameNanos = frameTimeNanos
         if (previous > 0L) {
@@ -76,11 +91,7 @@ internal class ViewerFlingDriver(
                 velocity = step.velocityPixelsPerSecond
             }
         }
-        if (abs(velocity) < MINIMUM_VELOCITY) {
-            stop()
-        } else {
-            frameScheduler.post()
-        }
+        if (abs(velocity) < MINIMUM_VELOCITY) stop()
     }
 
     private companion object {

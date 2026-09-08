@@ -18,7 +18,7 @@ import ml.melun.mangaview.source.wfwf.*
 
 internal class EngineWfwfSessionWork(
     userAgent: String,
-    private val origin: URI,
+    origin: URI,
     private val transport: SourceTransport,
     storage: EngineStoragePort,
     private val positions: EnginePositionPort,
@@ -30,6 +30,8 @@ internal class EngineWfwfSessionWork(
     private val principal = "wfwf:public"
     private val planner = WfwfAccessPlanner(userAgent)
     private val catalog = WfwfEpisodeCatalogPlanner(userAgent)
+    private val origins = EngineWfwfOriginWork(origin,
+        WfwfOriginResolver(transport, userAgent, probeParallelism = 1)::resolve)
     private val episodes = EngineEpisodeWork(principal, planner, transport, parsingDispatcher, observer = observer)
     private val pages = EnginePageWork(principal, planner, transport, storage) { _, _, _ ->
         error("WFWF returned an unsupported access prerequisite")
@@ -44,11 +46,13 @@ internal class EngineWfwfSessionWork(
         })
     }
 
-    override fun episode(episodeId: EpisodeId, priority: WorkPriority) = episodes.request(episodeId, origin, 0, priority)
+    override fun episode(episodeId: EpisodeId, priority: WorkPriority) = origins.request { resolved ->
+        episodes.request(episodeId, resolved, 0, priority)
+    }
     override fun page(plan: EpisodeAccessPlan, pageId: PageId, priority: WorkPriority) = pages.request(plan, pageId, priority)
 
     override fun navigation(episodeId: EpisodeId, priority: WorkPriority) = WorkRequest(
-        WorkKey(principal, episodeId.toString(), "catalog.navigation", origin.toString(), AdjacentEpisodes::class.java),
+        WorkKey(principal, episodeId.toString(), "catalog.navigation", "resolved", AdjacentEpisodes::class.java),
         WorkDomain.CONTROL, priority, execute = { parent ->
             val ordered = parent.dependency(episodes(episodeId.seriesId, parent.priority.value)).episodes
             val index = ordered.indexOfFirst { it.id == episodeId }
@@ -57,7 +61,7 @@ internal class EngineWfwfSessionWork(
         },
     )
 
-    override fun episodes(seriesId: SeriesId, priority: WorkPriority) = WorkRequest(
+    override fun episodes(seriesId: SeriesId, priority: WorkPriority) = origins.request { origin -> WorkRequest(
         WorkKey(principal, seriesId.toString(), "catalog.episodes", origin.toString(), EngineEpisodeCatalog::class.java),
         WorkDomain.CONTROL, priority, execute = { parent ->
             val loaded = mutableListOf<WfwfEpisodeCatalogPage>()
@@ -67,7 +71,7 @@ internal class EngineWfwfSessionWork(
                 val number = next++
                 val document = WorkRequest(WorkKey(principal, seriesId.toString(), "catalog.document.$number",
                     origin.toString(), SourceDocument::class.java), WorkDomain.BODY, parent.priority.value,
-                    execute = { fetchCatalog(seriesId, number) })
+                    execute = { fetchCatalog(seriesId, number, origin) })
                 val parsed = parent.useDependency(document) { value ->
                     withContext(parsingDispatcher) { catalog.parse(seriesId, value) }
                 }
@@ -76,9 +80,9 @@ internal class EngineWfwfSessionWork(
             }
             EngineEpisodeCatalog(seriesId, catalog.merge(loaded))
         },
-    )
+    ) }
 
-    private suspend fun fetchCatalog(id: SeriesId, page: Int): SourceDocument {
+    private suspend fun fetchCatalog(id: SeriesId, page: Int, origin: URI): SourceDocument {
         val response = transport.execute(catalog.request(id, origin, page))
         val length = response.contentLength
         try {

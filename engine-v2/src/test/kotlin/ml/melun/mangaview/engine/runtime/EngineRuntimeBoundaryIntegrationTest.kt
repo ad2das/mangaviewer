@@ -49,7 +49,7 @@ class EngineRuntimeBoundaryIntegrationTest {
     private val dimensions = PageDimensions(622, 900)
     private val viewport = EngineViewport(1080, 2138)
 
-    @Test fun preparedBoundaryPagesReachCompleteSceneBeforeDeepNextEpisodeReadAhead() = runTest {
+    @Test fun boundaryOriginalPreparationContinuesWhileVisibleDecodeIsBlocked() = runTest {
         val visibleDecodeGate = CompletableDeferred<Unit>()
         val reverseReadAheadGate = CompletableDeferred<Unit>()
         val source = Source(reverseReadAheadGate)
@@ -67,58 +67,61 @@ class EngineRuntimeBoundaryIntegrationTest {
         lateinit var render: EngineRenderRuntime
         content = EngineSessionRuntime(this, coordinator, reducer, source, current, { snapshot, _ ->
             render.update(snapshot)
-        }, { _, failure -> failures += failure }, requireVisualReadiness = true)
+        }, { _, failure -> failures += failure })
         render = EngineRenderRuntime(this, coordinator, EngineTilePlanner(64L * 1_024L * 1_024L), tiles,
             uploader, content::pageRequest, { scene ->
                 scenes += scene
                 uploader.scene(scene.quads.map { it.texture.key }.toSet())
-                content.visualReady(scene.session, scene.completeCoverage)
             }, { uploader.scene(emptySet()) }, { _, failure -> failures += failure })
 
-        content.open()
-        runCurrent()
+        try {
+            content.open()
+            runCurrent()
 
-        val heldContent = content.diagnosticSnapshot()
-        val heldRender = render.diagnosticSnapshot()
-        assertEquals(heldContent.runtime.session, heldRender.session)
-        assertEquals(boundaryPages, content.snapshot.session.visibleRegions.map { it.pageId }.toSet())
-        assertEquals(boundaryPages, heldRender.plannedVisibleTiles.map { it.pageId }.toSet())
-        assertTrue(heldRender.residentTextureTiles.isEmpty())
-        assertFalse(heldRender.completeCoverage)
-        assertFalse(scenes.last().completeCoverage)
-        assertFalse(PageId.at(current, 13) in source.requestedPages)
-        assertFalse(PageId.at(next, 2) in source.requestedPages)
+            val heldContent = content.diagnosticSnapshot()
+            val heldRender = render.diagnosticSnapshot()
+            assertEquals(heldContent.runtime.session, heldRender.session)
+            assertEquals(boundaryPages, content.snapshot.session.visibleRegions.map { it.pageId }.toSet())
+            assertEquals(boundaryPages, heldRender.plannedVisibleTiles.map { it.pageId }.toSet())
+            assertTrue(heldRender.residentTextureTiles.isEmpty())
+            assertFalse(heldRender.completeCoverage)
+            assertFalse(scenes.last().completeCoverage)
+            assertTrue(PageId.at(current, 13) in source.requestedPages)
+            assertFalse(PageId.at(next, 2) in source.requestedPages)
 
-        visibleDecodeGate.complete(Unit)
-        runCurrent()
+            visibleDecodeGate.complete(Unit)
+            runCurrent()
 
-        val releasedContent = content.diagnosticSnapshot()
-        val releasedRender = render.diagnosticSnapshot()
-        assertEquals(releasedContent.runtime.session, releasedRender.session)
-        assertTrue(releasedRender.completeCoverage)
-        assertTrue(releasedRender.residentTextureTiles.containsAll(releasedRender.plannedVisibleTiles))
-        assertTrue(PageId.at(current, 13) in source.requestedPages)
-        assertFalse(PageId.at(next, 2) in source.requestedPages)
-        assertTrue(scenes.any { it.completeCoverage && it.quads.map { quad -> quad.texture.tile.pageId }.toSet() == boundaryPages })
+            val releasedContent = content.diagnosticSnapshot()
+            val releasedRender = render.diagnosticSnapshot()
+            assertEquals(releasedContent.runtime.session, releasedRender.session)
+            assertTrue(releasedRender.completeCoverage)
+            assertTrue(releasedRender.residentTextureTiles.containsAll(releasedRender.plannedVisibleTiles))
+            assertTrue(PageId.at(current, 13) in source.requestedPages)
+            assertFalse(PageId.at(next, 2) in source.requestedPages)
+            assertTrue(scenes.any { it.completeCoverage && it.quads.map { quad -> quad.texture.tile.pageId }.toSet() == boundaryPages })
 
-        reverseReadAheadGate.complete(Unit)
-        runCurrent()
+            reverseReadAheadGate.complete(Unit)
+            runCurrent()
 
-        assertEquals((0 until 15).map { PageId.at(current, it) }.toSet(),
-            source.requestedPages.filter { it.episodeId == current }.toSet())
-        assertEquals((0 until 23).map { PageId.at(next, it) }.toSet(),
-            source.requestedPages.filter { it.episodeId == next }.toSet())
-        assertEquals(WorkPriority.NEXT_EPISODE, source.priorities.getValue(PageId.at(next, 2)))
-        val final = scenes.last()
-        assertTrue(final.completeCoverage)
-        assertEquals(boundaryPages, final.quads.map { it.texture.tile.pageId }.toSet())
-        assertTrue(failures.toString(), failures.isEmpty())
+            assertEquals((0 until 15).map { PageId.at(current, it) }.toSet(),
+                source.requestedPages.filter { it.episodeId == current }.toSet())
+            assertEquals((0 until 23).map { PageId.at(next, it) }.toSet(),
+                source.requestedPages.filter { it.episodeId == next }.toSet())
+            assertEquals(WorkPriority.NEXT_EPISODE, source.priorities.getValue(PageId.at(next, 2)))
+            assertTrue(render.diagnosticSnapshot().residentTextureTiles.any { it.pageId == PageId.at(next, 2) })
+            val final = scenes.last()
+            assertTrue(final.completeCoverage)
+            assertEquals(boundaryPages, final.quads.map { it.texture.tile.pageId }.toSet())
+            assertTrue(failures.toString(), failures.isEmpty())
 
-        render.close()
-        content.close()
+        } finally {
+            render.close()
+            content.close()
+            coordinator.close()
+        }
         assertEquals(0, coordinator.snapshot().subscribers)
         assertTrue(uploader.live.isEmpty())
-        coordinator.close()
     }
 
     @Test fun startupFramePrecedesCrossEpisodeReplayAndInputRemainsExact() = runTest {
@@ -142,52 +145,117 @@ class EngineRuntimeBoundaryIntegrationTest {
         content = EngineSessionRuntime(this, coordinator, reducer, source, current, { snapshot, values ->
             receipts += values
             render.update(snapshot)
-        }, { _, failure -> failures += failure }, requireVisualReadiness = true)
+        }, { _, failure -> failures += failure })
         render = EngineRenderRuntime(this, coordinator, EngineTilePlanner(1_000_000, 202), tiles, uploader,
             content::pageRequest, { scene ->
                 scenes += scene
                 uploader.scene(scene.quads.map { it.texture.key }.toSet())
-                content.visualReady(scene.session, scene.completeCoverage)
             }, { uploader.scene(emptySet()) }, { _, failure -> failures += failure })
 
-        content.open()
-        val sample = ml.melun.mangaview.engine.api.InputSample(1, 1, 0, 250L * 1_024L)
-        content.input(sample)
-        runCurrent()
+        try {
+            content.open()
+            val sample = ml.melun.mangaview.engine.api.InputSample(1, 1, 0, 250L * 1_024L)
+            content.input(sample)
+            runCurrent()
 
-        val deferred = receipts.single { it.sample == sample }
-        assertEquals(ml.melun.mangaview.engine.api.InputOutcome.DEFERRED, deferred.outcome)
-        assertEquals(0L, deferred.appliedScreenUnits)
-        assertFalse(next in source.requestedEpisodes)
+            val deferred = receipts.single { it.sample == sample }
+            assertEquals(ml.melun.mangaview.engine.api.InputOutcome.DEFERRED, deferred.outcome)
+            assertEquals(0L, deferred.appliedScreenUnits)
+            assertTrue(next in source.requestedEpisodes)
 
-        decodeGate.complete(Unit)
-        runCurrent()
+            decodeGate.complete(Unit)
+            runCurrent()
 
-        assertTrue(scenes.any { scene -> scene.quads.any { it.texture.tile.pageId == PageId.at(current, 13) } })
-        assertTrue(PageId.at(current, 14) in source.requestedPages)
-        assertFalse(next in source.requestedEpisodes)
+            assertTrue(scenes.any { scene -> scene.quads.any { it.texture.tile.pageId == PageId.at(current, 13) } })
+            assertTrue(PageId.at(current, 14) in source.requestedPages)
+            assertTrue(next in source.requestedEpisodes)
+            assertFalse(receipts.any { it.sample == sample && it.outcome == ml.melun.mangaview.engine.api.InputOutcome.APPLIED })
 
-        // Models EngineViewerRuntime's callback after a successful, nonempty native submission.
-        content.releaseStartupInput()
-        runCurrent()
-        assertTrue(next in source.requestedEpisodes)
-        assertFalse(receipts.any { it.sample == sample && it.outcome == ml.melun.mangaview.engine.api.InputOutcome.APPLIED })
+            // Models EngineViewerRuntime's callback after a successful, nonempty native submission.
+            content.releaseStartupInput()
+            runCurrent()
+            assertTrue(next in source.requestedEpisodes)
+            assertTrue(next in content.snapshot.session.requiredEpisodes)
+            assertTrue(content.snapshot.session.completeViewport)
+            assertTrue(scenes.last().completeCoverage)
+            assertFalse(receipts.any { it.sample == sample && it.outcome == ml.melun.mangaview.engine.api.InputOutcome.APPLIED })
 
-        nextManifestGate.complete(Unit)
-        runCurrent()
+            nextManifestGate.complete(Unit)
+            runCurrent()
 
-        val applied = receipts.last { it.sample == sample }
-        assertEquals(ml.melun.mangaview.engine.api.InputOutcome.APPLIED, applied.outcome)
-        assertEquals(deferred.acceptedAtNanos, applied.acceptedAtNanos)
-        assertEquals(sample.deltaScreenUnits, applied.appliedScreenUnits)
-        assertEquals(PageId.at(next, 0), content.snapshot.session.anchor!!.pageId)
-        assertEquals(50L * SourceAnchor.SOURCE_UNITS_PER_PIXEL, content.snapshot.session.anchor!!.sourceYQ32)
-        assertTrue(failures.toString(), failures.isEmpty())
+            val applied = receipts.last { it.sample == sample }
+            assertEquals(ml.melun.mangaview.engine.api.InputOutcome.APPLIED, applied.outcome)
+            assertEquals(deferred.acceptedAtNanos, applied.acceptedAtNanos)
+            assertEquals(sample.deltaScreenUnits, applied.appliedScreenUnits)
+            assertEquals(PageId.at(next, 0), content.snapshot.session.anchor!!.pageId)
+            assertEquals(50L * SourceAnchor.SOURCE_UNITS_PER_PIXEL, content.snapshot.session.anchor!!.sourceYQ32)
+            assertTrue(failures.toString(), failures.isEmpty())
 
-        reverseReadAheadGate.complete(Unit)
-        render.close()
-        content.close()
-        coordinator.close()
+            reverseReadAheadGate.complete(Unit)
+        } finally {
+            render.close()
+            content.close()
+            coordinator.close()
+        }
+    }
+
+    @Test fun readyPixelsDrainOrderedInputsAcrossDelayedManifestWithoutWaitingForDisplayTimestamps() = runTest {
+        val decodeGate = CompletableDeferred<Unit>()
+        val manifestGate = CompletableDeferred<Unit>()
+        val source = StartupSource(manifestGate, CompletableDeferred())
+        val coordinator = WorkCoordinator(this)
+        val uploader = Uploader()
+        val scenes = mutableListOf<EngineDrawScene>()
+        val receipts = mutableListOf<ml.melun.mangaview.engine.api.InputReceipt>()
+        val failures = mutableListOf<Throwable>()
+        val tiles = EngineTileWork(EngineImageDecoder { _, tile ->
+            if (tile.pageId == PageId.at(current, 13)) decodeGate.await()
+            Pixels(tile)
+        }, StandardTestDispatcher(testScheduler), uploader)
+        val reducer = EngineSession(3, current, EngineViewport(100, 50),
+            { testScheduler.currentTime * 1_000_000L }).apply { engageViewportReadinessBarrier() }
+        lateinit var content: EngineSessionRuntime
+        lateinit var render: EngineRenderRuntime
+        content = EngineSessionRuntime(this, coordinator, reducer, source, current, { snapshot, values ->
+            receipts += values
+            render.update(snapshot)
+        }, { _, failure -> failures += failure })
+        render = EngineRenderRuntime(this, coordinator, EngineTilePlanner(1_000_000, 202), tiles, uploader,
+            content::pageRequest, { scene ->
+                scenes += scene
+                uploader.scene(scene.quads.map { it.texture.key }.toSet())
+            }, { uploader.scene(emptySet()) }, { _, failure -> failures += failure },
+            waitForCompleteViewport = true, reportViewportReady = content::viewportReady)
+        val samples = listOf(250L, -50L, 10L).mapIndexed { index, delta ->
+            ml.melun.mangaview.engine.api.InputSample(index + 1L, 1, 0, delta * 1024L)
+        }
+        try {
+            content.open()
+            samples.forEach(content::input)
+            runCurrent()
+            assertTrue(scenes.isEmpty())
+            decodeGate.complete(Unit)
+            runCurrent()
+            assertTrue(scenes.isNotEmpty())
+            assertTrue(next in content.snapshot.session.requiredEpisodes)
+            assertEquals(3, content.snapshot.session.pendingInputCount)
+            manifestGate.complete(Unit)
+            runCurrent()
+            val terminal = receipts.filter { it.outcome != ml.melun.mangaview.engine.api.InputOutcome.DEFERRED }
+            assertEquals(samples, terminal.map { it.sample })
+            assertEquals(samples.map { it.deltaScreenUnits }, terminal.map { it.appliedScreenUnits })
+            assertEquals(0, content.snapshot.session.pendingInputCount)
+            assertEquals(SourceAnchor(PageId.at(next, 0), 10L * SourceAnchor.SOURCE_UNITS_PER_PIXEL),
+                content.snapshot.session.anchor)
+            assertTrue(scenes.all { it.completeCoverage })
+            assertTrue(failures.toString(), failures.isEmpty())
+        } finally {
+            render.close()
+            content.close()
+            coordinator.close()
+        }
+        assertTrue(uploader.live.isEmpty())
+        assertEquals(0, coordinator.snapshot().subscribers)
     }
 
     private val boundaryPages = setOf(PageId.at(current, 14), PageId.at(next, 0), PageId.at(next, 1))
@@ -213,7 +281,7 @@ class EngineRuntimeBoundaryIntegrationTest {
             WorkKey("test", pageId.toString(), "page", "revision", StoredPage::class.java), WorkDomain.BODY,
             priority, execute = {
                 requestedPages += pageId
-                priorities[pageId] = priority
+                priorities.putIfAbsent(pageId, priority)
                 if (pageId == PageId.at(current, 13)) reverseReadAheadGate.await()
                 StoredPage(pageId, plan.contentRevision, File("immutable-${pageId.remoteKey}.png"), 1,
                     "1".repeat(64), dimensions, "image/png")

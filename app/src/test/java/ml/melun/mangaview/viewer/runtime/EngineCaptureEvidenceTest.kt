@@ -44,6 +44,20 @@ class EngineCaptureEvidenceTest {
         assertThrows(IllegalArgumentException::class.java) { journal.since(-1) }
     }
 
+    @Test fun reservedCaptureCapacityRetainsOneLargeReplayBatchAndCannotHideEarlierLoss() {
+        val journal = EngineInputObservations()
+        journal.reserveCaptureCapacity(2_048)
+        val receipts = (1L..1_024L).map(::receipt)
+        journal.record(state(), receipts)
+        assertEquals(0L, journal.since(0).lostCount)
+        assertEquals(receipts, journal.since(0).observations.map { it.receipt })
+        assertThrows(IllegalStateException::class.java) { journal.reserveCaptureCapacity(4_096) }
+        assertThrows(IllegalArgumentException::class.java) { EngineInputObservations().reserveCaptureCapacity(32_769) }
+        val ordinary = EngineInputObservations()
+        ordinary.record(state(), receipts)
+        assertEquals(512L, ordinary.since(0).lostCount)
+    }
+
     private fun wire(): ByteArray = ByteBuffer.allocate(132).order(ByteOrder.LITTLE_ENDIAN).apply {
         longArrayOf(EngineReadbackPacket.MAGIC, 1, 1, 7, 1, 1, 4, 4, 1, 0, 1, 10, 20, 15, 4, 0)
             .forEach { putLong(it) }

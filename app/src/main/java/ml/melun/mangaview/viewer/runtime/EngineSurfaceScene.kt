@@ -5,6 +5,7 @@ import ml.melun.mangaview.engine.api.EngineDrawScene
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.FrameIdentity
 import ml.melun.mangaview.engine.api.SourceAnchor
+import ml.melun.mangaview.core.PageDimensions
 
 internal data class EngineTexturePlacement(val texture: EngineTexture, val topPx: Int, val bottomPx: Int) {
     init { require(bottomPx > topPx) }
@@ -20,6 +21,8 @@ internal data class EngineSurfaceScene(
     val placements: List<EngineTexturePlacement>,
     val coordinateUnitsPerPixel: Int = 1,
     val completeCoverage: Boolean = false,
+    val movementRevision: Long = 0L,
+    val anchorDimensions: PageDimensions? = null,
 ) {
     init {
         require(sessionId > 0 && generation > 0 && inputRevision >= 0 && geometryRevision >= 0)
@@ -47,7 +50,8 @@ internal data class EngineSurfaceScene(
             scene.session.sessionId, scene.session.generation, scene.session.inputRevision,
             scene.session.geometryRevision, scene.session.viewport, scene.session.anchor,
             scene.quads.map { EngineTexturePlacement(it.texture, Math.toIntExact(it.topScreenUnits),
-                Math.toIntExact(it.bottomScreenUnits)) }, 1024, scene.completeCoverage,
+                Math.toIntExact(it.bottomScreenUnits)) }, 1024, scene.completeCoverage, scene.session.movementRevision,
+            scene.session.anchorDimensions,
         )
     }
 }
