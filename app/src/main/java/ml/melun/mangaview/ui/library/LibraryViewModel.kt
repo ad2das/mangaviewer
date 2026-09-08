@@ -65,10 +65,11 @@ internal class LibraryViewModel(
     }
     init {
         observers.start(viewModelScope, ::update, ::loadHome) {
-            mostLikelyContinuation(state.value)?.let(episodeWarmer::warm)
+            episodeWarmer.continuation(state.value)
         }
         loadHome()
     }
+    fun foreground(value: Boolean) = episodeWarmer.foreground(value, state.value)
     fun accept(intent: LibraryIntent) {
         when (intent) {
             is LibraryIntent.QueryChanged,
@@ -151,7 +152,6 @@ internal class LibraryViewModel(
     }
 
     private fun selectDestination(destination: MainDestination) {
-        episodeWarmer.cancel()
         update { it.copy(
             destination = destination,
             content = LibraryContent.Empty,
@@ -160,6 +160,7 @@ internal class LibraryViewModel(
             seriesMenuVisible = false,
             downloadSelectionVisible = false,
         ) }
+        episodeWarmer.continuation(state.value)
         actions.updateSettings { it.copy(startTab = destination.ordinal) }
         if (destination == MainDestination.HOME && mutableState.value.home is HomeContent.Failure) loadHome()
     }
@@ -168,7 +169,6 @@ internal class LibraryViewModel(
         sourceRegistry.require(sourceId)
         cancelContent()
         cancelGenres()
-        episodeWarmer.cancel()
         update { it.copy(
             selectedSourceId = sourceId,
             content = LibraryContent.Empty,
@@ -216,7 +216,7 @@ internal class LibraryViewModel(
                 val result = withContext(ioDispatcher) { homeCatalogs(source, snapshot.homeKind) }
                 if (version == homeVersion) {
                     update { it.copy(home = result) }
-                    mostLikelyContinuation(state.value)?.let(episodeWarmer::warm)
+                    episodeWarmer.continuation(state.value)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -449,11 +449,10 @@ private fun preferredEpisode(
     return episodes.firstOrNull { it.id == recent }?.id ?: firstEpisode(episodes)?.id
 }
 
-private fun mostLikelyContinuation(state: LibraryState): EpisodeId? {
-    if (state.destination != MainDestination.HOME) return null
-    return state.saved.recent.firstOrNull {
-        it.series.id.sourceId == state.selectedSourceId
-    }?.episodeId
+internal fun mostLikelyContinuation(state: LibraryState): EpisodeId? {
+    // An explicitly opened series takes priority over a late home/library refresh.
+    if (state.content is LibraryContent.Episodes) return null
+    return state.saved.recent.firstOrNull()?.episodeId
 }
 
 private fun initialLibraryState(sourceRegistry: SourceRegistry): LibraryState {

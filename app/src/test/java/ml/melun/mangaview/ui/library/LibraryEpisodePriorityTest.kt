@@ -10,6 +10,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class LibraryEpisodePriorityTest {
+    @Test fun continuationIgnoresHomeTabAndSelectedSourceButHonorsExplicitSeriesSelection() {
+        val series = ml.melun.mangaview.data.library.SavedSeries(
+            SeriesId(SourceId("wfwf"), "last-read"), "Last read", null, false, 100L)
+        val id = EpisodeId(series.id, "7")
+        val recent = ml.melun.mangaview.data.library.RecentReading(series, id,
+            ml.melun.mangaview.core.PageId.at(id, 3), 123L, 100L)
+        val state = LibraryState("", listOf(SourceOption(SourceId("ntk"), "NTK")), SourceId("ntk"),
+            destination = MainDestination.LIBRARY,
+            saved = ml.melun.mangaview.data.library.UserLibrarySnapshot(recent = listOf(recent)))
+        assertEquals(id, mostLikelyContinuation(state))
+        assertEquals(id, mostLikelyContinuation(state.copy(destination = MainDestination.SEARCH)))
+        org.junit.Assert.assertNull(mostLikelyContinuation(state.copy(content = LibraryContent.Episodes(
+            SourceSeries(series.id, "Selected series"), emptyList()))))
+    }
+
     @Test
     fun firstTimeReaderWarmsTheEarliestEpisodeEvenWhenCatalogIsNewestFirst() {
         val episodes = listOf(episode("12", 12.0), episode("2", 2.0), episode("1", 1.0))

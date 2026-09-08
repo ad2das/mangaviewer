@@ -13,9 +13,11 @@ public:
     void pixels(bool direct, int width, int height, const std::uint8_t* pixels,
                 std::size_t byteCount) noexcept;
     void close() noexcept;
+    void invalidateCapacity() noexcept { unpackCapacity_ = 0; }
 
 private:
     std::array<GLuint, 32> names_{};
     std::size_t remaining_ = 0;
     GLuint unpackBuffer_ = 0;
+    std::size_t unpackCapacity_ = 0;
 };

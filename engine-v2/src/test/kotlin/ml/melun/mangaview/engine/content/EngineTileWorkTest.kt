@@ -35,6 +35,36 @@ class EngineTileWorkTest {
     private val stored = StoredPage(id, "1", File("original.png"), 1, "1".repeat(64), PageDimensions(101, 1000), "image/png")
     private val tile = EngineTileSpec(id, "1", stored.sha256, stored.dimensions, 100, 300, 150)
 
+    @Test fun preparedPixelsAreSharedWithViewerAndSurvivePredictionCancellationDuringUpload() = runTest {
+        val coordinator = WorkCoordinator(this)
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val pixels = Pixels(tile)
+        var decodes = 0
+        val decoder = EngineImageDecoder { _, _ -> decodes++; pixels }
+        val page = page()
+        val prediction = coordinator.submit(EnginePixelWork(decoder, dispatcher).request(page, tile, WorkPriority.NEXT_IMAGE))
+        assertSame(pixels, prediction.await())
+        val uploading = CompletableDeferred<Unit>()
+        val finishUpload = CompletableDeferred<Unit>()
+        val uploader = Uploader {
+            uploading.complete(Unit)
+            finishUpload.await()
+            assertEquals(0, pixels.closes)
+        }
+        val viewer = coordinator.submit(EngineTileWork(decoder, dispatcher, uploader).request(page, tile, WorkPriority.FOCUS))
+        uploading.await()
+        prediction.close(); prediction.awaitReleased()
+        assertEquals(1, decodes)
+        assertEquals(0, pixels.closes)
+        finishUpload.complete(Unit)
+        viewer.await()
+        assertEquals(1, pixels.closes)
+        viewer.close(); viewer.awaitReleased()
+        assertEquals(1, uploader.releases)
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
     @Test fun fileAndPixelsAreReleasedAfterUploadWhileTextureStaysOwned() = runTest {
         val coordinator = WorkCoordinator(this)
         var files = 0

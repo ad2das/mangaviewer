@@ -26,10 +26,15 @@ void GlTextureUpload::pixels(
 
     if (unpackBuffer_ == 0) glGenBuffers(1, &unpackBuffer_);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, unpackBuffer_);
-    // Replace the data store rather than overwriting storage an earlier upload uses.
-    // The GL command stream preserves the earlier transfer before retiring its store.
-    glBufferData(
-        GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(byteCount), pixels, GL_STREAM_DRAW);
+    // Normal buffer updates are ordered after preceding texture transfers. Reuse the
+    // store instead of making every tile allocate and synchronize a replacement.
+    if (byteCount > unpackCapacity_) {
+        glBufferData(
+            GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(byteCount), pixels, GL_STREAM_DRAW);
+        unpackCapacity_ = byteCount;
+    } else {
+        glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, static_cast<GLsizeiptr>(byteCount), pixels);
+    }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     glTexSubImage2D(
         GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -40,6 +45,7 @@ void GlTextureUpload::close() noexcept {
     if (unpackBuffer_ != 0) glDeleteBuffers(1, &unpackBuffer_);
     glDeleteTextures(static_cast<GLsizei>(names_.size()), names_.data());
     unpackBuffer_ = 0;
+    unpackCapacity_ = 0;
     names_.fill(0);
     remaining_ = 0;
 }

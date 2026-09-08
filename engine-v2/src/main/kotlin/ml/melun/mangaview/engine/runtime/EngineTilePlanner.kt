@@ -213,18 +213,10 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         return tile(page, if (direction > 0) 0 else count - 1, count, width)
     }
 
-    private fun bandCount(page: PageContentIdentity, width: Int): Int {
-        val rasterHeight = (page.dimensions.heightPx.toLong() * width + page.dimensions.widthPx - 1) /
-            page.dimensions.widthPx
-        val target = targetTileHeightPx - 2L // full-raster crop rounding can add a row at either boundary
-        return ((rasterHeight + target - 1) / target).coerceIn(1L, page.dimensions.heightPx.toLong()).toInt()
-    }
+    private fun bandCount(page: PageContentIdentity, width: Int) = EngineTileBands.count(page, width, targetTileHeightPx)
 
-    private fun tile(page: PageContentIdentity, band: Int, count: Int, width: Int) = EngineTileSpec(
-        page.pageId, page.contentRevision, page.sha256, page.dimensions,
-        (page.dimensions.heightPx.toLong() * band / count).toInt(),
-        (page.dimensions.heightPx.toLong() * (band + 1) / count).toInt(), width,
-    )
+    private fun tile(page: PageContentIdentity, band: Int, count: Int, width: Int) =
+        EngineTileBands.tile(page, band, count, width)
 
     private fun placement(tile: EngineTileSpec, region: VisiblePageRegion) = EngineTilePlacement(
         tile, screenCoordinate(tile.rasterTop, tile, region), screenCoordinate(tile.rasterBottom, tile, region),

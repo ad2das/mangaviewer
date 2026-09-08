@@ -42,3 +42,18 @@ Release APK SHA-256: `9ea138111555a807574c566da85a6a942b4c06a9897820001d76467def
 The overall viewer performance goal remains incomplete. Publication of this checkpoint does
 not constitute performance qualification; the current limitations remain recorded in
 `viewer-scroll-20260908.md`.
+
+## Published checkpoint
+
+Commit `74659235d2b73f636a2fd9fa0410de2d3ff7a33c` was pushed at the user's request.
+[Release run 34230337861](https://github.com/ad2das/mangaviewer/actions/runs/34230337861)
+succeeded and published versionCode `2147000001`. The 42,638,529-byte APK has SHA-256
+`e135a843aad95710bad905a8bbc6a5932024b7449ca67ac6e6d60d77a73ef993`; the downloaded
+metadata, APK manifest, APK signature and existing installed certificate matched.
+
+The existing version `2147000000` automatically detected this actual public release
+and downloaded it through the app. The app's cached APK had the same SHA-256. Android's
+installation-source permission screen opened with permission disabled; that setting
+was left unchanged. Native installer confirmation and an installed upgrade were not
+claimed. The original library database was restored and verified. Evidence is under
+`published-746592` in the account restoration artifact directory.

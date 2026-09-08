@@ -4,6 +4,9 @@ import kotlinx.coroutines.*
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.engine.api.*
 
+internal data class EnginePreparedOpening(val episodeId: EpisodeId, val originalPages: Int,
+    val pixelTiles: Int, val pixelBytes: Long, val readyAtNanos: Long)
+
 /** Keeps predicted opening work in the same coordinator and storage as the real viewer. */
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class EngineOpeningPreparations(
@@ -12,6 +15,7 @@ internal class EngineOpeningPreparations(
     private val coordinator: WorkCoordinatorPort,
     private val source: (EpisodeId) -> EngineSessionWork,
     private val reportFailure: (Throwable) -> Unit = {},
+    private val pixels: EngineOpeningPixels? = null,
 ) {
     private val lock = Any()
     private class Entry(val target: EpisodeId, val predecessor: Job?, val job: Job)
@@ -19,10 +23,17 @@ internal class EngineOpeningPreparations(
     private var tail: Job? = null
     private var viewers = 0
     private var closed = false
+    private var prepared: EnginePreparedOpening? = null
+    private var deferredTarget: EpisodeId? = null
+
+    fun preparedSnapshot(): EnginePreparedOpening? = synchronized(lock) { prepared }
 
     fun warm(target: EpisodeId) = synchronized(lock) {
-        if (closed || viewers > 0 || pending?.target == target) return@synchronized
+        if (closed) return@synchronized
+        if (viewers > 0) { deferredTarget = target; return@synchronized }
+        if (pending?.target == target) return@synchronized
         pending?.job?.cancel()
+        prepared = null
         val previous = tail
         val job = scope.launch(dispatcher, start = CoroutineStart.ATOMIC) {
             try {
@@ -48,14 +59,18 @@ internal class EngineOpeningPreparations(
     }
 
     fun cancelPrediction() = synchronized(lock) {
+        deferredTarget = null
         pending?.job?.cancel()
         pending = null
+        prepared = null
     }
 
     fun claim(target: EpisodeId): Handoff = synchronized(lock) {
         check(!closed)
         val entry = pending
+        deferredTarget = null
         pending = null
+        prepared = null
         viewers++
         if (entry?.target == target) Handoff(entry.job, entry.predecessor)
         else {
@@ -75,7 +90,11 @@ internal class EngineOpeningPreparations(
         suspend fun close() {
             withContext(NonCancellable) { releasePreparation() }
             synchronized(lock) {
-                if (!finished) { finished = true; viewers-- }
+                if (!finished) {
+                    finished = true
+                    viewers--
+                    if (viewers == 0) deferredTarget?.also { deferredTarget = null }?.let(::warm)
+                }
             }
         }
     }
@@ -83,8 +102,10 @@ internal class EngineOpeningPreparations(
     suspend fun close() {
         val last = synchronized(lock) {
             closed = true
+            deferredTarget = null
             pending?.job?.cancel()
             pending = null
+            prepared = null
             tail
         }
         last?.cancelAndJoin()
@@ -111,9 +132,14 @@ internal class EngineOpeningPreparations(
             val page = position.anchor?.pageId ?: position.legacy?.pageId
             val pages = plan.manifest.pages
             val start = pages.indexOfFirst { it.id == page }.coerceAtLeast(0)
-            pages.drop(start).take(6).map { item ->
+            val originals = pages.drop(start).take(6).map { item ->
                 async { retain(work.page(plan, item.id, WorkPriority.NEXT_IMAGE)) }
             }.awaitAll()
+            val rasters = pixels?.requests(work, plan, position, originals).orEmpty().map { retain(it) }
+            synchronized(lock) {
+                if (pending?.target == target) prepared = EnginePreparedOpening(target, originals.size,
+                    rasters.size, rasters.sumOf { it.byteCount }, System.nanoTime())
+            }
             // Retain the immutable authorization plan until the viewer has acquired its own
             // subscriptions. Re-fetching a plan can change signed URLs and cache revisions.
             awaitCancellation()

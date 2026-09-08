@@ -40,9 +40,18 @@ internal class EngineAppGraph(
 ) {
     private val workLimits = WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12)
     val coordinator: WorkCoordinatorPort = WorkCoordinator(scope, workLimits)
+    private val openingMemory: ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment =
+        ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment(context) { openings.cancelPrediction() }
+    private val openingDecode = AndroidWorkDispatcher("viewer-opening-decode", 1, android.os.Process.THREAD_PRIORITY_BACKGROUND)
+    private val openingPixels = EngineOpeningPixels(
+        ml.melun.mangaview.engine.content.EnginePixelWork(
+            ml.melun.mangaview.viewer.runtime.NativeEngineImageDecoder(), openingDecode.coroutineDispatcher),
+        { context.resources.displayMetrics.let { ml.melun.mangaview.engine.api.EngineViewport(it.widthPixels, it.heightPixels) } },
+        minOf(32L * 1024 * 1024, ml.melun.mangaview.engine.api.DeviceMemoryBudget
+            .fromPhysicalRam(openingMemory.totalPhysicalBytes).glResidentBytes / 4).coerceAtLeast(1))
     val openings = EngineOpeningPreparations(scope, ioDispatcher, coordinator, { target ->
         session(ViewerLaunchSpec(target.seriesId.sourceId, target.seriesId, target))
-    }, { android.util.Log.w("EngineOpening", "Opening preparation failed", it) })
+    }, { android.util.Log.w("EngineOpening", "Opening preparation failed", it) }, openingPixels)
     @Volatile var episodeEvidenceObserver: EpisodePlanObserver? = null
     @Volatile var ntkAuthorizationEvidenceObserver: ((NtkEngineAuthorization) -> Unit)? = null
     private val observations = EpisodePlanObserver { episode, document, plan ->
@@ -80,15 +89,18 @@ internal class EngineAppGraph(
 
     suspend fun close() {
         var primary: Throwable? = null
-        try { openings.close() } catch (failure: Throwable) { primary = failure }
-        try { coordinator.close() } catch (failure: Throwable) {
-            if (primary == null) primary = failure else primary.addSuppressed(failure)
+        suspend fun closeOwned(action: suspend () -> Unit) {
+            try { action() } catch (failure: Throwable) {
+                val first = primary
+                if (first == null) primary = failure else if (first !== failure) first.addSuppressed(failure)
+            }
         }
+        closeOwned { openings.close() }
+        closeOwned { coordinator.close() }
+        closeOwned { openingMemory.close() }
+        closeOwned { openingDecode.closeAndAwait() }
         val transports = listOfNotNull(transport, ntkPageTransport.takeIf { it.isInitialized() }?.value)
-        for (owned in transports) try { owned.close() } catch (failure: Throwable) {
-            val first = primary
-            if (first == null) primary = failure else if (first !== failure) first.addSuppressed(failure)
-        }
+        for (owned in transports) closeOwned { owned.close() }
         primary?.let { throw it }
     }
     suspend fun saveBookmark(anchor: ml.melun.mangaview.engine.api.SourceAnchor, offset: Long) {

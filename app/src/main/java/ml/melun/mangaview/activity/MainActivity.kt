@@ -61,6 +61,12 @@ class MainActivity : ComponentActivity() {
         showLibrary(graph, viewModel)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                viewModel.foreground(true)
+                try { kotlinx.coroutines.awaitCancellation() } finally { viewModel.foreground(false) }
+            }
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 // A silent metadata check stays out of first-frame startup and stops when reading opens.
                 delay(10_000)
                 updates.checkAutomatically()

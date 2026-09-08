@@ -401,6 +401,7 @@ std::uint64_t GlViewerRenderer::upload(
     textureUpload_.pixels(directTextureUpload, width, height, cpu.pixels, cpu.byteCount);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (!glSucceeded("texture upload")) {
+        textureUpload_.invalidateCapacity();
         if (texture != 0) glDeleteTextures(1, &texture);
         return 0;
     }

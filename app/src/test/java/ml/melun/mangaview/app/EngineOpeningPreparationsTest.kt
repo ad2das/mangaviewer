@@ -15,6 +15,83 @@ import org.junit.Test
 class EngineOpeningPreparationsTest {
     private val episode = EpisodeId(SeriesId(SourceId("test"), "series"), "1")
 
+    @Test fun middleOfTallImagePreparesPastTheSavedRowInsteadOfCountingRowsAboveIt() = runTest {
+        val source = Source().apply {
+            dimensions = PageDimensions(100, 10_000)
+            sourceAnchor = SourceAnchor(PageId.at(episode, 2), 5179L * SourceAnchor.SOURCE_UNITS_PER_PIXEL, 0)
+        }
+        val coordinator = WorkCoordinator(this)
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val decoded = mutableListOf<EngineTileSpec>()
+        val decoder = EngineImageDecoder { _, tile ->
+            decoded += tile
+            object : EnginePixels {
+                override val tile = tile
+                override val byteCount = tile.byteCount
+                override fun close() = Unit
+            }
+        }
+        val pixels = EngineOpeningPixels(ml.melun.mangaview.engine.content.EnginePixelWork(decoder, dispatcher),
+            { EngineViewport(1000, 1000) }, maximumBytes = 16L * 1024 * 1024)
+        val openings = EngineOpeningPreparations(this, dispatcher, coordinator, { source }, pixels = pixels)
+        openings.warm(episode); runCurrent()
+        assertEquals(listOf(5102 to 5306, 5306 to 5510), decoded.map { it.sourceTop to it.sourceBottom })
+        assertTrue(decoded.all { it.pageId == source.sourceAnchor!!.pageId && it.displayWidth == 1000 })
+        assertEquals(16_320_000L, openings.preparedSnapshot()?.pixelBytes)
+        openings.close(); coordinator.close()
+    }
+
+    @Test fun returningLibraryPredictionWaitsForReaderCloseAndCanBeCancelled() = runTest {
+        val source = Source()
+        val coordinator = WorkCoordinator(this)
+        val openings = EngineOpeningPreparations(this, StandardTestDispatcher(testScheduler), coordinator, { source })
+        openings.warm(episode); runCurrent()
+        val first = openings.claim(episode)
+        val next = episode.copy(remoteKey = "2")
+        openings.warm(next); runCurrent()
+        assertEquals(listOf(episode), source.episodes)
+        first.close(); runCurrent()
+        assertEquals(listOf(episode, next), source.episodes)
+        val second = openings.claim(next)
+        openings.warm(episode.copy(remoteKey = "3"))
+        openings.cancelPrediction()
+        second.close(); runCurrent()
+        assertEquals(listOf(episode, next), source.episodes)
+        openings.close()
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
+    @Test fun preparesSavedPositionPixelsWithinBudgetAndReleasesThemWithPrediction() = runTest {
+        val source = Source()
+        val coordinator = WorkCoordinator(this)
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val decoded = mutableListOf<EngineTileSpec>()
+        var livePixels = 0
+        val decoder = EngineImageDecoder { _, tile ->
+            decoded += tile
+            livePixels++
+            object : EnginePixels {
+                override val tile = tile
+                override val byteCount = tile.byteCount
+                override fun close() { livePixels-- }
+            }
+        }
+        val pixels = EngineOpeningPixels(ml.melun.mangaview.engine.content.EnginePixelWork(decoder, dispatcher),
+            { EngineViewport(100, 100) }, maximumBytes = 40_000)
+        val openings = EngineOpeningPreparations(this, dispatcher, coordinator, { source }, pixels = pixels)
+        openings.warm(episode); runCurrent()
+        assertEquals(listOf(PageId.at(episode, 2)), decoded.map { it.pageId })
+        assertEquals(40_000L, decoded.sumOf { it.byteCount })
+        assertEquals(1, livePixels)
+        assertEquals(6, source.livePages)
+        openings.cancelPrediction(); openings.close()
+        assertEquals(0, livePixels)
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+        coordinator.close()
+    }
+
     @Test fun viewerSharesPreparedPlanAndSavedOpeningPagesAndOwnsThemAfterHandoff() = runTest {
         val source = Source()
         val coordinator = WorkCoordinator(this)
@@ -83,9 +160,11 @@ class EngineOpeningPreparationsTest {
         var livePages = 0
         var failPage = false
         var beforeEpisode: suspend () -> Unit = {}
+        var dimensions = PageDimensions(100, 100)
+        var sourceAnchor: SourceAnchor? = null
         override fun position(episodeId: EpisodeId) = request(episodeId.toString(), "position",
             SessionPosition::class.java, WorkDomain.STORAGE, WorkPriority.FOCUS) {
-            SessionPosition(null, ReadingPosition(PageId.at(episodeId, 2), 0))
+            SessionPosition(sourceAnchor, ReadingPosition(PageId.at(episodeId, 2), 0))
         }
         override fun episode(episodeId: EpisodeId, priority: WorkPriority) = request(episodeId.toString(), "episode",
             EpisodeAccessPlan::class.java, WorkDomain.CONTROL, priority) {
@@ -104,7 +183,7 @@ class EngineOpeningPreparationsTest {
                 pageCalls[pageId] = (pageCalls[pageId] ?: 0) + 1
                 if (failPage && pageId == PageId.at(pageId.episodeId, 3)) error("page unavailable")
                 livePages++
-                StoredPage(pageId, "revision", File("immutable.png"), 1, "1".repeat(64), PageDimensions(100, 100), "image/png")
+                StoredPage(pageId, "revision", File("immutable.png"), 1, "1".repeat(64), dimensions, "image/png")
             }, dispose = { livePages-- })
         private fun <T : Any> request(resource: String, operation: String, type: Class<T>, domain: WorkDomain,
             priority: WorkPriority, execute: suspend () -> T) = WorkRequest(
