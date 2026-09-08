@@ -279,7 +279,13 @@ bool GlViewerRenderer::attach(ANativeWindow* window) noexcept {
     if (!createWindowSurface(window)) return false;
     configurePresentationTimestamps();
     // Interval zero enables Android's asynchronous queue and replacement of unacquired buffers.
-    if (eglSwapInterval(display_, 1) != EGL_TRUE) return eglFailure("set swap interval");
+    if (eglSwapInterval(display_, 0) != EGL_TRUE) return eglFailure("set swap interval");
+    // Let BufferQueue prepare its existing buffer pool while the episode is still loading.
+    // This is an optional allocation hint; geometry, format and buffer count stay owned by EGL.
+    using TryAllocateBuffers = void (*)(ANativeWindow*);
+    static const auto tryAllocateBuffers = reinterpret_cast<TryAllocateBuffers>(
+        dlsym(RTLD_DEFAULT, "ANativeWindow_tryAllocateBuffers"));
+    if (tryAllocateBuffers != nullptr) tryAllocateBuffers(window);
     return true;
 }
 
@@ -380,8 +386,7 @@ std::uint64_t GlViewerRenderer::upload(
     ScopedTraceSection uploadTrace(uploadTraceLabel);
     const EGLSurface target = windowSurface_ != EGL_NO_SURFACE ? windowSurface_ : pbuffer_;
     if (!makeCurrent(target)) return 0;
-    GLuint texture = 0;
-    glGenTextures(1, &texture);
+    const GLuint texture = textureUpload_.takeTextureName();
     glBindTexture(GL_TEXTURE_2D, texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -393,7 +398,7 @@ std::uint64_t GlViewerRenderer::upload(
         transferTraceLabel, sizeof(transferTraceLabel), "viewer_upload_transfer:%s:%llu",
         transferMode, static_cast<unsigned long long>(cpu.byteCount));
     ScopedTraceSection transferTrace(transferTraceLabel);
-    uploadTexturePixels(directTextureUpload, width, height, cpu.pixels, cpu.byteCount);
+    textureUpload_.pixels(directTextureUpload, width, height, cpu.pixels, cpu.byteCount);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (!glSucceeded("texture upload")) {
         if (texture != 0) glDeleteTextures(1, &texture);
@@ -729,6 +734,7 @@ void GlViewerRenderer::close() noexcept {
     scene_.clear();
     for (auto& item : textures_) deleteTexture(&item.second);
     textures_.clear();
+    textureUpload_.close();
 #ifndef NDEBUG
     if (vertexBuffer_ != 0) glDeleteBuffers(1, &vertexBuffer_);
     if (program_ != 0) glDeleteProgram(program_);

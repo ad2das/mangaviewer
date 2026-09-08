@@ -4,10 +4,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 
-void uploadTexturePixels(
-    bool direct,
-    int width,
-    int height,
-    const std::uint8_t* pixels,
-    std::size_t byteCount) noexcept;
+/** Context-owned names; reserving texture names allocates no image storage. */
+class GlTextureUpload final {
+public:
+    GLuint takeTextureName() noexcept;
+    void pixels(bool direct, int width, int height, const std::uint8_t* pixels,
+                std::size_t byteCount) noexcept;
+    void close() noexcept;
+
+private:
+    std::array<GLuint, 32> names_{};
+    std::size_t remaining_ = 0;
+    GLuint unpackBuffer_ = 0;
+};

@@ -10,7 +10,10 @@ import okhttp3.Protocol
 
 class OkHttpTransportFactory(
     private val ioDispatcher: CoroutineDispatcher,
+    private val parallelism: Int = 6,
 ) {
+    init { require(parallelism in 1..32) }
+
     fun create(cookieJar: CookieJar = CookieJar.NO_COOKIES): OkHttpSourceTransport =
         create(cookieJar, listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
 
@@ -19,17 +22,17 @@ class OkHttpTransportFactory(
         protocols: List<Protocol>,
     ): OkHttpSourceTransport {
         val dispatcher = Dispatcher().apply {
-            // Keep all six image lanes available while an independent provider-document request
-            // prepares the adjacent episode.
-            maxRequests = 8
-            maxRequestsPerHost = 6
+            // The engine coordinator owns admission. Its already admitted requests must not
+            // wait behind a smaller transport queue inherited from the legacy page reader.
+            maxRequests = parallelism + 2
+            maxRequestsPerHost = parallelism
         }
         val dns = AndroidIpv4FirstDns(fixedAddressOffset = 0)
         val client = OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .dns(dns)
             .cookieJar(cookieJar)
-            .connectionPool(ConnectionPool(6, 5L, TimeUnit.MINUTES))
+            .connectionPool(ConnectionPool(parallelism, 5L, TimeUnit.MINUTES))
             .protocols(protocols)
             .connectTimeout(10L, TimeUnit.SECONDS)
             .readTimeout(30L, TimeUnit.SECONDS)

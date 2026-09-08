@@ -53,6 +53,9 @@ class EngineSwapBaselineTest {
                 put("submittedFrameCount", frames.size); put("nativeP95Millis", costs[(costs.size * 0.95).toInt().coerceAtMost(costs.lastIndex)])
                 put("nativeMaxMillis", costs.last()); put("atLeast100ms", costs.count { it >= 100 })
                 put("physicalPresentationVerified", false); put("performanceQualified", false); put("corpusCredit", 0)
+                put("offeredFrames", JSONArray().apply { probe.offeredSnapshot().forEach { (vsync, offered) ->
+                    put(JSONObject().put("frameTimeNanos", vsync).put("offeredAtNanos", offered))
+                } })
                 put("frames", JSONArray().apply { frames.forEach { frame -> put(JSONObject().apply {
                     put("token", frame.identity.token); put("eglFrameId", frame.eglFrameId)
                     put("submittedAtNanos", frame.submittedAtNanos); put("nativeDurationNanos", frame.renderLatencyNanos)

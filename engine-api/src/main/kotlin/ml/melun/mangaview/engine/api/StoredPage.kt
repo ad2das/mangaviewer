@@ -19,7 +19,7 @@ data class StoredPage(
 ) {
     init {
         require(contentRevision.isNotBlank() && byteCount > 0L && mediaType.startsWith("image/"))
-        require(sha256.matches(Regex("[0-9a-f]{64}")))
+        require(isSha256Hex(sha256))
     }
 }
 

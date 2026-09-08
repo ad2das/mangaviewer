@@ -39,6 +39,8 @@ def main():
     parser.add_argument('--maximum-captures', type=int, default=512, help='Bounded diagnostic capture storage (1..1024)')
     parser.add_argument('--maximum-gestures', type=int, default=512, help='Bounded traversal gesture count (1..2048)')
     parser.add_argument('--whole-preparation', action='store_true', help='Measure all launch originals with immediate and post-preparation scrolling')
+    parser.add_argument('--quick-preparation', action='store_true', help='Startup and short-scroll diagnostic; skips full episode endpoint traversal')
+    parser.add_argument('--cross-next-boundary', action='store_true', help='Continue through the actual next-episode boundary before reversing')
     parser.add_argument('--catalog-ui', action='store_true', help='Enter through live catalog/search and the real episode row')
     parser.add_argument('--source', choices=('wfwf', 'ntk'), default='wfwf')
     parser.add_argument('--kind', choices=('COMIC', 'WEBTOON'), default='COMIC')
@@ -48,12 +50,17 @@ def main():
     parser.add_argument('--no-readback', action='store_true', help='Timing control only; no pixel/row qualification')
     parser.add_argument('--gesture-plan', type=Path, help='Fixed boolean direction list for matched timing controls')
     parser.add_argument('--no-trace', action='store_true', help='Fixed no-readback timing control only; cannot qualify display evidence')
+    parser.add_argument('--trace-config', type=Path, help='Explicit diagnostic Perfetto config; copied into the capture evidence')
     parser.add_argument('--raw-monotonic-ftrace', action='store_true', help='Temporarily own/restore raw MONOTONIC tracefs clock and buffers')
     parser.add_argument('--memory-sampling', action='store_true', help='Collect owned-process PSS boundaries and asynchronous active samples')
     parser.add_argument('--navigation-idle-ms', type=int, help='Experimental UI navigation idle timeout only; restored before viewer input')
     parser.add_argument('--navigation-async-moves', action='store_true', help='Real navigation swipes with asynchronous MOVE injection and synchronous UP')
     parser.add_argument('--engine-diagnostics', action='store_true', help='Export observation-only stopped engine diagnostic state')
     args = parser.parse_args()
+    if args.quick_preparation and (not args.whole_preparation or args.catalog_ui):
+        parser.error('--quick-preparation requires direct-entry --whole-preparation')
+    if args.cross_next_boundary and (not args.whole_preparation or args.quick_preparation):
+        parser.error('--cross-next-boundary requires full --whole-preparation traversal')
     if args.whole_preparation and (not args.traverse_episode or not args.no_readback or args.gesture_plan):
         parser.error('--whole-preparation requires --traverse-episode --no-readback and excludes --gesture-plan')
     if args.whole_preparation and args.traversal_seconds < 150:
@@ -66,17 +73,22 @@ def main():
         parser.error('asynchronous navigation moves require catalog UI')
     if args.raw_monotonic_ftrace and args.no_trace:
         parser.error('raw MONOTONIC requires trace collection')
+    if args.trace_config and args.no_trace:
+        parser.error('--trace-config requires trace collection')
     if not 1 <= args.traversal_seconds <= 300 or not 1 <= args.maximum_captures <= 1024:
         parser.error('diagnostic traversal bounds are outside the supported range')
-    if args.no_trace and not (args.no_readback and args.gesture_plan and args.traverse_episode):
-        parser.error('--no-trace is restricted to fixed-gesture no-readback controls')
+    if args.no_trace and not (args.no_readback and args.traverse_episode and
+                             (args.gesture_plan or args.whole_preparation)):
+        parser.error('--no-trace requires a fixed-gesture or whole-preparation no-readback control')
     metadata_args = []
     measurement_args = ['-e', 'captureReadback', str(not args.no_readback).lower(),
                         '-e', 'captureMemory', str(args.memory_sampling).lower(),
                         '-e', 'captureTraversalSeconds', str(args.traversal_seconds),
                         '-e', 'captureMaximumFrames', str(args.maximum_captures),
                         '-e', 'captureMaximumGestures', str(args.maximum_gestures),
-                        '-e', 'captureWholePreparation', str(args.whole_preparation).lower()]
+                        '-e', 'captureWholePreparation', str(args.whole_preparation).lower(),
+                        '-e', 'captureQuickPreparation', str(args.quick_preparation).lower(),
+                        '-e', 'captureCrossNextBoundary', str(args.cross_next_boundary).lower()]
     measurement_args += _engine_diagnostics_args(args.engine_diagnostics)
     if args.navigation_idle_ms is not None:
         measurement_args += ['-e', 'captureNavigationIdleMillis', str(args.navigation_idle_ms)]
@@ -142,7 +154,7 @@ def main():
         before = captures()
         report['capturesBefore'] = sorted(before)
         if not args.no_trace:
-            config = Path(__file__).with_name('engine_live_frames.cfg').read_bytes()
+            config = (args.trace_config or Path(__file__).with_name('engine_live_frames.cfg')).read_bytes()
             if args.raw_monotonic_ftrace:
                 raw_clock = RawMonotonicTrace(args.adb)
                 report['rawMonotonicTrace'] = raw_clock.report
@@ -159,6 +171,7 @@ def main():
         report['maximumCaptures'] = args.maximum_captures
         report['maximumGestures'] = args.maximum_gestures
         report['wholePreparationMode'] = args.whole_preparation
+        report['quickPreparation'] = args.quick_preparation
         report['readbackEnabled'] = not args.no_readback
         report['memorySamplingEnabled'] = args.memory_sampling
         report['engineDiagnosticsEnabled'] = args.engine_diagnostics

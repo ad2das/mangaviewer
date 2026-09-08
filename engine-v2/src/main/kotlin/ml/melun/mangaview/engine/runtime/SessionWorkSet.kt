@@ -20,7 +20,7 @@ internal class SessionDemand<T : Any>(
     val onFailure: ((Throwable) -> Unit)? = null,
     val accept: (T) -> Unit,
 ) {
-    suspend fun subscribe(coordinator: WorkCoordinatorPort): WorkSubscription<T> = coordinator.submit(request)
+    suspend fun subscribe(coordinator: WorkCoordinatorPort): WorkSubscription<T> = coordinator.submitAfterRetirement(request)
 }
 
 /** Owner-thread registry for this session's subscriptions, including acknowledged retirement. */

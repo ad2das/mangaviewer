@@ -53,7 +53,7 @@ class NtkEngineBrowserClient(
         var owned: NtkEngineBrowserPreparation? = null
         try {
             withContext(Dispatchers.Main.immediate) {
-                owned = NtkEngineBrowserPreparation(app)
+                owned = NtkEngineBrowserPreparation(app, userAgent)
                 checkNotNull(owned).bind()
             }
             return checkNotNull(owned)

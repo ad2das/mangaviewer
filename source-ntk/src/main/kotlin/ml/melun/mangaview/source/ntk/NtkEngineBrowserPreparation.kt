@@ -9,7 +9,7 @@ import android.os.Looper
 import java.io.Closeable
 
 /** A scoped process-start binding. It sends no provider request or authorization message. */
-class NtkEngineBrowserPreparation internal constructor(private val context: Context) : Closeable {
+class NtkEngineBrowserPreparation internal constructor(private val context: Context, private val userAgent: String) : Closeable {
     private var bound = false
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) = Unit
@@ -19,7 +19,9 @@ class NtkEngineBrowserPreparation internal constructor(private val context: Cont
     internal fun bind() {
         check(Looper.myLooper() == Looper.getMainLooper())
         check(!bound)
-        bound = context.bindService(Intent(context, NtkEngineBrowserService::class.java), connection, Context.BIND_AUTO_CREATE)
+        val intent = Intent(context, NtkEngineBrowserService::class.java)
+            .putExtra(NtkBrowserProtocol.KEY_USER_AGENT, userAgent)
+        bound = context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
         check(bound) { "NTK engine browser preparation binding was rejected" }
     }
 

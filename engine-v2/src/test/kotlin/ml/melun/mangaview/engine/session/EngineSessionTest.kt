@@ -176,6 +176,10 @@ class EngineSessionTest {
         )
 
         assertEquals(0, resolution.snapshot.pendingInputCount)
+        assertEquals(listOf(1L, 2L), resolution.receipts.map { it.sample.sequence })
+        assertEquals(listOf(150_000L, -50_000L), resolution.receipts.map { it.appliedScreenUnits })
+        assertTrue(resolution.receipts.all { it.outcome == InputOutcome.APPLIED })
+        assertTrue(resolution.snapshot.movementRevision > secondMissing.snapshot.movementRevision)
         assertEquals(full.snapshot.anchor, resolution.snapshot.anchor)
         assertEquals(full.snapshot.visibleRegions, resolution.snapshot.visibleRegions)
     }

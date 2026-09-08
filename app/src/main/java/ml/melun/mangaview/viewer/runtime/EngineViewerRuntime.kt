@@ -7,6 +7,10 @@ import android.view.Surface
 import java.math.BigInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -69,19 +73,18 @@ internal class EngineViewerRuntime(
     private var gesture = 1L
     private var lastSaved: Pair<SourceAnchor, Long>? = null
     private var submittedPosition: Pair<SourceAnchor, Long>? = null
+    private var autosave: Job? = null
     private val renderer: EngineSurfaceOwner = EngineSurfaceOwner(budget.glResidentBytes,
         { value -> onMain { reportPresented(value) } }, { error -> onMain { reportFailure(error) } },
         { onMain { if (!closing) graphics.rendererChanged() } },
         { onMain { if (!closing) { graphics.enabled(false); surface.rendererUnavailable() } } },
         reportSubmitted = { value -> onMain { onSubmitted(value) } })
-    private val reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime).apply {
-        engageViewportReadinessBarrier()
-    }
+    private val reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime)
     private val content: EngineSessionRuntime = EngineSessionRuntime(scope, coordinator, reducer, source, episodeId,
         { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },
-        { _, failure -> reportFailure(failure) })
+        { _, failure -> reportFailure(failure) }, awaitInitialPresentation = true)
     private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator,
-        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 2),
+        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 4),
         EngineTileWork(NativeEngineImageDecoder(), decodeDispatcher, renderer), renderer, content::pageRequest,
         renderer::offer, renderer::clearScene, { _, failure -> reportFailure(failure) },
         waitForCompleteViewport = true, reportSceneFailure = reportFailure, reportViewportReady = content::viewportReady)
@@ -134,6 +137,7 @@ internal class EngineViewerRuntime(
             surface.cancelMotion()
             surface.enterBackground()
             closing = true
+            autosave?.cancelAndJoin()
             surfaceGeneration++
             val failures = mutableListOf<Throwable>()
             coroutineScope {
@@ -202,13 +206,24 @@ internal class EngineViewerRuntime(
 
     private fun onContent(value: EngineRuntimeSnapshot) {
         if (closing) return
-        graphics.update(value)
+        traceEngineWork("engine_graphics_update") { graphics.update(value) }
         reportSnapshot(value)
     }
 
     private fun onSubmitted(value: EngineSurfaceScene) {
         submittedSourcePosition(value)?.let { submittedPosition = it }
-        if (!closing) reportSnapshot(content.snapshot)
+        if (!closing) {
+            if (value.completeCoverage) content.initialViewportSubmitted(value.generation)
+            reportSnapshot(content.snapshot)
+            if (autosave == null && submittedPosition != lastSaved) {
+                autosave = scope.launch {
+                    try { delay(1_000); persist(position()) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: Throwable) { reportFailure(failure) }
+                    finally { autosave = null }
+                }
+            }
+        }
     }
 
     private fun position(): Pair<SourceAnchor, Long>? = submittedPosition

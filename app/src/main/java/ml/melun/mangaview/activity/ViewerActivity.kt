@@ -48,16 +48,8 @@ import ml.melun.mangaview.viewer.runtime.EngineSurfacePresentation
 import ml.melun.mangaview.viewer.runtime.EngineViewerDiagnostics
 import ml.melun.mangaview.viewer.runtime.EngineInputObservations
 import ml.melun.mangaview.viewer.runtime.ViewerStartupTiming
-import kotlin.math.max
 
 class ViewerActivity : ComponentActivity() {
-    private data class SafeInsets(
-        val left: Int,
-        val top: Int,
-        val right: Int,
-        val bottom: Int,
-    )
-
     private val sessionJob = SupervisorJob()
     private val sessionScope = CoroutineScope(sessionJob + Dispatchers.Main.immediate)
     private val hardDecodeWork = AndroidWorkDispatcher(
@@ -77,6 +69,8 @@ class ViewerActivity : ComponentActivity() {
     private lateinit var chrome: ViewerChromeController
     private var contentSource: EngineViewerWork? = null
     private lateinit var engine: EngineAppGraph
+    private var openingHandoff: ml.melun.mangaview.app.EngineOpeningPreparations.Handoff? = null
+    private var openingReleased = false
     private val engineClosed = CompletableDeferred<Unit>()
     private val engineDiagnostics = EngineViewerDiagnostics()
     private val engineInputObservations = EngineInputObservations()
@@ -88,7 +82,7 @@ class ViewerActivity : ComponentActivity() {
     @Volatile private var episodePickerFailure: Throwable? = null
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        configureWindowInsets()
+        configureViewerWindowInsets()
         val spec = runCatching { ViewerLaunchSpec.from(intent) }.getOrElse {
             finishWithFailure(it)
             return
@@ -101,6 +95,7 @@ class ViewerActivity : ComponentActivity() {
             return
         }
         val viewport = initialViewport()
+        openingHandoff = engine.openings.claim(spec.episodeId)
         contentSource = source
         val createdRuntime = EngineViewerRuntime(
             context = this,
@@ -128,20 +123,9 @@ class ViewerActivity : ComponentActivity() {
         setContentView(root)
         root.requestApplyInsets()
         engineDiagnostics.opened(System.nanoTime())
-        createdRuntime.open()
-    }
-
-    private fun configureWindowInsets() {
-        window.statusBarColor = Color.BLACK
-        window.navigationBarColor = Color.BLACK
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(false)
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility =
-                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        sessionScope.launch {
+            openingHandoff?.awaitPredecessor()
+            if (runtime === createdRuntime) createdRuntime.open()
         }
     }
 
@@ -241,6 +225,12 @@ class ViewerActivity : ComponentActivity() {
                 closeFailure = failure
             }
             try {
+                openingHandoff?.close()
+            } catch (failure: Throwable) {
+                val primary = closeFailure
+                if (primary == null) closeFailure = failure else if (primary !== failure) primary.addSuppressed(failure)
+            }
+            try {
                 closeDecodeWorkers()
             } catch (failure: Throwable) {
                 val primary = closeFailure
@@ -313,6 +303,10 @@ class ViewerActivity : ComponentActivity() {
 
     private fun onViewerOpened() {
         if (::chrome.isInitialized) chrome.refresh()
+        if (!openingReleased && runtime?.bookmarkSnapshot() != null) {
+            openingReleased = true
+            sessionScope.launch { openingHandoff?.releasePreparation() }
+        }
     }
 
     private fun navigateAdjacent(next: Boolean) {
@@ -392,7 +386,7 @@ class ViewerActivity : ComponentActivity() {
 
     private fun FrameLayout.installSystemBarInsets() {
         setOnApplyWindowInsetsListener { view, insets ->
-            val safe = safeDrawingInsets(insets)
+            val safe = insets.viewerSafeDrawingInsets()
             if (view.paddingLeft != safe.left || view.paddingTop != safe.top ||
                 view.paddingRight != safe.right || view.paddingBottom != safe.bottom
             ) {
@@ -400,32 +394,6 @@ class ViewerActivity : ComponentActivity() {
             }
             insets
         }
-    }
-
-    private fun safeDrawingInsets(insets: WindowInsets): SafeInsets {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val safe = insets.getInsets(
-                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
-            )
-            return SafeInsets(safe.left, safe.top, safe.right, safe.bottom)
-        }
-        @Suppress("DEPRECATION")
-        var left = insets.systemWindowInsetLeft
-        @Suppress("DEPRECATION")
-        var top = insets.systemWindowInsetTop
-        @Suppress("DEPRECATION")
-        var right = insets.systemWindowInsetRight
-        @Suppress("DEPRECATION")
-        var bottom = insets.systemWindowInsetBottom
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            insets.displayCutout?.let { cutout ->
-                left = max(left, cutout.safeInsetLeft)
-                top = max(top, cutout.safeInsetTop)
-                right = max(right, cutout.safeInsetRight)
-                bottom = max(bottom, cutout.safeInsetBottom)
-            }
-        }
-        return SafeInsets(left, top, right, bottom)
     }
 
     private fun initialViewport(): Viewport {

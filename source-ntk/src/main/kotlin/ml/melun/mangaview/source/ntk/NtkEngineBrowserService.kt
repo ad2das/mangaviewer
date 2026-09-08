@@ -73,7 +73,21 @@ class NtkEngineBrowserService : Service() {
         }
     })
 
-    override fun onBind(intent: Intent?): IBinder = incoming.binder
+    override fun onBind(intent: Intent?): IBinder {
+        intent?.getStringExtra(NtkBrowserProtocol.KEY_USER_AGENT)?.let { userAgent ->
+            val prepare = {
+                if (!destroyed) runCatching { host.acquire(userAgent) }.onFailure {
+                    android.util.Log.w("NtkEngineBrowser", "Local WebView preparation failed", it)
+                }
+                Unit
+            }
+            val owner = application as? NtkWebViewStartupOwner
+            // Create the same owned WebView during document I/O. No URL or provider
+            // authorization request is issued until the captured document is supplied.
+            if (owner == null) prepare() else owner.ntkWebViewStartup.whenReady(prepare) { }
+        }
+        return incoming.binder
+    }
 
     override fun onDestroy() {
         destroyed = true

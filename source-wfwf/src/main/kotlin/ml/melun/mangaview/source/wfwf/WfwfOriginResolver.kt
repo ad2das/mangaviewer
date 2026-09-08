@@ -19,7 +19,7 @@ import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.readBytes
 
 /** Last provider origin verified with its real catalog and episode documents. */
-const val DEFAULT_WFWF_ORIGIN = "https://wfwf493.com"
+const val DEFAULT_WFWF_ORIGIN = "https://wfwf494.com"
 
 class WfwfOriginResolver(
     private val transport: SourceTransport,

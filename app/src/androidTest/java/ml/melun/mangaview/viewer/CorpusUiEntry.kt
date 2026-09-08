@@ -129,13 +129,20 @@ internal class CorpusUiEntry(
         val startedMillis = SystemClock.elapsedRealtime()
         val startedNanos = System.nanoTime()
         requireNotNull(clickableAncestor(episode)).click()
-        check(device.wait(Condition<UiDevice, Boolean> {
+        val openedInTime = device.wait(Condition<UiDevice, Boolean> {
             instrumentation.runOnMainSync {
                 viewer = ActivityLifecycleMonitorRegistry.getInstance()
                     .getActivitiesInStage(Stage.RESUMED).filterIsInstance<ViewerActivity>().singleOrNull()
             }
             viewer != null
-        }, 5_000) == true) { "Real episode tap did not open viewer" }
+        }, 5_000) == true
+        if (!openedInTime) {
+            val evidence = requireNotNull(instrumentation.targetContext.getExternalFilesDir("ux-evidence"))
+                .resolve("episode-tap-failure-${System.nanoTime()}").apply { check(mkdirs()) }
+            device.dumpWindowHierarchy(evidence.resolve("hierarchy.xml"))
+            device.takeScreenshot(evidence.resolve("screen.png"))
+            error("Real episode tap did not open viewer; evidence=$evidence")
+        }
         val opened = requireNotNull(viewer)
         val spec = ViewerLaunchSpec.from(opened.intent)
         check(spec.episodeId == expected.id) { "UI opened ${spec.episodeId} instead of ${expected.id}" }
@@ -195,6 +202,7 @@ internal class CorpusUiEntry(
         var unchanged = 0
         for (gesture in 0 until 2_000) {
             try {
+            if (android.os.Build.VERSION.SDK_INT >= 34) instrumentation.uiAutomation.clearCache()
             timing.measure("find-target-nodes") { device.findObjects(By.textContains(title)) }.firstOrNull {
                 it.className != "android.widget.EditText" && exactRow.matches(it.text.orEmpty()) && clickableAncestor(it) != null
             }?.let { return it }

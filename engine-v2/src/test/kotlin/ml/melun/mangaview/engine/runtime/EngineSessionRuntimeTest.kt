@@ -42,6 +42,35 @@ import org.junit.Test
 class EngineSessionRuntimeTest {
     private val episode = EpisodeId(SeriesId(SourceId("test"), "series"), "1")
 
+    @Test fun publishedMetadataSurvivesInputBackgroundAndCloseWithoutChangingOldSnapshots() = runTest {
+        val source = Source()
+        val (runtime, coordinator) = runtime(source)
+        runtime.open()
+        runCurrent()
+        val before = runtime.snapshot
+        runtime.input(InputSample(1, 1, 0, 10 * 1_024L))
+        runCurrent()
+        val moved = runtime.snapshot
+        assertNotEquals(before.session.anchor, moved.session.anchor)
+        assertSame(before.plans, moved.plans)
+        assertSame(before.pages, moved.pages)
+        assertThrows(UnsupportedOperationException::class.java) { (before.pages as MutableMap).clear() }
+        runtime.foreground(false)
+        runCurrent()
+        assertTrue(runtime.snapshot.pages.isEmpty())
+        assertEquals(3, before.pages.size)
+        runtime.foreground(true)
+        runCurrent()
+        assertEquals(before.pages, runtime.snapshot.pages)
+        runtime.close()
+        assertTrue(runtime.snapshot.plans.isEmpty())
+        assertTrue(runtime.snapshot.pages.isEmpty())
+        assertEquals(1, before.plans.size)
+        assertEquals(3, before.pages.size)
+        assertEquals(0, source.livePages)
+        coordinator.close()
+    }
+
     @Test fun coldInputIsConservedAcrossDelayedPageDimensionsAndReleasedOnClose() = runTest {
         val source = Source()
         val gate = CompletableDeferred<Unit>()
@@ -217,9 +246,12 @@ class EngineSessionRuntimeTest {
         val (runtime, coordinator) = runtime(source, failures = failures)
         runtime.open()
         runCurrent()
-        assertEquals(listOf(2, 3, 4, 5).map { PageId.at(episode, it) }, requested.distinct())
+        assertEquals(listOf(2, 3, 4, 5).map { PageId.at(episode, it) },
+            requested.filter { it.episodeId == episode }.distinct())
         assertTrue(source.requestedEpisodes.contains(source.nextEpisode))
-        assertTrue(requested.none { it.episodeId == source.nextEpisode })
+        assertEquals(listOf(0, 1).map { PageId.at(source.nextEpisode!!, it) },
+            requested.filter { it.episodeId == source.nextEpisode }.distinct())
+        assertFalse(gate.isCompleted)
         gate.complete(Unit)
         runCurrent()
         assertEquals(listOf(2, 3, 4, 5, 1, 0).map { PageId.at(episode, it) },
@@ -566,6 +598,35 @@ class EngineSessionRuntimeTest {
         } finally { runtime.close(); coordinator.close() }
         assertEquals(0, source.livePages)
         assertTrue(runtime.snapshot.pages.isEmpty())
+    }
+
+    @Test fun originalsPrepareBeforeFirstSubmissionWithVisiblePriorityPreserved() = runTest {
+        val source = Source().apply { pageCount = 20 }
+        val first = CompletableDeferred<Unit>()
+        source.beforePage = { if (it == PageId.at(episode, 0)) first.await() }
+        val coordinator = WorkCoordinator(this)
+        val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
+            { _, _ -> }, { _, failure -> throw failure }, awaitInitialPresentation = true)
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals((0..2).map { PageId.at(episode, it) }.toSet(), source.startedPriorities.keys)
+            assertFalse(runtime.snapshot.session.completeViewport)
+            first.complete(Unit)
+            runCurrent()
+            assertEquals((0 until 20).map { PageId.at(episode, it) }.toSet(), source.startedPriorities.keys)
+            assertEquals(WorkPriority.VISIBLE, source.startedPriorities[PageId.at(episode, 1)])
+            assertEquals(WorkPriority.VISIBLE, source.startedPriorities[PageId.at(episode, 2)])
+            runtime.initialViewportSubmitted(session.snapshot.generation - 1)
+            runCurrent()
+            assertEquals(20, source.startedPriorities.size)
+            runtime.initialViewportSubmitted(session.snapshot.generation)
+            runCurrent()
+            assertEquals(20, source.startedPriorities.size)
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
     }
 
     private fun TestScope.runtime(source: Source, receipts: MutableList<InputReceipt> = mutableListOf(),

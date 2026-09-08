@@ -70,6 +70,7 @@ internal suspend fun withEngineCaptureViewer(
     } else {
         beforeViewerOpen()
         var activity: ViewerActivity? = null
+        val launchRequestedAtNanos = System.nanoTime()
         ActivityScenario.launch<ViewerActivity>(Intent(context, ViewerActivity::class.java).apply {
             putExtra(ViewerLaunchSpec.EXTRA_SOURCE_ID, episode.seriesId.sourceId.value)
             putExtra(ViewerLaunchSpec.EXTRA_SERIES_KEY, episode.seriesId.remoteKey)
@@ -78,6 +79,7 @@ internal suspend fun withEngineCaptureViewer(
         }).use { scenario ->
             scenario.onActivity { activity = it }
             File(output, "ui-launch.json").writeText(JSONObject().put("entry", "DIRECT_VIEWER_INTENT")
+                .put("launchRequestedAtNanos", launchRequestedAtNanos)
                 .put("episodeId", episode.toString()).put("corpusCredit", 0).toString(2))
             block(requireNotNull(activity))
         }

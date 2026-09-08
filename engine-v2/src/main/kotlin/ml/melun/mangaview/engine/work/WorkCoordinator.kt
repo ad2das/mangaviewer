@@ -4,6 +4,9 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
@@ -60,6 +63,27 @@ class WorkCoordinator(
 
     override suspend fun <T : Any> submit(request: WorkRequest<T>): WorkSubscription<T> =
         submitInternal(request)
+
+    override suspend fun <T : Any> submitAfterRetirement(request: WorkRequest<T>): WorkSubscription<T> {
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            var retirement: CompletableDeferred<Unit>? = null
+            val registered = mutex.withLock {
+                checkOpenLocked()
+                val previous = records[request.key]
+                if (previous != null && (previous.state == WorkRecordState.RETIRING || previous.cancelRequested)) {
+                    retirement = previous.completion
+                    null
+                } else registerLocked(request)
+            }
+            if (registered != null) {
+                val (record, subscriber) = registered
+                return CoordinatorSubscription(this, record, subscriber, request.key.resultType)
+            }
+            // This waiter owns neither a permit nor a subscription while prior cleanup runs.
+            checkNotNull(retirement).await()
+        }
+    }
 
     override suspend fun <T : Any> acquire(request: WorkRequest<T>): WorkLease<T> {
         val subscription = submitInternal(request)

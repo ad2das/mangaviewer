@@ -30,7 +30,7 @@ internal class EngineNtkSessionWork(
     private val loadLegacy: suspend (EpisodeId) -> ReadingPosition?,
     private val initialPosition: ReadingPosition?,
     private val observer: EpisodePlanObserver? = null,
-    pageTransport: SourceTransport = transport,
+    private val pageTransport: SourceTransport = transport,
 ) : EngineViewerWork {
     private val principal = "ntk:engine"
     private val planner = NtkAccessPlanner(userAgent)
@@ -52,6 +52,9 @@ internal class EngineNtkSessionWork(
     override fun episode(episodeId: EpisodeId, priority: WorkPriority): WorkRequest<EpisodeAccessPlan> = WorkRequest(
         WorkKey(principal, episodeId.toString(), "ntk.episode", origin.toString(), EpisodeAccessPlan::class.java),
         WorkDomain.CONTROL, priority, execute = { parent ->
+            // Bootstrap Chromium's local network implementation during document I/O. The H3
+            // pool still waits for the verified manifest's complete CDN hint set below.
+            pageTransport.warmConnections(listOf(origin.toString()), preferQuic = false)
             parent.useDependency(WorkRequest(
                 WorkKey(principal, episodeId.toString(), "ntk.browser.prepare", origin.toString(), NtkEngineBrowserPreparation::class.java),
                 WorkDomain.BROWSER, parent.priority.value, execute = { browser.prepareService() },
@@ -72,6 +75,9 @@ internal class EngineNtkSessionWork(
             )) { proof -> withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) } }
             require(completed.manifest.id == episodeId && completed.documentSha256 == source.sha256 &&
                 completed.finalDocumentUrl == source.finalUrl)
+            // Provider-verified candidates may use several CDN origins from the first viewport.
+            // Configure all of their QUIC hints before any page races to create the shared pool.
+            pageTransport.warmConnections(completed.pages.flatMap { it.candidates }.map(URI::toString), preferQuic = true)
             observer?.observed(episodeId, source, completed)
             completed
         }

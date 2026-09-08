@@ -59,11 +59,13 @@ class EngineSessionRuntime(
     private val reportUpdate: (EngineRuntimeSnapshot, List<InputReceipt>) -> Unit,
     reportFailure: (WorkKey<*>, Throwable) -> Unit,
     private val observationClock: () -> Long = System::nanoTime,
+    private val awaitInitialPresentation: Boolean = false,
 ) {
     private val owner = Thread.currentThread()
     private val work = SessionWorkSet(scope, coordinator, reportFailure)
-    private val plans = linkedMapOf<EpisodeId, EpisodeAccessPlan>()
-    private val pages = linkedMapOf<PageId, PageContentIdentity>()
+    // Publish new immutable maps only when their metadata changes, not on every scroll sample.
+    private var plans: Map<EpisodeId, EpisodeAccessPlan> = emptyMap()
+    private var pages: Map<PageId, PageContentIdentity> = emptyMap()
     private val prepared = linkedSetOf<PageId>()
     private val failedReadAheadPages = linkedSetOf<PageId>()
     private val failedReadAheadEpisodes = linkedSetOf<EpisodeId>()
@@ -82,10 +84,11 @@ class EngineSessionRuntime(
     private var closed = false
     private var processing = false
     private var dirty = false
+    private var initialPresented = !awaitInitialPresentation
 
     val snapshot: EngineRuntimeSnapshot get() {
         checkOwner()
-        return EngineRuntimeSnapshot(session.snapshot, immutableMap(plans), immutableMap(pages))
+        return EngineRuntimeSnapshot(session.snapshot, plans, pages)
     }
 
     fun open() {
@@ -110,13 +113,14 @@ class EngineSessionRuntime(
         if (closed) return
         val update = session.dispatch(SessionEvent.Navigate(episodeId))
         work.clear()
-        plans.clear()
-        pages.clear()
+        plans = emptyMap()
+        pages = emptyMap()
         prepared.clear()
         failedReadAheadPages.clear()
         failedReadAheadEpisodes.clear()
         positionResolved = true
         targetEpisode = episodeId
+        initialPresented = !awaitInitialPresentation
         process(update)
     }
 
@@ -124,7 +128,7 @@ class EngineSessionRuntime(
         checkOwner()
         if (closed || foreground == enabled) return
         foreground = enabled
-        if (!enabled) { pages.clear(); prepared.clear() }
+        if (!enabled) { pages = emptyMap(); prepared.clear() }
         process(SessionUpdate(session.snapshot))
     }
 
@@ -171,16 +175,24 @@ class EngineSessionRuntime(
         if (update.receipts.isNotEmpty() || update.snapshot != before) process(update)
     }
 
+    /** A successful complete native submission ends the initial viewport's priority boost. */
+    fun initialViewportSubmitted(generation: Long) {
+        checkOwner()
+        if (!isCurrent(generation) || initialPresented) return
+        initialPresented = true
+        process(SessionUpdate(session.snapshot))
+    }
+
     suspend fun close() {
         checkOwner()
         if (!closed) {
             closed = true
-            pages.clear()
+            pages = emptyMap()
             prepared.clear()
             process(session.dispatch(SessionEvent.Close))
         }
         work.close()
-        plans.clear()
+        plans = emptyMap()
     }
 
     private fun process(update: SessionUpdate) {
@@ -261,13 +273,15 @@ class EngineSessionRuntime(
         }
         // Identities own no file lease or texture. Preserve the verified neighbors so the tile
         // planner can fill its pixel-distance horizon even beyond the small raw-request window.
-        pages.keys.removeAll { it.episodeId !in episodes }
+        if (pages.keys.any { it.episodeId !in episodes }) {
+            pages = Collections.unmodifiableMap(pages.filterKeys { it.episodeId in episodes })
+        }
     }
 
     private fun acceptPlan(generation: Long, expected: EpisodeId, plan: EpisodeAccessPlan) {
         require(plan.manifest.id == expected)
         val update = session.dispatch(SessionEvent.ManifestResolved(generation, plan.manifest, plan.navigationKnown))
-        plans[expected] = plan
+        plans = withEntry(plans, expected, plan)
         if (generation == launchGeneration && expected == launchEpisode && launchManifestAcceptedAtNanos == null) {
             launchManifestPageIds = plan.manifest.pages.map { it.id }
             launchManifestContentRevision = plan.contentRevision
@@ -282,7 +296,7 @@ class EngineSessionRuntime(
         failedReadAheadPages -= expected
         val update = session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
         val identity = PageContentIdentity(expected, page.contentRevision, page.sha256, page.dimensions, page.byteCount)
-        pages[expected] = identity
+        if (pages[expected] != identity) pages = withEntry(pages, expected, identity)
         if (generation == launchGeneration && expected.episodeId == launchEpisode &&
             page.contentRevision == launchManifestContentRevision && expected in launchManifestPageIds &&
             expected !in launchVerifiedPages
@@ -301,9 +315,9 @@ class EngineSessionRuntime(
     private fun acceptNavigation(generation: Long, id: EpisodeId, navigation: AdjacentEpisodes) {
         val previous = requireNotNull(plans[id])
         val update = session.dispatch(SessionEvent.NavigationResolved(generation, id, navigation.previous, navigation.next))
-        plans[id] = EpisodeAccessPlan(previous.manifest.copy(previousEpisodeId = navigation.previous,
+        plans = withEntry(plans, id, EpisodeAccessPlan(previous.manifest.copy(previousEpisodeId = navigation.previous,
             nextEpisodeId = navigation.next), previous.contentRevision, previous.documentSha256,
-            previous.finalDocumentUrl, previous.authEpoch, previous.pages, previous.prerequisites, navigationKnown = true)
+            previous.finalDocumentUrl, previous.authEpoch, previous.pages, previous.prerequisites, navigationKnown = true))
         process(update)
     }
 
@@ -323,9 +337,11 @@ class EngineSessionRuntime(
         val index = manifest.pages.indexOfFirst { it.id == anchor }
         if (index < 0) return
         addNearbyOriginals(state, manifest, index, result)
-        // Original bodies use reserved background permits, not the decoder or renderer.
-        // Refill them even if a slower focus body or missing geometry still blocks the viewport.
-        addRemainingOriginals(manifest, index, result)
+        // Give the opening original and its two neighbors the first network window.
+        // Resume bulk bodies as soon as the anchor bytes are verified, without waiting
+        // for decoding or a swap, so arriving input still has a downloaded runway.
+        if (initialPresented || anchor in prepared) addRemainingOriginals(manifest, index, result)
+        addNextOriginals(manifest, result)
     }
 
     private fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
@@ -349,7 +365,8 @@ class EngineSessionRuntime(
                     // The same two-page horizon continues across a known document boundary.
                     plans[next]?.manifest?.pages?.getOrNull(ordinal - manifest.pages.size)?.id
                 } ?: continue
-                if (id !in failedReadAheadPages) result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
+                val priority = if (!initialPresented && ordinal <= index + 2) WorkPriority.VISIBLE else WorkPriority.NEXT_IMAGE
+                if (id !in failedReadAheadPages) result.putIfAbsent(id, priority)
             }
         }
     }
@@ -357,9 +374,9 @@ class EngineSessionRuntime(
     private fun addRemainingOriginals(manifest: EpisodeManifest, index: Int,
         result: LinkedHashMap<PageId, WorkPriority>,
     ) {
-        // Keep two originals in flight under the existing background BODY limit.
+        // Stream originals to disk while the app reserves two BODY slots for visible work.
         // Finish the forward phase before filling earlier pages; visible work keeps priority.
-        val remainingSlots = 2 - result.count { (id, priority) -> priority == WorkPriority.NEXT_IMAGE && id !in prepared }
+        val remainingSlots = 12 - result.count { (id, priority) -> priority == WorkPriority.NEXT_IMAGE && id !in prepared }
         if (remainingSlots == 0) return
         fun pending(indices: IntProgression) = indices.asSequence().map { manifest.pages[it].id }
             .filter { it !in prepared && it !in failedReadAheadPages && it !in result }.take(remainingSlots).toList()
@@ -372,12 +389,20 @@ class EngineSessionRuntime(
             pending.forEach { result.putIfAbsent(it, WorkPriority.NEXT_IMAGE) }
             return
         }
-        if (manifest.pages.any { it.id !in prepared }) return
+    }
+
+    private fun addNextOriginals(manifest: EpisodeManifest,
+        result: LinkedHashMap<PageId, WorkPriority>,
+    ) {
         val next = manifest.nextEpisodeId?.let { plans[it]?.manifest } ?: return
         next.pages.take(2).filter { it.id in prepared }.forEach {
             result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
         }
-        next.pages.asSequence().filter { it.id !in prepared && it.id !in failedReadAheadPages }.take(2).forEach {
+        // Queue the first two originals as soon as the adjacent plan is authorized. A slow
+        // current body must not serialize boundary preparation; existing background permits
+        // and NEXT_EPISODE priority still reserve capacity for the current viewport.
+        val candidates = if (manifest.pages.all { it.id in prepared }) next.pages else next.pages.take(2)
+        candidates.asSequence().filter { it.id !in prepared && it.id !in failedReadAheadPages }.take(2).forEach {
             result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
         }
     }
@@ -394,4 +419,6 @@ class EngineSessionRuntime(
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
     private fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmodifiableMap(LinkedHashMap(source))
+    private fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
+        Collections.unmodifiableMap(LinkedHashMap(source).apply { put(key, value) })
 }

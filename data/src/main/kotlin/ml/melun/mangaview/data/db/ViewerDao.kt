@@ -34,12 +34,21 @@ interface ViewerDao {
         saveLibraryEntry(entry.copy(favorite = existingEntry?.favorite ?: entry.favorite))
         val existingProgress = progress(entry.sourceKey, entry.seriesKey)
         val nextProgress = if (existingProgress?.episodeKey == initialProgress.episodeKey) {
+            touchMatchingReadingAnchor(entry.sourceKey, entry.seriesKey, initialProgress.updatedAtEpochMillis)
             existingProgress.copy(updatedAtEpochMillis = initialProgress.updatedAtEpochMillis)
         } else {
             initialProgress
         }
         saveProgress(nextProgress)
     }
+
+    /** Refresh recency without invalidating a matching source-coordinate resume anchor. */
+    @Query("UPDATE engine_reading_anchors SET updatedAtEpochMillis = :at WHERE sourceKey = :source AND seriesKey = :series " +
+        "AND EXISTS (SELECT 1 FROM reading_progress p WHERE p.sourceKey = engine_reading_anchors.sourceKey " +
+        "AND p.seriesKey = engine_reading_anchors.seriesKey AND p.episodeKey = engine_reading_anchors.episodeKey " +
+        "AND p.pageKey = engine_reading_anchors.pageKey AND p.offsetInPageUnits = engine_reading_anchors.legacyScreenOffsetUnits " +
+        "AND p.updatedAtEpochMillis = engine_reading_anchors.updatedAtEpochMillis)")
+    suspend fun touchMatchingReadingAnchor(source: String, series: String, at: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveBookmark(bookmark: BookmarkEntity)

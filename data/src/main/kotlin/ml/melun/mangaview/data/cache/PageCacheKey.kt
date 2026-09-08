@@ -3,6 +3,7 @@ package ml.melun.mangaview.data.cache
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import ml.melun.mangaview.core.PageId
+import ml.melun.mangaview.core.lowerHex
 
 object PageCacheKey {
     fun of(pageId: PageId): String {
@@ -20,7 +21,5 @@ object PageCacheKey {
         digest.update(bytes)
     }
 
-    internal fun ByteArray.toHex(): String = joinToString(separator = "") { byte ->
-        "%02x".format(byte.toInt() and 0xff)
-    }
+    internal fun ByteArray.toHex(): String = lowerHex()
 }

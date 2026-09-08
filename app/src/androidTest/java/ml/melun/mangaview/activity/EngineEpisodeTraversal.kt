@@ -23,7 +23,7 @@ internal enum class WholePreparationState { WAITING, READY, TIMED_OUT }
 internal class WholePreparationGate(
     private val startedAtNanos: Long,
     private val clock: () -> Long,
-    timeoutNanos: Long = 120_000_000_000L,
+    timeoutNanos: Long = 15_000_000_000L,
 ) {
     private val deadlineNanos = Math.addExact(startedAtNanos, timeoutNanos)
     var state: WholePreparationState = WholePreparationState.WAITING
@@ -82,12 +82,17 @@ internal suspend fun traverseCapturedEpisode(
     maximumDurationMillis: Long = 90_000,
     maximumCaptures: Long = 512,
     wholePreparationMode: Boolean = false,
+    quickPreparation: Boolean = false,
+    crossNextBoundary: Boolean = false,
+    launchRequestedAtNanos: Long? = null,
     preparationSnapshot: suspend () -> EngineLaunchPreparationSnapshot? = { null },
     recordPreparation: (EngineLaunchPreparationSnapshot) -> Unit = {},
     maximumGestures: Int = 512,
 ): JSONObject = coroutineScope {
     require(maximumDurationMillis in 1_000L..300_000L && maximumCaptures in 1L..1024L && maximumGestures in 1..2048)
     if (wholePreparationMode) require(!readbackEnabled) { "Whole-preparation performance phase must not use synchronous readback" }
+    require(!quickPreparation || wholePreparationMode)
+    require(!crossNextBoundary || (wholePreparationMode && !quickPreparation))
     val startToken = AtomicLong(0)
     val endToken = AtomicLong(0)
     val lastCapturedToken = AtomicLong(0)
@@ -136,7 +141,12 @@ internal suspend fun traverseCapturedEpisode(
     var lostFrameEvidence = 0L
     val observedSourceFrames = mutableListOf<JSONObject>()
     var firstFullSubmittedAtNanos: Long? = null
+    var nextEpisode: EpisodeId? = null
+    var firstNextSourceToken: Long? = null
+    var firstNextAnchorToken: Long? = null
+    val boundaryFrames = mutableListOf<JSONObject>()
     fun observeFrames() {
+        nextEpisode = nextEpisode ?: activity.viewerEngineSnapshot()?.plans?.get(episode)?.manifest?.nextEpisodeId
         firstFullSubmittedAtNanos = firstFullSubmittedAtNanos ?:
             activity.viewerStartupTimingSnapshot()?.firstCompleteViewportSubmittedAtNanos
         val batch = activity.engineFramesSince(frameCursor)
@@ -144,6 +154,25 @@ internal suspend fun traverseCapturedEpisode(
         batch.observations.forEach { observation ->
             val frame = observation.presentation
             if (frame.swapSucceeded) {
+                val next = nextEpisode
+                if (next != null) {
+                    val height = frame.scene.viewport.heightPx * frame.scene.coordinateUnitsPerPixel
+                    val visible = frame.scene.placements.filter { it.bottomPx > 0 && it.topPx < height }
+                    val nextVisible = visible.any { it.texture.tile.pageId.episodeId == next }
+                    if (nextVisible && frame.scene.completeCoverage) {
+                        firstNextSourceToken = firstNextSourceToken ?: frame.identity.token
+                        if (frame.scene.anchor?.pageId?.episodeId == next) {
+                            firstNextAnchorToken = firstNextAnchorToken ?: frame.identity.token
+                        }
+                    }
+                    if (nextVisible) boundaryFrames += JSONObject().apply {
+                        put("token", frame.identity.token); put("submittedAtNanos", frame.submittedAtNanos)
+                        put("completeViewportCoverage", frame.scene.completeCoverage)
+                        put("anchorPageId", frame.scene.anchor?.pageId?.toString() ?: JSONObject.NULL)
+                        put("visiblePageIds", org.json.JSONArray(visible.map { it.texture.tile.pageId.toString() }.distinct()))
+                        put("currentAndNextShareViewport", visible.any { it.texture.tile.pageId.episodeId == episode })
+                    }
+                }
                 observedSourceFrames += JSONObject().apply {
                     put("ordinal", observation.ordinal); put("token", frame.identity.token)
                     put("submittedAtNanos", frame.submittedAtNanos)
@@ -187,11 +216,12 @@ internal suspend fun traverseCapturedEpisode(
             fixedGestureDirections.forEach { swipe(it) }
         } else if (wholePreparationMode) {
             val openedAt = requireNotNull(activity.viewerStartupTimingSnapshot()).openStartedAtNanos
-            val readiness = WholePreparationGate(openedAt, System::nanoTime)
+            val readiness = WholePreparationGate(launchRequestedAtNanos ?: openedAt, System::nanoTime)
             val protocolDeadline = WholeProtocolDeadline(openedAt, System::nanoTime)
             var protocolDeadlineFail = false
             var gestureLimitFail = false
             var documentEndpointMissFail = false
+            var nextBoundaryMissFail = false
             var failurePhase: String? = null
             fun wholeSwipe(forward: Boolean, speed: EngineTraversalGestureSpeed, phase: String): Boolean {
                 if (protocolDeadline.expired()) {
@@ -217,9 +247,9 @@ internal suspend fun traverseCapturedEpisode(
                 if (!wholeSwipe(gesture.forward, gesture.speed, "EARLY_GESTURES")) break
                 readiness.observe(observePreparation()?.allFirstVerifiedPreparedAtNanos)
             }
-            while (!protocolDeadlineFail && !gestureLimitFail && endToken.get() == 0L &&
-                readiness.state != WholePreparationState.TIMED_OUT
-            ) {
+            // A preparation timeout remains a failure, but must not truncate the scroll
+            // evidence. Continue the complete traversal under the separate protocol bound.
+            while (!quickPreparation && !protocolDeadlineFail && !gestureLimitFail && endToken.get() == 0L) {
                 val anchorEpisode = activity.viewerEngineSnapshot()?.session?.anchor?.pageId?.episodeId
                 if (anchorEpisode != null && anchorEpisode != episode) {
                     documentEndpointMissFail = true
@@ -229,10 +259,21 @@ internal suspend fun traverseCapturedEpisode(
                 if (!wholeSwipe(true, EngineTraversalGestureSpeed.FAST, "FORWARD_ENDPOINT")) break
                 readiness.observe(observePreparation()?.allFirstVerifiedPreparedAtNanos)
             }
+            if (crossNextBoundary && !protocolDeadlineFail && !gestureLimitFail && endToken.get() > 0L) {
+                if (nextEpisode == null) {
+                    nextBoundaryMissFail = true
+                    if (failurePhase == null) failurePhase = "NEXT_EPISODE_UNAVAILABLE"
+                } else {
+                    while (!protocolDeadlineFail && !gestureLimitFail && firstNextAnchorToken == null) {
+                        if (!wholeSwipe(true, EngineTraversalGestureSpeed.NORMAL, "NEXT_BOUNDARY")) break
+                        readiness.observe(observePreparation()?.allFirstVerifiedPreparedAtNanos)
+                    }
+                    nextBoundaryMissFail = firstNextSourceToken == null || firstNextAnchorToken == null
+                    if (nextBoundaryMissFail && failurePhase == null) failurePhase = "NEXT_SOURCE_NOT_OBSERVED"
+                }
+            } else if (crossNextBoundary) nextBoundaryMissFail = true
             val reverseStartToken = lastObservedToken.get()
-            while (!protocolDeadlineFail && !gestureLimitFail && startToken.get() <= reverseStartToken &&
-                readiness.state != WholePreparationState.TIMED_OUT
-            ) {
+            while (!quickPreparation && !protocolDeadlineFail && !gestureLimitFail && startToken.get() <= reverseStartToken) {
                 val state = activity.viewerEngineSnapshot()
                 val previousEpisode = state?.plans?.get(episode)?.manifest?.previousEpisodeId
                 if (previousEpisode != null && state.session.anchor?.pageId?.episodeId == previousEpisode) {
@@ -254,7 +295,7 @@ internal suspend fun traverseCapturedEpisode(
                 if (readiness.state == WholePreparationState.WAITING) delay(100)
             }
             var postPreparationGestures = 0
-            if (!protocolDeadlineFail && !gestureLimitFail && readiness.state == WholePreparationState.READY) {
+            if (!protocolDeadlineFail && !gestureLimitFail && finalPreparation?.allFirstVerifiedPreparedAtNanos != null) {
                 for (forward in POST_PREPARATION_GESTURES) {
                     if (!wholeSwipe(forward, EngineTraversalGestureSpeed.FAST, "POST_PREPARATION_GESTURES")) break
                     postPreparationGestures++
@@ -286,11 +327,18 @@ internal suspend fun traverseCapturedEpisode(
             }.orEmpty()
             val finalFrame = activity.viewerEngineFrameSnapshot()
             return@coroutineScope JSONObject().apply {
-                put("wholePreparationMode", true); put("wholePreparationDeadlineMillis", 120_000)
+                put("wholePreparationMode", true); put("wholePreparationDeadlineMillis", 15_000)
+                put("quickPreparation", quickPreparation)
+                put("scope", if (quickPreparation) "STARTUP_AND_SHORT_SCROLL_DIAGNOSTIC" else "WHOLE_EPISODE_TRAVERSAL")
                 put("protocolDeadlineMillis", 150_000); put("protocolDeadlineFail", protocolDeadlineFail)
                 put("protocolTimeoutFail", protocolDeadlineFail)
                 put("gestureLimitFail", gestureLimitFail); put("failurePhase", failurePhase ?: JSONObject.NULL)
                 put("documentEndpointMissFail", documentEndpointMissFail)
+                put("crossNextBoundary", crossNextBoundary); put("nextBoundaryMissFail", nextBoundaryMissFail)
+                put("nextEpisodeId", nextEpisode?.toString() ?: JSONObject.NULL)
+                put("firstNextSourceToken", firstNextSourceToken ?: JSONObject.NULL)
+                put("firstNextAnchorToken", firstNextAnchorToken ?: JSONObject.NULL)
+                put("nextBoundaryFrames", org.json.JSONArray(boundaryFrames))
                 put("wholePreparationState", readiness.state.name)
                 put("preparationTimeoutFail", preparationTimedOut)
                 put("timeoutFail", preparationTimedOut || protocolDeadlineFail)

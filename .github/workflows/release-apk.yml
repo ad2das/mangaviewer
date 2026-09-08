@@ -30,6 +30,11 @@ on:
 permissions:
   contents: write
 
+# Allocate each version from the previous published APK without competing publishers.
+concurrency:
+  group: release-apk-main
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -62,6 +67,7 @@ jobs:
             /gradle/
             /tools/patch_apk_manifest_version.py
             /tools/release_latest_ci.sh
+            /tools/release_version.py
             /build.gradle
             /gradle.properties
             /gradlew

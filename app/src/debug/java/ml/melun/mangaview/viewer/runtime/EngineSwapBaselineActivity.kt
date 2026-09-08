@@ -19,6 +19,7 @@ import ml.melun.mangaview.engine.api.EngineViewport
 internal class EngineSwapBaselineActivity : Activity(), SurfaceHolder.Callback {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val records = mutableListOf<EngineSurfacePresentation>()
+    private val offeredFrames = mutableListOf<Pair<Long, Long>>()
     private val delivered = mutableMapOf<Long, Long>()
     private val errors = mutableListOf<Throwable>()
     val ready = CompletableDeferred<Unit>()
@@ -31,6 +32,7 @@ internal class EngineSwapBaselineActivity : Activity(), SurfaceHolder.Callback {
     private val tick = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
+            offeredFrames += frameTimeNanos to System.nanoTime()
             owner.offer(EngineSurfaceScene(1, 1, ++revision, 1, viewport, null, emptyList()))
             Choreographer.getInstance().postFrameCallback(this)
         }
@@ -94,6 +96,7 @@ internal class EngineSwapBaselineActivity : Activity(), SurfaceHolder.Callback {
     }
 
     fun snapshot(): List<EngineSurfacePresentation> = synchronized(records) { records.toList() }
+    fun offeredSnapshot(): List<Pair<Long, Long>> = offeredFrames.toList()
     fun deliveredAt(token: Long): Long = synchronized(records) { delivered.getValue(token) }
 
     override fun onDestroy() {

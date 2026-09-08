@@ -64,7 +64,8 @@ internal class AppWorkDispatchers : Closeable {
         // PageRepository can own six network flights. Fewer source workers serialized blocking
         // response-prefix validation before the transport scheduler could apply its priorities.
         const val SOURCE_THREADS = 6
-        const val IO_THREADS = 6
+        // Fourteen bounded image-body transfers leave workers available for publication and positions.
+        const val IO_THREADS = 16
     }
 }
 

@@ -20,6 +20,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,8 +36,12 @@ internal fun LibraryScreen(
     state: LibraryState,
     artworkLoader: SeriesArtworkLoader,
     accept: (LibraryIntent) -> Unit,
+    account: ml.melun.mangaview.account.AccountState = ml.melun.mangaview.account.AccountState(),
+    updateAvailable: Boolean = false,
 ) {
     val colors = libraryColors(state.saved.settings.darkTheme)
+    val focus = LocalFocusManager.current
+    LaunchedEffect(state.settingsVisible) { if (state.settingsVisible) focus.clearFocus() }
     val detailVisible = state.activeSeries != null
     val genreCatalogVisible = state.selectedGenre != null
     BackHandler(
@@ -53,7 +59,7 @@ internal fun LibraryScreen(
         if (state.seriesMenuVisible) SeriesActionsOverlay(state, colors, accept)
         if (state.downloadSelectionVisible) DownloadSelectionOverlay(state, colors, accept)
         if (state.pendingOfflineRemoval != null) OfflineRemovalConfirmation(state, colors, accept)
-        if (state.settingsVisible) SettingsOverlay(colors, accept)
+        if (state.settingsVisible) SettingsOverlay(colors, accept, account, updateAvailable)
         if (state.preferencesVisible) PreferencesOverlay(state, colors, accept)
     }
 }

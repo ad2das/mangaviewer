@@ -15,7 +15,7 @@ data class EngineTileSpec(
     val displayWidth: Int,
 ) {
     init {
-        require(contentRevision.isNotBlank() && sha256.matches(Regex("[0-9a-f]{64}")))
+        require(contentRevision.isNotBlank() && isSha256Hex(sha256))
         require(sourceTop >= 0 && sourceBottom > sourceTop && sourceBottom <= dimensions.heightPx)
         require(displayWidth > 0)
     }

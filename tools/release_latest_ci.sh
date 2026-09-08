@@ -12,6 +12,14 @@ if [ -z "${version_code}" ] || [ -z "${version_name}" ]; then
   exit 1
 fi
 
+mkdir -p release-work
+gh release view "${release_tag}" --repo "${repo}" >/dev/null 2>&1 || \
+  gh release create "${release_tag}" --repo "${repo}" --target "${target_branch}" \
+    --title "Main Latest" --notes "Latest main branch debug APK."
+# A failed metadata request must stop the release, never reuse the last versionCode.
+gh api "repos/${repo}/releases/tags/${release_tag}" --jq '.assets' > release-work/published-assets.json
+version_code="$(python3 tools/release_version.py next --base "${version_code}" --assets release-work/published-assets.json)"
+
 apk_name="mangaViewer_${version_code}-debug.apk"
 apk_path="app/build/outputs/apk/debug/${apk_name}"
 download_url="https://github.com/${repo}/releases/download/${release_tag}/${apk_name}"
@@ -21,18 +29,12 @@ echo "versionName=${version_name}"
 echo "apk=${apk_name}"
 
 VERSION_CODE="${version_code}" DOWNLOAD_URL="${download_url}" python3 - <<'PY'
-import json
 import os
 import re
 from pathlib import Path
 
 version_code = int(os.environ["VERSION_CODE"])
 download_url = os.environ["DOWNLOAD_URL"]
-
-Path("version.json").write_text(
-    json.dumps({"version": version_code, "link": download_url}, separators=(",", ":")),
-    encoding="utf-8",
-)
 
 path = Path("releases.html")
 text = path.read_text(encoding="utf-8")
@@ -85,6 +87,9 @@ python3 tools/patch_apk_manifest_version.py \
 "${apksigner}" verify "${apk_path}"
 test -f "${apk_path}"
 
+python3 tools/release_version.py metadata --version "${version_code}" --version-name "${version_name}" \
+  --repo "${repo}" --tag "${release_tag}" --apk "${apk_path}" --output version.json
+
 gh release view "${release_tag}" --repo "${repo}" >/dev/null 2>&1 || \
   gh release create "${release_tag}" \
     --repo "${repo}" \
@@ -92,7 +97,9 @@ gh release view "${release_tag}" --repo "${repo}" >/dev/null 2>&1 || \
     --title "Main Latest" \
     --notes "Latest main branch debug APK."
 
-gh release upload "${release_tag}" "${apk_path}" version.json --clobber --repo "${repo}"
+# Publish discovery metadata only after the complete APK is available for download.
+gh release upload "${release_tag}" "${apk_path}" --clobber --repo "${repo}"
+gh release upload "${release_tag}" version.json --clobber --repo "${repo}"
 
 release_id="$(gh api "repos/${repo}/releases/tags/${release_tag}" --jq ".id")"
 gh api "repos/${repo}/releases/${release_id}/assets" --jq ".[].name" |

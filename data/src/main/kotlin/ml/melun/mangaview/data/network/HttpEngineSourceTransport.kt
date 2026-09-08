@@ -32,6 +32,7 @@ class HttpEngineSourceTransport(
     context: Context,
     private val userAgent: String,
     private val protocolAlternatesEnabled: Boolean = true,
+    maximumSimultaneousBodyReads: Int = MAXIMUM_SIMULTANEOUS_BODY_READS,
 ) : SourceTransport, Closeable {
     private val appContext = context.applicationContext
     private val callbackExecutor: ExecutorService = Executors.newFixedThreadPool(8) { runnable ->
@@ -59,7 +60,7 @@ class HttpEngineSourceTransport(
     private var engineUseSequence = 0L
     private val exchanges = TransportResourceOwner<HttpEngineExchange>()
     private val bodies = TransportResourceOwner<HttpEngineBodyPageStream>()
-    private val bodyReadScheduler = HttpEngineBodyReadScheduler(MAXIMUM_SIMULTANEOUS_BODY_READS)
+    private val bodyReadScheduler = HttpEngineBodyReadScheduler(maximumSimultaneousBodyReads)
     private val closed = AtomicBoolean(false)
     private val resourcesClosed = AtomicBoolean(false)
 
@@ -93,19 +94,23 @@ class HttpEngineSourceTransport(
         val endpoints = urls.map(::engineEndpoint).distinctBy(EngineEndpoint::originKey)
         if (endpoints.isEmpty()) return
         val key = protocolEngineKey(effectivePreferQuic)
-        val schedule = synchronized(engineLock) {
-            if (closed.get() || key in warmedEngines) return@synchronized false
+        val creation = synchronized(engineLock) {
+            if (closed.get() || key in warmedEngines) return@synchronized null
             warmedEngines += key
-            engines[key] == null && engineCreations[key] == null
-        }
-        if (!schedule) return
+            if (engines[key] != null || engineCreations[key] != null) return@synchronized null
+            // Reserve the complete hint set before a simultaneous image request can create
+            // the same pool with only its own host. All callers await this owned creation.
+            CompletableFuture<EngineEntry>().also { engineCreations[key] = it }
+        } ?: return
         runCatching {
             callbackExecutor.execute {
-                runCatching { acquireEngine(key, endpoints, effectivePreferQuic) }
-                    .onSuccess { lease -> releaseEngine(lease.key) }
-                    .onFailure { synchronized(engineLock) { warmedEngines.remove(key) } }
+                createEngineFlight(key, endpoints, effectivePreferQuic, creation)
             }
-        }.onFailure { synchronized(engineLock) { warmedEngines.remove(key) } }
+        }.onFailure { failure -> synchronized(engineLock) {
+            engineCreations.remove(key, creation)
+            warmedEngines.remove(key)
+            creation.completeExceptionally(failure)
+        } }
     }
 
     private fun alternateProtocolRequest(request: SourceRequest): SourceRequest =
@@ -262,7 +267,10 @@ class HttpEngineSourceTransport(
                     engines[key] = entry
                     future.complete(entry)
                 }
-            }.onFailure(future::completeExceptionally)
+            }.onFailure { failure ->
+                warmedEngines.remove(key)
+                future.completeExceptionally(failure)
+            }
         }
     }
 

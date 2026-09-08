@@ -57,7 +57,7 @@ class EpisodeAccessPlan(
 
     init {
         require(contentRevision.isNotBlank() && authEpoch >= 0L)
-        require(documentSha256.matches(Regex("[0-9a-f]{64}")))
+        require(isSha256Hex(documentSha256))
         require(finalDocumentUrl.scheme in setOf("https", "http") && !finalDocumentUrl.host.isNullOrBlank())
         require(pages.map { it.pageId } == manifest.pages.map { it.id }) {
             "Access records must match the manifest exactly, including order"

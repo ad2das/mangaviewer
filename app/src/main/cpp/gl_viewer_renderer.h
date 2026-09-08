@@ -15,6 +15,7 @@
 
 #include "gl_presentation_callback.h"
 #include "gl_strip_readback.h"
+#include "gl_texture_upload.h"
 
 struct GlSceneEntry final {
     std::uint64_t textureKey = 0;
@@ -197,4 +198,5 @@ private:
     std::int64_t lastSubmittedToken_ = 0;
     std::thread::id ownerThread_{};
     GlStripReadback readback_;
+    GlTextureUpload textureUpload_;
 };

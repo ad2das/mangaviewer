@@ -7,6 +7,7 @@ import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.PageSpec
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.core.lowerHex
 import ml.melun.mangaview.engine.api.AccessPrerequisite
 import ml.melun.mangaview.engine.api.EpisodeAccessPlan
 import ml.melun.mangaview.engine.api.EpisodeDocumentPlanner
@@ -159,7 +160,7 @@ class NtkAccessPlanner(private val userAgent: String) : EpisodeDocumentPlanner {
     private fun revision(episode: EpisodeId, pages: List<NtkPageRequest>): String {
         val fields = listOf(episode.seriesId.sourceId.value, episode.seriesId.remoteKey, episode.remoteKey) + pages.map { it.url }
         return MessageDigest.getInstance("SHA-256").digest(fields.joinToString("") { "${it.length}:$it" }.toByteArray())
-            .joinToString("") { "%02x".format(it.toInt() and 255) }
+            .lowerHex()
     }
 
     private fun validateEpisode(episode: EpisodeId) {

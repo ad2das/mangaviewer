@@ -26,6 +26,8 @@ abstract class ViewerDatabase : RoomDatabase() {
     abstract fun viewer(): ViewerDao
 
     abstract fun engine(): EngineDao
+
+    abstract fun cloudLibrary(): CloudLibraryDao
 }
 
 class ViewerDatabaseFactory(

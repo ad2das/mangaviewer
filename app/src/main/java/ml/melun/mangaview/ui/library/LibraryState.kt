@@ -114,6 +114,8 @@ internal sealed interface LibraryIntent {
     data object ToggleSettings : LibraryIntent
     data object TogglePreferences : LibraryIntent
     data object AccountSignIn : LibraryIntent
+    data object AccountSignOut : LibraryIntent
+    data object AccountRetry : LibraryIntent
     data object CheckForUpdate : LibraryIntent
     data object OpenLicenses : LibraryIntent
     data class StartTabChanged(val value: Int) : LibraryIntent
@@ -136,7 +138,18 @@ internal sealed interface LibraryIntent {
     data object Back : LibraryIntent
 }
 
+internal fun LibraryIntent.accountEffect(): LibraryEffect = when (this) {
+    LibraryIntent.AccountSignIn -> LibraryEffect.AccountSignIn
+    LibraryIntent.AccountSignOut -> LibraryEffect.AccountSignOut
+    LibraryIntent.AccountRetry -> LibraryEffect.AccountRetry
+    else -> error("Not an account intent: $this")
+}
+
 internal sealed interface LibraryEffect {
+    data object CheckForUpdate : LibraryEffect
+    data object AccountSignIn : LibraryEffect
+    data object AccountSignOut : LibraryEffect
+    data object AccountRetry : LibraryEffect
     data class OpenEpisode(
         val episodeId: EpisodeId,
         val position: ReadingPosition? = null,

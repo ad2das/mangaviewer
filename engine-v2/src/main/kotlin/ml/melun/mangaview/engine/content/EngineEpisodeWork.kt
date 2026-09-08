@@ -5,6 +5,7 @@ import java.security.MessageDigest
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.core.lowerHex
 import ml.melun.mangaview.engine.api.EpisodeAccessPlan
 import ml.melun.mangaview.engine.api.EpisodePlanObserver
 import ml.melun.mangaview.engine.api.EpisodeDocumentPlanner
@@ -94,7 +95,7 @@ class EngineEpisodeWork(
             origin.toString(), adjacency?.toString() ?: "unknown")
         val bytes = fields.joinToString("") { "${it.length}:$it" }.toByteArray(Charsets.UTF_8)
         val resource = MessageDigest.getInstance("SHA-256").digest(bytes)
-            .joinToString("") { "%02x".format(it.toInt() and 255) }
+            .lowerHex()
         return WorkKey(principal, resource, "content.$operation", epoch.toString(), type)
     }
 }

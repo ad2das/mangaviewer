@@ -14,7 +14,10 @@ internal class SessionViewportReadiness {
     fun engage() { enabled = true; held = true }
     fun invalidate() { if (enabled) held = true }
     fun moved(consumed: BigRational) {
-        if (enabled && !consumed.isZero()) { held = true; revision++ }
+        if (!consumed.isZero()) {
+            revision++
+            if (enabled) held = true
+        }
     }
 
     fun release(presented: EngineSessionSnapshot, current: EngineSessionSnapshot): Boolean {

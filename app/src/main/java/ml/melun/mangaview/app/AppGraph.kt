@@ -112,6 +112,10 @@ internal class AppGraph(
         ),
     )
     val artworkLoader = SeriesArtworkLoader(sources, ioDispatcher)
+    val account = ml.melun.mangaview.account.AccountSync(appContext, applicationScope, ioDispatcher,
+        ml.melun.mangaview.account.LocalCloudLibrary(database::database)) { series ->
+            sources.require(series.sourceId).episodes(series).items
+        }
     val engine: EngineAppGraph by lazy {
         EngineAppGraph(appContext, applicationScope, sourceDispatcher, ioDispatcher, database, userLibrary, userAgent(),
             java.net.URI(DEFAULT_NTK_ORIGIN), { networkEvidenceObserver })

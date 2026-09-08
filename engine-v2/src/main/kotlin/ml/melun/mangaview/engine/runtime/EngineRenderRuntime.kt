@@ -52,6 +52,7 @@ class EngineRenderRuntime(
     private val owner = Thread.currentThread()
     private val work = SessionWorkSet(scope, coordinator, reportFailure)
     private val textures = linkedMapOf<EngineTileSpec, EngineTexture>()
+    private val tileDemands = linkedMapOf<EngineTileSpec, CachedTileDemand>()
     private val failedReadAhead = linkedSetOf<EngineTileSpec>()
     private val closeDone = CompletableDeferred<Unit>()
     private var current: EngineRuntimeSnapshot? = null
@@ -74,6 +75,7 @@ class EngineRenderRuntime(
             displayed = null
             work.clear()
             textures.clear()
+            tileDemands.clear()
             failedReadAhead.clear()
             epoch = uploader.rendererEpoch
         }
@@ -134,6 +136,7 @@ class EngineRenderRuntime(
                 if (original == null) failure = error else if (original !== error) original.addSuppressed(error)
             }
             textures.clear()
+            tileDemands.clear()
             failedReadAhead.clear()
             current = null
             displayed = null
@@ -171,10 +174,14 @@ class EngineRenderRuntime(
         }
         val plan = if (enabled) planner.retainReady(visiblePlan, snapshot, textures.keys.toList().asReversed())
             else visiblePlan
-        textures.keys.retainAll(plan.demands.mapTo(linkedSetOf()) { it.tile })
+        val wantedTiles = plan.demands.mapTo(linkedSetOf()) { it.tile }
+        textures.keys.retainAll(wantedTiles)
+        tileDemands.keys.retainAll(wantedTiles)
         if (!waiting) {
             val next = scene(snapshot, plan)
-            submitScene(next)
+            // Far-away original dimensions advance geometry revision without changing the
+            // viewport. Preserve input revisions and every changed pixel, but avoid that swap.
+            if (!sameSubmittedViewport(displayed, next)) submitScene(next)
             displayed = next.takeIf { enabled && it.completeCoverage }
             if (enabled && next.completeCoverage) reportViewportReady(next.session)
         }
@@ -182,6 +189,16 @@ class EngineRenderRuntime(
             it.priority != WorkPriority.NEXT_IMAGE || it.tile !in failedReadAhead
         }.map { demand(snapshot, it) })
         return true
+    }
+
+    private fun sameSubmittedViewport(previous: EngineDrawScene?, next: EngineDrawScene): Boolean {
+        if (previous == null || !previous.completeCoverage || !next.completeCoverage) return false
+        val before = previous.session
+        val after = next.session
+        return before.sessionId == after.sessionId && before.generation == after.generation &&
+            before.inputRevision == after.inputRevision && before.movementRevision == after.movementRevision &&
+            before.viewport == after.viewport && before.anchor == after.anchor &&
+            before.visibleRegions == after.visibleRegions && previous.quads == next.quads
     }
 
     private fun releaseDisplayedReferences() {
@@ -201,20 +218,28 @@ class EngineRenderRuntime(
     }
 
     private fun demand(snapshot: EngineRuntimeSnapshot, demand: EngineTileDemand): SessionDemand<EngineTexture> {
+        val accessPlan = snapshot.plans[demand.tile.pageId.episodeId]
+        tileDemands[demand.tile]?.let { cached ->
+            if (cached.priority == demand.priority && cached.accessPlan === accessPlan) return cached.value
+        }
         val request = tiles.request(pageRequest(demand.tile.pageId, demand.priority), demand.tile, demand.priority)
+        val generation = snapshot.session.generation
         return SessionDemand(request, onFailure = if (demand.priority == WorkPriority.NEXT_IMAGE) ({ _: Throwable ->
             failedReadAhead += demand.tile
             refresh()
         }) else null) { texture ->
-            if (!closed && current?.session?.generation == snapshot.session.generation &&
+            if (!closed && current?.session?.generation == generation &&
                 texture.rendererEpoch == uploader.rendererEpoch) {
                 require(texture.tile == demand.tile && texture.rendererId == uploader.rendererId)
                 failedReadAhead -= demand.tile
                 textures[demand.tile] = texture
                 refresh()
             }
-        }
+        }.also { tileDemands[demand.tile] = CachedTileDemand(accessPlan, demand.priority, it) }
     }
+
+    private class CachedTileDemand(val accessPlan: ml.melun.mangaview.engine.api.EpisodeAccessPlan?,
+        val priority: WorkPriority, val value: SessionDemand<EngineTexture>)
 
     private fun scene(snapshot: EngineRuntimeSnapshot, plan: EngineTilePlan): EngineDrawScene {
         val quads = plan.placements.mapNotNull { placement ->

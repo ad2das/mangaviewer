@@ -271,6 +271,48 @@ class EngineRenderRuntimeTest {
         fixture.close()
     }
 
+    @Test fun offscreenGeometryDoesNotRedrawButNewInputStillSubmits() = runTest {
+        val fixture = Fixture(this)
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        runCurrent()
+        val count = fixture.scenes.size
+        val requests = fixture.pageRequestBuilds
+        val updated = initial.copy(session = initial.session.copy(geometryRevision = 100))
+        fixture.runtime.update(updated)
+        runCurrent()
+        assertEquals(count, fixture.scenes.size)
+        fixture.runtime.update(updated.copy(session = updated.session.copy(inputRevision = 2)))
+        runCurrent()
+        assertEquals(count + 1, fixture.scenes.size)
+        assertEquals(2L, fixture.scenes.last().session.inputRevision)
+        assertEquals(100L, fixture.scenes.last().session.geometryRevision)
+        assertEquals("Ready scrolling must not rebuild identical tile work", requests, fixture.pageRequestBuilds)
+        fixture.close()
+    }
+
+    @Test fun renewedAccessPlanRebuildsWorkEvenWhenItsImageIdentityIsUnchanged() = runTest {
+        val fixture = Fixture(this)
+        val manifest = ml.melun.mangaview.core.EpisodeManifest(id.episodeId, "test",
+            listOf(ml.melun.mangaview.core.PageSpec(id, 0)))
+        fun access(epoch: Long) = EpisodeAccessPlan(manifest, "1", "0".repeat(64),
+            java.net.URI("https://test.example/read"), epoch,
+            listOf(PageAccessPlan(id, "0", listOf(java.net.URI("https://test.example/image")))))
+        val initial = snapshot().copy(plans = mapOf(id.episodeId to access(0)))
+        fixture.runtime.update(initial)
+        runCurrent()
+        val requests = fixture.pageRequestBuilds
+        fixture.runtime.update(initial.copy(session = initial.session.copy(inputRevision = 2)))
+        runCurrent()
+        assertEquals(requests, fixture.pageRequestBuilds)
+        fixture.runtime.update(initial.copy(session = initial.session.copy(inputRevision = 2),
+            plans = mapOf(id.episodeId to access(1))))
+        runCurrent()
+        assertTrue(fixture.pageRequestBuilds > requests)
+        assertTrue(fixture.scenes.last().completeCoverage)
+        fixture.close()
+    }
+
     private inner class Fixture(scope: TestScope, textureBudget: Long = 80_000,
         tileHeight: Int = 202, preparationViewports: Int = 0, waitForComplete: Boolean = false,
     ) {
@@ -279,6 +321,7 @@ class EngineRenderRuntimeTest {
         val scenes = mutableListOf<EngineDrawScene>()
         var files = 0
         var pixelCloses = 0
+        var pageRequestBuilds = 0
         var failScene = false
         var beforeDecode: suspend (EngineTileSpec) -> Unit = {}
         val failures = mutableListOf<Throwable>()
@@ -293,6 +336,7 @@ class EngineRenderRuntimeTest {
         val runtime = EngineRenderRuntime(scope, coordinator,
             EngineTilePlanner(textureBudget, tileHeight, preparationViewports), tileWork, uploader,
             { _, priority ->
+                pageRequestBuilds++
                 WorkRequest(WorkKey("test", "page", "read", "1", StoredPage::class.java), WorkDomain.STORAGE, priority,
                     execute = { files++; StoredPage(id, "1", File("original.png"), 1, "1".repeat(64), dimensions, "image/png") },
                     dispose = { files-- })

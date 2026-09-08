@@ -68,20 +68,16 @@ internal class EngineSurfaceOwner(
     private val captureRasterizationReader = EngineCaptureRasterizationReader({ rendererEpoch }, { surfaceEpoch }) {
         requireNotNull(OwnedRendererBridge.nativeRasterizationInfoForVerification(native))
     }
-    private var lastFrameStartedNanos = 0L
     private var configured = false
     private var choreographer: Choreographer? = null
-    private var drawCallbackPosted = false
-    private val draw = Choreographer.FrameCallback {
-        drawCallbackPosted = false
-        renderLatest()
-    }
     private var pollPosted = false
     private val poll = Choreographer.FrameCallback {
         pollPosted = false
         if (!destroyed.get()) {
-            OwnedRendererBridge.nativePollPresentations(native)
-            readbacks.poll()
+            traceEngineWork("engine_presentation_poll") {
+                OwnedRendererBridge.nativePollPresentations(native)
+                readbacks.poll()
+            }
             if (maximumPendingForVerification != null && pending.size < maximumPendingForVerification &&
                 synchronized(lock) { latest != null }) renderLatest()
             if (pending.isNotEmpty() || readbacks.pending) schedulePoll()
@@ -202,25 +198,13 @@ internal class EngineSurfaceOwner(
             receipt.await()
         }
 
-    fun offer(scene: EngineSurfaceScene) {
+    fun offer(scene: EngineSurfaceScene) = traceEngineWork("engine_offer") {
         val schedule = synchronized(lock) {
             if (closing.get()) return
             latest = scene.copy(placements = scene.placements.toList())
             if (posted) false else true.also { posted = true }
         }
-        if (schedule) check(handler.post(::scheduleDraw)) { "GL owner queue rejected a frame" }
-    }
-
-    /** Consume the latest accumulated scene at display cadence; input processing remains independent. */
-    private fun scheduleDraw() {
-        if (drawCallbackPosted || closing.get()) return
-        if (attached && EngineFrameCadence.due(lastFrameStartedNanos, System.nanoTime(), refreshRate)) {
-            renderLatest()
-            return
-        }
-        drawCallbackPosted = true
-        val clock = choreographer ?: Choreographer.getInstance().also { choreographer = it }
-        clock.postFrameCallback(draw)
+        if (schedule) check(handler.post(::renderLatest)) { "GL owner queue rejected a frame" }
     }
 
     override suspend fun upload(pixels: EnginePixels, expectedEpoch: Long): EngineTexture {
@@ -230,7 +214,7 @@ internal class EngineSurfaceOwner(
         var acquired = 0L
         try {
             while (acquired == 0L) {
-                val wait = onOwner {
+                val wait = onOwner("engine_owner_upload") {
                     caller?.ensureActive()
                     check(!closing.get() && configured && expectedEpoch == rendererEpoch && !nativePixels.isClosed)
                     val used = OwnedRendererBridge.nativeTextureCounts(native)[1]
@@ -260,7 +244,7 @@ internal class EngineSurfaceOwner(
     override suspend fun release(texture: EngineTexture) = withContext(NonCancellable) {
         require(texture.rendererId == rendererId)
         if (closing.get()) { closed.await(); return@withContext }
-        val completion = onOwner {
+        val completion = onOwner("engine_owner_release") {
             val done = CompletableDeferred<Unit>()
             if (destroyed.get()) done.complete(Unit) else {
                 OwnedRendererBridge.nativeReleaseTexture(native, texture.key)
@@ -289,8 +273,6 @@ internal class EngineSurfaceOwner(
             try {
                 onOwner {
                     synchronized(lock) { latest = null }
-                    choreographer?.removeFrameCallback(draw)
-                    drawCallbackPosted = false
                     attached = false
                     terminatePending(PresentationTimestampKind.CANCELLED)
                     OwnedRendererBridge.nativeDestroy(native)
@@ -319,7 +301,6 @@ internal class EngineSurfaceOwner(
         val identity = FrameIdentity(scene.sessionId, rendererEpoch, surfaceEpoch, token, scene.inputRevision, scene.geometryRevision)
         val record = Pending(identity, scene, System.nanoTime())
         nextCapture.bind(rendererId, identity, scene, readbacks, captureRasterizationReader)
-        lastFrameStartedNanos = record.submittedAt
         pending[token] = record
         val tracing = Trace.isEnabled()
         if (tracing) Trace.beginSection("engine_frame:${identity.sessionId}:$rendererId:$surfaceEpoch:$token:${scene.inputRevision}:${scene.geometryRevision}")
@@ -419,7 +400,8 @@ internal class EngineSurfaceOwner(
         capacityChanged = CompletableDeferred()
     }
 
-    private suspend fun <T> onOwner(block: () -> T): T = withContext(NonCancellable + dispatcher) { block() }
+    private suspend fun <T> onOwner(trace: String = "engine_owner_task", block: () -> T): T =
+        withContext(NonCancellable + dispatcher) { traceEngineWork(trace, block) }
 
     private companion object { val nextRenderer = AtomicLong() }
 }

@@ -113,6 +113,8 @@ data class WorkOwnershipSnapshot(
 interface WorkCoordinatorPort {
     /** Registers ownership without waiting for the physical operation to complete. */
     suspend fun <T : Any> submit(request: WorkRequest<T>): WorkSubscription<T>
+    /** Waits for an earlier cancelled owner of this key to retire before registering new work. */
+    suspend fun <T : Any> submitAfterRetirement(request: WorkRequest<T>): WorkSubscription<T> = submit(request)
     suspend fun <T : Any> acquire(request: WorkRequest<T>): WorkLease<T>
     /** Permanently rejects this and older principal epochs; awaits their execution/disposal. */
     suspend fun invalidate(principal: String, authEpoch: Long)

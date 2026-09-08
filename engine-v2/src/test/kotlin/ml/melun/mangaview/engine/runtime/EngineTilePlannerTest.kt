@@ -184,7 +184,11 @@ class EngineTilePlannerTest {
         val plan = EngineTilePlanner(1_000_000, 202, preparationViewports = 2).plan(state)
         assertEquals(listOf(0, 200), plan.demands.filter { it.tile.pageId != pageId }.map { it.tile.sourceTop })
         assertTrue(plan.placements.all { it.tile.pageId == pageId })
-        val tight = EngineTilePlanner(80_000, 202, preparationViewports = 2).plan(state)
+        val extended = EngineTilePlanner(1_000_000, 202, preparationViewports = 4).plan(state)
+        assertEquals(listOf(0, 200, 400, 600),
+            extended.demands.filter { it.tile.pageId != pageId }.map { it.tile.sourceTop })
+        assertEquals(plan.placements, extended.placements)
+        val tight = EngineTilePlanner(80_000, 202, preparationViewports = 4).plan(state)
         assertEquals(1, tight.demands.size)
         assertEquals(80_000L, tight.plannedTextureBytes)
     }

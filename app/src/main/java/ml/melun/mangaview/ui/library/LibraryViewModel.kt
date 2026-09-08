@@ -18,7 +18,7 @@ import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.data.library.SavedSeries
-import ml.melun.mangaview.data.PageRepository
+import ml.melun.mangaview.app.EngineOpeningPreparations
 import ml.melun.mangaview.data.library.UserLibraryRepository
 import ml.melun.mangaview.data.offline.OfflineDownloadManager
 import ml.melun.mangaview.data.offline.OfflineEpisodeStore
@@ -35,7 +35,7 @@ internal class LibraryViewModel(
     private val userLibrary: UserLibraryRepository,
     private val offlineStore: OfflineEpisodeStore,
     private val offlineDownloads: OfflineDownloadManager,
-    private val pageRepository: PageRepository,
+    private val openings: () -> EngineOpeningPreparations,
     private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
     private val actions = LibraryActions(viewModelScope, ioDispatcher, sourceRegistry, userLibrary, offlineDownloads)
@@ -49,13 +49,7 @@ internal class LibraryViewModel(
         update = ::update,
         emit = { effect -> effectChannel.trySend(effect) },
     )
-    private val episodeWarmer = LibraryEpisodeWarmer(
-        viewModelScope,
-        ioDispatcher,
-        sourceRegistry,
-        pageRepository,
-        userLibrary,
-    )
+    private val episodeWarmer = LibraryEpisodeWarmer(openings)
     private var contentJob: Job? = null
     private var homeJob: Job? = null
     private var genreJob: Job? = null
@@ -65,6 +59,10 @@ internal class LibraryViewModel(
 
     val state: StateFlow<LibraryState> = mutableState.asStateFlow()
     val effects = effectChannel.receiveAsFlow()
+    override fun onCleared() {
+        episodeWarmer.cancel()
+        super.onCleared()
+    }
     init {
         observers.start(viewModelScope, ::update, ::loadHome) {
             mostLikelyContinuation(state.value)?.let(episodeWarmer::warm)
@@ -112,8 +110,10 @@ internal class LibraryViewModel(
             LibraryIntent.TogglePreferences -> update {
                 it.copy(preferencesVisible = !it.preferencesVisible, settingsVisible = false)
             }
-            LibraryIntent.AccountSignIn -> uiActions.showMessage("계정 동기화 설정이 이 빌드에 연결되어 있지 않습니다")
-            LibraryIntent.CheckForUpdate -> uiActions.openProjectPage("https://github.com/ad2das/mangaviewer/releases")
+            LibraryIntent.AccountSignIn, LibraryIntent.AccountSignOut, LibraryIntent.AccountRetry -> {
+                effectChannel.trySend(intent.accountEffect())
+            }
+            LibraryIntent.CheckForUpdate -> effectChannel.trySend(LibraryEffect.CheckForUpdate)
             LibraryIntent.OpenLicenses -> uiActions.openProjectPage("https://github.com/ad2das/mangaviewer/blob/main/LICENSE")
             LibraryIntent.ToggleSeriesMenu -> update { it.copy(seriesMenuVisible = !it.seriesMenuVisible) }
             LibraryIntent.ToggleDownloadSelection -> uiActions.toggleDownloadSelection()
@@ -480,7 +480,7 @@ internal class LibraryViewModelFactory(
     private val userLibrary: UserLibraryRepository,
     private val offlineStore: OfflineEpisodeStore,
     private val offlineDownloads: OfflineDownloadManager,
-    private val pageRepository: PageRepository,
+    private val openings: () -> EngineOpeningPreparations,
     private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
@@ -491,7 +491,7 @@ internal class LibraryViewModelFactory(
             userLibrary,
             offlineStore,
             offlineDownloads,
-            pageRepository,
+            openings,
             ioDispatcher,
         ) as T
     }

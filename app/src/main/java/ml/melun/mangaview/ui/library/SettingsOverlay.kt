@@ -23,7 +23,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
-internal fun SettingsOverlay(colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+internal fun SettingsOverlay(colors: LibraryColors, accept: (LibraryIntent) -> Unit,
+    account: ml.melun.mangaview.account.AccountState = ml.melun.mangaview.account.AccountState(),
+    updateAvailable: Boolean = false) {
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = .46f))
             .clickable { accept(LibraryIntent.ToggleSettings) },
@@ -41,7 +43,7 @@ internal fun SettingsOverlay(colors: LibraryColors, accept: (LibraryIntent) -> U
             AccountHeading(colors)
             Spacer(Modifier.height(18.dp))
             BasicText(
-                "로그인 필요",
+                account.message,
                 Modifier.clip(RoundedCornerShape(12.dp)).background(colors.accentSurface)
                     .padding(horizontal = 12.dp, vertical = 7.dp),
                 labelStyle(colors, true),
@@ -52,13 +54,22 @@ internal fun SettingsOverlay(colors: LibraryColors, accept: (LibraryIntent) -> U
                 style = bodyStyle(colors, 14).copy(color = colors.secondary),
             )
             Spacer(Modifier.height(22.dp))
-            LibraryAction("Google 계정으로 로그인", colors, Modifier.fillMaxWidth().height(56.dp)) {
-                accept(LibraryIntent.AccountSignIn)
+            if (account.signedIn) {
+                BasicText(account.displayName, style = bodyStyle(colors, 14))
+                Spacer(Modifier.height(10.dp))
+                AccountOutlineAction("지금 동기화", colors) { accept(LibraryIntent.AccountRetry) }
+                Spacer(Modifier.height(10.dp))
+                AccountOutlineAction("로그아웃", colors) { accept(LibraryIntent.AccountSignOut) }
+            } else {
+                LibraryAction(if (account.busy) "로그인 중" else "Google 계정으로 로그인", colors,
+                    Modifier.fillMaxWidth().height(56.dp)) {
+                    if (!account.busy) accept(LibraryIntent.AccountSignIn)
+                }
             }
             Spacer(Modifier.height(10.dp))
             AccountOutlineAction("설정 열기", colors) { accept(LibraryIntent.TogglePreferences) }
             Spacer(Modifier.height(10.dp))
-            AccountOutlineAction("업데이트 확인", colors) { accept(LibraryIntent.CheckForUpdate) }
+            AccountOutlineAction(if (updateAvailable) "새 업데이트 있음" else "업데이트 확인", colors) { accept(LibraryIntent.CheckForUpdate) }
         }
     }
 }

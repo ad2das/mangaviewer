@@ -167,6 +167,11 @@ class EngineViewerCaptureTest {
                     maximumDurationMillis = (arguments.getString("captureTraversalSeconds") ?: if (wholePreparationMode) "150" else "90").toLong() * 1_000,
                     maximumCaptures = (arguments.getString("captureMaximumFrames") ?: "512").toLong(),
                     wholePreparationMode = wholePreparationMode,
+                    quickPreparation = arguments.getString("captureQuickPreparation") == "true",
+                    crossNextBoundary = arguments.getString("captureCrossNextBoundary") == "true",
+                    launchRequestedAtNanos = JSONObject(File(output, "ui-launch.json").readText()).let {
+                        it.optLong("launchRequestedAtNanos", it.optLong("tapStartedMonotonicNs", 0L)).takeIf { value -> value > 0L }
+                    },
                     preparationSnapshot = { activity.viewerEngineDiagnosticSnapshot()?.content?.launchPreparation },
                     recordPreparation = ::recordLaunchPreparation,
                     maximumGestures = (arguments.getString("captureMaximumGestures") ?: "512").toInt())
@@ -200,8 +205,9 @@ class EngineViewerCaptureTest {
                         put("physicalPresentationVerified", false)
                     }.toString(2))
                 }
-                check(!report.optBoolean("timeoutFail")) { "Launch episode originals were not all first-verified within 120 seconds" }
+                check(!report.optBoolean("timeoutFail")) { "Launch originals exceeded 15 seconds or traversal exceeded its protocol deadline" }
                 check(!report.optBoolean("documentEndpointMissFail")) { "Launch episode boundary was crossed without its visible source endpoint" }
+                check(!report.optBoolean("nextBoundaryMissFail")) { "Next episode source was not observed across the real boundary" }
             } else {
             val deadline = SystemClock.elapsedRealtime() + 30_000
             var index = 0

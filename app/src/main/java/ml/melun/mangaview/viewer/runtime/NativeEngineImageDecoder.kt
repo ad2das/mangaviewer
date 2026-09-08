@@ -11,8 +11,10 @@ internal class NativeEngineImageDecoder : EngineImageDecoder {
     override suspend fun decode(page: StoredPage, tile: EngineTileSpec): EnginePixels {
         require(page.pageId == tile.pageId && page.contentRevision == tile.contentRevision &&
             page.sha256 == tile.sha256 && page.dimensions == tile.dimensions)
-        val handle = NativeCpuDecodeBridge.nativeDecode(page.file.absolutePath, tile.dimensions.widthPx,
-            tile.dimensions.heightPx, tile.sourceTop, tile.sourceBottom, tile.displayWidth)
+        val handle = traceEngineWork("engine_decode") {
+            NativeCpuDecodeBridge.nativeDecode(page.file.absolutePath, tile.dimensions.widthPx,
+                tile.dimensions.heightPx, tile.sourceTop, tile.sourceBottom, tile.displayWidth)
+        }
         check(handle != 0L) { "Native original-image decode failed" }
         try {
             val bytes = NativeCpuDecodeBridge.nativeByteCount(handle)

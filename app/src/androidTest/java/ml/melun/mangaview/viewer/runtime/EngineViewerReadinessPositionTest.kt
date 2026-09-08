@@ -52,9 +52,14 @@ class EngineViewerReadinessPositionTest {
                     assertEquals(displayed, runtime.bookmarkSnapshot()!!.first)
                     assertTrue(runtime.userScroll(FixedPx.fromPixels(400), 0f, System.nanoTime(), 0, 0))
                     assertTrue(runtime.userScroll(FixedPx.fromPixels(-50), 0f, System.nanoTime(), 0, 0))
-                    assertEquals(PageId.at(source.episode, 1), runtime.snapshot().session.anchor!!.pageId)
-                    assertEquals(1, runtime.snapshot().session.pendingInputCount)
+                    assertEquals(SourceAnchor(PageId.at(source.episode, 1),
+                        50L * SourceAnchor.SOURCE_UNITS_PER_PIXEL), runtime.snapshot().session.anchor)
+                    assertEquals(0, runtime.snapshot().session.pendingInputCount)
                     assertEquals(displayed, runtime.bookmarkSnapshot()!!.first)
+                    withTimeout(5_000) {
+                        while (positions.saved == null) delay(10)
+                    }
+                    assertEquals(displayed to 0L, positions.saved)
                     runtime.close()
                     assertEquals(displayed to 0L, positions.saved)
                     assertTrue(failures.toString(), failures.isEmpty())

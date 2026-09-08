@@ -17,6 +17,7 @@ import ml.melun.mangaview.engine.api.EnginePositionPort
 import ml.melun.mangaview.engine.api.EpisodePlanObserver
 import ml.melun.mangaview.engine.api.EngineSessionWork
 import ml.melun.mangaview.engine.api.WorkCoordinatorPort
+import ml.melun.mangaview.engine.api.WorkLimits
 import ml.melun.mangaview.engine.work.WorkCoordinator
 import ml.melun.mangaview.source.wfwf.DEFAULT_WFWF_ORIGIN
 import ml.melun.mangaview.source.ntk.NtkBrowserIdentity
@@ -37,7 +38,11 @@ internal class EngineAppGraph(
     private val ntkOrigin: URI,
     networkEvidenceObserver: () -> SourceExchangeObserver? = { null },
 ) {
-    val coordinator: WorkCoordinatorPort = WorkCoordinator(scope)
+    private val workLimits = WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12)
+    val coordinator: WorkCoordinatorPort = WorkCoordinator(scope, workLimits)
+    val openings = EngineOpeningPreparations(scope, ioDispatcher, coordinator, { target ->
+        session(ViewerLaunchSpec(target.seriesId.sourceId, target.seriesId, target))
+    }, { android.util.Log.w("EngineOpening", "Opening preparation failed", it) })
     @Volatile var episodeEvidenceObserver: EpisodePlanObserver? = null
     @Volatile var ntkAuthorizationEvidenceObserver: ((NtkEngineAuthorization) -> Unit)? = null
     private val observations = EpisodePlanObserver { episode, document, plan ->
@@ -45,13 +50,14 @@ internal class EngineAppGraph(
     }
     private val positionStore = EnginePositionStore(database::database, ioDispatcher)
     val positions: EnginePositionPort = positionStore
-    private val transport = ObservedSourceTransport(OkHttpTransportFactory(ioDispatcher).create(), "engine", networkEvidenceObserver)
+    private val transportFactory = OkHttpTransportFactory(ioDispatcher, parallelism = workLimits.network)
+    private val transport = ObservedSourceTransport(transportFactory.create(), "engine", networkEvidenceObserver)
     private val ntkPageTransport = lazy {
         // Match NTK's existing Chromium TLS transport for its image CDN hosts.
         // Construction is lazy and does not preconnect or request page content.
         ObservedSourceTransport(if (Build.VERSION.SDK_INT >= 34) {
-            HttpEngineSourceTransport(context.applicationContext, userAgent)
-        } else OkHttpTransportFactory(ioDispatcher).create(), "engine", networkEvidenceObserver)
+            HttpEngineSourceTransport(context.applicationContext, userAgent, maximumSimultaneousBodyReads = workLimits.bodies)
+        } else transportFactory.create(), "engine", networkEvidenceObserver)
     }
     private val storage = EngineRawStorage(File(context.applicationInfo.dataDir, "app_engine_pages_v1"),
         RoomEnginePublicationIndex(database::database), ioDispatcher, positions)
@@ -74,7 +80,10 @@ internal class EngineAppGraph(
 
     suspend fun close() {
         var primary: Throwable? = null
-        try { coordinator.close() } catch (failure: Throwable) { primary = failure }
+        try { openings.close() } catch (failure: Throwable) { primary = failure }
+        try { coordinator.close() } catch (failure: Throwable) {
+            if (primary == null) primary = failure else primary.addSuppressed(failure)
+        }
         val transports = listOfNotNull(transport, ntkPageTransport.takeIf { it.isInitialized() }?.value)
         for (owned in transports) try { owned.close() } catch (failure: Throwable) {
             val first = primary
