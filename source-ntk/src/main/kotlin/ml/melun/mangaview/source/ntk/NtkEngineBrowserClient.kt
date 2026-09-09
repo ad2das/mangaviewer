@@ -76,13 +76,15 @@ class NtkEngineBrowserClient(
         var result: EngineBrowserProof? = null
         var failure: Throwable? = null
         try {
-            exchange.bind()
-            exchange.resolve(document, userAgent, identity, captureEvidence())
-            exchange.ready.await()
-            exchange.descriptor(document, payload)
-            val ack = exchange.ack.await()
-            val manifest = exchange.manifest.await()
-            result = EngineBrowserProof(manifest.first, ack, manifest.second)
+            result = awaitNtkBrowserResult {
+                exchange.bind()
+                exchange.resolve(document, userAgent, identity, captureEvidence())
+                exchange.ready.await()
+                exchange.descriptor(document, payload)
+                val ack = exchange.ack.await()
+                val manifest = exchange.manifest.await()
+                EngineBrowserProof(manifest.first, ack, manifest.second)
+            }
         } catch (caught: Throwable) { failure = caught }
         withContext(NonCancellable) {
             try { exchange.retire() } catch (cleanup: Throwable) {

@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.app.AndroidWorkDispatcher
@@ -119,7 +120,11 @@ internal class EngineViewerScreen(
                 engineDiagnostics.snapshot(snapshot, System.nanoTime())
                 onViewerOpened()
             },
-            reportPresented = engineDiagnostics::presented,
+            reportPresented = { presented ->
+                engineDiagnostics.presented(presented)
+                if (presented.swapSucceeded && presented.scene.completeCoverage &&
+                    presented.scene.placements.isNotEmpty()) progress.visibility = android.view.View.GONE
+            },
             reportRendererClosed = engineDiagnostics::rendererClosed,
             inputObservations = engineInputObservations,
             reportFailure = ::showFailure,
@@ -132,6 +137,12 @@ internal class EngineViewerScreen(
     fun open() {
         val createdRuntime = requireNotNull(runtime)
         engineDiagnostics.opened(System.nanoTime())
+        sessionScope.launch {
+            delay(500)
+            if (!closing && reportedFailure == null &&
+                engineDiagnostics.startup()?.firstCompleteViewportSubmittedAtNanos == null)
+                progress.visibility = android.view.View.VISIBLE
+        }
         sessionScope.launch {
             openingHandoff?.awaitPredecessor()
             if (runtime === createdRuntime) createdRuntime.open()

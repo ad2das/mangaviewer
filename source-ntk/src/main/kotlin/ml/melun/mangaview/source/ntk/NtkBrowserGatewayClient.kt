@@ -2,6 +2,7 @@ package ml.melun.mangaview.source.ntk
 
 import android.graphics.Bitmap
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.HttpAuthHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -21,6 +22,12 @@ internal class NtkBrowserGatewayClient(
     private val fail: (RemoteRequest, String) -> Unit,
     private val rendererGone: (WebView, RemoteRequest?) -> Unit,
 ) : WebViewClient() {
+    override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler, host: String, realm: String) {
+        val credentials = (view.context.applicationContext as? NtkBrowserProxyOwner)
+            ?.ntkBrowserProxyCredentials(host, realm)
+        if (credentials == null) handler.cancel() else handler.proceed(credentials.first, credentials.second)
+    }
+
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
         currentRequest()?.let { request ->
             if (!request.documentNavigationStarted || !request.documentCookiesApplied || keyOf(url) != request.key) return

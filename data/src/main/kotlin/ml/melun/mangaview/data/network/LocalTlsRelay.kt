@@ -14,12 +14,17 @@ import java.util.concurrent.Semaphore
 import okhttp3.Dns
 
 /** Private CONNECT relay on loopback; it never terminates TLS or handles decrypted HTTP. */
-internal class LocalTlsRelay(private val dns: Dns) : Closeable {
+internal class LocalTlsRelay(private val dns: Dns, private val basicAuthentication: Boolean = false) : Closeable {
     private val server = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
     private val workers = Executors.newCachedThreadPool { task -> Thread(task, "source-tls-relay").apply { isDaemon = true } }
     private val slots = Semaphore(32)
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
-    val authorization = "Bearer ${UUID.randomUUID()}"
+    val username = UUID.randomUUID().toString()
+    val password = UUID.randomUUID().toString()
+    val realm = "mangaviewer-${UUID.randomUUID()}"
+    val authorization = if (basicAuthentication) "Basic " +
+        java.util.Base64.getEncoder().encodeToString("$username:$password".toByteArray(Charsets.UTF_8))
+        else "Bearer ${UUID.randomUUID()}"
     val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", server.localPort))
 
     init { workers.execute(::acceptConnections) }
@@ -70,8 +75,18 @@ internal class LocalTlsRelay(private val dns: Dns) : Closeable {
             header.append(value.toChar())
         }
         val lines = header.toString().split("\r\n")
-        require(lines.drop(1).any { it.equals("Proxy-Authorization: $authorization", ignoreCase = true) }) {
-            "CONNECT is not authorized"
+        val authenticated = lines.drop(1).any {
+            it.substringBefore(':').equals("Proxy-Authorization", ignoreCase = true) &&
+                it.substringAfter(':', "").trim() == authorization
+        }
+        if (!authenticated) {
+            if (basicAuthentication) client.getOutputStream().apply {
+                write(("HTTP/1.1 407 Proxy Authentication Required\r\n" +
+                    "Proxy-Authenticate: Basic realm=\"$realm\"\r\n" +
+                    "Content-Length: 0\r\nConnection: close\r\n\r\n").toByteArray(Charsets.US_ASCII))
+                flush()
+            }
+            throw IOException("CONNECT is not authorized")
         }
         val request = lines.first().split(' ')
         require(request.size == 3 && request[0] == "CONNECT" && request[2] == "HTTP/1.1")

@@ -12,8 +12,11 @@ import ml.melun.mangaview.source.ntk.NtkBrowserProcess
 import ml.melun.mangaview.source.ntk.NtkWebViewStartup
 import ml.melun.mangaview.source.ntk.NtkWebViewStartupOwner
 
-class ViewerApplication : Application(), NtkWebViewStartupOwner {
+class ViewerApplication : Application(), NtkWebViewStartupOwner,
+    ml.melun.mangaview.source.ntk.NtkBrowserProxyOwner {
     override val ntkWebViewStartup = NtkWebViewStartup()
+    private var browserNetwork: ml.melun.mangaview.app.NtkBrowserNetwork? = null
+    override fun ntkBrowserProxyCredentials(host: String, realm: String) = browserNetwork?.credentials(host, realm)
     private val workDispatchers = AppWorkDispatchers()
     private val applicationScope = CoroutineScope(SupervisorJob() + workDispatchers.source)
     internal lateinit var graph: AppGraph
@@ -23,7 +26,8 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner {
         super.onCreate()
         if (NtkBrowserProcess.isCurrent(this)) {
             NtkBrowserProcess.configureWebViewStorage(this)
-            ntkWebViewStartup.start(this)
+            val network = ml.melun.mangaview.app.NtkBrowserNetwork().also { browserNetwork = it }
+            ntkWebViewStartup.start(this, network::configure)
             return
         }
         val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
@@ -33,6 +37,7 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner {
     }
 
     override fun onTerminate() {
+        browserNetwork?.close()
         if (::graph.isInitialized) graph.close()
         applicationScope.cancel()
         workDispatchers.close()

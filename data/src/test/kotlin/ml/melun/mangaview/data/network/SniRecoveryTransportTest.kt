@@ -26,6 +26,51 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SniRecoveryTransportTest {
+    @Test fun browserProxyAuthenticatesBeforeOpeningTlsAndPreservesPostBytes() = runBlocking {
+        val certificate = HeldCertificate.Builder().addSubjectAlternativeName("blocked.test").build()
+        val serverTrust = HandshakeCertificates.Builder().heldCertificate(certificate).build()
+        val clientTrust = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
+        val server = MockWebServer().apply {
+            useHttps(serverTrust.sslSocketFactory(), false)
+            protocols = listOf(Protocol.HTTP_1_1)
+            enqueue(MockResponse().setBody("provider response"))
+            start()
+        }
+        val filter = HelloFilter(server.port)
+        val lookups = AtomicInteger()
+        val relay = LocalTlsRelay(object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                lookups.incrementAndGet()
+                return listOf(InetAddress.getByName("127.0.0.1"))
+            }
+        }, basicAuthentication = true)
+        var challenges = 0
+        val client = OkHttpClient.Builder().proxy(relay.proxy)
+            .sslSocketFactory(clientTrust.sslSocketFactory(), clientTrust.trustManager)
+            .protocols(listOf(Protocol.HTTP_1_1)).callTimeout(5, TimeUnit.SECONDS)
+            .proxyAuthenticator { _, response ->
+                if (response.header("Proxy-Authenticate") == "OkHttp-Preemptive") return@proxyAuthenticator null
+                assertEquals(407, response.code)
+                assertEquals(0, lookups.get())
+                challenges++
+                response.request.newBuilder().header("Proxy-Authorization",
+                    okhttp3.Credentials.basic(relay.username, relay.password)).build()
+            }.build()
+        val transport = OkHttpSourceTransport(client, Dispatchers.IO)
+        val payload = "{\"token\":\"unchanged\",\"한글\":true}".toByteArray()
+        try {
+            val response = transport.execute(SourceRequest("https://blocked.test:${filter.port}/api/manifest",
+                method = SourceHttpMethod.POST, body = payload, bodyMediaType = "application/json"))
+            assertEquals("provider response", response.readBytes(1024).toString(Charsets.UTF_8))
+            val received = requireNotNull(server.takeRequest(2, TimeUnit.SECONDS))
+            assertArrayEquals(payload, received.body.readByteArray())
+            assertNull(received.getHeader("Proxy-Authorization"))
+            assertEquals(1, challenges)
+            assertEquals(0, filter.blocked.get())
+            assertEquals(1, filter.passed.get())
+        } finally { transport.close(); relay.close(); filter.close(); server.shutdown() }
+    }
+
     @Test fun aBlockedClientHelloRecoversWithValidTlsAndExactResponseBytes() = runBlocking {
         val certificate = HeldCertificate.Builder().addSubjectAlternativeName("blocked.test").build()
         val serverTrust = HandshakeCertificates.Builder().heldCertificate(certificate).build()

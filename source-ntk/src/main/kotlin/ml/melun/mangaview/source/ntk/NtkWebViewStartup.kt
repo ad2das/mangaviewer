@@ -19,7 +19,9 @@ class NtkWebViewStartup {
     private var failure: Throwable? = null
     private var completed = false
 
-    fun start(context: Context) {
+    fun start(context: Context,
+        configureNetwork: (ready: () -> Unit, failed: (Throwable) -> Unit) -> Unit = { ready, _ -> ready() },
+    ) {
         val accepted = synchronized(lock) {
             if (started) false else true.also { started = true }
         }
@@ -33,7 +35,7 @@ class NtkWebViewStartup {
             WebViewCompat.startUpWebView(
                 context.applicationContext,
                 config,
-                startupReceiver(startedAt, executor),
+                startupReceiver(startedAt, executor, configureNetwork),
             )
         }.onFailure { complete(it, startedAt, executor, null) }
     }
@@ -52,9 +54,13 @@ class NtkWebViewStartup {
     private fun startupReceiver(
         startedAt: Long,
         executor: ExecutorService,
+        configureNetwork: (ready: () -> Unit, failed: (Throwable) -> Unit) -> Unit,
     ) = object : WebViewOutcomeReceiver<WebViewStartUpResult, WebViewStartupException> {
         override fun onResult(result: WebViewStartUpResult) {
-            complete(null, startedAt, executor, result)
+            try {
+                configureNetwork({ complete(null, startedAt, executor, result) },
+                    { complete(it, startedAt, executor, result) })
+            } catch (failure: Throwable) { complete(failure, startedAt, executor, result) }
         }
 
         override fun onError(error: WebViewStartupException) {
