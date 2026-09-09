@@ -37,6 +37,7 @@ target_link_libraries(viewer_native PRIVATE
         EGL
         GLESv3
         jnigraphics
+        nativewindow
         log
         z
         )

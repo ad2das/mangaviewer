@@ -435,7 +435,7 @@ episode's second original completed. Other gaps followed batches of next-episode
 original completions and accumulated input. This correlation does not separate
 decoding, upload and scheduling costs. In cohort case 9, all four missed slots
 occurred across the first three native submissions, whose call durations were
-42.01, 38.25 and 31.84 ms. Later native P95 was below 16 ms. These initial calls
+42.01, 38.25 and 31.84 ms. Prepared native P95 was below 16 ms. These initial calls
 require a native trace before attributing them to allocation or swap behavior.
 The renderer already calls the optional `ANativeWindow_tryAllocateBuffers` hint
 on attachment; adding that same hint again would not be a new fix.
@@ -444,3 +444,46 @@ Evidence is retained in `repeated-host-restart/recovery12-progress.json`,
 `recovery12-observable-gates.json`, `recovery12-originals-comparison.json` and the
 individual capture directories. Native submissions remain distinct from physical
 scanout and from the latency of every deferred input.
+
+The case 9 native trace reproduced the initial allocation delay. Its first native
+call took 43.76 ms, including 30.32 ms in `allocateHelper` inside `dequeueBuffer`.
+Other early calls incurred another 24.11 ms and 24.57 ms of allocation. No
+`allocateBuffers` preallocation call appeared during attachment. The existing
+code looked up `ANativeWindow_tryAllocateBuffers` with `dlsym(RTLD_DEFAULT, ...)`,
+but the app did not link `libnativewindow`, where the device and NDK export this
+function. The app already requires API 30, the function's minimum supported API.
+The [NDK contract](https://developer.android.com/ndk/reference/group/a-native-window#anativewindow_tryallocatebuffers)
+permits a direct call while retaining its allocation-hint semantics.
+
+The native library now links `nativewindow` and calls the function directly on
+its existing GL owner during attachment. A trace section observes this call.
+No surface format, geometry, buffer-count limit, image bytes or render submission
+was added or changed. Both ABI builds link the public symbol. The frozen
+`73f67d95…` candidate differs from `6b5a3079…` only in the two `libviewer_native.so`
+payloads; every other APK payload is byte-identical. The existing optional
+frame-rate lookup can also resolve through the now-linked library and was
+observed setting the already requested rate in the new trace.
+
+In the new case 9 trace, `allocateBuffers` ran at tap +148.84 ms for 77.32 ms,
+preparing three buffers well before the first image at +952.94 ms. No subsequent
+`allocateHelper` call appeared in the first two seconds. The first native call
+dropped to 15.22 ms. A separate later submission waited 49.73 ms in an
+uninterruptible state inside dequeue, so this traced run still failed cadence;
+removing the allocation dependency is not proof of full performance compliance.
+
+| Capture | First native, ms | Prepared native P95, ms | Native max, ms | Submission missed ratio |
+| --- | ---: | ---: | ---: | ---: |
+| Case 9 control, traced | 1026.36 | 11.76 | 43.76 | 5.50% |
+| Case 9 linked allocation, traced | 952.94 | 12.17 | 62.32 | 5.65% |
+| Case 9 linked allocation, untraced | 1047.26 | 10.95 | 20.55 | 2.73% |
+| Case 3 linked allocation, untraced | 3081.06 | 8.83 | 24.80 | 7.96% |
+
+All four captures completed their protocol, preserved complete input and renderer
+histories with zero cancellation, and restored the public APKs and original data.
+The two untraced runs had no prepared submission gap of at least 100 ms, but both
+still failed the missed-ratio gate. In case 9, two missed slots preceded the first
+image after the last original was verified; another followed input/geometry
+changes with a 37.52 ms gap despite normal input callbacks. Further preparation
+and rendering work remains. Native assembly, 395 existing JVM tests and
+architecture checks passed. Evidence is in the `case09-*-profile-01` captures,
+`native-window-check-progress.json` and `native-window-candidate/payload-comparison.json`.

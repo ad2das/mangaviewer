@@ -304,10 +304,10 @@ bool GlViewerRenderer::attach(ANativeWindow* window) noexcept {
     if (eglSwapInterval(display_, 0) != EGL_TRUE) return eglFailure("set swap interval");
     // Let BufferQueue prepare its existing buffer pool while the episode is still loading.
     // This is an optional allocation hint; geometry, format and buffer count stay owned by EGL.
-    using TryAllocateBuffers = void (*)(ANativeWindow*);
-    static const auto tryAllocateBuffers = reinterpret_cast<TryAllocateBuffers>(
-        dlsym(RTLD_DEFAULT, "ANativeWindow_tryAllocateBuffers"));
-    if (tryAllocateBuffers != nullptr) tryAllocateBuffers(window);
+    // The app requires API 30, where this is part of libnativewindow's public ABI.
+    // A lookup in RTLD_DEFAULT can miss that library in the app linker namespace.
+    ScopedTraceSection preallocation("viewer_preallocate_window");
+    ANativeWindow_tryAllocateBuffers(window);
     return true;
 }
 
