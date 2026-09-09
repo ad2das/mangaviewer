@@ -157,7 +157,10 @@ std::unique_ptr<CpuTile> decode(
             ANDROID_IMAGE_DECODER_SUCCESS ||
         AImageDecoder_setDataSpace(decoder, ADATASPACE_SRGB) != ANDROID_IMAGE_DECODER_SUCCESS ||
         AImageDecoder_setTargetSize(decoder, displayWidth, scaledHeight) !=
-            ANDROID_IMAGE_DECODER_SUCCESS ||
+            ANDROID_IMAGE_DECODER_SUCCESS) return nullptr;
+    // An unnecessary full-image crop makes the platform allocate an intermediate
+    // bitmap even when the original already has the requested raster dimensions.
+    if ((displayTop != 0 || displayBottom != scaledHeight) &&
         AImageDecoder_setCrop(decoder, ARect{0, displayTop, displayWidth, displayBottom}) !=
             ANDROID_IMAGE_DECODER_SUCCESS) return nullptr;
     const std::size_t rowBytes = static_cast<std::size_t>(displayWidth) * 4U;

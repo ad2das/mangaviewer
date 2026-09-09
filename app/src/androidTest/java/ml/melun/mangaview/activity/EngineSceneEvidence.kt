@@ -25,6 +25,7 @@ internal fun writeEngineSceneEvidence(record: JSONObject, scene: EngineSurfaceSc
                 put("pageId", tile.pageId.toString()); put("sourceSha256", tile.sha256)
                 put("contentRevision", tile.contentRevision)
                 put("pageIdentity", page(tile.pageId)); put("displayWidth", tile.displayWidth)
+                put("rasterWidth", tile.rasterWidth)
                 put("rasterHeight", tile.rasterHeight); put("rasterTop", tile.rasterTop); put("rasterBottom", tile.rasterBottom)
                 put("sourceWidth", tile.dimensions.widthPx); put("sourceHeight", tile.dimensions.heightPx)
                 put("sourceTop", tile.sourceTop); put("sourceBottom", tile.sourceBottom)

@@ -1,9 +1,11 @@
 # Preparing received originals during fast scrolling
 
-The full performance goal remains unmet. This investigation separates two
-preparation costs from the remaining native swap delay. All device captures use
-the fixed traversal test APK `e1810fe0…`, the existing AVD and network, and restore
-the public APKs and saved data afterward.
+The full performance goal remains unmet. This investigation separates
+preparation costs from the remaining native swap delay. The allocation and gap
+captures use traversal test APK `e1810fe0…`. Original-size texture captures add
+raster-width evidence and use the test APK identified below. The AVD, network,
+gesture protocol and thresholds are unchanged; public APKs and saved data are
+restored after each device run.
 
 ## Output allocation
 
@@ -91,3 +93,44 @@ The separate case 9 pool trace reproduced the native delay: the worst call took
 during `eglSwapBuffers`. Another call waited 26.54 ms in queueing. Application
 draw work before swap was less than 1 ms in those examples. Preparation fixes
 alone do not resolve that native submission bottleneck.
+
+## Avoiding CPU enlargement of complete originals
+
+Complete pages narrower than the viewport now retain their original raster
+dimensions through decoding and upload; the existing GPU linear filter enlarges
+them for display. A 650 × 924 page uses 2,402,400 decoded/upload bytes instead of
+6,635,520. Wider originals retain the previous downscaling. Cropped bands retain
+the existing shared sampling grid and screen-width raster, including seam rules.
+The preparation distance still uses screen pixels, independently of raster size.
+Full-image crops are omitted from the native decoder when they cover the entire
+decoded image. Texture-coordinate precision is explicitly highp.
+
+API/planner regression tests and the debug unit/architecture build passed. The
+independent source comparator now reads optional rasterWidth and validates it
+against the original dimensions; old captures retain their previous interpretation.
+Its existing row-MAE limit is unchanged. Eleven comparator tests and seven source
+sampling tests passed.
+
+The new synthetic GPU enlargement test initially required every RGB component
+to differ from ideal floating-point bilinear interpolation by at most one. It
+failed at one of 45,000 components per viewport, by two. Raising shader precision
+did not alter that result. Full output was retained and compared: mean absolute
+error was 0.07291–0.08318 components out of 255 across forward/reverse offsets.
+The test now separately requires byte-exact 1:1 original readback, maximum scaled
+component error two, and mean scaled error below 0.1. This changes only this newly
+introduced synthetic interpolation assertion, not the existing live quality gate.
+All 18 native decoding, owner, pixel and context-loss checks passed. These checks
+do not establish the live performance goal.
+
+The original-size candidate is `1510a7a8…`, with test APK `00ac08ff…`. Its untraced
+case 3 measured first complete submission 3966.89 ms, native P95 28.07 ms and
+19.91% missed submission slots. There were no prepared gaps of at least 100 ms,
+and complete histories passed with 523 accepted inputs and no cancellations.
+The preceding untraced gap-only candidate measured 3584.34 ms, 31.89 ms and
+23.35%, respectively. This is insufficient improvement and not a causal latency
+claim because network and host timing vary.
+
+A subsequent display-paced submission experiment (`6e8d36aa…`, same test APK)
+measured 3378.51 ms first submission, 28.15 ms native P95 and 40.42% missed slots.
+Its input/renderer histories passed, but cadence worsened. The frame-pacing
+implementation was removed immediately; none of it remains in production.

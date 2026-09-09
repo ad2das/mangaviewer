@@ -37,7 +37,13 @@ def compare(frame, raw, originals, raster_profile=None, include_source_sampling=
         require(hashlib.sha256(source.read_bytes()).hexdigest() == digest, 'source content digest mismatch')
         sw, sh = placement['sourceWidth'], placement['sourceHeight']
         require(sw > 0 and sh > 0 and 0 <= placement['sourceTop'] < placement['sourceBottom'] <= sh, 'invalid source geometry')
-        rh = (sh * width + sw - 1) // sw
+        # Legacy captures describe a CPU-resized texture. New captures explicitly
+        # declare original-width sampling for complete pages that need enlargement.
+        rw = placement.get('rasterWidth', width)
+        expected_rw = min(width, sw) if placement['sourceTop'] == 0 and placement['sourceBottom'] == sh else width
+        require(type(rw) is int and rw > 0 and ('rasterWidth' not in placement or rw == expected_rw),
+                'declared raster width disagrees with independent original geometry')
+        rh = (sh * rw + sw - 1) // sw
         rt = placement['sourceTop'] * rh // sh
         rb = (placement['sourceBottom'] * rh + sh - 1) // sh
         require((placement['displayWidth'], placement['rasterHeight'], placement['rasterTop'], placement['rasterBottom']) ==
@@ -47,7 +53,13 @@ def compare(frame, raw, originals, raster_profile=None, include_source_sampling=
             require(not original.info.get('icc_profile'), 'ICC source requires an explicit independent color transform')
             rgba = original.convert('RGBA')
             require(rgba.getchannel('A').getextrema() == (255, 255), 'transparent source requires premultiplied reference support')
-            raster = np.asarray(rgba.resize((width, rh), Image.Resampling.BILINEAR).crop((0, rt, width, rb)), dtype=np.float64)
+            raster = np.asarray(rgba.resize((rw, rh), Image.Resampling.BILINEAR).crop((0, rt, rw, rb)), dtype=np.float64)
+        if rw != width:
+            texture_x = (np.arange(width, dtype=np.float64) + 0.5) * rw / width - 0.5
+            left = np.floor(texture_x).astype(np.int64)
+            x_weight = (texture_x - left)[None, :, None]
+            raster = (raster[:, np.clip(left, 0, rw - 1)] * (1 - x_weight) +
+                      raster[:, np.clip(left + 1, 0, rw - 1)] * x_weight)
         qt, qb = placement['screenTopUnits'] / units, placement['screenBottomUnits'] / units
         require(qb > qt, 'inverted quad')
         if raster_profile is None:

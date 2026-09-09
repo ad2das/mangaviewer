@@ -406,6 +406,7 @@ class EngineViewerCaptureTest {
         put("contentRevision", value.contentRevision); put("sha256", value.sha256)
         put("sourceTop", value.sourceTop); put("sourceBottom", value.sourceBottom)
         put("displayWidth", value.displayWidth)
+        put("rasterWidth", value.rasterWidth)
         put("sourceWidth", value.dimensions.widthPx); put("sourceHeight", value.dimensions.heightPx)
     }
 

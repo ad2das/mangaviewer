@@ -36,8 +36,21 @@ class EngineTileSpecTest {
         assertEquals(16_000_000_000_000L, tile.byteCount)
     }
 
+    @Test fun aCompleteSmallOriginalKeepsEverySourcePixelWithoutCpuUpscaling() {
+        val tile = EngineTileSpec(id, "1", "0".repeat(64), PageDimensions(650, 924), 0, 924, 1080)
+        assertEquals(1080, tile.displayWidth)
+        assertEquals(924, tile.rasterHeight)
+        assertEquals(2_402_400L, tile.byteCount)
+    }
+
+    @Test fun shrinkingACompleteOriginalStillUsesTheExistingDisplayRaster() {
+        val tile = EngineTileSpec(id, "1", "0".repeat(64), PageDimensions(1000, 2000), 0, 2000, 500)
+        assertEquals(1000, tile.rasterHeight)
+        assertEquals(2_000_000L, tile.byteCount)
+    }
+
     @Test(expected = ArithmeticException::class)
     fun impossibleRasterHeightFailsBeforeNativeAllocation() {
-        EngineTileSpec(id, "1", "0".repeat(64), PageDimensions(1, 2), 0, 2, 1_500_000_000).byteCount
+        EngineTileSpec(id, "1", "0".repeat(64), PageDimensions(1, 2), 0, 1, 1_500_000_000).byteCount
     }
 }

@@ -23,7 +23,7 @@ namespace {
 constexpr char kVertexShader[] = R"(#version 300 es
 layout(location = 0) in vec2 position;
 layout(location = 1) in vec2 textureCoordinate;
-out vec2 sampledCoordinate;
+out highp vec2 sampledCoordinate;
 void main() {
     sampledCoordinate = textureCoordinate;
     gl_Position = vec4(position, 0.0, 1.0);
@@ -33,8 +33,8 @@ void main() {
 #endif
 
 constexpr char kFragmentShader[] = R"(#version 300 es
-precision mediump float;
-in vec2 sampledCoordinate;
+precision highp float;
+in highp vec2 sampledCoordinate;
 uniform sampler2D pageTexture;
 out vec4 color;
 void main() {
@@ -46,7 +46,7 @@ constexpr char kStaticQuadVertexShader[] = R"(#version 300 es
 layout(location = 0) in vec2 position;
 layout(location = 1) in vec2 textureCoordinate;
 uniform vec2 verticalBounds;
-out vec2 sampledCoordinate;
+out highp vec2 sampledCoordinate;
 void main() {
     sampledCoordinate = textureCoordinate;
     float y = position.y < 0.5 ? verticalBounds.x : verticalBounds.y;

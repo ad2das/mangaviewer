@@ -234,7 +234,7 @@ internal class EngineSurfaceOwner(
                     val used = OwnedRendererBridge.nativeTextureCounts(native)[1]
                     if (pixels.byteCount > textureAllocationLimit - used) return@onOwner capacityChanged
                     val tile = pixels.tile
-                    acquired = OwnedRendererBridge.nativeUpload(native, nativePixels.handle, tile.displayWidth,
+                    acquired = OwnedRendererBridge.nativeUpload(native, nativePixels.handle, tile.rasterWidth,
                         tile.decodedHeight, tile.sourceTop, tile.sourceBottom, tile.dimensions.heightPx)
                     if (acquired <= 0L && OwnedRendererBridge.nativeContextLost(native)) recoverContext()
                     check(acquired > 0L) { "Native texture upload failed" }

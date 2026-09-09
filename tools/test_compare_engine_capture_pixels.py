@@ -53,6 +53,26 @@ class CapturePixelTest(unittest.TestCase):
         self.assertEqual(result['sourceBands'], [])
         self.assertFalse(result['wholeEpisodeVerified'])
 
+    def test_original_width_texture_uses_two_dimensional_gpu_sampling(self):
+        source = np.array([[[0, 0, 0, 255], [200, 0, 200, 255]],
+                           [[0, 200, 200, 255], [200, 200, 0, 255]]], dtype=np.uint8)
+        path = self.root / 'small.png'
+        Image.fromarray(source).save(path)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        path.rename(self.root / (digest + '.page'))
+        self.frame.update(width=4, top=0, bottom=4, viewportHeight=4)
+        p = self.frame['placements'][0]
+        p.update(sourceSha256=digest, sourceWidth=2, sourceHeight=2, sourceTop=0, sourceBottom=2,
+                 rasterWidth=2, rasterHeight=2, rasterTop=0, rasterBottom=2, screenBottomUnits=4096)
+        weights = [0, 0.25, 0.75, 1]
+        expected = np.array([[[round(200 * x), round(200 * y), round(200 * (x + y - 2 * x * y)), 255]
+                              for x in weights] for y in weights], dtype=np.uint8)
+        self.assertTrue(compare(self.frame, expected.tobytes(), self.root)['capturedPixelsMatch'])
+        self.assertFalse(compare(self.frame, expected[:, ::-1].tobytes(), self.root)['capturedPixelsMatch'])
+        p['rasterWidth'] = 1
+        with self.assertRaisesRegex(ValueError, 'raster width'):
+            compare(self.frame, expected.tobytes(), self.root)
+
 
 if __name__ == '__main__':
     unittest.main()

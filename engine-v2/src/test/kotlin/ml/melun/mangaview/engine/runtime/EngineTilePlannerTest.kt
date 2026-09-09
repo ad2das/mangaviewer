@@ -57,7 +57,7 @@ class EngineTilePlannerTest {
     @Test fun fullRasterCropIsProjectedBackToTheExactSourceAspectRatio() {
         val plan = EngineTilePlanner(10_000_000, 2000).plan(snapshot(101, 1000, 150, 0, 1000 * q))
         val placement = plan.placements.single()
-        assertEquals(1486, placement.tile.rasterHeight)
+        assertEquals(1000, placement.tile.rasterHeight)
         assertEquals(0L, placement.topScreenUnits)
         assertEquals(1_520_792L, placement.bottomScreenUnits)
     }
@@ -89,7 +89,7 @@ class EngineTilePlannerTest {
             EngineTileSpec(previousId, "1", "1".repeat(64), dimensions, 0, 900, 1080),
             EngineTileSpec(nextId, "1", "2".repeat(64), dimensions, 0, 900, 1080),
         ), placements.map { it.tile })
-        assertTrue(placements.all { it.tile.rasterHeight == 1563 && it.tile.decodedHeight == 1563 })
+        assertTrue(placements.all { it.tile.rasterHeight == 900 && it.tile.decodedHeight == 900 })
         assertEquals(seam, placements[0].bottomScreenUnits)
         assertEquals(seam, placements[1].topScreenUnits)
         assertNotEquals(outwardRoundedPreviousBottom, placements[0].bottomScreenUnits)

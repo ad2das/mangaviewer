@@ -16,10 +16,10 @@ internal class NativeEngineImageDecoder : EngineImageDecoder {
             val tracing = Trace.isEnabled()
             if (tracing) Trace.beginSection("decode_tile:${tile.sha256.take(12)}:" +
                 "${tile.dimensions.widthPx}x${tile.dimensions.heightPx}:" +
-                "${tile.sourceTop}:${tile.sourceBottom}:${tile.displayWidth}")
+                "${tile.sourceTop}:${tile.sourceBottom}:${tile.displayWidth}:r${tile.rasterWidth}")
             try {
                 NativeCpuDecodeBridge.nativeDecode(page.file.absolutePath, tile.dimensions.widthPx,
-                    tile.dimensions.heightPx, tile.sourceTop, tile.sourceBottom, tile.displayWidth)
+                    tile.dimensions.heightPx, tile.sourceTop, tile.sourceBottom, tile.rasterWidth)
             } finally { if (tracing) Trace.endSection() }
         }
         check(handle != 0L) { "Native original-image decode failed" }

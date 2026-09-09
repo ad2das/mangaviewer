@@ -20,13 +20,17 @@ data class EngineTileSpec(
         require(displayWidth > 0)
     }
 
-    val rasterHeight: Int get() = Math.toIntExact((dimensions.heightPx.toLong() * displayWidth +
+    // A complete small page can be sampled directly by the GPU. Cropped bands
+    // retain the existing resized raster and its shared sampling grid at seams.
+    val rasterWidth: Int get() = if (sourceTop == 0 && sourceBottom == dimensions.heightPx)
+        minOf(displayWidth, dimensions.widthPx) else displayWidth
+    val rasterHeight: Int get() = Math.toIntExact((dimensions.heightPx.toLong() * rasterWidth +
         dimensions.widthPx - 1L) / dimensions.widthPx)
     val rasterTop: Int get() = (sourceTop.toLong() * rasterHeight / dimensions.heightPx).toInt()
     val rasterBottom: Int get() = ((sourceBottom.toLong() * rasterHeight + dimensions.heightPx - 1L) /
         dimensions.heightPx).toInt()
     val decodedHeight: Int get() = rasterBottom - rasterTop
-    val byteCount: Long get() = Math.multiplyExact(displayWidth.toLong() * decodedHeight, 4L)
+    val byteCount: Long get() = Math.multiplyExact(rasterWidth.toLong() * decodedHeight, 4L)
 }
 
 /** Immutable native pixels, owned by the coordinator. Uploaders borrow them and never close them. */

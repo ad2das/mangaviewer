@@ -125,7 +125,8 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
             for (candidate in neighboringBands(snapshot, page, start, direction)) {
                 if (distance >= horizon) break
                 distant += distance to candidate
-                distance += candidate.decodedHeight
+                distance += (candidate.decodedHeight.toLong() * candidate.displayWidth +
+                    candidate.rasterWidth - 1L) / candidate.rasterWidth
             }
         }
     }
