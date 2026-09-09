@@ -430,10 +430,10 @@ class EngineSessionRuntime(
             result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
         }
         // Queue the first two originals as soon as the adjacent plan is authorized. A slow
-        // current body must not serialize boundary preparation; existing background permits
-        // and NEXT_EPISODE priority still reserve capacity for the current viewport.
+        // current body must not serialize boundary preparation. Once the current episode is
+        // complete, fill its vacated 12-body window under the same background permits.
         val candidates = if (manifest.pages.all { it.id in prepared }) next.pages else next.pages.take(2)
-        candidates.asSequence().filter { it.id !in prepared && it.id !in failedReadAheadPages }.take(2).forEach {
+        candidates.asSequence().filter { it.id !in prepared && it.id !in failedReadAheadPages }.take(12).forEach {
             result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
         }
     }
@@ -442,9 +442,8 @@ class EngineSessionRuntime(
         if (!positionResolved) return null
         val episode = state.anchor?.pageId?.episodeId ?: targetEpisode
         val plan = plans[episode] ?: return null
-        // A legacy anchor needs original dimensions, but its episode is already known.
-        // Authorize the forward document while those original bytes are still arriving.
-        return plan.manifest.nextEpisodeId?.takeUnless { it in failedReadAheadEpisodes }
+        return nextDocumentToPrepare(plan.manifest, plans, prepared,
+            initialPresented, failedReadAheadEpisodes)
     }
 
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
@@ -459,3 +458,16 @@ private fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
 // can convert the saved offset into an exact source anchor.
 private fun readAheadAnchor(state: EngineSessionSnapshot, target: EpisodeId): PageId? =
     state.anchor?.pageId ?: state.requiredDimensions.firstOrNull { it.episodeId == target }
+
+// Keep the first adjacent authorization independent of legacy geometry. After the
+// current originals and viewport are ready, use the control slot for one further
+// document while the adjacent bodies load. This never starts that document's bodies
+// or recursively walks its navigation links.
+private fun nextDocumentToPrepare(manifest: EpisodeManifest, plans: Map<EpisodeId, EpisodeAccessPlan>,
+    prepared: Set<PageId>, initialPresented: Boolean, failed: Set<EpisodeId>,
+): EpisodeId? {
+    val next = manifest.nextEpisodeId?.takeUnless { it in failed } ?: return null
+    val nextPlan = plans[next] ?: return next
+    if (!initialPresented || manifest.pages.any { it.id !in prepared }) return null
+    return nextPlan.manifest.nextEpisodeId?.takeUnless { it in plans || it in failed }
+}

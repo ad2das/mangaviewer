@@ -256,3 +256,106 @@ isolated transfer comparison. The experimental implementation was archived under
 legacy adjacent-preparation fixes remain. These captures also show a native-call
 regression in both control and candidate compared with earlier runs of the same
 control APK; its source remains unresolved and requires native trace attribution.
+
+## Repeated host restart and bounded preparation across episodes
+
+The subsequent native trace (`trace-ui-native-swap-profile-case03-01`) located
+the slow calls in the emulator graphics submission path. One 58.24 ms native
+submission spent 54.40 ms in `eglSwapBuffers`, including 51.28 ms in
+`rcCreateSyncKHR` encoding; its thread was running for 36.75 ms and runnable for
+21.48 ms. This traced run is diagnostic and is not compared directly against
+untraced performance runs.
+
+The same AVD process was then restarted with its exact previous options. APKs,
+the database/WAL/SHM and preferences were verified against the original hashes
+before stopping, explicitly synced, and independently verified again afterward.
+The AVD configuration hash stayed
+`7f38597a323f824d5cb7b6f6508a17b9893d65806df7c7488c9fdc99b1ca7629`.
+Boot changed from `e6ed5d52-da7e-4f33-9377-e61ec194f1e0` to
+`4c6f5aed-0691-4ea2-9761-04aaed0c93dd`. No package or data recovery was needed
+after this synced restart. The old boot records were preserved; new wrappers
+use a separate boot record under `repeated-host-restart`.
+
+On the same control app (`d57cfc79…`) and instrumentation (`e1810fe0…`), case 3
+then measured first complete native submission at 3133.12 ms and prepared native
+call P95 at 4.38 ms, versus 4553.55 ms and 23.81 ms in the last untraced control
+before restarting. This is environment recovery, not an app-code speedup. Its
+prepared submission missed ratio was still 3.92%. Although no submission gap
+exceeded 100 ms, accepted inputs could still wait several seconds for adjacent
+originals; continuously submitting frames does not prove continuous movement.
+
+Two remaining serialized preparation steps were reproduced and corrected:
+
+- Once all current originals are verified, the adjacent episode now uses the
+  existing 12-body pending window. Previously it remained limited to two pending
+  bodies until the anchor crossed into that episode. Before current preparation
+  finishes, only the first two adjacent originals are requested. Existing BODY
+  and background admission limits continue to apply.
+- Once the current originals and initial viewport are ready, authorization of
+  one further adjacent document can overlap the next episode's original bodies.
+  This is bounded to two forward documents from the current anchor. It neither
+  recursively walks the series nor starts that further document's image bodies.
+
+The first regression test failed with only 2 active next-episode bodies where
+12 unused background permits were available. It now verifies the initial
+two-body restriction, the 12-body ceiling, refill past a blocked first body,
+unchanged current anchor and complete cancellation cleanup. A second regression
+test failed because the further document was not requested while next-episode
+bodies waited. It now checks the bounded document request, absence of further
+image-body requests and cleanup. All 142 engine tests, 130 app tests, architecture
+checks and app/instrumentation assembly passed.
+
+These sequential untraced case 3 captures used the same boot and instrumentation.
+All 14 opening original hashes and byte counts matched. They are individual runs
+of an adaptive interaction protocol, not repeated identical input traces:
+
+| Variant | App hash prefix | First native, ms | Native call P95, ms | Applied-input P95, ms | Prepared submission missed ratio |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Control after restart | `d57cfc79` | 3133.12 | 4.38 | 4630.60 | 3.92% |
+| Adjacent 12-body window | `97d70d14` | 3272.52 | 4.44 | 4249.33 | 4.76% |
+| Window plus further document | `37477a25` | 3253.48 | 2.80 | 3179.17 | 6.36% |
+
+The adjacent third-body request moved from tap +4683.76 ms to +3756.8 ms in the
+window comparison. With document overlap, the further authorization arrived at
++5428.61 ms versus +6729.59 ms in the control. The corresponding scheduling
+dependencies were removed, but overall cadence did not pass: the three runs
+recorded 13, 14 and 15 missed submission slots across different-length interaction
+windows. All accepted input histories were complete with zero cancellation.
+The final candidate still had post-preparation applied-input P95 of 3032.76 ms,
+so no claim of stall-free interaction is made. These three runs do not constitute
+corpus qualification. Evidence and the source-byte comparison are in
+`repeated-host-restart/preparation-comparison.json` under the artifact directory.
+
+The subsequent fixed 12-case cohort used `37477a25…` and the same instrumentation,
+boot, settings and per-case restoration procedure. It did not pass the goal:
+
+| Case | First native, ms | Prepared native P95, ms | Submission missed ratio | Submission gaps at least 100 ms | Collection result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 2565.37 | 3.29 | 1.16% | 0 | Complete; missed ratio fails |
+| 2 | 2913.96 | 4.76 | 0.85% | 0 | Observable numeric gates pass |
+| 3 | 2334.53 | 1.80 | 7.25% | 0 | Complete; missed ratio fails |
+| 4 | 1814.71 | 4.46 | 0.19% | 0 | Observable numeric gates pass |
+| 5 | 2054.22 | 3.07 | 0.18% | 0 | Observable numeric gates pass |
+| 6 | 2291.78 | 3.19 | 0.31% | 0 | Observable numeric gates pass |
+| 7 | — | — | — | — | Document observation capacity exceeded |
+| 8 | — | — | — | — | Document observation capacity exceeded |
+| 9 | — | — | — | — | Document observation capacity exceeded |
+| 10 | 32187.74 | 3.97 | 5.88% | 4 | Fails |
+| 11 | 32276.85 | 5.72 | 6.40% | 3 | Fails |
+| 12 | 32531.59 | 5.57 | 6.89% | 4 | Fails |
+
+The nine captures with complete summaries also passed renderer/input history
+verification with zero input cancellation. Every case, including failed captures,
+restored and independently verified the original APKs and saved data. The numerical
+rows describe native submissions, not physical scanout or the absence of deferred
+input. Full results are retained in `repeated-host-restart/current12-progress.json`.
+
+The WFWF failures expose a separate first-document delay. In case 7, the document
+request started at tap +35 ms and headers arrived at +31339 ms. The subsequent
+requests were much faster. Preserved input accumulated during that wait and then
+advanced through 16 episode documents, exhausting the test observer's unchanged
+16-document capacity. That failed capture is retained without increasing its
+capacity or crediting it as a completed case. The regular WFWF catalog path has
+independent-route handling, whereas `EngineEpisodeWork` used a single plain
+`transport.execute` call. The long document wait must be addressed separately from
+graphics cadence and adjacent preparation.
