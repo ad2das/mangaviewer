@@ -49,3 +49,15 @@ does not claim that every network's filtering can be recovered. The fixed
 12-case physical presentation and missed-frame performance goal remains unmet.
 The fresh-emulator performance screening was paused after case 4 to address this
 report; those earlier results used the preceding APK.
+
+## Installable APK parity
+
+The final package comparison caught another defect in the release versioning
+script: it removed every `META-INF/` entry, including gRPC providers and coroutine
+service registrations. It now removes only old APK/JAR signature entries and
+preserves service descriptors, library metadata, and licenses. A ZIP regression
+test covers those resources and nested files that are not root signatures.
+The phone APK is checked against the tested base APK: every nonsignature entry
+except the versioned Android manifest must remain byte-identical, and the signing
+certificate must match. The first automatic release attempt was cancelled before
+publication when this mismatch was found.

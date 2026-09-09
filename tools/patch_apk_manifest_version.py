@@ -156,7 +156,14 @@ def rewrite_apk(input_apk, output_apk, manifest):
             name = item.filename
             upper = name.upper()
             if upper.startswith("META-INF/"):
-                continue
+                metadata_name = upper[len("META-INF/"):]
+                # Remove only the old JAR signatures. ServiceLoader registrations and
+                # library metadata are runtime resources, not signing metadata.
+                if "/" not in metadata_name and (
+                    metadata_name == "MANIFEST.MF" or metadata_name.startswith("SIG-") or
+                    metadata_name.endswith((".SF", ".RSA", ".DSA", ".EC"))
+                ):
+                    continue
             data = manifest if name == "AndroidManifest.xml" else zin.read(item)
             info = zipfile.ZipInfo(name, item.date_time)
             info.compress_type = item.compress_type
