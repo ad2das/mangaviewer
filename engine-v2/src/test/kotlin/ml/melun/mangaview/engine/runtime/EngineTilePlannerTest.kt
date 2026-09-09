@@ -208,6 +208,77 @@ class EngineTilePlannerTest {
             .plan(state.copy(pages = emptyMap())).demands.isEmpty())
     }
 
+    @Test fun readyOriginalBeyondAnUnreceivedPagePreparesInBothDirections() {
+        for (reverse in listOf(false, true)) {
+            val state = snapshotWithPreparationGap(reverse)
+            val ready = PageId.at(pageId.episodeId, 2)
+            val control = EngineTilePlanner(1_000_000, 202).plan(state)
+            val plan = EngineTilePlanner(1_000_000, 202, preparationViewports = 4).plan(state)
+            assertTrue("Verified pixels beyond a missing original must prepare", plan.demands.any {
+                it.tile.pageId == ready && it.priority == ml.melun.mangaview.engine.api.WorkPriority.NEXT_IMAGE
+            })
+            assertEquals(control.placements, plan.placements)
+            assertEquals(control.completeGeometry, plan.completeGeometry)
+            assertTrue(plan.demands.none { it.tile.pageId == PageId.at(pageId.episodeId, 1) })
+            val tight = EngineTilePlanner(80_000, 202, preparationViewports = 4).plan(state)
+            assertEquals(80_000L, tight.plannedTextureBytes)
+            assertTrue(tight.demands.all { it.tile.pageId == pageId })
+        }
+    }
+
+    @Test fun missingGeometryCanPrepareAReceivedOriginalBeyondThreeMissingPages() {
+        val base = snapshotWithPreparationGap(false, missingCount = 5)
+        val state = base.copy(session = base.session.copy(visibleRegions = emptyList(),
+            completeViewport = false, requiredDimensions = setOf(pageId)),
+            pages = base.pages.filterKeys { it != pageId })
+        val plan = EngineTilePlanner(1_000_000, 202, preparationViewports = 4).plan(state)
+        assertFalse(plan.completeGeometry)
+        assertTrue(plan.placements.isEmpty())
+        assertEquals(PageId.at(pageId.episodeId, 6), plan.demands.single().tile.pageId)
+        assertEquals(0, plan.demands.single().tile.sourceTop)
+    }
+
+    @Test fun nextEpisodeReceivedPagePreparesEvenWhileItsFirstOriginalIsMissing() {
+        val base = neighboringSnapshot(false)
+        val current = base.plans.getValue(pageId.episodeId)
+        val nextId = pageId.episodeId.copy(remoteKey = "next-with-gap")
+        val nextIds = (0..1).map { PageId.at(nextId, it) }
+        fun access(manifest: ml.melun.mangaview.core.EpisodeManifest) =
+            ml.melun.mangaview.engine.api.EpisodeAccessPlan(manifest, "1", "0".repeat(64),
+                current.finalDocumentUrl, 0, manifest.pages.map {
+                    ml.melun.mangaview.engine.api.PageAccessPlan(it.id, it.id.remoteKey, current.pages.first().candidates)
+                })
+        val opening = access(current.manifest.copy(pages = current.manifest.pages.take(1), nextEpisodeId = nextId))
+        val next = access(ml.melun.mangaview.core.EpisodeManifest(nextId, "next", nextIds.mapIndexed { index, id ->
+            ml.melun.mangaview.core.PageSpec(id, index, PageDimensions(100, 1000))
+        }))
+        val state = base.copy(plans = mapOf(pageId.episodeId to opening, nextId to next),
+            pages = mapOf(pageId to base.pages.getValue(pageId),
+                nextIds[1] to base.pages.getValue(pageId).copy(pageId = nextIds[1])))
+        val planner = EngineTilePlanner(1_000_000, 202, preparationViewports = 4)
+        val plan = planner.plan(state)
+        assertTrue(plan.demands.any { it.tile.pageId == nextIds[1] })
+        assertTrue(plan.demands.none { it.tile.pageId == nextIds[0] })
+        assertTrue(plan.placements.all { it.tile.pageId == pageId })
+        assertTrue(planner.plan(state.copy(plans = mapOf(pageId.episodeId to opening)))
+            .demands.all { it.tile.pageId == pageId })
+    }
+
+    private fun snapshotWithPreparationGap(reverse: Boolean, missingCount: Int = 1): EngineRuntimeSnapshot {
+        val base = neighboringSnapshot(reverse)
+        val ids = (listOf(pageId) + (1..missingCount + 1).map { PageId.at(pageId.episodeId, it) })
+            .let { if (reverse) it.reversed() else it }
+        val old = base.plans.getValue(pageId.episodeId)
+        val plan = ml.melun.mangaview.engine.api.EpisodeAccessPlan(old.manifest.copy(pages = ids.mapIndexed { index, id ->
+            ml.melun.mangaview.core.PageSpec(id, index, PageDimensions(100, 1000))
+        }), old.contentRevision, old.documentSha256, old.finalDocumentUrl, old.authEpoch,
+            ids.map { id -> ml.melun.mangaview.engine.api.PageAccessPlan(id, id.remoteKey, old.pages.first().candidates) })
+        val readyId = PageId.at(pageId.episodeId, missingCount + 1)
+        return base.copy(plans = mapOf(pageId.episodeId to plan),
+            pages = mapOf(pageId to base.pages.getValue(pageId),
+                readyId to base.pages.getValue(pageId).copy(pageId = readyId)))
+    }
+
     private fun neighboringSnapshot(previous: Boolean): EngineRuntimeSnapshot {
         val state = if (previous) snapshot(100, 1000, 100, 0, 100 * q)
             else snapshot(100, 1000, 100, 800 * q, 900 * q)

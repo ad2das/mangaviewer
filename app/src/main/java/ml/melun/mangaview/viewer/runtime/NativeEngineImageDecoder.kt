@@ -1,5 +1,6 @@
 package ml.melun.mangaview.viewer.runtime
 
+import android.os.Trace
 import java.util.concurrent.atomic.AtomicBoolean
 import ml.melun.mangaview.engine.api.EngineImageDecoder
 import ml.melun.mangaview.engine.api.EnginePixels
@@ -12,8 +13,14 @@ internal class NativeEngineImageDecoder : EngineImageDecoder {
         require(page.pageId == tile.pageId && page.contentRevision == tile.contentRevision &&
             page.sha256 == tile.sha256 && page.dimensions == tile.dimensions)
         val handle = traceEngineWork("engine_decode") {
-            NativeCpuDecodeBridge.nativeDecode(page.file.absolutePath, tile.dimensions.widthPx,
-                tile.dimensions.heightPx, tile.sourceTop, tile.sourceBottom, tile.displayWidth)
+            val tracing = Trace.isEnabled()
+            if (tracing) Trace.beginSection("decode_tile:${tile.sha256.take(12)}:" +
+                "${tile.dimensions.widthPx}x${tile.dimensions.heightPx}:" +
+                "${tile.sourceTop}:${tile.sourceBottom}:${tile.displayWidth}")
+            try {
+                NativeCpuDecodeBridge.nativeDecode(page.file.absolutePath, tile.dimensions.widthPx,
+                    tile.dimensions.heightPx, tile.sourceTop, tile.sourceBottom, tile.displayWidth)
+            } finally { if (tracing) Trace.endSection() }
         }
         check(handle != 0L) { "Native original-image decode failed" }
         try {

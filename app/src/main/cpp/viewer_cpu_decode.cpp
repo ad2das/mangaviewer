@@ -1,12 +1,15 @@
 #include <android/data_space.h>
 #include <android/imagedecoder.h>
+#include <android/trace.h>
 #include <jni.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <fcntl.h>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <unistd.h>
 #include <vector>
@@ -17,8 +20,63 @@
 
 namespace {
 
+class DecodeTrace final {
+public:
+    explicit DecodeTrace(const char* name) noexcept : enabled_(ATrace_isEnabled()) {
+        if (enabled_) ATrace_beginSection(name);
+    }
+    ~DecodeTrace() { if (enabled_) ATrace_endSection(); }
+private:
+    bool enabled_;
+};
+
+// Only returned storage is reusable. Pixel identity and live tile ownership never
+// enter this pool. Bound idle storage independently of the live GPU tile budget.
+class PixelBufferPool final {
+public:
+    std::vector<std::uint8_t> acquire(std::size_t bytes) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        std::size_t selected = buffers_.size();
+        for (std::size_t i = 0; i < buffers_.size(); ++i) {
+            if (buffers_[i].capacity() >= bytes &&
+                (selected == buffers_.size() ||
+                 buffers_[i].capacity() < buffers_[selected].capacity())) selected = i;
+        }
+        if (selected == buffers_.size()) return {};
+        DecodeTrace trace("decode_buffer_reuse");
+        std::vector<std::uint8_t> result;
+        result.swap(buffers_[selected]);
+        return result;
+    }
+
+    void release(std::vector<std::uint8_t>& pixels) {
+        if (pixels.capacity() == 0 || pixels.capacity() > maxIdleBytes) return;
+        std::lock_guard<std::mutex> guard(mutex_);
+        std::size_t total = 0;
+        std::size_t selected = 0;
+        for (std::size_t i = 0; i < buffers_.size(); ++i) {
+            total += buffers_[i].capacity();
+            if (buffers_[i].capacity() < buffers_[selected].capacity()) selected = i;
+        }
+        if (total - buffers_[selected].capacity() + pixels.capacity() <= maxIdleBytes) {
+            pixels.swap(buffers_[selected]);
+        }
+    }
+
+private:
+    static constexpr std::size_t maxIdleBytes = 16U * 1024U * 1024U;
+    std::mutex mutex_;
+    std::array<std::vector<std::uint8_t>, 2> buffers_;
+};
+
+PixelBufferPool& pixelBufferPool() {
+    static PixelBufferPool pool;
+    return pool;
+}
+
 struct CpuTile final {
     std::vector<std::uint8_t> pixels;
+    ~CpuTile() { pixelBufferPool().release(pixels); }
 };
 
 class FileDescriptor final {
@@ -35,6 +93,7 @@ private:
 class Decoder final {
 public:
     explicit Decoder(int fd) noexcept {
+        DecodeTrace trace("decode_create");
         if (fd >= 0 && AImageDecoder_createFromFd(fd, &value_) != ANDROID_IMAGE_DECODER_SUCCESS) {
             value_ = nullptr;
         }
@@ -106,7 +165,12 @@ std::unique_ptr<CpuTile> decode(
     if (rowCount > std::numeric_limits<std::size_t>::max() / rowBytes) return nullptr;
     auto tile = std::unique_ptr<CpuTile>(new (std::nothrow) CpuTile());
     if (tile == nullptr) return nullptr;
-    tile->pixels.resize(rowBytes * rowCount);
+    {
+        DecodeTrace trace("decode_allocate");
+        tile->pixels = pixelBufferPool().acquire(rowBytes * rowCount);
+        tile->pixels.resize(rowBytes * rowCount);
+    }
+    DecodeTrace trace("decode_pixels");
     if (AImageDecoder_decodeImage(
             decoder, tile->pixels.data(), rowBytes, tile->pixels.size()) !=
         ANDROID_IMAGE_DECODER_SUCCESS) return nullptr;

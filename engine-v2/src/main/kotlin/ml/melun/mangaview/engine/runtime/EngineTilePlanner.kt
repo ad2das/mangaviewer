@@ -144,8 +144,8 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
                 val leading = snapshot.session.requiredDimensions.fold(index) { at, id ->
                     maxOf(at, manifest.pages.indexOfFirst { it.id == id })
                 }
-                if (index >= 0) for (at in leading..minOf(leading + 2, manifest.pages.lastIndex)) {
-                    val page = snapshot.pages[manifest.pages[at].id] ?: continue
+                if (index >= 0) for (page in preparedPagesFrom(snapshot,
+                    manifest.pages[leading].id, 1, includeStart = true).take(3)) {
                     speculative += tile(page, 0, bandCount(page, snapshot.session.viewport.widthPx), snapshot.session.viewport.widthPx)
                 }
             }
@@ -157,14 +157,13 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
     ): Sequence<EngineTileSpec> = sequence {
         var page = initial
         var band = start
-        val visited = linkedSetOf(page.pageId)
+        val neighbors = preparedPagesFrom(snapshot, page.pageId, direction).iterator()
         val width = snapshot.session.viewport.widthPx
         while (true) {
             var count = bandCount(page, width)
             if (band !in 0 until count) {
-                val edge = adjacentTile(snapshot, page.pageId, direction) ?: break
-                if (!visited.add(edge.pageId)) break
-                page = snapshot.pages[edge.pageId] ?: break
+                if (!neighbors.hasNext()) break
+                page = neighbors.next()
                 count = bandCount(page, width)
                 band = if (direction > 0) 0 else count - 1
             }
