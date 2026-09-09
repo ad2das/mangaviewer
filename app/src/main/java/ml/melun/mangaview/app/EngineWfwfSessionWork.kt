@@ -26,6 +26,7 @@ internal class EngineWfwfSessionWork(
     private val loadLegacy: suspend (EpisodeId) -> ReadingPosition?,
     private val initialPosition: ReadingPosition?,
     observer: EpisodePlanObserver? = null,
+    private val initialAnchor: SourceAnchor? = null,
 ) : EngineViewerWork {
     private val principal = "wfwf:public"
     private val planner = WfwfAccessPlanner(userAgent)
@@ -39,9 +40,11 @@ internal class EngineWfwfSessionWork(
 
     override fun position(episodeId: EpisodeId): WorkRequest<SessionPosition> {
         val override = initialPosition?.takeIf { it.pageId.episodeId == episodeId }
-        return WorkRequest(WorkKey(principal, episodeId.toString(), "position", override?.toString() ?: "saved",
+        val exact = initialAnchor?.takeIf { it.pageId.episodeId == episodeId }
+        return WorkRequest(WorkKey(principal, episodeId.toString(), "position", exact?.toString() ?: override?.toString() ?: "saved",
             SessionPosition::class.java), WorkDomain.STORAGE, WorkPriority.FOCUS, execute = {
-            if (override != null) SessionPosition(null, override)
+            if (exact != null) SessionPosition(exact)
+            else if (override != null) SessionPosition(null, override)
             else SessionPosition(positions.load(episodeId), loadLegacy(episodeId))
         })
     }

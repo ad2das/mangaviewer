@@ -48,6 +48,8 @@ class EpisodeAccessPlan(
     pages: List<PageAccessPlan>,
     prerequisites: List<AccessPrerequisite> = emptyList(),
     val navigationKnown: Boolean = true,
+    /** A complete verified disk snapshot. Its source addresses must never reactivate HTTP. */
+    val localOnly: Boolean = false,
 ) {
     val manifest: EpisodeManifest = manifest.copy(
         pages = Collections.unmodifiableList(manifest.pages.toList()),

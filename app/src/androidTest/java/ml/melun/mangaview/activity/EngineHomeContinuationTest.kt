@@ -48,9 +48,20 @@ class EngineHomeContinuationTest {
         val graph = (context.applicationContext as ViewerApplication).graph
         val output = File(context.getExternalFilesDir(null), "home-continuation-${System.currentTimeMillis()}")
             .apply { check(mkdir()) }
+        val unpreparedTarget = args.getString("homeUnpreparedTarget") == "true"
+        val expected: SourceAnchor
+        if (unpreparedTarget) {
+            require(target.seriesId.sourceId.value == "ntk" && predicted.seriesId.sourceId.value == "wfwf")
+            val page = ml.melun.mangaview.core.PageId(target, "engine-complete-plan")
+            assertFalse("Backup harness must preserve and remove only this target's cached plan",
+                File(context.applicationInfo.dataDir, "app_engine_episode_plans_v1/" +
+                    ml.melun.mangaview.data.cache.PageCacheKey.of(page) + ".plan").exists())
+            expected = SourceAnchor(ml.melun.mangaview.core.PageId(target, "p0000"), 0, 0)
+            graph.userLibrary.recordOpened(target.seriesId, title, null, target)
+            graph.engine.positions.save(expected, 0)
+        } else {
         val work = graph.engine.session(ViewerLaunchSpec(target.seriesId.sourceId, target.seriesId, target))
         val plan = graph.engine.coordinator.submit(work.episode(target, WorkPriority.FOCUS))
-        val expected: SourceAnchor
         try {
             val manifest = plan.await()
             val page = graph.engine.coordinator.submit(work.page(manifest,
@@ -69,17 +80,47 @@ class EngineHomeContinuationTest {
                 graph.engine.positions.save(expected, legacy)
             } finally { page.close(); page.awaitReleased() }
         } finally { plan.close(); plan.awaitReleased() }
+        }
         delay(5)
         graph.userLibrary.recordOpened(predicted.seriesId, "가장 최근 작품 · ${predicted.seriesId.sourceId.value.uppercase()}", null, predicted)
         withTimeout(5000) { graph.userLibrary.snapshot.first { it.recent.firstOrNull()?.episodeId == predicted } }
         val device = UiDevice.getInstance(instrumentation)
-        var reader: ViewerActivity? = null
+        var reader: EngineViewerScreen? = null
         val sampling = java.util.concurrent.atomic.AtomicBoolean(false)
         var sampler: Thread? = null
         var deadlineCapture: Deferred<Result<Unit>>? = null
+        val resolvedAt = java.util.concurrent.atomic.AtomicLong()
+        val authorizedAt = java.util.concurrent.atomic.AtomicLong()
+        val authorizations = EngineCapturedNtkAuthorizations()
+        val planObserver = ml.melun.mangaview.engine.api.EpisodePlanObserver { id, _, _ ->
+            if (id == target) resolvedAt.set(System.nanoTime())
+        }
+        val authObserver: (ml.melun.mangaview.source.ntk.NtkEngineAuthorization) -> Unit = {
+            authorizations.observer(it)
+            if (it.episodeId == target) authorizedAt.set(System.nanoTime())
+        }
+        if (unpreparedTarget) {
+            check(graph.engine.episodeEvidenceObserver == null && graph.engine.ntkAuthorizationEvidenceObserver == null)
+            graph.engine.episodeEvidenceObserver = planObserver
+            graph.engine.ntkAuthorizationEvidenceObserver = authObserver
+        }
         ActivityScenario.launch(MainActivity::class.java).use { home ->
+            lateinit var libraryWindow: android.view.Window
+            lateinit var libraryDecor: android.view.View
+            home.onActivity { libraryWindow = it.window; libraryDecor = it.window.decorView }
             try {
                 dismissAutomaticUpdateNotice(device)
+                if (unpreparedTarget) {
+                    repeat(2) {
+                        lateinit var state: ml.melun.mangaview.ui.library.LibraryState
+                        home.onActivity { state = androidx.lifecycle.ViewModelProvider(it)
+                            .get(ml.melun.mangaview.ui.library.LibraryViewModel::class.java).state.value }
+                        if (state.selectedSourceId.value != "ntk") {
+                            val label = state.sources.single { it.id == state.selectedSourceId }.label
+                            requireNotNull(device.wait(Until.findObject(By.desc(label)), 5000)).click()
+                        }
+                    }
+                }
                 requireNotNull(device.wait(Until.findObject(By.desc("하단 홈")), 15_000)).click()
                 assertNotNull(device.wait(Until.findObject(By.text("이어서 읽기")), 15_000))
                 val preparedOwner = withTimeout(45_000) {
@@ -101,6 +142,10 @@ class EngineHomeContinuationTest {
                 row.scroll(Direction.RIGHT, 0.8f)
                 val card = requireNotNull(device.wait(Until.findObject(By.desc("이어보기: $title")), 10_000))
                 assertTrue(device.takeScreenshot(File(output, "home-selected-card.png")))
+                if (unpreparedTarget) {
+                    assertEquals("Target was resolved before its card was tapped", 0L, resolvedAt.get())
+                    assertEquals("Target was authorized before its card was tapped", 0L, authorizedAt.get())
+                }
                 val requested = System.nanoTime()
                 args.getString("homeDeadlineCaptureMillis")?.toLong()?.let { captureMillis ->
                     require(captureMillis in 1..10_000)
@@ -146,17 +191,19 @@ class EngineHomeContinuationTest {
                 }
                 card.click()
                 reader = withTimeout(15_000) {
-                    var found: ViewerActivity? = null
+                    var found: EngineViewerScreen? = null
                     while (found == null) {
                         instrumentation.runOnMainSync {
                             found = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
-                                .filterIsInstance<ViewerActivity>().singleOrNull()
+                                .filterIsInstance<MainActivity>().singleOrNull()?.readerScreen()
                         }
                         if (found == null) delay(10)
                     }
                     found
                 }
                 val activity = requireNotNull(reader)
+                assertSame("Opening replaced the library window", libraryWindow, activity.window)
+                assertSame("Opening replaced the library decor", libraryDecor, activity.window.decorView)
                 val frame = withTimeout(30_000) {
                     var value = activity.engineFramesSince(0).observations.firstOrNull {
                         it.presentation.swapSucceeded && it.presentation.scene.completeCoverage &&
@@ -175,6 +222,26 @@ class EngineHomeContinuationTest {
                 assertEquals("Home must use the exact saved source anchor", expected, frame.scene.anchor)
                 assertEquals("The renderer must be reusable for a different work", preparedOwner.rendererId, frame.rendererId)
                 assertEquals(preparedOwner.rendererEpoch, frame.identity.rendererEpoch)
+                if (unpreparedTarget) {
+                    assertFalse(requireNotNull(activity.viewerEngineSnapshot()?.plans?.get(target)).localOnly)
+                    assertTrue("Target's plan did not resolve after its tap", resolvedAt.get() > requested)
+                    assertTrue("Target's browser authorization did not run after its tap", authorizedAt.get() > requested)
+                }
+                if (args.getString("homeCaptureAfterComplete") == "true") {
+                    val started = System.nanoTime()
+                    val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+                    val returned = System.nanoTime()
+                    try {
+                        File(output, "complete-capture.json").writeText(JSONObject()
+                            .put("requestedAtNanos", requested).put("captureStartedAtNanos", started)
+                            .put("captureReturnedAtNanos", returned)
+                            .put("returnedAfterMillis", (returned - requested) / 1e6)
+                            .put("sourcePixelsVerified", false).put("corpusCredit", 0).toString(2))
+                        File(output, "complete.png").outputStream().use {
+                            check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+                        }
+                    } finally { bitmap.recycle() }
+                }
                 deadlineCapture?.await()?.getOrThrow()
                 // Submission is separate from visibility. The captures show what was visible
                 // when taken; the later screenshot is not a first-image timestamp.
@@ -182,7 +249,7 @@ class EngineHomeContinuationTest {
                 device.waitForIdle(1000)
                 assertTrue("Reader surface is not the active accessibility window",
                     device.wait(Until.hasObject(By.desc("viewer-surface")), 5000))
-                assertFalse("Home still owns the active window", device.hasObject(By.text("이어서 읽기")))
+                assertFalse("Home content remained visible over the reader", device.hasObject(By.text("이어서 읽기")))
                 device.dumpWindowHierarchy(File(output, "viewer-window.xml"))
                 assertTrue(device.takeScreenshot(File(output, "viewer.png")))
                 if (args.getString("homeDisplayDiagnostic") == "true") {
@@ -193,6 +260,9 @@ class EngineHomeContinuationTest {
                 }
                 File(output, "result.json").writeText(JSONObject()
                     .put("entry", "REAL_HOME_CONTINUATION_CARD_TAP")
+                    .put("unpreparedTarget", unpreparedTarget)
+                    .put("targetResolvedAtNanos", resolvedAt.get()).put("targetAuthorizedAtNanos", authorizedAt.get())
+                    .put("host", "EXISTING_LIBRARY_WINDOW")
                     .put("prediction", predicted.toString()).put("selected", target.toString())
                     .put("anchor", expected.toString()).put("rendererId", frame.rendererId)
                     .put("requestedAtNanos", requested)
@@ -212,12 +282,16 @@ class EngineHomeContinuationTest {
                     })
                     .put("launchToCompleteSubmissionMillis", (frame.submittedAtNanos + frame.renderLatencyNanos - requested) / 1e6)
                     .put("physicalPresentationVerified", false).put("corpusCredit", 0).toString(2))
+                val expectedAtClose = if (args.getString("homeLifecycleValidation") == "true") {
+                    verifyEmbeddedReaderLifecycle(instrumentation, home, activity, expected, output)
+                } else expected
                 // The actual close path also persists the same anchor.
                 home.close()
                 instrumentation.runOnMainSync { activity.finish() }
                 withTimeout(30_000) { activity.awaitEngineClosed() }
-                assertEquals(expected, graph.engine.positions.load(target))
+                assertEquals(expectedAtClose, graph.engine.positions.load(expectedAtClose.pageId.episodeId))
             } catch (failure: Throwable) {
+                File(output, "failure.txt").writeText(failure.stackTraceToString())
                 device.takeScreenshot(File(output, "failure.png"))
                 device.dumpWindowHierarchy(File(output, "failure-window.xml"))
                 File(output, "failure-windows.txt").writeText(device.executeShellCommand("dumpsys window windows"))
@@ -232,6 +306,9 @@ class EngineHomeContinuationTest {
                 }
                 graph.engine.openings.cancelPrediction()
                 graph.engine.renderers.cancel()
+                if (graph.engine.episodeEvidenceObserver === planObserver) graph.engine.episodeEvidenceObserver = null
+                if (graph.engine.ntkAuthorizationEvidenceObserver === authObserver) graph.engine.ntkAuthorizationEvidenceObserver = null
+                if (unpreparedTarget) authorizations.exportAndClear(output)
             }
         }
         withTimeout(15_000) { while (graph.engine.coordinator.snapshot().subscribers != 0) delay(10) }

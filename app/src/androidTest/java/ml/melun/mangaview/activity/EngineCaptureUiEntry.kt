@@ -23,8 +23,8 @@ internal suspend fun withEngineCaptureViewer(
     kind: SeriesKind,
     catalogUi: Boolean,
     beforeViewerOpen: () -> Unit = {},
-    afterViewerClosed: suspend (ViewerActivity) -> Unit = {},
-    block: suspend (ViewerActivity) -> Unit,
+    afterViewerClosed: suspend (EngineViewerScreen) -> Unit = {},
+    block: suspend (EngineViewerScreen) -> Unit,
 ) {
     val context = instrumentation.targetContext
     if (catalogUi) {
@@ -55,6 +55,7 @@ internal suspend fun withEngineCaptureViewer(
             val launch = ui.open(series, item)
             File(output, "ui-launch.json").writeText(JSONObject().apply {
                 put("entry", "CATALOG_EPISODE_ROW_TAP"); put("episodeId", episode.toString())
+                put("hostActivity", (launch.activity.baseContext as android.app.Activity).componentName.className)
                 put("seriesTitle", series.title); put("episodeTitle", item.title)
                 put("tapStartedMonotonicNs", launch.startedNanos); put("tapStartedElapsedMillis", launch.startedMillis)
                 put("independentCatalogOrderVerified", false); put("corpusCredit", 0)
@@ -69,7 +70,7 @@ internal suspend fun withEngineCaptureViewer(
         }
     } else {
         beforeViewerOpen()
-        var activity: ViewerActivity? = null
+        var activity: EngineViewerScreen? = null
         val launchRequestedAtNanos = System.nanoTime()
         ActivityScenario.launch<ViewerActivity>(Intent(context, ViewerActivity::class.java).apply {
             putExtra(ViewerLaunchSpec.EXTRA_SOURCE_ID, episode.seriesId.sourceId.value)
@@ -77,8 +78,9 @@ internal suspend fun withEngineCaptureViewer(
             putExtra(ViewerLaunchSpec.EXTRA_EPISODE_KEY, episode.remoteKey)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }).use { scenario ->
-            scenario.onActivity { activity = it }
+            scenario.onActivity { activity = it.screen }
             File(output, "ui-launch.json").writeText(JSONObject().put("entry", "DIRECT_VIEWER_INTENT")
+                .put("hostActivity", (requireNotNull(activity).baseContext as android.app.Activity).componentName.className)
                 .put("launchRequestedAtNanos", launchRequestedAtNanos)
                 .put("episodeId", episode.toString()).put("corpusCredit", 0).toString(2))
             block(requireNotNull(activity))

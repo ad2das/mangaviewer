@@ -83,6 +83,9 @@ internal class EngineAppGraph(
     }
     private val storage = EngineRawStorage(File(context.applicationInfo.dataDir, "app_engine_pages_v1"),
         RoomEnginePublicationIndex(database::database), ioDispatcher, positions)
+    private val completeEpisodes = ml.melun.mangaview.data.engine.EngineCompleteEpisodeStore(
+        File(context.applicationInfo.dataDir, "app_engine_episode_plans_v1"), storage, ioDispatcher,
+        reportFailure = { android.util.Log.w("EngineEpisodeCache", "Cached episode metadata unavailable", it) })
     private val ntkBrowser by lazy {
         NtkEngineBrowserClient(context, userAgent, NtkBrowserIdentity.forDevice(context, "engine"),
             captureEvidence = { ntkAuthorizationEvidenceObserver != null }) {
@@ -91,12 +94,18 @@ internal class EngineAppGraph(
     }
 
     fun session(spec: ViewerLaunchSpec): EngineViewerWork {
-        return when (spec.sourceId.value) {
+        val live = when (spec.sourceId.value) {
             "wfwf" -> EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
-                parsingDispatcher, library::readingPosition, spec.initialPosition, observations)
+                parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
             "ntk" -> EngineNtkSessionWork(userAgent, ntkOrigin, transport, storage, positions,
-                parsingDispatcher, ntkBrowser, library::readingPosition, spec.initialPosition, observations, ntkPageTransport.value)
+                parsingDispatcher, ntkBrowser, library::readingPosition, spec.initialPosition, observations, ntkPageTransport.value,
+                spec.initialAnchor)
             else -> error("Unknown engine source")
+        }
+        val cached = ml.melun.mangaview.engine.content.EngineCachedSessionWork(live, completeEpisodes)
+        return object : EngineViewerWork, EngineSessionWork by cached {
+            override fun episodes(seriesId: ml.melun.mangaview.core.SeriesId,
+                priority: ml.melun.mangaview.engine.api.WorkPriority) = live.episodes(seriesId, priority)
         }
     }
 

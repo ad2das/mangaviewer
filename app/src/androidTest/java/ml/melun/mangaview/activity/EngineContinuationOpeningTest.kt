@@ -115,6 +115,10 @@ class EngineContinuationOpeningTest {
                         .put("anchor", frame.scene.anchor.toString())
                         .put("width", frame.scene.viewport.widthPx).put("height", frame.scene.viewport.heightPx)
                         .put("timestampKind", frame.timestampKind.name).put("physicalPresentationVerified", false)
+                    activity.viewerEngineSnapshot()?.plans?.get(id)?.let { plan ->
+                        record.put("completeDiskEpisode", plan.localOnly)
+                            .put("manifestPageCount", plan.manifest.pages.size)
+                    }
                     activity.viewerEngineDiagnosticSnapshot()?.content?.launchPreparation?.let { preparation ->
                         record.put("manifestAcceptedAtNanos", preparation.manifestAcceptedAtNanos)
                             .put("verifiedPages", JSONArray().apply {

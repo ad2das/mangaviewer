@@ -50,7 +50,7 @@ class EngineViewerCaptureTest {
         val ntkAuthorizations = EngineCapturedNtkAuthorizations()
         val memory = if (arguments.getString("captureMemory") == "true")
             QualificationMemory(instrumentation, File(output, "memory").apply { check(mkdir()) }) else null
-        var viewer: ViewerActivity? = null
+        var viewer: EngineViewerScreen? = null
         var inputCursor = 0L
         var frameCursor = 0L
         fun exportFrames() {

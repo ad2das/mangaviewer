@@ -12,6 +12,20 @@ from verify_engine_surface_fixture import (
 TARGET = 'SurfaceView[ml.melun.mangaview/ml.melun.mangaview.activity.ViewerActivity](BLAST)'
 
 
+def target_layer_for_launch(catalog_ui, launch):
+    _require(type(catalog_ui) is bool, 'invalid catalog entry classification')
+    if launch is None:
+        _require(not catalog_ui, 'catalog entry lacks its actual launch record')
+        return TARGET  # Older direct-entry archives have the fixed ViewerActivity host.
+    _require(launch.get('entry') == ('CATALOG_EPISODE_ROW_TAP' if catalog_ui else 'DIRECT_VIEWER_INTENT'),
+             'launch record disagrees with collection entry')
+    direct = 'ml.melun.mangaview.activity.ViewerActivity'
+    embedded = 'ml.melun.mangaview.activity.MainActivity'
+    host = launch.get('hostActivity', direct)
+    _require(host in ({direct, embedded} if catalog_ui else {direct}), 'unsupported reader launch host')
+    return f'SurfaceView[ml.melun.mangaview/{host}](BLAST)'
+
+
 def verify_native_packet(frame, raw, strip):
     _require(len(raw) >= HEADER.size, 'native packet is truncated')
     values = HEADER.unpack_from(raw)
@@ -38,11 +52,16 @@ def verify(directory, trace_processor=None):
              'collection does not contain one exact capture directory')
     capture = (root / names[0]).resolve()
     _require(capture.parent == root, 'capture directory escapes collection')
+    launch_path = capture / 'ui-launch.json'
+    launch = json.loads(launch_path.read_bytes()) if launch_path.exists() else None
+    target = target_layer_for_launch(collection.get('catalogUi', False), launch)
     summary = json.loads((capture / 'summary.json').read_text(encoding='utf-8'))
     files = list(capture.glob('frame-*.json'))
     _require(summary.get('capturedFrames') == len(files) and bool(files), 'captured frame count mismatch')
     frames = []
     hashes = {}
+    if launch is not None:
+        hashes[str(launch_path.relative_to(root))] = _sha256(launch_path)
     indices = set()
     for path in files:
         match = re.fullmatch(r'frame-([0-9]+).json', path.name)
@@ -72,7 +91,7 @@ def verify(directory, trace_processor=None):
     processor_identity = {'sha256': _sha256(binary), 'version': subprocess.check_output(
         [str(binary), '--version'], text=True).strip()}
     slices, events, transactions, stats, flows, releases = _load_trace(
-        trace, TARGET, full_sort=True, bin_path=str(binary))
+        trace, target, full_sort=True, bin_path=str(binary))
     first = min(frames, key=lambda frame: frame['token'])
     owner_uid = _package_uid(collection)
     owner_pid = first['processId']
@@ -106,7 +125,8 @@ def verify(directory, trace_processor=None):
             hashes[str((capture / name).relative_to(root))] = _sha256(capture / name)
         hashes['raw-clock-verification.json'] = _sha256(root / 'raw-clock-verification.json')
     result = bind_live_frames(frames, slices, events, transactions, owner_uid=owner_uid,
-        owner_pid=owner_pid, trace_loss=[] if foreign_audit else stats, binder_flows=flows, binder_releases=releases)
+        owner_pid=owner_pid, trace_loss=[] if foreign_audit else stats, binder_flows=flows, binder_releases=releases,
+        target_layer=target)
     result['originalTraceStats'] = stats
     result['outOfEpisodeFrameEndAudit'] = foreign_audit
     result['kernelTimingSource'] = 'ORIGINAL_RAW_MONOTONIC' if raw_clock else 'TRACE_PROCESSOR_CONVERTED'
@@ -114,6 +134,7 @@ def verify(directory, trace_processor=None):
         collectionSha256=_sha256(root / 'collection.json'), capturedFilesSha256=hashes,
         traceProcessorFullSort=True, traceProcessor=processor_identity,
         nativePacketVerified=True, independentSourcePixelsVerified=False, wholeEpisodeVerified=False,
+        targetLayer=target,
         note='Exact engine input frame, Binder message, producer buffer and SF latch; physical display time remains unknown.')
     return result
 

@@ -65,6 +65,8 @@ class EngineSessionRuntime(
     private val work = SessionWorkSet(scope, coordinator, reportFailure)
     // Publish new immutable maps only when their metadata changes, not on every scroll sample.
     private var plans: Map<EpisodeId, EpisodeAccessPlan> = emptyMap()
+    private class CachedPlan(val request: WorkRequest<EpisodeAccessPlan>, val plan: EpisodeAccessPlan)
+    private val retainedCachedPlans = linkedMapOf<EpisodeId, CachedPlan>()
     private var pages: Map<PageId, PageContentIdentity> = emptyMap()
     private val prepared = linkedSetOf<PageId>()
     private val failedReadAheadPages = linkedSetOf<PageId>()
@@ -113,6 +115,7 @@ class EngineSessionRuntime(
         if (closed) return
         val update = session.dispatch(SessionEvent.Navigate(episodeId))
         work.clear()
+        retainedCachedPlans.clear()
         plans = emptyMap()
         pages = emptyMap()
         prepared.clear()
@@ -192,6 +195,7 @@ class EngineSessionRuntime(
             process(session.dispatch(SessionEvent.Close))
         }
         work.close()
+        retainedCachedPlans.clear()
         plans = emptyMap()
     }
 
@@ -204,7 +208,11 @@ class EngineSessionRuntime(
             while (dirty) {
                 dirty = false
                 val state = session.snapshot
-                val demand = if (started && foreground && !closed) demands(state) else emptyList()
+                val demand = when {
+                    !started || closed -> emptyList()
+                    foreground -> demands(state)
+                    else -> cachedPlanPins()
+                }
                 val batch = receipts.toList()
                 receipts.clear()
                 reportUpdate(snapshot, batch)
@@ -213,6 +221,12 @@ class EngineSessionRuntime(
         } finally {
             processing = false
         }
+    }
+
+    private fun cachedPlanPins(): List<SessionDemand<*>> = retainedCachedPlans.values.map { held ->
+        // Complete snapshots pin every original until navigation or close, including background
+        // suspension. The ready dependency performs no network, decoding or ongoing storage work.
+        SessionDemand(held.request) { plan -> check(plan === held.plan) { "Cached plan ownership changed" } }
     }
 
     private fun demands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
@@ -234,13 +248,7 @@ class EngineSessionRuntime(
         // One forward document uses the spare control slot; its image bodies remain background work.
         adjacentPrefetch(state)?.let { if (it !in plans) wantedEpisodes.putIfAbsent(it, WorkPriority.INTERACTIVE) }
         wantedEpisodes.forEach { (id, priority) ->
-            if (id !in plans) result += SessionDemand(source.episode(id, priority), onFailure =
-                if (priority == WorkPriority.NEXT_EPISODE || priority == WorkPriority.INTERACTIVE) ({ _: Throwable ->
-                    failedReadAheadEpisodes += id
-                    process(SessionUpdate(session.snapshot))
-                }) else null) { plan ->
-                if (isCurrent(generation)) acceptPlan(generation, id, plan)
-            }
+            if (id !in plans) result += episodeDemand(generation, id, priority)
         }
         state.requiredNavigation.forEach { id ->
             if (plans[id]?.navigationKnown == false) {
@@ -259,7 +267,22 @@ class EngineSessionRuntime(
                 if (isCurrent(generation)) acceptPage(generation, id, plan, page)
             }
         }
+        result += cachedPlanPins()
         return result
+    }
+
+    private fun episodeDemand(generation: Long, id: EpisodeId, priority: WorkPriority): SessionDemand<EpisodeAccessPlan> {
+        val request = source.episode(id, priority)
+        return SessionDemand(request, onFailure =
+            if (priority == WorkPriority.NEXT_EPISODE || priority == WorkPriority.INTERACTIVE) ({ _: Throwable ->
+                failedReadAheadEpisodes += id
+                process(SessionUpdate(session.snapshot))
+            }) else null) { plan ->
+            if (isCurrent(generation)) {
+                if (plan.localOnly) retainedCachedPlans[id] = CachedPlan(request, plan)
+                acceptPlan(generation, id, plan)
+            }
+        }
     }
 
     private fun retainPreparedMetadata(state: EngineSessionSnapshot, wantedPages: Set<PageId>) {
@@ -317,7 +340,8 @@ class EngineSessionRuntime(
         val update = session.dispatch(SessionEvent.NavigationResolved(generation, id, navigation.previous, navigation.next))
         plans = withEntry(plans, id, EpisodeAccessPlan(previous.manifest.copy(previousEpisodeId = navigation.previous,
             nextEpisodeId = navigation.next), previous.contentRevision, previous.documentSha256,
-            previous.finalDocumentUrl, previous.authEpoch, previous.pages, previous.prerequisites, navigationKnown = true))
+            previous.finalDocumentUrl, previous.authEpoch, previous.pages, previous.prerequisites,
+            navigationKnown = true, localOnly = previous.localOnly))
         process(update)
     }
 

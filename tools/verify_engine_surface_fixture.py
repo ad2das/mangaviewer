@@ -461,9 +461,12 @@ def bind_frames(frames, slices, frame_events, transactions, **kwargs):
                         target_layer=TARGET_LAYER, fixture_shape=True, **kwargs)
 
 
-def bind_live_frames(frames, slices, frame_events, transactions, **kwargs):
+def bind_live_frames(frames, slices, frame_events, transactions, *, target_layer=None, **kwargs):
     """Bind every recorded normal-viewer frame, including its exact engine input identity."""
-    target = "SurfaceView[ml.melun.mangaview/ml.melun.mangaview.activity.ViewerActivity](BLAST)"
+    allowed = {f"SurfaceView[ml.melun.mangaview/ml.melun.mangaview.activity.{host}](BLAST)"
+               for host in ("ViewerActivity", "MainActivity")}
+    target = target_layer or "SurfaceView[ml.melun.mangaview/ml.melun.mangaview.activity.ViewerActivity](BLAST)"
+    _require(target in allowed, "unsupported normal-reader host layer")
     report = _bind_frames(frames, slices, frame_events, transactions,
                           target_layer=target, fixture_shape=False, **kwargs)
     by_id = {row["id"]: row for row in slices}

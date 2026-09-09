@@ -69,7 +69,7 @@ private val POST_PREPARATION_GESTURES = listOf(true, false, true, true, false, f
 
 /** Real uninterrupted gestures, with an independent bounded natural-frame readback consumer. */
 internal suspend fun traverseCapturedEpisode(
-    activity: ViewerActivity,
+    activity: EngineViewerScreen,
     device: UiDevice,
     episode: EpisodeId,
     documents: EngineCapturedEpisodeDocuments,

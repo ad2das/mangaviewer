@@ -37,6 +37,8 @@ import java.io.File
 
 class MainActivity : ComponentActivity() {
     private lateinit var updates: AppUpdateViewModel
+    private lateinit var reader: MainReaderHost
+    internal fun readerScreen(): EngineViewerScreen? = if (::reader.isInitialized) reader.current else null
     private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val file = updates.state.value.file ?: return@registerForActivityResult
         if (packageManager.canRequestPackageInstalls()) installUpdate(file)
@@ -59,21 +61,35 @@ class MainActivity : ComponentActivity() {
             ),
         )[LibraryViewModel::class.java]
         showLibrary(graph, viewModel)
+        reader = MainReaderHost(this)
+        reader.restore(savedInstanceState)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                // MainActivity hosts both home and library; this prepares no specific episode.
-                graph.engine.renderers.warm()
-                viewModel.foreground(true)
-                try { kotlinx.coroutines.awaitCancellation() } finally { viewModel.foreground(false) }
+                reader.visible.collectLatest { reading ->
+                    if (!reading) {
+                        applySystemBars(viewModel.state.value.saved.settings.darkTheme)
+                        graph.engine.renderers.warm()
+                        viewModel.foreground(true)
+                    }
+                    try { kotlinx.coroutines.awaitCancellation() } finally { viewModel.foreground(false) }
+                }
             }
         }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                // A silent metadata check stays out of first-frame startup and stops when reading opens.
-                delay(10_000)
-                updates.checkAutomatically()
+                reader.visible.collectLatest { reading ->
+                    if (!reading) { delay(10_000); updates.checkAutomatically() }
+                }
             }
         }
+    }
+
+    override fun onStart() { super.onStart(); if (::reader.isInitialized) reader.enterForeground() }
+    override fun onStop() { if (::reader.isInitialized) reader.enterBackground(); super.onStop() }
+    override fun onDestroy() { if (::reader.isInitialized) reader.destroy(); super.onDestroy() }
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::reader.isInitialized) reader.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     private fun showLibrary(graph: ml.melun.mangaview.app.AppGraph, viewModel: LibraryViewModel) {
@@ -88,7 +104,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             LaunchedEffect(state.saved.settings.darkTheme) {
-                applySystemBars(state.saved.settings.darkTheme)
+                if (readerScreen() == null) applySystemBars(state.saved.settings.darkTheme)
             }
             LaunchedEffect(viewModel) {
                 viewModel.effects.collectLatest { effect ->
@@ -140,15 +156,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openEpisode(episodeId: EpisodeId, position: ReadingPosition?) {
-        startActivity(Intent(this, ViewerActivity::class.java).apply {
-            putExtra(ViewerLaunchSpec.EXTRA_SOURCE_ID, episodeId.seriesId.sourceId.value)
-            putExtra(ViewerLaunchSpec.EXTRA_SERIES_KEY, episodeId.seriesId.remoteKey)
-            putExtra(ViewerLaunchSpec.EXTRA_EPISODE_KEY, episodeId.remoteKey)
-            position?.let {
-                putExtra(ViewerLaunchSpec.EXTRA_PAGE_KEY, it.pageId.remoteKey)
-                putExtra(ViewerLaunchSpec.EXTRA_PAGE_OFFSET_UNITS, it.offsetInPageUnits)
-            }
-        })
+        reader.open(ViewerLaunchSpec(episodeId.seriesId.sourceId, episodeId.seriesId, episodeId, position))
     }
 
     private fun openExternalUri(value: String) {

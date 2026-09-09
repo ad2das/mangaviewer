@@ -34,6 +34,7 @@ internal class EngineNtkSessionWork(
     private val initialPosition: ReadingPosition?,
     private val observer: EpisodePlanObserver? = null,
     private val pageTransport: SourceTransport = transport,
+    private val initialAnchor: SourceAnchor? = null,
 ) : EngineViewerWork {
     private val principal = "ntk:engine"
     private val planner = NtkAccessPlanner(userAgent)
@@ -45,9 +46,11 @@ internal class EngineNtkSessionWork(
 
     override fun position(episodeId: EpisodeId): WorkRequest<SessionPosition> {
         val override = initialPosition?.takeIf { it.pageId.episodeId == episodeId }
-        return WorkRequest(WorkKey(principal, episodeId.toString(), "position", override?.toString() ?: "saved",
+        val exact = initialAnchor?.takeIf { it.pageId.episodeId == episodeId }
+        return WorkRequest(WorkKey(principal, episodeId.toString(), "position", exact?.toString() ?: override?.toString() ?: "saved",
             SessionPosition::class.java), WorkDomain.STORAGE, WorkPriority.FOCUS, execute = {
-            if (override != null) SessionPosition(null, override)
+            if (exact != null) SessionPosition(exact)
+            else if (override != null) SessionPosition(null, override)
             else SessionPosition(positions.load(episodeId), loadLegacy(episodeId))
         })
     }

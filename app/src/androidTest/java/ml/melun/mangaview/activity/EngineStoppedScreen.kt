@@ -11,7 +11,7 @@ import org.json.JSONObject
 /** Compositor screenshots are separate evidence, never labeled as native renderer readbacks. */
 internal fun captureEngineStoppedScreen(
     instrumentation: Instrumentation,
-    activity: ViewerActivity,
+    activity: EngineViewerScreen,
     output: File,
     index: Int,
 ) {

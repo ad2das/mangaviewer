@@ -10,6 +10,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
 import ml.melun.mangaview.activity.ViewerActivity
+import ml.melun.mangaview.activity.EngineViewerScreen
 import ml.melun.mangaview.viewer.runtime.NativePresentationEvidencePacking
 import ml.melun.mangaview.viewer.runtime.ViewerSurfaceHost
 import org.json.JSONArray
@@ -17,7 +18,9 @@ import org.json.JSONObject
 
 /** Captures immediately, without idle waits, input, frame requests, or display timestamp claims. */
 internal class ViewerScreenshotEvidence(private val instrumentation: Instrumentation, private val directory: File) {
-    fun capture(activity: ViewerActivity, requested: LiveEpisode, name: String): File {
+    fun capture(activity: ViewerActivity, requested: LiveEpisode, name: String): File = capture(activity.screen, requested, name)
+
+    fun capture(activity: EngineViewerScreen, requested: LiveEpisode, name: String): File {
         val before = snapshot(activity)
         val file = directory.resolve("$name.png")
         val record = JSONObject().put("schemaVersion", 1).put("name", name)
@@ -54,7 +57,7 @@ internal class ViewerScreenshotEvidence(private val instrumentation: Instrumenta
         }
     }
 
-    private fun snapshot(activity: ViewerActivity): JSONObject = onMain {
+    private fun snapshot(activity: EngineViewerScreen): JSONObject = onMain {
         val started = System.nanoTime()
         val telemetry = activity.viewerTelemetrySnapshot()
         val frames = NativePresentationEvidencePacking.decode(activity.presentationEvidenceSnapshot())
@@ -62,7 +65,7 @@ internal class ViewerScreenshotEvidence(private val instrumentation: Instrumenta
         val decor = activity.window.decorView
         val surface = descendants(decor).filterIsInstance<ViewerSurfaceHost>().singleOrNull()
         JSONObject().put("snapshotStartedAtNanos", started)
-            .put("activityIdentity", System.identityHashCode(activity)).put("hasWindowFocus", activity.hasWindowFocus())
+            .put("activityIdentity", System.identityHashCode(activity.baseContext)).put("hasWindowFocus", decor.hasWindowFocus())
             .put("displayId", decor.display?.displayId).put("displayRotation", decor.display?.rotation)
             .put("surface", surface?.let(::viewJson))
             .put("potentialOccluders", JSONArray(surface?.let(::potentialOccluders).orEmpty()))

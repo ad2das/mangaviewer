@@ -10,6 +10,7 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import ml.melun.mangaview.activity.ViewerActivity
+import ml.melun.mangaview.activity.EngineViewerScreen
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
@@ -80,13 +81,13 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         val observedEpisodes = mutableListOf<EpisodeId>()
         var previous: ViewerTelemetrySnapshot? = null
         var lastEpisodeComplete = false
-        lateinit var activity: ViewerActivity
+        lateinit var activity: EngineViewerScreen
         try {
             check(ViewerUiConditions.waitForSurface(device, SURFACE_TIMEOUT_MILLIS)) {
                 "Viewer surface did not accept immediate input"
             }
             if (uiLaunch != null) activity = uiLaunch.activity
-            else requireNotNull(scenario).onActivity { activity = it }
+            else requireNotNull(scenario).onActivity { activity = it.screen }
             onMain { windowFrameRecorder = ViewerWindowFrameRecorder(activity.window) }
             val bounds = surfaceBounds()
             var gestureCount = 0
@@ -207,7 +208,7 @@ internal class ViewerTenEpisodeAutoAppendHarness(
     }
 
     private fun ensureDeliveredGestureEvidence(
-        activity: ViewerActivity,
+        activity: EngineViewerScreen,
         bounds: Rect,
         expectedCount: Int,
     ) {
@@ -405,7 +406,7 @@ internal class ViewerTenEpisodeAutoAppendHarness(
             }}"
 
     private fun verifyFirstContent(
-        activity: ViewerActivity,
+        activity: EngineViewerScreen,
         startedAtMillis: Long,
     ) {
         val node = device.findObject(By.descStartsWith(FRAME_PREFIX))
@@ -430,7 +431,7 @@ internal class ViewerTenEpisodeAutoAppendHarness(
     }
 
     private fun startupTiming(
-        activity: ViewerActivity,
+        activity: EngineViewerScreen,
     ): ViewerStartupTiming? = onMain { activity.viewerStartupTimingSnapshot() }
 
     private fun verifyBoundaryPresentations() {
@@ -511,10 +512,10 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         if (!decision.passed && !pending) violations += decision.reason
     }
 
-    private fun telemetry(activity: ViewerActivity): ViewerTelemetrySnapshot? =
+    private fun telemetry(activity: EngineViewerScreen): ViewerTelemetrySnapshot? =
         onMain { activity.viewerTelemetrySnapshot() }
 
-    private fun harvestActivityEvidence(activity: ViewerActivity) {
+    private fun harvestActivityEvidence(activity: EngineViewerScreen) {
         val evidence = activitySnapshot(activity)
         if (evidence.presentationDropped || evidence.motionDropped) {
             violations += "Evidence recorder overran before an incremental harvest"
@@ -547,7 +548,7 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         refreshPeriodNanos = evidence.refreshPeriodNanos
     }
 
-    private fun harvestRegions(activity: ViewerActivity) {
+    private fun harvestRegions(activity: EngineViewerScreen) {
         val batch = onMain { activity.presentedRegionsSince(regionCursor) }
         regionCursor = batch.nextSequence
         if (batch.dropped) violations += "Displayed image region recorder overran before harvest"
@@ -592,7 +593,7 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         }
     }
 
-    private fun activitySnapshot(activity: ViewerActivity): ActivityEvidence = onMain {
+    private fun activitySnapshot(activity: EngineViewerScreen): ActivityEvidence = onMain {
         val presentations = activity.presentationEvidenceSince(presentationCursor)
         val motion = activity.motionFramesSince(motionCursor)
         presentationCursor = presentations.nextSequence
@@ -627,7 +628,7 @@ internal class ViewerTenEpisodeAutoAppendHarness(
         return Rect(node.visibleBounds)
     }
 
-    private fun checkHealth(activity: ViewerActivity) {
+    private fun checkHealth(activity: EngineViewerScreen) {
         onMain { activity.viewerFailureSnapshot() }?.let { throw it }
         if (device.hasObject(By.pkg("android").res(ANDROID_FAILURE_RESOURCE))) {
             violations += "System reported an ANR or crash"

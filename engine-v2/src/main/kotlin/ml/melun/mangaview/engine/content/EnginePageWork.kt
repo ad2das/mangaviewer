@@ -46,7 +46,8 @@ class EnginePageWork(
                 "lookup", PinnedPage::class.java, WorkDomain.STORAGE, context.priority.value,
                 dispose = { it.close() },
             ) { PinnedPage(storage.find(pageId, plan.contentRevision)) })
-            cached.page ?: load(context, identity, plan, pageId)
+            cached.page ?: if (plan.localOnly) throw IOException("Complete cached episode is no longer available")
+                else load(context, identity, plan, pageId)
         }
     }
 
@@ -155,7 +156,7 @@ private class PageWorkIdentity(
         pageId.episodeId.seriesId.remoteKey, pageId.episodeId.remoteKey, pageId.remoteKey))
     // Access documents may change without changing image identity. Never mix authorization plans.
     private val revision = hashFields(listOf(plan.authEpoch.toString(), plan.contentRevision,
-        plan.documentSha256, plan.finalDocumentUrl.toString()))
+        plan.documentSha256, plan.finalDocumentUrl.toString(), plan.localOnly.toString()))
 
     fun <T : Any> request(
         operation: String,

@@ -274,6 +274,20 @@ class EngineLiveSurfaceBinderTest(unittest.TestCase):
         with self.assertRaisesRegex(SurfaceFixtureError, 'exact captured engine frame'):
             self.bind()
 
+    def test_embedded_host_keeps_exact_buffer_identity_and_rejects_other_windows(self):
+        self.rows = json.loads(json.dumps(self.rows).replace('activity.ViewerActivity', 'activity.MainActivity'))
+        target = 'SurfaceView[ml.melun.mangaview/ml.melun.mangaview.activity.MainActivity](BLAST)'
+        self.assertTrue(self.bind(target_layer=target)['producerLayerBindingVerified'])
+        with self.assertRaises(SurfaceFixtureError):
+            self.bind()  # A MainActivity buffer cannot satisfy the legacy ViewerActivity contract.
+        self.rows[0][0]['inputRevision'] += 1
+        with self.assertRaisesRegex(SurfaceFixtureError, 'exact captured engine frame'):
+            self.bind(target_layer=target)
+
+    def test_unrecognized_normal_host_is_rejected(self):
+        with self.assertRaisesRegex(SurfaceFixtureError, 'unsupported normal-reader host'):
+            self.bind(target_layer=TARGET_LAYER)
+
     def test_wrong_viewport_cannot_adopt_an_owned_buffer(self):
         self.rows[0][0]['viewportHeight'] = 95
         with self.assertRaisesRegex(SurfaceFixtureError, 'transaction candidate'):

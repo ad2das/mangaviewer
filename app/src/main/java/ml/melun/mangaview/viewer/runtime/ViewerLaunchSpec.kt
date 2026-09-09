@@ -12,6 +12,7 @@ internal data class ViewerLaunchSpec(
     val seriesId: SeriesId,
     val episodeId: EpisodeId,
     val initialPosition: ReadingPosition? = null,
+    val initialAnchor: ml.melun.mangaview.engine.api.SourceAnchor? = null,
 ) {
     companion object {
         const val EXTRA_SOURCE_ID = "viewer.v2.source_id"

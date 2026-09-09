@@ -1,5 +1,23 @@
 import unittest
-from verify_engine_live_surface import HEADER, MAGIC, verify_native_packet
+from verify_engine_live_surface import HEADER, MAGIC, TARGET, verify_native_packet, target_layer_for_launch
+
+
+class ReaderHostTest(unittest.TestCase):
+    def test_old_direct_and_catalog_archives_keep_their_original_host(self):
+        self.assertEqual(TARGET, target_layer_for_launch(False, None))
+        self.assertEqual(TARGET, target_layer_for_launch(True, {'entry': 'CATALOG_EPISODE_ROW_TAP'}))
+
+    def test_embedded_entry_selects_only_its_declared_main_window(self):
+        launch = {'entry': 'CATALOG_EPISODE_ROW_TAP', 'hostActivity': 'ml.melun.mangaview.activity.MainActivity'}
+        self.assertEqual(TARGET.replace('ViewerActivity', 'MainActivity'), target_layer_for_launch(True, launch))
+
+    def test_wrong_entry_missing_catalog_record_and_foreign_hosts_are_rejected(self):
+        for catalog, launch in [(True, None), ('true', None),
+                (False, {'entry': 'DIRECT_VIEWER_INTENT', 'hostActivity': 'ml.melun.mangaview.activity.MainActivity'}),
+                (True, {'entry': 'DIRECT_VIEWER_INTENT'}),
+                (True, {'entry': 'CATALOG_EPISODE_ROW_TAP', 'hostActivity': 'other.app.MainActivity'})]:
+            with self.subTest(catalog=catalog, launch=launch), self.assertRaises(ValueError):
+                target_layer_for_launch(catalog, launch)
 
 
 class NativeCaptureTest(unittest.TestCase):

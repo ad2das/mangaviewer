@@ -15,7 +15,7 @@ import kotlin.math.abs
 import ml.melun.mangaview.viewer.runtime.ViewerChromeState
 
 internal class ViewerChromeController(
-    private val activity: ViewerActivity,
+    private val activity: android.content.Context,
     private val surface: View,
     private val snapshot: () -> ViewerChromeState?,
     private val actions: Actions,

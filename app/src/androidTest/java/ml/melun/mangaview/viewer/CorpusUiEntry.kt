@@ -15,7 +15,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import ml.melun.mangaview.activity.MainActivity
-import ml.melun.mangaview.activity.ViewerActivity
+import ml.melun.mangaview.activity.EngineViewerScreen
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
@@ -45,7 +45,7 @@ internal class CorpusUiEntry(
         idleOverride?.let { configurator.waitForIdleTimeout = it }
         timing.mark("library-launched-idle-${configurator.waitForIdleTimeout}-original-$originalIdleMillis")
     }
-    private var viewer: ViewerActivity? = null
+    private var viewer: EngineViewerScreen? = null
 
     fun prepare(sample: CorpusSeriesSample, beforeOpeningSeries: () -> Unit = {}) =
         prepare(sample.kind, sample.series, sample.chain.first(), beforeOpeningSeries)
@@ -60,6 +60,7 @@ internal class CorpusUiEntry(
         episode: SourceEpisode,
         beforeOpeningSeries: () -> Unit = {},
     ) {
+        ml.melun.mangaview.ui.library.dismissAutomaticUpdateNotice(device)
         await { it.sources.isNotEmpty() }
         timing.mark("sources-ready")
         repeat(state().sources.size) {
@@ -87,7 +88,12 @@ internal class CorpusUiEntry(
             .filter { it.visibleBounds.centerY() in inputBounds.top..inputBounds.bottom }
             .single()
         submit.click()
-        device.pressBack()
+        var keyboardVisible = false
+        library.onActivity {
+            keyboardVisible = it.window.decorView.rootWindowInsets
+                ?.isVisible(android.view.WindowInsets.Type.ime()) == true
+        }
+        if (keyboardVisible) device.pressBack()
         await { it.content is LibraryContent.Series || it.content is LibraryContent.Failure }
         timing.mark("search-results-ready")
         val found = (state().content as? LibraryContent.Series)?.items ?: error("UI search failed: ${state().content}")
@@ -132,7 +138,7 @@ internal class CorpusUiEntry(
         val openedInTime = device.wait(Condition<UiDevice, Boolean> {
             instrumentation.runOnMainSync {
                 viewer = ActivityLifecycleMonitorRegistry.getInstance()
-                    .getActivitiesInStage(Stage.RESUMED).filterIsInstance<ViewerActivity>().singleOrNull()
+                    .getActivitiesInStage(Stage.RESUMED).filterIsInstance<MainActivity>().singleOrNull()?.readerScreen()
             }
             viewer != null
         }, 5_000) == true
@@ -144,7 +150,7 @@ internal class CorpusUiEntry(
             error("Real episode tap did not open viewer; evidence=$evidence")
         }
         val opened = requireNotNull(viewer)
-        val spec = ViewerLaunchSpec.from(opened.intent)
+        val spec = opened.launchSpec
         check(spec.episodeId == expected.id) { "UI opened ${spec.episodeId} instead of ${expected.id}" }
         timing.mark("viewer-opened")
         return ViewerUiLaunch(opened, startedMillis, startedNanos)
@@ -198,6 +204,7 @@ internal class CorpusUiEntry(
 
     private fun findTextInList(title: String): UiObject2 {
         val exactRow = Regex("(?s)${Regex.escape(title)}(?:\\n.*)?")
+        val initialRenderDeadline = SystemClock.elapsedRealtime() + 5_000
         var previousRows: List<String>? = null
         var unchanged = 0
         for (gesture in 0 until 2_000) {
@@ -211,11 +218,18 @@ internal class CorpusUiEntry(
                     .clazz("android.widget.TextView")).map { "${it.text}:${it.visibleBounds}" }
             }
             unchanged = if (rows == previousRows) unchanged + 1 else 0
-            if (unchanged >= 3) break
             previousRows = rows
             val list = timing.measure("find-scroll-container") {
                 device.findObjects(By.scrollable(true)).singleOrNull()
-            } ?: break
+            }
+            if (list == null) {
+                if (SystemClock.elapsedRealtime() >= initialRenderDeadline) break
+                previousRows = null
+                unchanged = 0
+                SystemClock.sleep(50)
+                continue
+            }
+            if (unchanged >= 3) break
             val bounds = list.visibleBounds
             check(timing.measure("navigation-swipe") {
                 if (asynchronousNavigationMoves) injectCorpusUiSwipe(instrumentation, bounds)
@@ -244,4 +258,4 @@ internal class CorpusUiEntry(
     }
 }
 
-internal data class ViewerUiLaunch(val activity: ViewerActivity, val startedMillis: Long, val startedNanos: Long)
+internal data class ViewerUiLaunch(val activity: EngineViewerScreen, val startedMillis: Long, val startedNanos: Long)
