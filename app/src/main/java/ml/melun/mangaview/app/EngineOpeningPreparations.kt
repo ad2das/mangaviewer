@@ -134,8 +134,14 @@ internal class EngineOpeningPreparations(
             val start = pages.indexOfFirst { it.id == page }.coerceAtLeast(0)
             val originals = pages.drop(start).take(6).map { item ->
                 async { retain(work.page(plan, item.id, WorkPriority.NEXT_IMAGE)) }
-            }.awaitAll()
-            val rasters = pixels?.requests(work, plan, position, originals).orEmpty().map { retain(it) }
+            }
+            val pixelPreparation = pixels?.begin(work, plan, position)
+            val rasters = mutableListOf<EnginePixels>()
+            // Decode the opening as soon as its originals arrive; later downloads stay concurrent.
+            for (original in originals) {
+                val stored = original.await()
+                pixelPreparation?.requests(stored)?.forEach { rasters += retain(it) }
+            }
             synchronized(lock) {
                 if (pending?.target == target) prepared = EnginePreparedOpening(target, originals.size,
                     rasters.size, rasters.sumOf { it.byteCount }, System.nanoTime())

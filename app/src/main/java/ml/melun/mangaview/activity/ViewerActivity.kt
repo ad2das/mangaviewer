@@ -70,6 +70,8 @@ class ViewerActivity : ComponentActivity() {
     private var contentSource: EngineViewerWork? = null
     private lateinit var engine: EngineAppGraph
     private var openingHandoff: ml.melun.mangaview.app.EngineOpeningPreparations.Handoff? = null
+    private var rendererLease: ml.melun.mangaview.app.EngineRendererPreparation<
+        ml.melun.mangaview.viewer.runtime.EngineSurfaceOwner>.Lease? = null
     private var openingReleased = false
     private val engineClosed = CompletableDeferred<Unit>()
     private val engineDiagnostics = EngineViewerDiagnostics()
@@ -82,6 +84,7 @@ class ViewerActivity : ComponentActivity() {
     @Volatile private var episodePickerFailure: Throwable? = null
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        openWithoutTransitionAnimation()
         configureViewerWindowInsets()
         val spec = runCatching { ViewerLaunchSpec.from(intent) }.getOrElse {
             finishWithFailure(it)
@@ -96,6 +99,7 @@ class ViewerActivity : ComponentActivity() {
         }
         val viewport = initialViewport()
         openingHandoff = engine.openings.claim(spec.episodeId)
+        rendererLease = engine.renderers.claim()
         contentSource = source
         val createdRuntime = EngineViewerRuntime(
             context = this,
@@ -117,6 +121,7 @@ class ViewerActivity : ComponentActivity() {
             reportRendererClosed = engineDiagnostics::rendererClosed,
             inputObservations = engineInputObservations,
             reportFailure = ::showFailure,
+            preparedRenderer = rendererLease?.value,
         )
         runtime = createdRuntime
         val root = content(createdRuntime)
@@ -126,6 +131,15 @@ class ViewerActivity : ComponentActivity() {
         sessionScope.launch {
             openingHandoff?.awaitPredecessor()
             if (runtime === createdRuntime) createdRuntime.open()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun openWithoutTransitionAnimation() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
+        } else {
+            overridePendingTransition(0, 0)
         }
     }
 
@@ -226,6 +240,12 @@ class ViewerActivity : ComponentActivity() {
             }
             try {
                 openingHandoff?.close()
+            } catch (failure: Throwable) {
+                val primary = closeFailure
+                if (primary == null) closeFailure = failure else if (primary !== failure) primary.addSuppressed(failure)
+            }
+            try {
+                rendererLease?.close()
             } catch (failure: Throwable) {
                 val primary = closeFailure
                 if (primary == null) closeFailure = failure else if (primary !== failure) primary.addSuppressed(failure)

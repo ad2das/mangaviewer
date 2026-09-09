@@ -55,6 +55,7 @@ public:
     bool setSwapIntervalForVerification(int interval) noexcept;
     bool rasterizationInfoForVerification(int* values) noexcept;
     bool attach(ANativeWindow* window) noexcept;
+    bool prepare() noexcept;
     void detach() noexcept;
     std::uint64_t upload(
         std::uint64_t cpuTileHandle,
@@ -111,7 +112,8 @@ private:
     };
 #endif
 
-    bool initialize() noexcept;
+    bool initialize(ANativeWindow* initialWindow = nullptr) noexcept;
+    bool makeOffscreenCurrent() noexcept;
     bool glSucceeded(const char* operation) noexcept;
     bool glFailure(const char* operation) noexcept;
 #ifndef NDEBUG

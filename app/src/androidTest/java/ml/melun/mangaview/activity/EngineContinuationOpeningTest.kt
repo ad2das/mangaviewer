@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -59,6 +60,12 @@ class EngineContinuationOpeningTest {
             var library: ActivityScenario<MainActivity>? = null
             var viewer: ViewerActivity? = null
             val record = JSONObject().put("index", index).put("prepared", warm)
+            val planResolvedAtNanos = AtomicLong()
+            check(graph.engine.episodeEvidenceObserver == null)
+            val observer = ml.melun.mangaview.engine.api.EpisodePlanObserver { episode, _, _ ->
+                if (episode == id) planResolvedAtNanos.set(System.nanoTime())
+            }
+            graph.engine.episodeEvidenceObserver = observer
             try {
                 if (warm) {
                     val preparationStarted = System.nanoTime()
@@ -101,9 +108,22 @@ class EngineContinuationOpeningTest {
                     }
                     record.put("launchToCompleteSubmissionMillis",
                         (frame.submittedAtNanos + frame.renderLatencyNanos - requested) / 1e6)
+                        .put("requestedAtNanos", requested)
+                        .put("submittedAtNanos", frame.submittedAtNanos)
+                        .put("renderLatencyNanos", frame.renderLatencyNanos)
+                        .put("planResolvedAtNanos", planResolvedAtNanos.get())
                         .put("anchor", frame.scene.anchor.toString())
                         .put("width", frame.scene.viewport.widthPx).put("height", frame.scene.viewport.heightPx)
                         .put("timestampKind", frame.timestampKind.name).put("physicalPresentationVerified", false)
+                    activity.viewerEngineDiagnosticSnapshot()?.content?.launchPreparation?.let { preparation ->
+                        record.put("manifestAcceptedAtNanos", preparation.manifestAcceptedAtNanos)
+                            .put("verifiedPages", JSONArray().apply {
+                                preparation.verifiedPages.values.sortedBy { it.ordinal }.forEach { page ->
+                                    put(JSONObject().put("ordinal", page.ordinal)
+                                        .put("firstVerifiedAtNanos", page.firstVerifiedAtNanos))
+                                }
+                            })
+                    }
                     assertEquals(id, frame.scene.anchor?.pageId?.episodeId)
                     expectedAnchor?.let { assertEquals("Saved mid-page position changed", it, frame.scene.anchor) }
                     assertTrue(UiDevice.getInstance(instrumentation).takeScreenshot(File(output, "opening-$index.png")))
@@ -111,6 +131,7 @@ class EngineContinuationOpeningTest {
                     library?.close(); library = null
                 }
             } finally {
+                if (graph.engine.episodeEvidenceObserver === observer) graph.engine.episodeEvidenceObserver = null
                 library?.close()
                 viewer?.let { withTimeout(30_000) { it.awaitEngineClosed() } }
                 graph.engine.openings.cancelPrediction()

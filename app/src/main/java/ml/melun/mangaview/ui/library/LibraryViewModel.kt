@@ -141,6 +141,11 @@ internal class LibraryViewModel(
             is LibraryIntent.SavedSeriesSelected -> openSavedSeries(intent.series)
             is LibraryIntent.OfflineSeriesSelected -> episodes(intent.series, offlineOnly = true)
             is LibraryIntent.SavedEpisodeSelected -> openSavedPosition(intent.position)
+            is LibraryIntent.ResumeEpisode -> {
+                episodeWarmer.warm(intent.episodeId)
+                // Load the current exact source anchor, with legacy history as its existing fallback.
+                effectChannel.trySend(LibraryEffect.OpenEpisode(intent.episodeId))
+            }
             is LibraryIntent.FavoriteToggled -> actions.toggleFavorite(
                 intent.series,
                 state.value.saved.favorites.any { it.id == intent.series.id },

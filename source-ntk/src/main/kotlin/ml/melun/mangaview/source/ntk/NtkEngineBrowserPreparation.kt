@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
-import android.os.Looper
 import java.io.Closeable
 
 /** A scoped process-start binding. It sends no provider request or authorization message. */
@@ -16,8 +15,7 @@ class NtkEngineBrowserPreparation internal constructor(private val context: Cont
         override fun onServiceDisconnected(name: ComponentName) = Unit
     }
 
-    internal fun bind() {
-        check(Looper.myLooper() == Looper.getMainLooper())
+    @Synchronized internal fun bind() {
         check(!bound)
         val intent = Intent(context, NtkEngineBrowserService::class.java)
             .putExtra(NtkBrowserProtocol.KEY_USER_AGENT, userAgent)
@@ -25,8 +23,7 @@ class NtkEngineBrowserPreparation internal constructor(private val context: Cont
         check(bound) { "NTK engine browser preparation binding was rejected" }
     }
 
-    override fun close() {
-        check(Looper.myLooper() == Looper.getMainLooper())
+    @Synchronized override fun close() {
         if (!bound) return
         bound = false
         context.unbindService(connection)

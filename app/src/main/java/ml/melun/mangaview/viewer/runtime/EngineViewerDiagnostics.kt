@@ -42,7 +42,11 @@ internal class EngineViewerDiagnostics(private val frameCapacity: Int = 512) {
         // Scene/texture objects contain immutable coordinates and keys, not native resource leases.
         val snapshot = value.copy(scene = value.scene.copy(placements = Collections.unmodifiableList(value.scene.placements.toList())))
         frames.addLast(EngineFrameObservation(frameOrdinal, snapshot))
-        frame = value
+        // EGL timestamps can resolve out of order: an older frame may time out after a
+        // newer frame has latched. Keep every callback above, but do not let a late
+        // terminal observation move the screenshot's reported scene backwards.
+        val latest = frame
+        if (latest == null || snapshot.submittedAtNanos >= latest.submittedAtNanos) frame = snapshot
         if (opened == 0L || !value.swapSucceeded || value.scene.placements.isEmpty()) return
         if (firstSubmitted == null) firstSubmitted = value.submittedAtNanos
         val fullVisibleScene = value.scene.completeCoverage && value.scene.placements.any {

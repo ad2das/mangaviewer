@@ -29,6 +29,41 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class EngineSurfaceOwnerTest {
+    @Test fun contentIndependentPreparationKeepsItsOwnerAndBindsTheSelectedReader() = runBlocking {
+        val (page, pixels) = pixels()
+        val frames = CompletableDeferred<EngineSurfacePresentation>()
+        var obsoleteCallbacks = 0
+        val owner = EngineSurfaceOwner(pixels.byteCount, { obsoleteCallbacks++ },
+            { frames.completeExceptionally(it) }, {})
+        val consumer = SurfaceTexture(false).apply { setDefaultBufferSize(101, 100) }
+        val surface = Surface(consumer)
+        try {
+            val id = owner.rendererId
+            val epoch = owner.rendererEpoch
+            owner.prepare()
+            owner.prepare()
+            assertEquals(0, owner.ownership().textures)
+            assertEquals(0, owner.ownership().bytes)
+            assertEquals(0, owner.ownership().sceneEntries)
+            owner.bind(EngineSurfaceCallbacks({ frames.complete(it) }, { frames.completeExceptionally(it) }, {}))
+            assertTrue(owner.attach(surface, 101, 100, 60F))
+            val texture = owner.upload(pixels, epoch)
+            owner.offer(EngineSurfaceScene(1, 1, 0, 1, EngineViewport(101, 100), null,
+                listOf(EngineTexturePlacement(texture, 0, 100))))
+            val frame = withTimeout(5000) { frames.await() }
+            assertSuccessfulSwap(frame)
+            assertEquals(id, frame.rendererId)
+            assertEquals(epoch, texture.rendererEpoch)
+            assertEquals(1L, frame.identity.surfaceEpoch)
+            assertEquals(1L, frame.identity.token)
+            assertEquals(0, obsoleteCallbacks)
+            owner.clearScene()
+            owner.release(texture)
+        } finally {
+            owner.close(); surface.release(); consumer.release(); pixels.close(); assertTrue(page.file.delete())
+        }
+    }
+
     @Test fun allocationWaitsForRetirementAndUploaderOnlyBorrowsPixels() = runBlocking {
         val (page, pixels) = pixels()
         val failures = mutableListOf<Throwable>()

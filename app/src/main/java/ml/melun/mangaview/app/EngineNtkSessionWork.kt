@@ -1,8 +1,11 @@
 package ml.melun.mangaview.app
 
 import java.net.URI
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
@@ -52,35 +55,45 @@ internal class EngineNtkSessionWork(
     override fun episode(episodeId: EpisodeId, priority: WorkPriority): WorkRequest<EpisodeAccessPlan> = WorkRequest(
         WorkKey(principal, episodeId.toString(), "ntk.episode", origin.toString(), EpisodeAccessPlan::class.java),
         WorkDomain.CONTROL, priority, execute = { parent ->
-            // Bootstrap Chromium's local network implementation during document I/O. The H3
-            // pool still waits for the verified manifest's complete CDN hint set below.
-            pageTransport.warmConnections(listOf(origin.toString()), preferQuic = false)
-            parent.useDependency(WorkRequest(
-                WorkKey(principal, episodeId.toString(), "ntk.browser.prepare", origin.toString(), NtkEngineBrowserPreparation::class.java),
-                WorkDomain.BROWSER, parent.priority.value, execute = { browser.prepareService() },
-                dispose = { withContext(Dispatchers.Main.immediate) { it.close() } },
-            )) {
-                resolveEpisode(parent, episodeId)
+            coroutineScope {
+                // Bootstrap Chromium's local network implementation during document I/O. The H3
+                // pool still waits for the verified manifest's complete CDN hint set below.
+                pageTransport.warmConnections(listOf(origin.toString()), preferQuic = false)
+                // Download independently of process binding, retaining both leases through authorization.
+                val browserReady = CompletableDeferred<Unit>()
+                val plan = async {
+                    parent.useDependency(documents.documentRequest(episodeId, origin, 0, parent.priority.value)) { source ->
+                        browserReady.await()
+                        resolveEpisode(parent, episodeId, source)
+                    }
+                }
+                parent.useDependency(WorkRequest(
+                    WorkKey(principal, episodeId.toString(), "ntk.browser.prepare", origin.toString(), NtkEngineBrowserPreparation::class.java),
+                    WorkDomain.BROWSER, parent.priority.value, execute = { browser.prepareService() },
+                    dispose = { withContext(Dispatchers.IO) { it.close() } },
+                )) {
+                    browserReady.complete(Unit)
+                    plan.await()
+                }
             }
         },
     )
 
-    private suspend fun resolveEpisode(parent: WorkContext, episodeId: EpisodeId): EpisodeAccessPlan =
-        parent.useDependency(documents.documentRequest(episodeId, origin, 0, parent.priority.value)) { source ->
-            val parsed = withContext(parsingDispatcher) { planner.parseDocument(episodeId, source, 0) }
-            val completed = if (parsed.descriptor == null) withContext(parsingDispatcher) { planner.complete(parsed) }
-            else parent.useDependency(WorkRequest(
-                WorkKey(principal, episodeId.toString(), "ntk.browser", source.replaySha256, NtkEngineAuthorization::class.java),
-                WorkDomain.BROWSER, parent.priority.value, execute = { browser.capture(parsed) },
-            )) { proof -> withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) } }
-            require(completed.manifest.id == episodeId && completed.documentSha256 == source.sha256 &&
-                completed.finalDocumentUrl == source.finalUrl)
-            // Provider-verified candidates may use several CDN origins from the first viewport.
-            // Configure all of their QUIC hints before any page races to create the shared pool.
-            pageTransport.warmConnections(completed.pages.flatMap { it.candidates }.map(URI::toString), preferQuic = true)
-            observer?.observed(episodeId, source, completed)
-            completed
-        }
+    private suspend fun resolveEpisode(parent: WorkContext, episodeId: EpisodeId, source: SourceDocument): EpisodeAccessPlan {
+        val parsed = withContext(parsingDispatcher) { planner.parseDocument(episodeId, source, 0) }
+        val completed = if (parsed.descriptor == null) withContext(parsingDispatcher) { planner.complete(parsed) }
+        else parent.useDependency(WorkRequest(
+            WorkKey(principal, episodeId.toString(), "ntk.browser", source.replaySha256, NtkEngineAuthorization::class.java),
+            WorkDomain.BROWSER, parent.priority.value, execute = { browser.capture(parsed) },
+        )) { proof -> withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) } }
+        require(completed.manifest.id == episodeId && completed.documentSha256 == source.sha256 &&
+            completed.finalDocumentUrl == source.finalUrl)
+        // Provider-verified candidates may use several CDN origins from the first viewport.
+        // Configure all of their QUIC hints before any page races to create the shared pool.
+        pageTransport.warmConnections(completed.pages.flatMap { it.candidates }.map(URI::toString), preferQuic = true)
+        observer?.observed(episodeId, source, completed)
+        return completed
+    }
 
     override fun page(plan: EpisodeAccessPlan, pageId: PageId, priority: WorkPriority) = pages.request(plan, pageId, priority)
 

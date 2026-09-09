@@ -5,13 +5,15 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.SystemClock
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -52,13 +54,13 @@ class NtkEngineBrowserClient(
     suspend fun prepareService(): NtkEngineBrowserPreparation {
         var owned: NtkEngineBrowserPreparation? = null
         try {
-            withContext(Dispatchers.Main.immediate) {
+            withContext(Dispatchers.IO) {
                 owned = NtkEngineBrowserPreparation(app, userAgent)
                 checkNotNull(owned).bind()
             }
             return checkNotNull(owned)
         } catch (failure: Throwable) {
-            withContext(NonCancellable + Dispatchers.Main.immediate) {
+            withContext(NonCancellable + Dispatchers.IO) {
                 try { owned?.close() } catch (cleanup: Throwable) {
                     if (cleanup !== failure) failure.addSuppressed(cleanup)
                 }
@@ -67,10 +69,10 @@ class NtkEngineBrowserClient(
         }
     }
 
-    suspend fun capture(document: NtkAccessDocument): NtkEngineAuthorization = withContext(Dispatchers.Main.immediate) {
+    suspend fun capture(document: NtkAccessDocument): NtkEngineAuthorization = withNtkEngineIpc { handler ->
         requireNotNull(document.descriptor) { "Browser authorization requires a protected document" }
         val payload = NtkBrowserDocumentPayload.create(app.cacheDir, document.browserDocument)
-        val exchange = EngineBrowserExchange(app, nextId.incrementAndGet())
+        val exchange = EngineBrowserExchange(app, nextId.incrementAndGet(), handler)
         var result: EngineBrowserProof? = null
         var failure: Throwable? = null
         try {
@@ -105,7 +107,11 @@ class NtkEngineBrowserClient(
 
 private data class EngineBrowserProof(val payload: String, val ackNanos: Long, val manifestNanos: Long)
 
-private class EngineBrowserExchange(private val context: Context, val requestId: Long) : ServiceConnection {
+private class EngineBrowserExchange(
+    private val context: Context,
+    val requestId: Long,
+    private val handler: Handler,
+) : ServiceConnection {
     private val connected = CompletableDeferred<Messenger>()
     val ready = CompletableDeferred<Unit>()
     val ack = CompletableDeferred<Long>()
@@ -115,7 +121,7 @@ private class EngineBrowserExchange(private val context: Context, val requestId:
     private var bound = false
     private var submitted = false
     private var retiring = false
-    private val replies = Messenger(object : Handler(Looper.getMainLooper()) {
+    private val replies = Messenger(object : Handler(handler.looper) {
         override fun handleMessage(message: Message) {
             if (message.data.getLong(NtkBrowserProtocol.KEY_REQUEST_ID) != requestId) return
             val now = SystemClock.elapsedRealtimeNanos()
@@ -135,7 +141,13 @@ private class EngineBrowserExchange(private val context: Context, val requestId:
     })
 
     fun bind() {
-        bound = context.bindService(Intent(context, NtkEngineBrowserService::class.java), this, Context.BIND_AUTO_CREATE)
+        val intent = Intent(context, NtkEngineBrowserService::class.java)
+        bound = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val executor = Executor { task ->
+                if (!handler.post(task)) throw RejectedExecutionException("NTK engine IPC has closed")
+            }
+            context.bindService(intent, Context.BIND_AUTO_CREATE, executor, this)
+        } else context.bindService(intent, this, Context.BIND_AUTO_CREATE)
         check(bound) { "NTK engine browser binding was rejected" }
     }
 
@@ -187,15 +199,19 @@ private class EngineBrowserExchange(private val context: Context, val requestId:
         context.unbindService(this)
     }
 
-    override fun onServiceConnected(name: ComponentName, binder: IBinder) { connected.complete(Messenger(binder)) }
+    override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+        handler.post { connected.complete(Messenger(binder)) }
+    }
     override fun onServiceDisconnected(name: ComponentName) { disconnected("NTK engine browser disconnected") }
     override fun onBindingDied(name: ComponentName) { disconnected("NTK engine browser binding died") }
     override fun onNullBinding(name: ComponentName) { disconnected("NTK engine browser returned no binder") }
 
     private fun disconnected(detail: String) {
-        val failure = IllegalStateException(detail)
-        fail(failure)
-        retired.completeExceptionally(failure)
+        handler.post {
+            val failure = IllegalStateException(detail)
+            fail(failure)
+            retired.completeExceptionally(failure)
+        }
     }
 
     private fun fail(failure: Throwable) {

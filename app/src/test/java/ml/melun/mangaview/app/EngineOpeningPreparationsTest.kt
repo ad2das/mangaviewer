@@ -15,6 +15,57 @@ import org.junit.Test
 class EngineOpeningPreparationsTest {
     private val episode = EpisodeId(SeriesId(SourceId("test"), "series"), "1")
 
+    @Test fun openingPixelsDoNotWaitForTheSixthOriginalAndSurviveViewerHandoff() = runTest {
+        val delayedPage = CompletableDeferred<Unit>()
+        val source = Source().apply {
+            beforePage = { if (it == PageId.at(episode, 7)) delayedPage.await() }
+        }
+        val coordinator = WorkCoordinator(this)
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val decoded = mutableListOf<EngineTileSpec>()
+        var livePixels = 0
+        val pixelWork = ml.melun.mangaview.engine.content.EnginePixelWork(EngineImageDecoder { _, tile ->
+            decoded += tile
+            livePixels++
+            object : EnginePixels {
+                override val tile = tile
+                override val byteCount = tile.byteCount
+                override fun close() { livePixels-- }
+            }
+        }, dispatcher)
+        val pixels = EngineOpeningPixels(pixelWork, { EngineViewport(100, 100) }, maximumBytes = 80_000)
+        val openings = EngineOpeningPreparations(this, dispatcher, coordinator, { source }, pixels = pixels)
+        try {
+            openings.warm(episode); runCurrent()
+            assertFalse(delayedPage.isCompleted)
+            assertEquals((2..7).map { PageId.at(episode, it) }.toSet(), source.pageCalls.keys)
+            assertEquals(listOf(PageId.at(episode, 2), PageId.at(episode, 3)), decoded.map { it.pageId })
+            assertEquals(80_000L, decoded.sumOf { it.byteCount })
+            assertNull("All-six preparation is still pending", openings.preparedSnapshot())
+            val handoff = openings.claim(episode)
+            val plan = coordinator.submit(source.episode(episode, WorkPriority.FOCUS))
+            val tile = decoded.first()
+            val borrowed = coordinator.submit(pixelWork.request(
+                source.page(plan.await(), tile.pageId, WorkPriority.FOCUS), tile, WorkPriority.FOCUS))
+            try {
+                borrowed.await()
+                handoff.releasePreparation()
+                assertEquals("Viewer reuses the early raster", 2, decoded.size)
+                assertEquals(1, livePixels)
+            } finally {
+                borrowed.close(); borrowed.awaitReleased()
+                plan.close(); plan.awaitReleased()
+                handoff.close()
+            }
+        } finally {
+            openings.close()
+            assertEquals(0, livePixels)
+            assertEquals(0, source.livePages)
+            assertEquals(0, coordinator.snapshot().subscribers)
+            coordinator.close()
+        }
+    }
+
     @Test fun middleOfTallImagePreparesPastTheSavedRowInsteadOfCountingRowsAboveIt() = runTest {
         val source = Source().apply {
             dimensions = PageDimensions(100, 10_000)
@@ -160,6 +211,7 @@ class EngineOpeningPreparationsTest {
         var livePages = 0
         var failPage = false
         var beforeEpisode: suspend () -> Unit = {}
+        var beforePage: suspend (PageId) -> Unit = {}
         var dimensions = PageDimensions(100, 100)
         var sourceAnchor: SourceAnchor? = null
         override fun position(episodeId: EpisodeId) = request(episodeId.toString(), "position",
@@ -181,6 +233,7 @@ class EngineOpeningPreparationsTest {
             WorkKey("test", pageId.toString(), "page", "revision", StoredPage::class.java), WorkDomain.BODY,
             priority, execute = {
                 pageCalls[pageId] = (pageCalls[pageId] ?: 0) + 1
+                beforePage(pageId)
                 if (failPage && pageId == PageId.at(pageId.episodeId, 3)) error("page unavailable")
                 livePages++
                 StoredPage(pageId, "revision", File("immutable.png"), 1, "1".repeat(64), dimensions, "image/png")

@@ -22,6 +22,48 @@ class EngineRenderRuntimeTest {
     private val id = PageId.at(EpisodeId(SeriesId(SourceId("test"), "1"), "1"), 0)
     private val dimensions = PageDimensions(100, 1000)
 
+    @Test fun disabledStartupMetadataDoesNotQueueBlankBuffersBeforeTheFirstImage() = runTest {
+        val fixture = Fixture(this, waitForComplete = true)
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { gate.await() }
+        fixture.runtime.enabled(false)
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        fixture.runtime.update(initial.copy(session = initial.session.copy(geometryRevision = 2)))
+        runCurrent()
+        assertTrue("A disabled renderer with no prior scene has nothing to clear", fixture.scenes.isEmpty())
+        fixture.runtime.enabled(true)
+        runCurrent()
+        assertTrue("Attachment must not substitute a blank for the pending first image", fixture.scenes.isEmpty())
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(1, fixture.scenes.size)
+        assertTrue(fixture.scenes.single().completeCoverage)
+        assertEquals(initial.session.anchor, fixture.scenes.single().session.anchor)
+        fixture.runtime.enabled(false)
+        runCurrent()
+        assertEquals(2, fixture.scenes.size)
+        assertTrue(fixture.scenes.last().quads.isEmpty())
+        assertTrue(fixture.uploader.live.isEmpty())
+        fixture.close()
+    }
+
+    @Test fun disablingBeforeFirstCompleteCoverageStillClearsSubmittedPartialPixels() = runTest {
+        val fixture = Fixture(this, textureBudget = 240_000, tileHeight = 102)
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { if (it.sourceTop > 250) gate.await() }
+        fixture.runtime.update(snapshot())
+        runCurrent()
+        assertTrue(fixture.scenes.last().quads.isNotEmpty())
+        assertFalse(fixture.scenes.last().completeCoverage)
+        fixture.runtime.enabled(false)
+        runCurrent()
+        assertTrue(fixture.scenes.last().quads.isEmpty())
+        assertTrue(fixture.uploader.live.isEmpty())
+        gate.complete(Unit)
+        fixture.close()
+    }
+
     @Test fun fullSceneReleasesFileAndCpuBorrowsThenEmptySceneAllowsGpuRetirement() = runTest {
         val fixture = Fixture(this)
         fixture.runtime.update(snapshot())

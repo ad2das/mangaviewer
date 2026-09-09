@@ -135,6 +135,7 @@ internal sealed interface LibraryIntent {
     data class RemoveSavedItem(val item: SavedItemRemoval) : LibraryIntent
     data class OfflineSeriesSelected(val series: SourceSeries) : LibraryIntent
     data class SavedEpisodeSelected(val position: ReadingPosition) : LibraryIntent
+    data class ResumeEpisode(val episodeId: EpisodeId) : LibraryIntent
     data class FavoriteToggled(val series: SourceSeries) : LibraryIntent
     data class DownloadEpisode(val series: SourceSeries, val episode: SourceEpisode) : LibraryIntent
     data class DownloadEpisodes(val series: SourceSeries, val episodes: List<SourceEpisode>) : LibraryIntent

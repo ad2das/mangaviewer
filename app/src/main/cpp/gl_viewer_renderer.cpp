@@ -172,7 +172,7 @@ bool GlViewerRenderer::valid() const noexcept {
     return callback_ != nullptr && callback_->valid();
 }
 
-bool GlViewerRenderer::initialize() noexcept {
+bool GlViewerRenderer::initialize(ANativeWindow* initialWindow) noexcept {
     if (!bindOwnerThread()) return false;
     if (context_ != EGL_NO_CONTEXT) return true;
     display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -190,11 +190,12 @@ bool GlViewerRenderer::initialize() noexcept {
         return eglFailure("choose config");
     }
     constexpr EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
-    constexpr EGLint pbufferAttributes[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
     context_ = eglCreateContext(display_, config_, EGL_NO_CONTEXT, contextAttributes);
-    pbuffer_ = eglCreatePbufferSurface(display_, config_, pbufferAttributes);
-    if (context_ == EGL_NO_CONTEXT || pbuffer_ == EGL_NO_SURFACE || !makeCurrent(pbuffer_)) {
-        return eglFailure("create context or pbuffer");
+    if (context_ == EGL_NO_CONTEXT) return eglFailure("create context");
+    // A cold reader already supplies its real window. Reserve an offscreen surface
+    // only for preparation, upload without a window, or a later detach.
+    if (!(initialWindow != nullptr ? createWindowSurface(initialWindow) : makeOffscreenCurrent())) {
+        return eglFailure("bind initial surface");
     }
     const char* extensions = eglQueryString(display_, EGL_EXTENSIONS);
     if (extensionPresent(extensions, "EGL_ANDROID_get_frame_timestamps")) {
@@ -261,6 +262,16 @@ bool GlViewerRenderer::makeCurrent(EGLSurface surface) noexcept {
     return false;
 }
 
+bool GlViewerRenderer::makeOffscreenCurrent() noexcept {
+    if (display_ == EGL_NO_DISPLAY || context_ == EGL_NO_CONTEXT) return false;
+    if (pbuffer_ == EGL_NO_SURFACE) {
+        constexpr EGLint attributes[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+        pbuffer_ = eglCreatePbufferSurface(display_, config_, attributes);
+        if (pbuffer_ == EGL_NO_SURFACE) return eglFailure("create offscreen surface");
+    }
+    return makeCurrent(pbuffer_);
+}
+
 bool GlViewerRenderer::recreateContext() noexcept {
     ANativeWindow* retainedWindow = window_;
     if (retainedWindow != nullptr) ANativeWindow_acquire(retainedWindow);
@@ -272,11 +283,22 @@ bool GlViewerRenderer::recreateContext() noexcept {
     return restored;
 }
 
+bool GlViewerRenderer::prepare() noexcept {
+    // Reserve only object names, not image/buffer storage. The same context owns these names
+    // when a reader claims it; close() already retires the remaining names and unpack buffer.
+    if (!initialize() || !initializeStaticQuad()) return false;
+    textureUpload_.prepareNames();
+    return glSucceeded("prepare texture upload names");
+}
+
 bool GlViewerRenderer::attach(ANativeWindow* window) noexcept {
     if (window == nullptr) return eglFailure("attach window missing");
-    if (!initialize()) return false;
-    detach();
-    if (!createWindowSurface(window)) return false;
+    const bool cold = context_ == EGL_NO_CONTEXT;
+    if (!initialize(cold ? window : nullptr)) return false;
+    if (!cold) {
+        detach();
+        if (!createWindowSurface(window)) return false;
+    }
     configurePresentationTimestamps();
     // Interval zero enables Android's asynchronous queue and replacement of unacquired buffers.
     if (eglSwapInterval(display_, 0) != EGL_TRUE) return eglFailure("set swap interval");
@@ -348,7 +370,7 @@ void GlViewerRenderer::detach() noexcept {
         callback_->presented(frame.token, 0, -2, frame.frameId);
     }
     pendingFrames_.clear();
-    makeCurrent(pbuffer_);
+    makeOffscreenCurrent();
     if (windowSurface_ != EGL_NO_SURFACE) eglDestroySurface(display_, windowSurface_);
     windowSurface_ = EGL_NO_SURFACE;
     if (window_ != nullptr) ANativeWindow_release(window_);

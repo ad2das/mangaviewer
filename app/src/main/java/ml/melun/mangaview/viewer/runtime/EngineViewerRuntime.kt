@@ -61,6 +61,7 @@ internal class EngineViewerRuntime(
     private val reportMotionFrame: (Long, Long) -> Unit = { _, _ -> },
     private val inputObservations: EngineInputObservations = EngineInputObservations(),
     private val reportRendererClosed: (Long, Long, Long) -> Unit = { _, _, _ -> },
+    preparedRenderer: EngineSurfaceOwner? = null,
 ) : ViewerSurfaceSink {
     private val main = Handler(Looper.getMainLooper())
     private val memory = ViewerMemoryEnvironment(context) { }
@@ -74,11 +75,12 @@ internal class EngineViewerRuntime(
     private var lastSaved: Pair<SourceAnchor, Long>? = null
     private var submittedPosition: Pair<SourceAnchor, Long>? = null
     private var autosave: Job? = null
-    private val renderer: EngineSurfaceOwner = EngineSurfaceOwner(budget.glResidentBytes,
+    private val renderer: EngineSurfaceOwner = (preparedRenderer ?: EngineSurfaceOwner(budget.glResidentBytes,
+        {}, {}, {})).also { it.bind(EngineSurfaceCallbacks(
         { value -> onMain { reportPresented(value) } }, { error -> onMain { reportFailure(error) } },
         { onMain { if (!closing) graphics.rendererChanged() } },
         { onMain { if (!closing) { graphics.enabled(false); surface.rendererUnavailable() } } },
-        reportSubmitted = { value -> onMain { onSubmitted(value) } })
+        { value -> onMain { onSubmitted(value) } })) }
     private val reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime)
     private val content: EngineSessionRuntime = EngineSessionRuntime(scope, coordinator, reducer, source, episodeId,
         { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },

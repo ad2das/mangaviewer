@@ -14,16 +14,25 @@ internal class EngineOpeningPixels(
 ) {
     init { require(maximumBytes > 0) }
 
-    fun requests(work: EngineSessionWork, plan: EpisodeAccessPlan, position: SessionPosition,
-        pages: List<StoredPage>,
-    ): List<WorkRequest<EnginePixels>> {
-        val viewport = viewport()
-        val requests = mutableListOf<WorkRequest<EnginePixels>>()
-        val anchor = position.anchor
-        val legacy = position.legacy
-        var bytes = 0L
-        var rows = 0L
-        for (stored in pages) {
+    fun begin(work: EngineSessionWork, plan: EpisodeAccessPlan, position: SessionPosition): Preparation =
+        Preparation(work, plan, position, viewport())
+
+    /** Carries one opening's viewport and budget across originals arriving in source order. */
+    inner class Preparation internal constructor(
+        private val work: EngineSessionWork,
+        private val plan: EpisodeAccessPlan,
+        private val position: SessionPosition,
+        private val viewport: EngineViewport,
+    ) {
+        private var bytes = 0L
+        private var rows = 0L
+        private var exhausted = false
+
+        fun requests(stored: StoredPage): List<WorkRequest<EnginePixels>> {
+            if (exhausted) return emptyList()
+            val requests = mutableListOf<WorkRequest<EnginePixels>>()
+            val anchor = position.anchor
+            val legacy = position.legacy
             val page = PageContentIdentity(stored.pageId, stored.contentRevision, stored.sha256,
                 stored.dimensions, stored.byteCount)
             val count = EngineTileBands.count(page, viewport.widthPx)
@@ -37,13 +46,16 @@ internal class EngineOpeningPixels(
             val first = (((sourceRow + 1) * count - 1) / page.dimensions.heightPx).toInt()
             for (band in first until count) {
                 val tile = EngineTileBands.tile(page, band, count, viewport.widthPx)
-                if (tile.byteCount > maximumBytes - bytes || rows >= viewport.heightPx.toLong() * 2) return requests
+                if (tile.byteCount > maximumBytes - bytes || rows >= viewport.heightPx.toLong() * 2) {
+                    exhausted = true
+                    return requests
+                }
                 requests += pixels.request(work.page(plan, page.pageId, WorkPriority.NEXT_IMAGE), tile, WorkPriority.NEXT_IMAGE)
                 bytes += tile.byteCount
                 val openingRasterRow = sourceRow * tile.rasterHeight / page.dimensions.heightPx
                 rows += if (band == first) tile.rasterBottom - openingRasterRow else tile.decodedHeight.toLong()
             }
+            return requests
         }
-        return requests
     }
 }

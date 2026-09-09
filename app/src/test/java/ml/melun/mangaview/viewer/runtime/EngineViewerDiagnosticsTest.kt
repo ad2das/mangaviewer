@@ -36,6 +36,33 @@ class EngineViewerDiagnosticsTest {
         assertThrows(IllegalStateException::class.java) { diagnostics.presented(observation(2)) }
     }
 
+    @Test fun lateTimestampTimeoutRetainsHistoryWithoutReplacingNewerLatchedScene() {
+        val diagnostics = EngineViewerDiagnostics()
+        val latest = observation(3).copy(timestampKind = PresentationTimestampKind.COMPOSITION_LATCH)
+        diagnostics.presented(latest)
+        diagnostics.presented(observation(1).copy(timestampKind = PresentationTimestampKind.UNAVAILABLE,
+            timestampNanos = 0))
+        diagnostics.presented(observation(2).copy(timestampKind = PresentationTimestampKind.UNAVAILABLE,
+            timestampNanos = 0))
+
+        assertEquals(latest, diagnostics.frame)
+        assertEquals(listOf(3L, 1L, 2L), diagnostics.framesSince(0).observations.map { it.presentation.identity.token })
+        assertEquals(0L, diagnostics.framesSince(0).lostCount)
+    }
+
+    @Test fun latestFailedSubmissionIsStillVisibleAcrossRendererTokenReset() {
+        val diagnostics = EngineViewerDiagnostics()
+        diagnostics.presented(observation(3))
+        val failed = observation(1).copy(submittedAtNanos = 200, rendererId = 10,
+            swapSucceeded = false, timestampKind = PresentationTimestampKind.CONTEXT_LOST, timestampNanos = 0)
+        diagnostics.presented(failed)
+        diagnostics.presented(observation(2))
+
+        assertEquals(failed, diagnostics.frame)
+        assertFalse(requireNotNull(diagnostics.frame).swapSucceeded)
+        assertEquals(3, diagnostics.framesSince(0).observations.size)
+    }
+
     @Test fun eglLatchAndCancelledCloseNeverBecomePhysicalPresentationEvidence() {
         val episode = EpisodeId(SeriesId(SourceId("test"), "series"), "episode")
         val page = PageId.at(episode, 0)

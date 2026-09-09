@@ -48,6 +48,7 @@ internal fun HomeScreen(
 ) {
     LazyColumn(modifier = Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 12.dp)) {
         item { HomeHeading(colors) }
+        item { HomeContinuations(state.saved.recent, artworkLoader, colors, accept) }
         item { KindSelector(state.homeKind, colors, accept) }
         item { HomeTabs(state.homeTab, colors, accept) }
         if (state.homeTab == HomeTab.GENRES) {

@@ -42,7 +42,17 @@ internal class EngineAppGraph(
     private val workLimits = WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12)
     val coordinator: WorkCoordinatorPort = WorkCoordinator(scope, workLimits)
     private val openingMemory: ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment =
-        ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment(context) { openings.cancelPrediction() }
+        ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment(context) {
+            openings.cancelPrediction()
+            renderers.cancel()
+        }
+    val renderers = EngineRendererPreparation(scope, ioDispatcher,
+        create = {
+            ml.melun.mangaview.viewer.runtime.EngineSurfaceOwner(
+                ml.melun.mangaview.engine.api.DeviceMemoryBudget.fromPhysicalRam(openingMemory.totalPhysicalBytes).glResidentBytes,
+                {}, { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) }, {})
+        }, prepare = { it.prepare() }, dispose = { it.close() },
+        reportFailure = { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) })
     private val openingDecode = AndroidWorkDispatcher("viewer-opening-decode", 1, android.os.Process.THREAD_PRIORITY_BACKGROUND)
     private val openingPixels = EngineOpeningPixels(
         ml.melun.mangaview.engine.content.EnginePixelWork(
@@ -99,6 +109,7 @@ internal class EngineAppGraph(
             }
         }
         closeOwned { openings.close() }
+        closeOwned { renderers.close() }
         closeOwned { coordinator.close() }
         closeOwned { openingMemory.close() }
         closeOwned { openingDecode.closeAndAwait() }

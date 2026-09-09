@@ -1,10 +1,19 @@
 #include "gl_texture_upload.h"
 
-GLuint GlTextureUpload::takeTextureName() noexcept {
+void GlTextureUpload::reserveTextureNames() noexcept {
     if (remaining_ == 0) {
         glGenTextures(static_cast<GLsizei>(names_.size()), names_.data());
         remaining_ = names_.size();
     }
+}
+
+void GlTextureUpload::prepareNames() noexcept {
+    reserveTextureNames();
+    if (unpackBuffer_ == 0) glGenBuffers(1, &unpackBuffer_);
+}
+
+GLuint GlTextureUpload::takeTextureName() noexcept {
+    reserveTextureNames();
     const GLuint name = names_[--remaining_];
     names_[remaining_] = 0;
     return name;

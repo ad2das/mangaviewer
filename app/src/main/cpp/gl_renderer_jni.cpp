@@ -71,6 +71,13 @@ Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativeCreate(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativePrepare(
+    JNIEnv*, jobject, jlong handle) {
+    auto* value = renderer(handle);
+    return value != nullptr && value->prepare() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativeAttach(
     JNIEnv* env,
     jobject,

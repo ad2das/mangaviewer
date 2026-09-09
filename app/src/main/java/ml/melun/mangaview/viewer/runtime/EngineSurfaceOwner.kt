@@ -25,14 +25,16 @@ import ml.melun.mangaview.engine.api.FrameIdentity
 /** The new engine's sole GL owner. All native effects and resource acknowledgements use this thread. */
 internal class EngineSurfaceOwner(
     private val textureAllocationLimit: Long,
-    private val reportPresented: (EngineSurfacePresentation) -> Unit,
-    private val reportFailure: (Throwable) -> Unit,
-    private val reportInvalidated: (Long) -> Unit,
-    private val reportSurfaceLost: () -> Unit = {},
+    reportPresented: (EngineSurfacePresentation) -> Unit,
+    reportFailure: (Throwable) -> Unit,
+    reportInvalidated: (Long) -> Unit,
+    reportSurfaceLost: () -> Unit = {},
     private val maximumPendingForVerification: Int? = null,
     private val presentationPollMillisForVerification: Long? = null,
-    private val reportSubmitted: (EngineSurfaceScene) -> Unit = {},
+    reportSubmitted: (EngineSurfaceScene) -> Unit = {},
 ) : EngineTextureUploader {
+    @Volatile private var callbacks = EngineSurfaceCallbacks(reportPresented, reportFailure,
+        reportInvalidated, reportSurfaceLost, reportSubmitted)
     init {
         require(textureAllocationLimit > 0 && (maximumPendingForVerification == null || maximumPendingForVerification > 0))
         require(presentationPollMillisForVerification == null || presentationPollMillisForVerification in 1L..16L)
@@ -88,8 +90,20 @@ internal class EngineSurfaceOwner(
     init {
         check(handler.post {
             configured = OwnedRendererBridge.nativeSetTextureBudget(native, textureAllocationLimit)
-            if (!configured) reportFailure(IllegalStateException("Native texture allocation limit rejected"))
+            if (!configured) callbacks.failed(IllegalStateException("Native texture allocation limit rejected"))
         })
+    }
+
+    /** Runs on the same owner thread later used by any selected episode. */
+    suspend fun prepare() = onOwner("engine_owner_prepare") {
+        check(configured && !closing.get())
+        check(OwnedRendererBridge.nativePrepare(native)) { "Native renderer preparation failed" }
+    }
+
+    /** A library-prepared owner has no activity; install its reader callbacks before attachment. */
+    fun bind(callbacks: EngineSurfaceCallbacks) {
+        check(!closing.get())
+        this.callbacks = callbacks
     }
 
     suspend fun attach(surface: Surface, width: Int, height: Int, rate: Float): Boolean = onOwner {
@@ -318,7 +332,7 @@ internal class EngineSurfaceOwner(
         record.submissionResult = result
         if (result > 0) {
             acknowledgeRetirements()
-            reportSubmitted(record.scene)
+            callbacks.submitted(record.scene)
             deliver(record)
             schedulePoll()
         } else {
@@ -327,7 +341,7 @@ internal class EngineSurfaceOwner(
             when (result) {
                 -2 -> recoverContext()
                 0 -> surfaceLost()
-                else -> reportFailure(IllegalStateException("Native frame submission failed: $result"))
+                else -> callbacks.failed(IllegalStateException("Native frame submission failed: $result"))
             }
         }
         if (readbacks.pending) schedulePoll()
@@ -339,7 +353,7 @@ internal class EngineSurfaceOwner(
         deliver(record)
     }
 
-    private fun deliver(record: Pending) = record.deliverFrom(pending, rendererId, reportPresented)
+    private fun deliver(record: Pending) = record.deliverFrom(pending, rendererId, callbacks.presented)
 
     private fun schedulePoll() {
         if (pollPosted || (pending.isEmpty() && !readbacks.pending) || destroyed.get()) return
@@ -372,8 +386,8 @@ internal class EngineSurfaceOwner(
         readbacks.poll()
         val newEpoch = epoch.incrementAndGet()
         acknowledgeRetirements()
-        reportInvalidated(newEpoch)
-        if (!attached) reportFailure(IllegalStateException("GL context recreation failed"))
+        callbacks.invalidated(newEpoch)
+        if (!attached) callbacks.failed(IllegalStateException("GL context recreation failed"))
     }
 
     private fun surfaceLost() {
@@ -383,7 +397,7 @@ internal class EngineSurfaceOwner(
         acknowledgeRetirements()
         terminatePending(PresentationTimestampKind.CANCELLED)
         if (readbacks.pending) schedulePoll()
-        reportSurfaceLost()
+        callbacks.surfaceLost()
     }
 
     private fun acknowledgeRetirements() {
@@ -405,6 +419,14 @@ internal class EngineSurfaceOwner(
 
     private companion object { val nextRenderer = AtomicLong() }
 }
+
+internal data class EngineSurfaceCallbacks(
+    val presented: (EngineSurfacePresentation) -> Unit,
+    val failed: (Throwable) -> Unit,
+    val invalidated: (Long) -> Unit,
+    val surfaceLost: () -> Unit = {},
+    val submitted: (EngineSurfaceScene) -> Unit = {},
+)
 
 private class Pending(val identity: FrameIdentity, val scene: EngineSurfaceScene, val submittedAt: Long) {
     var latency: Long? = null

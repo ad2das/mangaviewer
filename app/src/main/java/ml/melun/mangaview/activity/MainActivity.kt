@@ -61,6 +61,8 @@ class MainActivity : ComponentActivity() {
         showLibrary(graph, viewModel)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                // MainActivity hosts both home and library; this prepares no specific episode.
+                graph.engine.renderers.warm()
                 viewModel.foreground(true)
                 try { kotlinx.coroutines.awaitCancellation() } finally { viewModel.foreground(false) }
             }

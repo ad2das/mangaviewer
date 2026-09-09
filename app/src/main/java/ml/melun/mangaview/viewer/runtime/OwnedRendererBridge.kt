@@ -12,6 +12,7 @@ internal object OwnedRendererBridge {
     }
 
     external fun nativeCreate(callback: OwnedRendererCallback): Long
+    external fun nativePrepare(renderer: Long): Boolean
     external fun nativeAttach(renderer: Long, surface: Surface): Boolean
     external fun nativeDetach(renderer: Long)
     external fun nativeContextLost(renderer: Long): Boolean

@@ -62,6 +62,7 @@ class EngineRenderRuntime(
     private var processing = false
     private var dirty = false
     private var displayed: EngineDrawScene? = null
+    private var hasSubmittedScene = false
     private var clearingScene = false
     private var sceneClearJob: Job? = null
     private var sceneClearFailed = false
@@ -181,7 +182,10 @@ class EngineRenderRuntime(
             val next = scene(snapshot, plan)
             // Far-away original dimensions advance geometry revision without changing the
             // viewport. Preserve input revisions and every changed pixel, but avoid that swap.
-            if (!sameSubmittedViewport(displayed, next)) submitScene(next)
+            if (shouldSubmit(next)) {
+                submitScene(next)
+                hasSubmittedScene = true
+            }
             displayed = next.takeIf { enabled && it.completeCoverage }
             if (enabled && next.completeCoverage) reportViewportReady(next.session)
         }
@@ -190,6 +194,11 @@ class EngineRenderRuntime(
         }.map { demand(snapshot, it) })
         return true
     }
+
+    private fun shouldSubmit(next: EngineDrawScene): Boolean =
+        // Before the first attachment, disabled metadata updates have no old pixels to clear.
+        // Keep the first buffer for actual content; later disabling must still retire partial scenes.
+        (enabled || hasSubmittedScene) && !sameSubmittedViewport(displayed, next)
 
     private fun sameSubmittedViewport(previous: EngineDrawScene?, next: EngineDrawScene): Boolean {
         if (previous == null || !previous.completeCoverage || !next.completeCoverage) return false
