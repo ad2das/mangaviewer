@@ -359,3 +359,88 @@ capacity or crediting it as a completed case. The regular WFWF catalog path has
 independent-route handling, whereas `EngineEpisodeWork` used a single plain
 `transport.execute` call. The long document wait must be addressed separately from
 graphics cadence and adjacent preparation.
+
+The first attempted document-only route change cancelled a silent primary route
+after one second and a fresh route after another second, then used the existing
+alternate route within the original total deadline. It improved one case 7 run
+to a 3881.94 ms first native submission, but case 8 still waited 33.28 seconds for
+document headers and exhausted the observer. That experiment was removed. A
+subsequent shared OkHttp route-preference experiment passed local tests but was
+removed before device testing: the API 35 catalog path uses HttpEngine, so its
+proposed catalog-to-viewer hint sharing did not cover the actual transport path.
+Both rejected experiments are retained under `rejected-document-route-experiments`.
+
+The new transport candidate instead bounds silent direct HTTPS GET/HEAD response
+headers to one second before invoking the already existing TLS-validated recovery
+transport. Cancellation of the direct attempt completes before recovery starts;
+late acquired responses are closed, and recovery receives only the remainder of
+the original total request deadline. Successful response bodies retain their
+existing deadlines. POST requests, caller cancellation and certificate failures
+are not replayed through this timeout recovery. No network, GPU or security
+setting was changed.
+
+Seven new virtual-time tests cover cancellation ordering, deadline accounting,
+late response closure, caller cancellation, prompt responses, remembered recovery,
+short exhausted deadlines and POST preservation. The existing four real TLS
+integration tests also pass. Validation totals were 123 data, 142 engine and 130
+app tests, plus architecture checks and app/instrumentation assembly. The frozen
+candidate is `6b5a3079…`; instrumentation remains `e1810fe0…`.
+
+| Focused capture | First native, ms | Prepared native P95, ms | Prepared submission missed ratio | Submission gaps at least 100 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Case 8 | 1703.86 | 4.74 | 0.53% | 0 |
+| Case 7 | 993.33 | 4.06 | 0.00% | 0 |
+| Case 3 | 2758.99 | 4.26 | 9.68% | 0 |
+
+All three focused captures completed the protocol and passed complete renderer
+and input-history verification with zero input cancellation. Case 8's ten opening
+original hashes and byte counts matched the earlier failed captures. Its selected
+document headers arrived at tap +601.55 ms, below the new one-second timeout;
+that observation does not establish that this particular request itself timed out
+and recovered. Earlier catalog preparation can already have selected a route.
+Cases 7 and 8 passed the observable numerical gates individually; case 3 did not.
+Every run restored and independently verified the original public APKs and saved
+data. These focused runs do not qualify the full fixed corpus.
+
+The subsequent unchanged 12-case cohort of `6b5a3079…` completed as follows:
+
+| Case | First native, ms | Prepared native P95, ms | Submission missed ratio | Submission gaps at least 100 ms | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 3032.55 | 5.39 | 5.52% | 0 | Preparation timeout and missed-ratio failure |
+| 2 | 3183.67 | 7.35 | 0.00% | 0 | Observable numeric gates pass |
+| 3 | 3182.86 | 8.95 | 10.41% | 0 | Missed-ratio failure |
+| 4 | 2693.52 | 9.66 | 1.06% | 0 | Missed-ratio failure |
+| 5 | 2276.25 | 8.44 | 1.45% | 0 | Missed-ratio failure |
+| 6 | 2157.04 | 8.53 | 0.28% | 0 | Observable numeric gates pass |
+| 7 | 1205.49 | 10.42 | 1.25% | 0 | Missed-ratio failure |
+| 8 | 1705.53 | 8.16 | 0.51% | 0 | Observable numeric gates pass |
+| 9 | 1008.20 | 10.38 | 3.81% | 0 | Missed-ratio failure |
+| 10 | 846.97 | 11.25 | 0.29% | 0 | Observable numeric gates pass |
+| 11 | 1253.78 | 11.90 | 0.14% | 0 | Observable numeric gates pass |
+| 12 | 1096.03 | 10.90 | 0.00% | 0 | Observable numeric gates pass |
+
+Every case passed complete renderer/input history verification with zero input
+cancellation, and every case restored the public APKs and original saved data.
+All 751 opening-page identities, SHA-256 values, byte counts and dimensions match
+the preceding cohort, including its failed captures. The first-image and native
+P95 gates pass for all 12; the full goal does not, because only six cases pass all
+observable gates. Case 1's complete-original time was 16126.10 ms versus 8674.82 ms
+in the earlier cohort. Its image requests used `mana.apihost93.com`, whereas the
+earlier opening pages used `booktoki8.org`; this is not a matched endpoint timing
+comparison. Both runs preserved exactly the same original bytes.
+
+The remaining gaps have different observed contexts. In the focused case 3 run,
+the 59.16 ms submission gap at the next-episode boundary began just after that
+episode's second original completed. Other gaps followed batches of next-episode
+original completions and accumulated input. This correlation does not separate
+decoding, upload and scheduling costs. In cohort case 9, all four missed slots
+occurred across the first three native submissions, whose call durations were
+42.01, 38.25 and 31.84 ms. Later native P95 was below 16 ms. These initial calls
+require a native trace before attributing them to allocation or swap behavior.
+The renderer already calls the optional `ANativeWindow_tryAllocateBuffers` hint
+on attachment; adding that same hint again would not be a new fix.
+
+Evidence is retained in `repeated-host-restart/recovery12-progress.json`,
+`recovery12-observable-gates.json`, `recovery12-originals-comparison.json` and the
+individual capture directories. Native submissions remain distinct from physical
+scanout and from the latency of every deferred input.

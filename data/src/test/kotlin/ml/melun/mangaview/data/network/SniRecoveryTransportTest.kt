@@ -111,7 +111,11 @@ class SniRecoveryTransportTest {
             error("Must not run")
         })
         try { protected.execute(SourceRequest("https://blocked.test/")); fail("Expected certificate rejection") }
-        catch (actual: SSLPeerUnverifiedException) { assertSame(failure, actual) }
+        catch (actual: SSLPeerUnverifiedException) {
+            assertEquals(failure.message, actual.message)
+            // Coroutine stack recovery can copy an exception across the header deadline.
+            assertTrue(actual === failure || actual.cause === failure)
+        }
         assertFalse(fallbackCreated)
         protected.close()
     }

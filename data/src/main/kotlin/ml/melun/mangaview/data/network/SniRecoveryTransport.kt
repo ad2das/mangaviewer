@@ -3,10 +3,12 @@ package ml.melun.mangaview.data.network
 import java.io.Closeable
 import java.io.IOException
 import java.net.URI
+import java.net.SocketTimeoutException
 import java.security.cert.CertificateException
 import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.SSLPeerUnverifiedException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import ml.melun.mangaview.source.*
 
 /** Ordinary successful requests keep their existing transport and pools. */
@@ -27,10 +29,10 @@ class SniRecoveryTransport(
         val host = URI(request.url).host
         val started = nowNanos()
         if (recoveredHosts[host]?.let { started - it < RECOVERY_LIFETIME_NANOS } == true) {
-            return remembered(request, host, started, direct)
+            return remembered(request, host, started) { attempt -> boundedDirect(attempt, direct) }
         }
         return try {
-            direct(request)
+            boundedDirect(request, direct)
         } catch (failure: IOException) {
             if (failure.isCertificateFailure()) throw failure
             val remaining = request.totalTimeoutMillis - (nowNanos() - started) / 1_000_000
@@ -44,6 +46,22 @@ class SniRecoveryTransport(
                 fallbackFailure.addSuppressed(failure)
                 throw fallbackFailure
             }
+        }
+    }
+
+    private suspend fun boundedDirect(request: SourceRequest,
+        direct: suspend (SourceRequest) -> SourceResponse,
+    ): SourceResponse {
+        var acquired: SourceResponse? = null
+        return try {
+            withTimeoutOrNull(minOf(DIRECT_HEADER_TIMEOUT_MILLIS, request.totalTimeoutMillis)) {
+                direct(request).also { acquired = it }
+            } ?: throw SocketTimeoutException("Direct HTTPS response headers remained unavailable")
+        } catch (failure: Throwable) {
+            try { acquired?.close() } catch (cleanup: Throwable) {
+                if (cleanup !== failure) failure.addSuppressed(cleanup)
+            }
+            throw failure
         }
     }
 
@@ -82,5 +100,8 @@ class SniRecoveryTransport(
         generateSequence(this) { it.cause?.takeUnless { cause -> cause === it } }.take(16)
             .any { it is SSLPeerUnverifiedException || it is CertificateException }
 
-    private companion object { const val RECOVERY_LIFETIME_NANOS = 10L * 60 * 1_000_000_000 }
+    private companion object {
+        const val DIRECT_HEADER_TIMEOUT_MILLIS = 1_000L
+        const val RECOVERY_LIFETIME_NANOS = 10L * 60 * 1_000_000_000
+    }
 }
