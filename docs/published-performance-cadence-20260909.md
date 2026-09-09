@@ -224,3 +224,35 @@ Thus the removed serialization is demonstrated; overall latency or cadence
 improvement is not established by this comparison. Every completed capture
 restored the published app, and independent byte/metadata verification of the
 original database and settings passed afterward. No AVD settings were changed.
+
+## Rejected bounded transport read-ahead experiment
+
+A separate candidate accumulated small HTTP pulls into two reusable 128 KiB heap
+blocks while preserving the existing direct-buffer bridge, callback serialization,
+pool size, request limits and original bytes. Five tests covered partial consumption,
+the two-block backpressure bound, EOF versus failure, cancellation, and actual bridge
+buffer release. Existing HTTP tests and 130 app tests also passed. The experimental
+producer used the existing shared callback pool; it added no worker threads.
+
+The fixed case 3 comparison then ran control/candidate/candidate/control with the
+same instrumentation APK (`e1810fe0…`), unchanged emulator boot, and restoration
+plus independent database/settings verification after every run. All 14 opening
+original SHA-256 hashes and byte counts matched. The replica URL changed in the
+last control, so the experiment cannot assume one invariant remote route.
+
+| Run | Body median for the same 14 originals, ms | First native submission, ms | All opening originals verified, ms | Native call P95, ms | Submission missed ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Control A1 | 1122.45 | 4767.44 | 7104.19 | 26.33 | 26.74% |
+| Candidate B1 | 517.38 | 4361.87 | 5964.81 | 29.29 | 30.47% |
+| Candidate B2 | 1155.35 | 4757.04 | 7001.90 | 25.64 | 25.84% |
+| Control A2 | 526.04 | 4553.55 | 6073.01 | 23.81 | 22.04% |
+
+The initially faster candidate result did not reproduce; the final control was
+similarly fast without the extra buffering. No overall improvement or performance
+qualification is established. B2 also reached four authorized episodes after the
+tap, while the other runs reached three, so whole-run input ages are not a clean
+isolated transfer comparison. The experimental implementation was archived under
+`read-ahead-rejected-source` and removed from the app. The verified FIFO replay and
+legacy adjacent-preparation fixes remain. These captures also show a native-call
+regression in both control and candidate compared with earlier runs of the same
+control APK; its source remains unresolved and requires native trace attribution.
