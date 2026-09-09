@@ -25,6 +25,7 @@ internal class HttpEngineExchange(
     private val callbackExecutor: Executor,
     private val bodyReadScheduler: HttpEngineBodyReadScheduler,
     private val initialPriority: ml.melun.mangaview.source.PageFetchPriority,
+    private val readTiming: HttpEngineReadTiming? = null,
 ) : UrlRequest.Callback {
     private val lifecycleLock = Any()
     private val request = AtomicReference<UrlRequest?>()
@@ -81,6 +82,7 @@ internal class HttpEngineExchange(
     ) = request.followRedirect()
 
     override fun onResponseStarted(request: UrlRequest, info: UrlResponseInfo) {
+        readTiming?.headers()
         val headers = info.headers.asMap
         val expectedLength = runCatching { HttpEngineResponseHeaders.contentLength(headers) }.getOrElse {
             abort(it)
@@ -95,6 +97,7 @@ internal class HttpEngineExchange(
                 dispatchRead = { action -> callbackExecutor.execute(Runnable(action)) },
                 initialPriority = initialPriority,
                 readScheduler = bodyReadScheduler,
+                readTiming = readTiming,
             )
         }.getOrElse {
             abort(it)

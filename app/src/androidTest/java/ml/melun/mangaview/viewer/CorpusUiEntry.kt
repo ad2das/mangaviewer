@@ -129,12 +129,15 @@ internal class CorpusUiEntry(
 
     fun open(series: SourceSeries, expected: SourceEpisode): ViewerUiLaunch {
         check(expected.id.seriesId == series.id)
-        val episode = findTextInList(expected.title)
+        findTextInList(expected.title)
+        val episode = awaitStationaryRow(expected.title)
         timing.mark("episode-row-rechecked")
         restoreIdleTimeout()
+        val target = requireNotNull(clickableAncestor(episode))
+        timing.mark("episode-tap-target-${target.visibleBounds.toShortString()}")
         val startedMillis = SystemClock.elapsedRealtime()
         val startedNanos = System.nanoTime()
-        requireNotNull(clickableAncestor(episode)).click()
+        target.click()
         val openedInTime = device.wait(Condition<UiDevice, Boolean> {
             instrumentation.runOnMainSync {
                 viewer = ActivityLifecycleMonitorRegistry.getInstance()
@@ -255,6 +258,36 @@ internal class CorpusUiEntry(
         var current: UiObject2? = node
         while (current != null && !current.isClickable) current = current.parent
         return current
+    }
+
+    private fun awaitStationaryRow(title: String): UiObject2 {
+        val exactRow = Regex("(?s)${Regex.escape(title)}(?:\\n.*)?")
+        val deadline = SystemClock.elapsedRealtime() + 5_000
+        var previousBounds: String? = null
+        var stableSince = 0L
+        while (SystemClock.elapsedRealtime() < deadline) {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= 34) instrumentation.uiAutomation.clearCache()
+                val row = device.findObjects(By.textContains(title)).firstOrNull {
+                    it.className != "android.widget.EditText" && exactRow.matches(it.text.orEmpty())
+                }
+                val target = row?.let(::clickableAncestor)
+                val bounds = if (target != null && row.visibleBounds.height() > 0)
+                    "${row.visibleBounds.toShortString()}:${target.visibleBounds.toShortString()}" else null
+                val now = SystemClock.elapsedRealtime()
+                if (bounds != null && bounds == previousBounds) {
+                    if (now - stableSince >= 250L) return requireNotNull(row)
+                } else {
+                    previousBounds = bounds
+                    stableSince = now
+                    timing.mark("episode-row-layout-$bounds")
+                }
+            } catch (_: StaleObjectException) {
+                previousBounds = null
+            }
+            SystemClock.sleep(50)
+        }
+        error("Episode row did not stop moving before its single measured tap: $title")
     }
 }
 

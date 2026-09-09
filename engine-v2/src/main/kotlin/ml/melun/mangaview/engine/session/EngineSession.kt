@@ -35,6 +35,7 @@ class EngineSession(
     private var lastSequence = 0L
     private var phaseValue = EngineSessionPhase.OPENING
     private var startupInputHeld = false
+    private var replayYielded = false
     private val presentation = SessionViewportReadiness()
 
     init {
@@ -47,6 +48,9 @@ class EngineSession(
             return buildSnapshot()
         }
 
+    override val inputReplayPending: Boolean
+        get() { checkOwner(); return replayYielded }
+
     override fun dispatch(event: SessionEvent): SessionUpdate {
         checkOwner()
         val receipts = when (event) {
@@ -56,6 +60,9 @@ class EngineSession(
             is SessionEvent.NavigationResolved -> navigationResolved(event)
             is SessionEvent.DimensionsResolved -> dimensionsResolved(event.generation, event.pageId, event.dimensions)
             is SessionEvent.Input -> input(event.sample)
+            is SessionEvent.ContinueInput -> if (event.generation == generationValue && replayYielded) {
+                replayPending(emptySet())
+            } else emptyList()
             SessionEvent.ReleaseStartupInput -> releaseStartupInput()
             is SessionEvent.ViewportReady -> viewportReady(event.snapshot)
             is SessionEvent.Resize -> resize(event.viewport)
@@ -136,7 +143,7 @@ class EngineSession(
 
     private fun input(sample: InputSample): List<InputReceipt> {
         require(sample.sequence > lastSequence) { "Input sequence must increase" }
-        val acceptedAt = acceptedAt(sample.eventTimeNanos)
+        val acceptedAt = acceptedAt(sample.eventTimeNanos, clockNanos)
         lastSequence = sample.sequence
         inputRevisionValue++
         if (phaseValue == EngineSessionPhase.CLOSED) {
@@ -221,11 +228,12 @@ class EngineSession(
     }
 
     private fun replayPending(forceSequences: Set<Long>): List<InputReceipt> {
+        replayYielded = false
         val receipts = mutableListOf<InputReceipt>()
         if (startupInputHeld || presentation.held) return receipts
         receiptsUntilReady(forceSequences)?.let { return it }
-        while (pendingInputs.isNotEmpty()) {
-            if (advancePending(pendingInputs.first, forceSequences, receipts)) break
+        replayYielded = replayWithinBudget(clockNanos, { pendingInputs.isNotEmpty() }) {
+            advancePending(pendingInputs.first, forceSequences, receipts)
         }
         return receipts
     }
@@ -384,6 +392,7 @@ class EngineSession(
     }
 
     private fun cancelPending(): List<InputReceipt> {
+        replayYielded = false
         val receipts = mutableListOf<InputReceipt>()
         while (pendingInputs.isNotEmpty()) {
             val pending = pendingInputs.removeFirst()
@@ -400,18 +409,18 @@ class EngineSession(
         }
     }
 
-    private fun acceptedAt(eventTimeNanos: Long): Long {
-        val now = clockNanos()
-        require(eventTimeNanos <= now) { "Input event time cannot be in the future" }
-        return now
-    }
-
     private fun checkOwner() {
         check(Thread.currentThread() === ownerThread) { "EngineSession is owned by its construction thread" }
     }
 
-    private fun SourceAnchor.toState(): AnchorState = AnchorState(
-        pageId, BigRational.of(sourceYQ32), viewportOffsetUnits,
-    )
+}
 
+private fun SourceAnchor.toState(): AnchorState = AnchorState(
+    pageId, BigRational.of(sourceYQ32), viewportOffsetUnits,
+)
+
+private fun acceptedAt(eventTimeNanos: Long, clockNanos: () -> Long): Long {
+    val now = clockNanos()
+    require(eventTimeNanos <= now) { "Input event time cannot be in the future" }
+    return now
 }

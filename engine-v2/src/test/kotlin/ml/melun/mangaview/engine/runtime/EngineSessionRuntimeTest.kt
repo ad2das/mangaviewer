@@ -5,16 +5,19 @@ import java.net.URI
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.PageSpec
+import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
@@ -41,6 +44,81 @@ import org.junit.Test
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class EngineSessionRuntimeTest {
     private val episode = EpisodeId(SeriesId(SourceId("test"), "series"), "1")
+
+    @Test fun adjacentDocumentStartsWhileLegacyAnchorWaitsForOriginalDimensions() = runTest {
+        val next = episode.copy(remoteKey = "2")
+        val saved = ReadingPosition(PageId.at(episode, 1), 17 * 1024L)
+        val source = Source().apply { nextEpisode = next; legacyPosition = saved }
+        val original = CompletableDeferred<Unit>()
+        source.beforePage = { if (it == saved.pageId) original.await() }
+        val (runtime, coordinator) = runtime(source)
+        try {
+            runtime.open()
+            runCurrent()
+            assertNull(runtime.snapshot.session.anchor)
+            assertTrue(next in source.requestedEpisodes)
+            assertTrue(next in runtime.snapshot.plans)
+            assertEquals(WorkPriority.FOCUS, source.startedPriorities[saved.pageId])
+            assertTrue(PageId.at(episode, 2) in source.startedPriorities)
+            original.complete(Unit)
+            runCurrent()
+            val anchor = requireNotNull(runtime.snapshot.session.anchor)
+            assertEquals(saved.pageId, anchor.pageId)
+            assertEquals(17 * SourceAnchor.SOURCE_UNITS_PER_PIXEL, anchor.sourceYQ32)
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun inputReplayYieldsToOtherOwnerWorkAndResumesWithoutAnotherInputEvent() = runTest {
+        val source = Source()
+        val coordinator = WorkCoordinator(this)
+        val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
+        session.engageStartupInputBarrier()
+        val receipts = mutableListOf<InputReceipt>()
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
+            { _, values -> receipts += values }, { _, failure -> throw failure })
+        runtime.open()
+        runCurrent()
+        (1..100).forEach { index -> runtime.input(InputSample(index.toLong(), 1, 0,
+            (if (index % 2 == 0) -37L else 500L) * 1024)) }
+        runtime.releaseStartupInput()
+        assertTrue(runtime.snapshot.session.pendingInputCount > 0)
+        var pendingWhenOtherWorkRan = 0
+        launch { pendingWhenOtherWorkRan = runtime.snapshot.session.pendingInputCount }
+        runCurrent()
+        assertTrue(pendingWhenOtherWorkRan > 0)
+        advanceUntilIdle()
+        assertEquals(0, runtime.snapshot.session.pendingInputCount)
+        assertEquals((1L..100L).toList(), receipts.filter { it.outcome != InputOutcome.DEFERRED }.map { it.sample.sequence })
+
+        runtime.close()
+        coordinator.close()
+        assertEquals(0, source.livePages)
+    }
+
+    @Test fun closeCancelsThePostedInputContinuationAndReportsEveryAcceptedInput() = runTest {
+        val source = Source()
+        val coordinator = WorkCoordinator(this)
+        val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
+        session.engageStartupInputBarrier()
+        val receipts = mutableListOf<InputReceipt>()
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
+            { _, values -> receipts += values }, { _, failure -> throw failure })
+        runtime.open()
+        runCurrent()
+        (1..100).forEach { runtime.input(InputSample(it.toLong(), 1, 0, 1024)) }
+        runtime.releaseStartupInput()
+        assertTrue(runtime.snapshot.session.pendingInputCount > 0)
+        runtime.close()
+        val countAtClose = receipts.size
+        advanceUntilIdle()
+        assertEquals(countAtClose, receipts.size)
+        assertEquals((1L..100L).toList(), receipts.filter { it.outcome != InputOutcome.DEFERRED }.map { it.sample.sequence })
+        assertTrue(receipts.any { it.outcome == InputOutcome.CANCELLED })
+        coordinator.close()
+        assertEquals(0, source.livePages)
+    }
 
     @Test fun publishedMetadataSurvivesInputBackgroundAndCloseWithoutChangingOldSnapshots() = runTest {
         val source = Source()
@@ -643,6 +721,7 @@ class EngineSessionRuntimeTest {
         var livePages = 0
         var pageCount = 3
         var initialAnchor: SourceAnchor? = null
+        var legacyPosition: ReadingPosition? = null
         var nextEpisode: EpisodeId? = null
         val requestedEpisodes = mutableListOf<EpisodeId>()
         val startedPriorities = mutableMapOf<PageId, WorkPriority>()
@@ -656,7 +735,7 @@ class EngineSessionRuntimeTest {
         }
 
         override fun position(episodeId: EpisodeId) = request(episodeId.toString(), "position",
-            SessionPosition::class.java, WorkDomain.STORAGE, WorkPriority.FOCUS) { SessionPosition(initialAnchor) }
+            SessionPosition::class.java, WorkDomain.STORAGE, WorkPriority.FOCUS) { SessionPosition(initialAnchor, legacyPosition) }
 
         override fun episode(episodeId: EpisodeId, priority: WorkPriority) = request(episodeId.toString(),
             "episode", EpisodeAccessPlan::class.java, WorkDomain.CONTROL, priority) { requestedEpisodes += episodeId; beforeEpisode(episodeId); plan(episodeId) }

@@ -108,6 +108,8 @@ sealed interface SessionEvent {
         val dimensions: PageDimensions,
     ) : SessionEvent
     data class Input(val sample: InputSample) : SessionEvent
+    /** Resumes a bounded FIFO replay; an old generation cannot move a newer document. */
+    data class ContinueInput(val generation: Long) : SessionEvent
     /** Releases inputs accepted during the one-time initial visual-readiness barrier. */
     data object ReleaseStartupInput : SessionEvent
     /** All source tiles for this viewport are ready; stale acknowledgements cannot advance input. */
@@ -124,6 +126,8 @@ data class SessionUpdate(
 
 interface EngineSessionPort {
     val snapshot: EngineSessionSnapshot
+    /** True only when ready input yielded its processing budget, not while waiting for content. */
+    val inputReplayPending: Boolean get() = false
     /** Called on the creating thread; never performs I/O or waits for content. */
     fun dispatch(event: SessionEvent): SessionUpdate
 }

@@ -10,6 +10,61 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ViewerFlingDriverTest {
+    @Test fun releaseAdvancesInTheFirstAvailableFrameWithoutDuplicatingElapsedDistance() {
+        val scheduler = SchedulerHarness()
+        val emissions = mutableListOf<Emission>()
+        val observations = mutableListOf<Pair<Long, Long>>()
+        val driver = ViewerFlingDriver(scheduler, { displacement, velocity, frameTime, expected, vsync ->
+            emissions += Emission(displacement, velocity, frameTime, expected, vsync)
+            true
+        }, { sequence, frameTime -> observations += sequence to frameTime }, {})
+        val released = 1_008_000_000L
+        val first = 1_016_666_667L
+        val second = 1_033_333_334L
+
+        assertTrue(driver.startFromRelease(6_000.0, released, first, 41, 71, first + 8_000_000))
+        assertEquals(1, emissions.size)
+        assertEquals(first, emissions.single().frameTime)
+        assertEquals(71, emissions.single().vsync)
+        assertEquals(first + 8_000_000, emissions.single().expectedPresentation)
+        assertEquals(listOf(41L to first), observations)
+        assertEquals(1, scheduler.postCount)
+        scheduler.deliver(second)
+
+        val expected = ViewerFlingPhysics.advance(6_000.0, (second - released) / 1_000_000_000.0)
+        assertEquals(expected.displacementPixels, emissions.sumOf { it.displacement }, 1e-9)
+        assertEquals(listOf(41L to first, 41L to second), observations)
+        assertTrue(scheduler.scheduled)
+    }
+
+    @Test fun releaseAfterTheVsyncKeepsItsOriginUntilAFutureFrame() {
+        val scheduler = SchedulerHarness()
+        val emissions = mutableListOf<Double>()
+        val driver = ViewerFlingDriver(scheduler, { displacement, _, _, _, _ ->
+            emissions += displacement; true
+        }, { _, _ -> }, {})
+        val released = 1_020_000_000L
+        assertTrue(driver.startFromRelease(6_000.0, released, 1_016_666_667L, 1, 71, 1_025_000_000L))
+        assertTrue(emissions.isEmpty())
+        scheduler.deliver(1_019_000_000L)
+        assertTrue(emissions.isEmpty())
+        scheduler.deliver(1_033_333_334L)
+        val expected = ViewerFlingPhysics.advance(6_000.0, .013333334)
+        assertEquals(expected.displacementPixels, emissions.single(), 1e-9)
+        assertTrue(scheduler.scheduled)
+    }
+
+    @Test fun boundaryAtReleaseCancelsThePendingFlingWithoutReportingMotion() {
+        val scheduler = SchedulerHarness()
+        var finished = 0
+        val driver = ViewerFlingDriver(scheduler, { _, _, _, _, _ -> false },
+            { _, _ -> throw AssertionError("Boundary hold is not movement") }, { finished++ })
+        assertFalse(driver.startFromRelease(6_000.0, 1_000_000_000L, 1_016_666_667L, 1, 71, 1_025_000_000L))
+        assertEquals(1, finished)
+        assertFalse(scheduler.scheduled)
+        assertFalse(scheduler.deliverIfScheduled(1_033_333_334L))
+    }
+
     @Test fun nextFrameIsArmedInsideTheCallbackBeforeEmissionWork() {
         val scheduler = SchedulerHarness()
         val emissions = mutableListOf<Emission>()

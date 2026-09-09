@@ -87,6 +87,9 @@ class EngineSessionRuntime(
     private var processing = false
     private var dirty = false
     private var initialPresented = !awaitInitialPresentation
+    private val inputReplay = SessionInputReplay(scope, { session.snapshot.generation },
+        { started && !closed && foreground && session.inputReplayPending },
+        { generation -> process(session.dispatch(SessionEvent.ContinueInput(generation))) })
 
     val snapshot: EngineRuntimeSnapshot get() {
         checkOwner()
@@ -113,6 +116,7 @@ class EngineSessionRuntime(
     fun navigate(episodeId: EpisodeId) {
         checkOwner()
         if (closed) return
+        inputReplay.cancel()
         val update = session.dispatch(SessionEvent.Navigate(episodeId))
         work.clear()
         retainedCachedPlans.clear()
@@ -131,6 +135,7 @@ class EngineSessionRuntime(
         checkOwner()
         if (closed || foreground == enabled) return
         foreground = enabled
+        if (!enabled) inputReplay.cancel()
         if (!enabled) { pages = emptyMap(); prepared.clear() }
         process(SessionUpdate(session.snapshot))
     }
@@ -188,6 +193,7 @@ class EngineSessionRuntime(
 
     suspend fun close() {
         checkOwner()
+        inputReplay.close()
         if (!closed) {
             closed = true
             pages = emptyMap()
@@ -221,6 +227,7 @@ class EngineSessionRuntime(
         } finally {
             processing = false
         }
+        inputReplay.schedule()
     }
 
     private fun cachedPlanPins(): List<SessionDemand<*>> = retainedCachedPlans.values.map { held ->
@@ -356,7 +363,7 @@ class EngineSessionRuntime(
     }
 
     private fun addReadAhead(state: EngineSessionSnapshot, result: LinkedHashMap<PageId, WorkPriority>) {
-        val anchor = state.anchor?.pageId ?: return
+        val anchor = readAheadAnchor(state, targetEpisode) ?: return
         val manifest = plans[anchor.episodeId]?.manifest ?: return
         val index = manifest.pages.indexOfFirst { it.id == anchor }
         if (index < 0) return
@@ -432,17 +439,23 @@ class EngineSessionRuntime(
     }
 
     private fun adjacentPrefetch(state: EngineSessionSnapshot): EpisodeId? {
-        val episode = state.anchor?.pageId?.episodeId ?: return null
-        val plan = plans[episode] ?: return null
         if (!positionResolved) return null
-        // Authorize one known forward document while original bodies download. Waiting for
-        // texture readiness serializes its provider handshake behind the first image.
+        val episode = state.anchor?.pageId?.episodeId ?: targetEpisode
+        val plan = plans[episode] ?: return null
+        // A legacy anchor needs original dimensions, but its episode is already known.
+        // Authorize the forward document while those original bytes are still arriving.
         return plan.manifest.nextEpisodeId?.takeUnless { it in failedReadAheadEpisodes }
     }
 
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
-    private fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmodifiableMap(LinkedHashMap(source))
-    private fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
-        Collections.unmodifiableMap(LinkedHashMap(source).apply { put(key, value) })
 }
+
+private fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmodifiableMap(LinkedHashMap(source))
+private fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
+    Collections.unmodifiableMap(LinkedHashMap(source).apply { put(key, value) })
+
+// The unresolved legacy page is a known request, even before its dimensions
+// can convert the saved offset into an exact source anchor.
+private fun readAheadAnchor(state: EngineSessionSnapshot, target: EpisodeId): PageId? =
+    state.anchor?.pageId ?: state.requiredDimensions.firstOrNull { it.episodeId == target }

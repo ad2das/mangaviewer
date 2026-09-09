@@ -56,6 +56,7 @@ def main():
     parser.add_argument('--navigation-idle-ms', type=int, help='Experimental UI navigation idle timeout only; restored before viewer input')
     parser.add_argument('--navigation-async-moves', action='store_true', help='Real navigation swipes with asynchronous MOVE injection and synchronous UP')
     parser.add_argument('--engine-diagnostics', action='store_true', help='Export observation-only stopped engine diagnostic state')
+    parser.add_argument('--http-read-timings', action='store_true', help='Diagnose body demand, admission, callback and read waits; adds observation overhead')
     args = parser.parse_args()
     if args.quick_preparation and (not args.whole_preparation or args.catalog_ui):
         parser.error('--quick-preparation requires direct-entry --whole-preparation')
@@ -90,6 +91,8 @@ def main():
                         '-e', 'captureQuickPreparation', str(args.quick_preparation).lower(),
                         '-e', 'captureCrossNextBoundary', str(args.cross_next_boundary).lower()]
     measurement_args += _engine_diagnostics_args(args.engine_diagnostics)
+    if args.http_read_timings:
+        measurement_args += ['-e', 'captureHttpReadTimings', 'true']
     if args.navigation_idle_ms is not None:
         measurement_args += ['-e', 'captureNavigationIdleMillis', str(args.navigation_idle_ms)]
     if args.navigation_async_moves:
@@ -175,6 +178,7 @@ def main():
         report['readbackEnabled'] = not args.no_readback
         report['memorySamplingEnabled'] = args.memory_sampling
         report['engineDiagnosticsEnabled'] = args.engine_diagnostics
+        report['httpReadTimingsEnabled'] = args.http_read_timings
         report['fixedGesturePlanSha256'] = hashlib.sha256(gesture_raw).hexdigest() if args.gesture_plan else None
         report['catalogUi'] = args.catalog_ui
         report['requestedEpisode'] = {'sourceId': args.source, 'seriesKey': args.series_key,

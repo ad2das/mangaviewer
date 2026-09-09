@@ -129,7 +129,11 @@ class HttpEngineSourceTransport(
         continuation: CancellableContinuation<SourceResponse>,
         startedAtNanos: Long,
     ) {
-        val exchangeExecutor = SerialExecutor(callbackExecutor)
+        val readTiming = HttpEngineReadDiagnostics.begin(sourceRequest.url)
+        val serialExecutor = SerialExecutor(callbackExecutor)
+        val exchangeExecutor = if (readTiming == null) serialExecutor else Executor { command ->
+            serialExecutor.execute(readTiming.queued(command))
+        }
         val exchange = runCatching {
             HttpEngineExchange(
                 continuation = continuation,
@@ -139,6 +143,7 @@ class HttpEngineSourceTransport(
                 callbackExecutor = exchangeExecutor,
                 bodyReadScheduler = bodyReadScheduler,
                 initialPriority = sourceRequest.priority,
+                readTiming = readTiming,
             )
         }.getOrElse {
             continuation.resumeWithException(it)

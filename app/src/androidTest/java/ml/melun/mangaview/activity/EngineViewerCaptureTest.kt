@@ -47,7 +47,9 @@ class EngineViewerCaptureTest {
         val graph = appGraph.engine
         val documents = EngineCapturedEpisodeDocuments()
         val exchanges = EngineCapturedHttpExchanges()
+        val httpReads = if (arguments.getString("captureHttpReadTimings") == "true") EngineCapturedHttpReads() else null
         val ntkAuthorizations = EngineCapturedNtkAuthorizations()
+        val motion = EngineCapturedMotion()
         val memory = if (arguments.getString("captureMemory") == "true")
             QualificationMemory(instrumentation, File(output, "memory").apply { check(mkdir()) }) else null
         var viewer: EngineViewerScreen? = null
@@ -111,7 +113,7 @@ class EngineViewerCaptureTest {
             assertTrue("Viewer decode workers did not terminate", decodeWorkersTerminated)
             // A full receipt ring must still fail qualification, but cannot hide independent closure proof.
             var exportFailure: Throwable? = null
-            for (export in listOf(::exportInputs, ::exportFrames)) {
+            for (export in listOf(::exportInputs, ::exportFrames, { motion.close(requireNotNull(viewer), output) })) {
                 try { export() } catch (failure: Throwable) {
                     val first = exportFailure
                     if (first == null) exportFailure = failure else if (first !== failure) first.addSuppressed(failure)
@@ -127,6 +129,7 @@ class EngineViewerCaptureTest {
         graph.ntkAuthorizationEvidenceObserver = ntkAuthorizations.observer
         var primaryFailure: Throwable? = null
         try {
+        httpReads?.start()
         memory?.capture("before-catalog")
         withEngineCaptureViewer(instrumentation, output, episode, kind, arguments.getString("catalogUi") == "true",
             beforeViewerOpen = { memory?.capture("before-viewer") },
@@ -137,6 +140,7 @@ class EngineViewerCaptureTest {
                 }
             }) { activity ->
             viewer = activity
+            motion.capture(activity)
             if (arguments.getString("captureWholePreparation") == "true") activity.reserveWholeTraversalInputEvidence()
             try {
             if (arguments.getString("traverseEpisode") == "true") {
@@ -160,7 +164,7 @@ class EngineViewerCaptureTest {
                 }
                 val report = traverseCapturedEpisode(activity, device,
                     episode, documents,
-                    { writeCapture(output, number++, it) }, { exportInputs(); exportFrames(); memory?.capture("active") },
+                    { writeCapture(output, number++, it) }, { exportInputs(); exportFrames(); motion.capture(activity); memory?.capture("active") },
                     { captureEngineStoppedScreen(instrumentation, activity, output, it) },
                     { gesture, forward, speed -> injectEngineTraversalGesture(instrumentation, device, output, gesture, forward, speed) },
                     readbackEnabled = if (wholePreparationMode) false else readback, fixedGestureDirections = directions,
@@ -224,6 +228,7 @@ class EngineViewerCaptureTest {
                 writeCapture(output, index++, result)
                 exportInputs()
                 exportFrames()
+                motion.capture(activity)
                 memory?.capture("active")
                 assertEquals(EngineReadbackPacket.Status.OK, packet.status)
                 assertFalse(packet.physicalPresentationVerified)
@@ -258,6 +263,7 @@ class EngineViewerCaptureTest {
             if (appGraph.networkEvidenceObserver === exchanges) appGraph.networkEvidenceObserver = null
             if (graph.ntkAuthorizationEvidenceObserver === ntkAuthorizations.observer) graph.ntkAuthorizationEvidenceObserver = null
             for (export in listOf({ documents.exportAndClear(output) }, { exchanges.exportAndClear(output) },
+                { httpReads?.close(output) },
                 { ntkAuthorizations.exportAndClear(output) })) {
                 try { export() } catch (cleanup: Throwable) {
                     val primary = failure

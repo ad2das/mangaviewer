@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Trace
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -51,6 +52,7 @@ internal class ViewerSurfaceHost(
     private var gestureMoved = false
     private var ending = false
     private var flingVelocity: Double? = null
+    private var flingReleaseNanos = 0L
     private var motionSequence = 0L
     private var nextMotionSequence = 1L
     private var foreground = true
@@ -167,6 +169,9 @@ internal class ViewerSurfaceHost(
     }
 
     private fun begin(event: MotionEvent) {
+        // This surface already queues every pointer delta for its own VSYNC drain.
+        // Let touchscreen samples reach that queue without a second frame-batching wait.
+        if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) requestUnbufferedDispatch(event)
         flushDrag()
         fling.stop()
         velocityTracker?.recycle()
@@ -210,6 +215,7 @@ internal class ViewerSurfaceHost(
         if (flingAfter && tracker != null) {
             tracker.computeCurrentVelocity(1_000, maximumFlingVelocity.toFloat())
             flingVelocity = (-tracker.getYVelocity(pointerId)).toDouble()
+            flingReleaseNanos = event.eventTime * NANOS_PER_MILLISECOND
         }
         ending = true
         scheduleDrag()
@@ -239,7 +245,7 @@ internal class ViewerSurfaceHost(
         }
         if (moved) sink.motionFrame(motionSequence, frameTime)
         previousFrameNanos = frameTime
-        if (ending) finishDrag(frameTime)
+        if (ending) finishDrag(frameTime, vsyncId, expectedPresentation)
         if (pointerDeltas.hasPending || ending) scheduleDrag() else motionSequence = 0L
     }
 
@@ -251,11 +257,14 @@ internal class ViewerSurfaceHost(
         return delta + pointerDeltas.append(event.getY(index))
     }
 
-    private fun finishDrag(frameTime: Long) {
+    private fun finishDrag(frameTime: Long, vsyncId: Long, expectedPresentation: Long) {
         ending = false
         val velocity = flingVelocity
+        val releasedAt = flingReleaseNanos
         flingVelocity = null
-        val started = velocity != null && fling.start(velocity, frameTime, issueMotionSequence())
+        flingReleaseNanos = 0L
+        val started = velocity != null && fling.startFromRelease(velocity, releasedAt, frameTime,
+            issueMotionSequence(), vsyncId, expectedPresentation)
         if (!started) finishInteraction()
     }
 
@@ -284,6 +293,7 @@ internal class ViewerSurfaceHost(
         }
         ending = false
         flingVelocity = null
+        flingReleaseNanos = 0L
         motionSequence = 0L
     }
 

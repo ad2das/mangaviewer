@@ -43,14 +43,30 @@ internal class ViewerFlingDriver(
         require(precedingFrameNanos > 0L) { "Fling must continue from a real frame" }
         require(sequence > 0L) { "Fling motion sequence must be positive" }
         velocity = initialVelocityPixelsPerSecond.coerceIn(-MAXIMUM_VELOCITY, MAXIMUM_VELOCITY)
-        // The release is already being handled on a Choreographer frame. Use that timestamp as
-        // the integration origin so the next callback advances immediately instead of consuming
-        // an empty priming frame between drag and fling.
+        // Integrate from the supplied monotonic origin; starting does not consume a frame.
         previousFrameNanos = precedingFrameNanos
         motionSequence = sequence
         running = true
         frameScheduler.post()
         return true
+    }
+
+    fun startFromRelease(
+        initialVelocityPixelsPerSecond: Double,
+        releasedAtNanos: Long,
+        frameTimeNanos: Long,
+        sequence: Long,
+        frameTimelineVsyncId: Long,
+        expectedPresentationTimeNanos: Long,
+    ): Boolean {
+        if (!start(initialVelocityPixelsPerSecond, releasedAtNanos, sequence)) return false
+        // An UP with unchanged pointer coordinates still has elapsed momentum by this
+        // frame. Waiting for another callback would leave the release frame empty.
+        // Input delivered after this VSYNC instead starts on the next available frame.
+        if (frameTimeNanos > releasedAtNanos) {
+            doFrame(frameTimeNanos, frameTimelineVsyncId, expectedPresentationTimeNanos)
+        }
+        return running
     }
 
     fun stop() {
@@ -72,6 +88,7 @@ internal class ViewerFlingDriver(
         // delay requesting the next display slot. Every stop path cancels this arm.
         frameScheduler.post()
         val previous = previousFrameNanos
+        if (frameTimeNanos <= previous) return
         previousFrameNanos = frameTimeNanos
         if (previous > 0L) {
             val elapsedSeconds = (frameTimeNanos - previous).coerceAtLeast(0L) / NANOS_PER_SECOND
