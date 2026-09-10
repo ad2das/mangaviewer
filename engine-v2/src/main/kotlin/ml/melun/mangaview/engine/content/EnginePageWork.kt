@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.PageId
+import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.engine.api.AccessPrerequisite
 import ml.melun.mangaview.engine.api.EngineStoragePort
 import ml.melun.mangaview.engine.api.EpisodeAccessPlan
@@ -22,6 +23,7 @@ import ml.melun.mangaview.engine.api.WorkDomain
 import ml.melun.mangaview.engine.api.WorkKey
 import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.engine.api.WorkRequest
+import ml.melun.mangaview.engine.api.WorkMetadata
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.SourceTransport
@@ -63,7 +65,9 @@ class EnginePageWork(
         val prepared = context.dependency(identity.request(
             "body", PreparedPage::class.java, WorkDomain.BODY, context.priority.value,
             dispose = { storage.discard(it) },
-        ) { transfer(it, plan, pageId) })
+        ) { transfer(it, plan, pageId) { dimensions ->
+            context.publishMetadata(WorkMetadata.PageGeometry(pageId, plan.contentRevision, dimensions))
+        } })
         val committed = context.dependency(identity.request(
             "publish", PinnedPage::class.java, WorkDomain.STORAGE, context.priority.value,
             dispose = { it.close() },
@@ -71,7 +75,9 @@ class EnginePageWork(
         return checkNotNull(committed.page)
     }
 
-    private suspend fun transfer(context: WorkContext, plan: EpisodeAccessPlan, pageId: PageId): PreparedPage {
+    private suspend fun transfer(context: WorkContext, plan: EpisodeAccessPlan, pageId: PageId,
+        reportGeometry: suspend (PageDimensions) -> Unit,
+    ): PreparedPage {
         val candidates = plan.page(pageId).candidates
         var failure: IOException? = null
         for (candidate in candidates.indices) {
@@ -89,7 +95,7 @@ class EnginePageWork(
             }
             val opened = OpenedPage(response.body, response.contentLength, response.contentType,
                 response.header("ETag"), response.header("Last-Modified"))
-            return prepareWithPromotion(context, plan, pageId, opened)
+            return prepareWithPromotion(context, plan, pageId, opened, reportGeometry)
         }
         throw checkNotNull(failure)
     }
@@ -99,6 +105,7 @@ class EnginePageWork(
         plan: EpisodeAccessPlan,
         pageId: PageId,
         opened: OpenedPage,
+        reportGeometry: suspend (PageDimensions) -> Unit,
     ): PreparedPage {
         var handedToStorage = false
         var prepared: PreparedPage? = null
@@ -109,7 +116,7 @@ class EnginePageWork(
                 }
                 try {
                     handedToStorage = true
-                    prepared = storage.prepare(pageId, plan.contentRevision, opened)
+                    prepared = storage.prepareWithGeometry(pageId, plan.contentRevision, opened, reportGeometry)
                 } finally {
                     promotion.cancel()
                 }

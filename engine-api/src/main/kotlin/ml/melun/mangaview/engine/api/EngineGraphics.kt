@@ -54,9 +54,19 @@ data class EngineTexture(
     init { require(rendererId > 0 && rendererEpoch > 0 && key > 0 && byteCount == tile.byteCount) }
 }
 
+interface EngineTextureUpload {
+    suspend fun upload(expectedEpoch: Long): EngineTexture
+    suspend fun close()
+}
+
 interface EngineTextureUploader {
     val rendererId: Long
     val rendererEpoch: Long
+    /** Prepare outside the serialized owner queue; the caller keeps the pixel borrow until close. */
+    suspend fun prepareTexture(pixels: EnginePixels): EngineTextureUpload = object : EngineTextureUpload {
+        override suspend fun upload(expectedEpoch: Long) = this@EngineTextureUploader.upload(pixels, expectedEpoch)
+        override suspend fun close() = Unit
+    }
     /** Cancellation returns only after the owner stops reading pixels and disposes any lost texture. */
     suspend fun upload(pixels: EnginePixels, expectedEpoch: Long): EngineTexture
     /** Returns after this texture is absent from the owner's allocations, including scene retention. */

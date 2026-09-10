@@ -10,6 +10,7 @@ import ml.melun.mangaview.engine.api.WorkContext
 import ml.melun.mangaview.engine.api.WorkDomain
 import ml.melun.mangaview.engine.api.WorkKey
 import ml.melun.mangaview.engine.api.WorkRequest
+import ml.melun.mangaview.engine.api.WorkMetadata
 
 /** One execution attempt owns these edges; the registry mutex protects their entire lifetime. */
 internal class DependencyWorkContext(
@@ -24,6 +25,17 @@ internal class DependencyWorkContext(
     private var open = true
     private var pending = 0
     private val subscriptions = linkedMapOf<WorkSubscriber, CoordinatorSubscription<*>>()
+
+    override suspend fun publishMetadata(value: WorkMetadata) {
+        currentCoroutineContext().ensureActive()
+        state.mutex.withLock {
+            check(open) { "Work execution context has finished" }
+            if (state.closed || parent.cancelRequested || parent.state != WorkRecordState.RUNNING ||
+                state.records[parent.key] !== parent) throw CancellationException("Work is no longer running")
+            check(parent.metadata.value == null || parent.metadata.value == value) { "Conflicting immutable work metadata" }
+            parent.metadata.value = value
+        }
+    }
 
     override suspend fun <T : Any> dependency(request: WorkRequest<T>): T {
         val (_, subscription) = register(request)

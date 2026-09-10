@@ -4,6 +4,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.filterNotNull
 import ml.melun.mangaview.engine.api.WorkLease
 import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.engine.api.WorkSubscription
@@ -15,6 +16,7 @@ internal class CoordinatorSubscription<T : Any>(
     private val resultType: Class<T>,
 ) : WorkSubscription<T> {
     private val closeRequested = AtomicBoolean(false)
+    override val metadata get() = record.metadata.filterNotNull()
 
     override suspend fun await(): T {
         if (closeRequested.get()) throw CancellationException("Work subscription is closed")

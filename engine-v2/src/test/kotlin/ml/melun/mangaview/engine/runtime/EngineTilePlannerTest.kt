@@ -188,6 +188,11 @@ class EngineTilePlannerTest {
         assertEquals(listOf(0, 200, 400, 600),
             extended.demands.filter { it.tile.pageId != pageId }.map { it.tile.sourceTop })
         assertEquals(plan.placements, extended.placements)
+        val burst = EngineTilePlanner(1_000_000, 202, preparationViewports = 12).plan(state)
+        assertEquals(listOf(0, 200, 400, 600, 800),
+            burst.demands.filter { it.tile.pageId != pageId }.map { it.tile.sourceTop })
+        assertEquals(plan.placements, burst.placements)
+        assertTrue(burst.plannedTextureBytes <= 1_000_000)
         val tight = EngineTilePlanner(80_000, 202, preparationViewports = 4).plan(state)
         assertEquals(1, tight.demands.size)
         assertEquals(80_000L, tight.plannedTextureBytes)

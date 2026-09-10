@@ -76,7 +76,7 @@ internal class EngineViewerRuntime(
     private var submittedPosition: Pair<SourceAnchor, Long>? = null
     private var autosave: Job? = null
     private val renderer: EngineSurfaceOwner = (preparedRenderer ?: EngineSurfaceOwner(budget.glResidentBytes,
-        {}, {}, {})).also { it.bind(EngineSurfaceCallbacks(
+        {}, {}, {}, bufferedCompositor = android.os.Build.VERSION.SDK_INT >= 31)).also { it.bind(EngineSurfaceCallbacks(
         { value -> onMain { reportPresented(value) } }, { error -> onMain { reportFailure(error) } },
         { onMain { if (!closing) graphics.rendererChanged() } },
         { onMain { if (!closing) { graphics.enabled(false); surface.rendererUnavailable() } } },
@@ -86,10 +86,10 @@ internal class EngineViewerRuntime(
         { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },
         { _, failure -> reportFailure(failure) }, awaitInitialPresentation = true)
     private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator,
-        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 4),
+        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 12),
         EngineTileWork(NativeEngineImageDecoder(), decodeDispatcher, renderer), renderer, content::pageRequest,
         renderer::offer, renderer::clearScene, { _, failure -> reportFailure(failure) },
-        waitForCompleteViewport = true, reportSceneFailure = reportFailure, reportViewportReady = content::viewportReady)
+        waitForCompleteViewport = false, reportSceneFailure = reportFailure)
     val surface = ViewerSurfaceHost(context, this)
 
     init { graphics.enabled(false) }

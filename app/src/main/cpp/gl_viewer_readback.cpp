@@ -35,7 +35,8 @@ bool GlViewerRenderer::hasReadbackRequest(std::int64_t token) const noexcept {
 void GlViewerRenderer::issueReadback(
     const GlViewerFrame& frame,
     EGLuint64KHR frameId) noexcept {
-    readback_.issue(frame.token, frame.surfaceWidth, frame.surfaceHeight, frameId);
+    readback_.issue(frame.token, frame.surfaceWidth, frame.surfaceHeight, frameId,
+        buffered_ ? buffered_->drawingFramebuffer() : 0);
 }
 
 void GlViewerRenderer::failReadback(

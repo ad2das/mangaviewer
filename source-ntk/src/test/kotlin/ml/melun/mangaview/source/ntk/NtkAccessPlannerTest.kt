@@ -30,7 +30,7 @@ class NtkAccessPlannerTest {
         val plan = planner.completeAuthorized(parsed, proof())
         assertTrue(plan.prerequisites.isEmpty())
         assertEquals(2, plan.pages.size)
-        assertTrue(planner.pageRequest(plan, plan.pages.first().pageId, 0, WorkPriority.FOCUS, null).preferQuic)
+        assertFalse(planner.pageRequest(plan, plan.pages.first().pageId, 0, WorkPriority.FOCUS, null).preferQuic)
         assertThrows(IllegalArgumentException::class.java) {
             planner.completeAuthorized(parsed, proof(id = episode.copy(remoteKey = "/webtoon/work/other")))
         }

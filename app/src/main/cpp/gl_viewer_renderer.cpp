@@ -278,20 +278,21 @@ bool GlViewerRenderer::recreateContext() noexcept {
     for (const auto& frame : pendingFrames_) callback_->presented(frame.token, 0, -4, frame.frameId);
     pendingFrames_.clear();
     close();
+    if (bufferedEnabled_) buffered_ = std::make_unique<BufferedFrameCompositor>(callback_);
     const bool restored = retainedWindow != nullptr && initialize() && attach(retainedWindow);
     if (retainedWindow != nullptr) ANativeWindow_release(retainedWindow);
     return restored;
 }
 
-bool GlViewerRenderer::prepare() noexcept {
-    // Reserve only object names, not image/buffer storage. The same context owns these names
-    // when a reader claims it; close() already retires the remaining names and unpack buffer.
-    if (!initialize() || !initializeStaticQuad()) return false;
-    textureUpload_.prepareNames();
-    return glSucceeded("prepare texture upload names");
-}
-
 bool GlViewerRenderer::attach(ANativeWindow* window) noexcept {
+    if (buffered_) {
+        if (!window || !initialize()) return false;
+        detach();
+        if (!buffered_->attach(window)) return false;
+        ANativeWindow_acquire(window);
+        window_ = window;
+        return true;
+    }
     if (window == nullptr) return eglFailure("attach window missing");
     const bool cold = context_ == EGL_NO_CONTEXT;
     if (!initialize(cold ? window : nullptr)) return false;
@@ -364,6 +365,7 @@ EGLint GlViewerRenderer::selectPresentationTimestamp() const noexcept {
 
 void GlViewerRenderer::detach() noexcept {
     if (!onOwnerThread()) return;
+    if (buffered_) buffered_->detach();
     cancelReadbacks(GlReadbackStatus::kCancelled);
     if (display_ == EGL_NO_DISPLAY) return;
     for (const auto& frame : pendingFrames_) {
@@ -379,7 +381,7 @@ void GlViewerRenderer::detach() noexcept {
     presentationTimestamp_ = EGL_NONE;
 }
 
-std::uint64_t GlViewerRenderer::upload(
+std::uint64_t GlViewerRenderer::uploadGl(
     std::uint64_t cpuTileHandle,
     int width,
     int height,
@@ -440,34 +442,14 @@ std::uint64_t GlViewerRenderer::upload(
 }
 
 void GlViewerRenderer::release(std::uint64_t key) noexcept {
+
     const auto found = textures_.find(key);
     if (found == textures_.end()) return;
     found->second.retired = true;
     collectRetiredTextures();
 }
 
-bool GlViewerRenderer::installScene(const GlViewerFrame& frame) noexcept {
-    if (frame.coordinateUnitsPerPixel != 1 && frame.coordinateUnitsPerPixel != 1024) return false;
-    if (frame.scene == nullptr) {
-        if (frame.sceneKey == sceneKey_ && frame.coordinateUnitsPerPixel == sceneUnitsPerPixel_) return true;
-        __android_log_print(
-            ANDROID_LOG_ERROR, "GlViewerRenderer", "scene key mismatch incoming=%lld active=%lld",
-            static_cast<long long>(frame.sceneKey), static_cast<long long>(sceneKey_));
-        return false;
-    }
-    for (const GlSceneEntry& entry : *frame.scene) {
-        if (entry.textureKey == 0 || entry.sourceTop < 0 ||
-            entry.sourceBottom <= entry.sourceTop || entry.sourceBottom > entry.sourceHeight ||
-            entry.destinationBottom <= entry.destinationTop) return false;
-    }
-    scene_ = *frame.scene;
-    sceneKey_ = frame.sceneKey;
-    sceneUnitsPerPixel_ = frame.coordinateUnitsPerPixel;
-    collectRetiredTextures();
-    return true;
-}
-
-int GlViewerRenderer::submit(const GlViewerFrame& frame) noexcept {
+int GlViewerRenderer::submitGl(const GlViewerFrame& frame) noexcept {
     const int bound = bindSubmitSurface(frame);
     if (bound <= 0) {
         failReadback(frame, bound == -2 ? GlReadbackStatus::kContextLost
@@ -488,6 +470,7 @@ int GlViewerRenderer::submit(const GlViewerFrame& frame) noexcept {
                                          : GlReadbackStatus::kGlError);
         return contextLost_ ? -2 : -1;
     }
+    if (buffered_) return presentBuffered(frame);
     EGLuint64KHR frameId = 0;
     const bool timestamped = getNextFrameId_ != nullptr && getFrameTimestamps_ != nullptr &&
         getNextFrameId_(display_, windowSurface_, &frameId) == EGL_TRUE;
@@ -496,6 +479,10 @@ int GlViewerRenderer::submit(const GlViewerFrame& frame) noexcept {
 }
 
 int GlViewerRenderer::bindSubmitSurface(const GlViewerFrame& frame) noexcept {
+    if (buffered_) {
+        if (!onOwnerThread() || frame.token <= 0) return -1;
+        return makeOffscreenCurrent() && buffered_->bind(frame.surfaceWidth, frame.surfaceHeight) ? 1 : -1;
+    }
     if (windowSurface_ == EGL_NO_SURFACE || frame.token <= 0 || frame.surfaceWidth <= 0 ||
         frame.surfaceHeight <= 0) return 0;
     if (makeCurrent(windowSurface_)) return 1;
@@ -692,6 +679,7 @@ bool GlViewerRenderer::appendVisibleEntry(
 #endif
 
 void GlViewerRenderer::pollPresentations() noexcept {
+    if (buffered_) { if (onOwnerThread()) buffered_->poll(); return; }
     if (windowSurface_ == EGL_NO_SURFACE || getFrameTimestamps_ == nullptr) {
         for (const auto& frame : pendingFrames_) callback_->presented(frame.token, 0, -1, frame.frameId);
         pendingFrames_.clear();
@@ -747,8 +735,10 @@ void GlViewerRenderer::deleteTexture(Texture* texture) noexcept {
 
 void GlViewerRenderer::close() noexcept {
     if (!onOwnerThread()) return;
+
     markContextLostReadbacks();
     detach();
+    buffered_.reset();
     if (display_ == EGL_NO_DISPLAY) {
         contextDestroyedReadbacks();
         return;

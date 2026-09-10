@@ -22,6 +22,7 @@ import ml.melun.mangaview.engine.api.WorkCoordinatorPort
 import ml.melun.mangaview.engine.api.WorkKey
 import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.engine.api.WorkRequest
+import ml.melun.mangaview.engine.api.WorkMetadata
 import ml.melun.mangaview.source.AdjacentEpisodes
 
 data class EngineSessionRuntimeDiagnosticSnapshot(
@@ -67,8 +68,12 @@ class EngineSessionRuntime(
     private var plans: Map<EpisodeId, EpisodeAccessPlan> = emptyMap()
     private class CachedPlan(val request: WorkRequest<EpisodeAccessPlan>, val plan: EpisodeAccessPlan)
     private val retainedCachedPlans = linkedMapOf<EpisodeId, CachedPlan>()
+    private val pageDemands = SessionPageDemands(source, ::acceptPageGeometry,
+        { generation, id, plan, page -> if (isCurrent(generation)) acceptPage(generation, id, plan, page) },
+        { id -> failedReadAheadPages += id; process(SessionUpdate(session.snapshot)) })
     private var pages: Map<PageId, PageContentIdentity> = emptyMap()
     private val prepared = linkedSetOf<PageId>()
+    private val earlyTransfers = EarlyOriginalTransfers()
     private val failedReadAheadPages = linkedSetOf<PageId>()
     private val failedReadAheadEpisodes = linkedSetOf<EpisodeId>()
     private val launchGeneration = session.snapshot.generation
@@ -120,9 +125,11 @@ class EngineSessionRuntime(
         val update = session.dispatch(SessionEvent.Navigate(episodeId))
         work.clear()
         retainedCachedPlans.clear()
+        pageDemands.clear()
         plans = emptyMap()
         pages = emptyMap()
         prepared.clear()
+        earlyTransfers.clear()
         failedReadAheadPages.clear()
         failedReadAheadEpisodes.clear()
         positionResolved = true
@@ -136,7 +143,7 @@ class EngineSessionRuntime(
         if (closed || foreground == enabled) return
         foreground = enabled
         if (!enabled) inputReplay.cancel()
-        if (!enabled) { pages = emptyMap(); prepared.clear() }
+        if (!enabled) { pages = emptyMap(); prepared.clear(); earlyTransfers.clear(); pageDemands.clear() }
         process(SessionUpdate(session.snapshot))
     }
 
@@ -198,6 +205,8 @@ class EngineSessionRuntime(
             closed = true
             pages = emptyMap()
             prepared.clear()
+            earlyTransfers.clear()
+            pageDemands.clear()
             process(session.dispatch(SessionEvent.Close))
         }
         work.close()
@@ -246,7 +255,7 @@ class EngineSessionRuntime(
             }
         }
         val wantedPages = pagePriorities(state)
-        retainPreparedMetadata(state, wantedPages.keys)
+        pages = retainPreparedMetadata(state, wantedPages.keys, plans, pages)
         val wantedEpisodes = linkedMapOf<EpisodeId, WorkPriority>()
         state.requiredEpisodes.forEach { wantedEpisodes[it] = WorkPriority.FOCUS }
         wantedPages.forEach { (id, priority) ->
@@ -264,18 +273,22 @@ class EngineSessionRuntime(
                 }
             }
         }
+        pageDemands.retain(wantedPages.keys)
         wantedPages.forEach { (id, priority) ->
             val plan = plans[id.episodeId] ?: return@forEach
-            result += SessionDemand(source.page(plan, id, priority), onFailure =
-                if (priority == WorkPriority.NEXT_IMAGE || priority == WorkPriority.NEXT_EPISODE) ({ _: Throwable ->
-                    failedReadAheadPages += id
-                    process(SessionUpdate(session.snapshot))
-                }) else null) { page ->
-                if (isCurrent(generation)) acceptPage(generation, id, plan, page)
-            }
+            result += pageDemands.get(generation, id, plan, priority)
         }
         result += cachedPlanPins()
         return result
+    }
+
+    private fun acceptPageGeometry(generation: Long, id: PageId, plan: EpisodeAccessPlan, metadata: WorkMetadata) {
+        if (!isCurrent(generation) || plans[id.episodeId] !== plan) return
+        val geometry = metadata as? WorkMetadata.PageGeometry ?: return
+        require(geometry.pageId == id && geometry.contentRevision == plan.contentRevision)
+        if (matchesVerifiedGeometry(pages[id], geometry) && id in prepared && id !in failedReadAheadPages) return
+        earlyTransfers.observed(id)
+        process(session.dispatch(SessionEvent.DimensionsResolved(generation, id, geometry.dimensions)))
     }
 
     private fun episodeDemand(generation: Long, id: EpisodeId, priority: WorkPriority): SessionDemand<EpisodeAccessPlan> {
@@ -289,22 +302,6 @@ class EngineSessionRuntime(
                 if (plan.localOnly) retainedCachedPlans[id] = CachedPlan(request, plan)
                 acceptPlan(generation, id, plan)
             }
-        }
-    }
-
-    private fun retainPreparedMetadata(state: EngineSessionSnapshot, wantedPages: Set<PageId>) {
-        val episodes = wantedPages.mapTo(mutableSetOf()) { it.episodeId }
-        state.anchor?.pageId?.episodeId?.let { current ->
-            episodes += current
-            plans[current]?.manifest?.let { manifest ->
-                manifest.previousEpisodeId?.let(episodes::add)
-                manifest.nextEpisodeId?.let(episodes::add)
-            }
-        }
-        // Identities own no file lease or texture. Preserve the verified neighbors so the tile
-        // planner can fill its pixel-distance horizon even beyond the small raw-request window.
-        if (pages.keys.any { it.episodeId !in episodes }) {
-            pages = Collections.unmodifiableMap(pages.filterKeys { it.episodeId in episodes })
         }
     }
 
@@ -322,10 +319,12 @@ class EngineSessionRuntime(
 
     private fun acceptPage(generation: Long, expected: PageId, plan: EpisodeAccessPlan, page: StoredPage) {
         require(page.pageId == expected && page.contentRevision == plan.contentRevision)
+        val identity = PageContentIdentity(expected, page.contentRevision, page.sha256, page.dimensions, page.byteCount)
+        // Reacquiring the same verified original changes subscription ownership, not visible content.
+        if (pages[expected] == identity && expected in prepared && expected !in failedReadAheadPages) return
         prepared += expected
         failedReadAheadPages -= expected
         val update = session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
-        val identity = PageContentIdentity(expected, page.contentRevision, page.sha256, page.dimensions, page.byteCount)
         if (pages[expected] != identity) pages = withEntry(pages, expected, identity)
         if (generation == launchGeneration && expected.episodeId == launchEpisode &&
             page.contentRevision == launchManifestContentRevision && expected in launchManifestPageIds &&
@@ -358,6 +357,7 @@ class EngineSessionRuntime(
         state.visibleRegions.forEach { region ->
             result.putIfAbsent(region.pageId, if (region.pageId == state.anchor?.pageId) WorkPriority.FOCUS else WorkPriority.VISIBLE)
         }
+        earlyTransfers.retain(result, prepared, failedReadAheadPages)
         addReadAhead(state, result)
         return result
     }
@@ -368,11 +368,11 @@ class EngineSessionRuntime(
         val index = manifest.pages.indexOfFirst { it.id == anchor }
         if (index < 0) return
         addNearbyOriginals(state, manifest, index, result)
-        // Give the opening original and its two neighbors the first network window.
-        // Resume bulk bodies as soon as the anchor bytes are verified, without waiting
-        // for decoding or a swap, so arriving input still has a downloaded runway.
-        if (initialPresented || anchor in prepared) addRemainingOriginals(manifest, index, result)
-        addNextOriginals(manifest, result)
+        // Give every original needed by the opening viewport the first network window.
+        // Bulk transfer starts as soon as those bytes arrive, independently of rendering.
+        if (initialPresented || (state.completeViewport && state.visibleRegions.all { it.pageId in prepared }))
+            addRemainingOriginals(manifest, index, result)
+        addNextOriginals(state, manifest, result)
     }
 
     private fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
@@ -407,7 +407,7 @@ class EngineSessionRuntime(
     ) {
         // Stream originals to disk while the app reserves two BODY slots for visible work.
         // Finish the forward phase before filling earlier pages; visible work keeps priority.
-        val remainingSlots = 12 - result.count { (id, priority) -> priority == WorkPriority.NEXT_IMAGE && id !in prepared }
+        val remainingSlots = (12 - result.count { (id, priority) -> priority == WorkPriority.NEXT_IMAGE && id !in prepared }).coerceAtLeast(0)
         if (remainingSlots == 0) return
         fun pending(indices: IntProgression) = indices.asSequence().map { manifest.pages[it].id }
             .filter { it !in prepared && it !in failedReadAheadPages && it !in result }.take(remainingSlots).toList()
@@ -422,20 +422,22 @@ class EngineSessionRuntime(
         }
     }
 
-    private fun addNextOriginals(manifest: EpisodeManifest,
+    private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest,
         result: LinkedHashMap<PageId, WorkPriority>,
     ) {
         val next = manifest.nextEpisodeId?.let { plans[it]?.manifest } ?: return
-        next.pages.take(2).filter { it.id in prepared }.forEach {
+        next.pages.take(2).filter { it.id !in failedReadAheadPages }.forEach {
             result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
         }
-        // Queue the first two originals as soon as the adjacent plan is authorized. A slow
-        // current body must not serialize boundary preparation. Once the current episode is
-        // complete, fill its vacated 12-body window under the same background permits.
-        val candidates = if (manifest.pages.all { it.id in prepared }) next.pages else next.pages.take(2)
-        candidates.asSequence().filter { it.id !in prepared && it.id !in failedReadAheadPages }.take(12).forEach {
-            result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
-        }
+        // Start before GPU preparation, but leave every queued current body its background slot.
+        // Filling all next slots prematurely can strand the current episode's sliding-window tail.
+        val openingReady = state.completeViewport && state.visibleRegions.all { it.pageId in prepared }
+        if (!initialPresented && !openingReady && manifest.pages.any { it.id !in prepared }) return
+        val occupied = result.count { (id, priority) -> id !in prepared &&
+            (priority == WorkPriority.NEXT_IMAGE || priority == WorkPriority.NEXT_EPISODE) }
+        val available = (12 - occupied).coerceAtLeast(0)
+        next.pages.asSequence().filter { it.id !in prepared && it.id !in failedReadAheadPages && it.id !in result }
+            .take(available).forEach { result[it.id] = WorkPriority.NEXT_EPISODE }
     }
 
     private fun adjacentPrefetch(state: EngineSessionSnapshot): EpisodeId? {
@@ -454,6 +456,12 @@ private fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmo
 private fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
     Collections.unmodifiableMap(LinkedHashMap(source).apply { put(key, value) })
 
+private fun matchesVerifiedGeometry(known: PageContentIdentity?, geometry: WorkMetadata.PageGeometry): Boolean {
+    if (known == null) return false
+    require(known.dimensions == geometry.dimensions) { "Conflicting dimensions for ${geometry.pageId}" }
+    return known.contentRevision == geometry.contentRevision
+}
+
 // The unresolved legacy page is a known request, even before its dimensions
 // can convert the saved offset into an exact source anchor.
 private fun readAheadAnchor(state: EngineSessionSnapshot, target: EpisodeId): PageId? =
@@ -470,4 +478,24 @@ private fun nextDocumentToPrepare(manifest: EpisodeManifest, plans: Map<EpisodeI
     val nextPlan = plans[next] ?: return next
     if (!initialPresented || manifest.pages.any { it.id !in prepared }) return null
     return nextPlan.manifest.nextEpisodeId?.takeUnless { it in plans || it in failed }
+}
+
+private fun retainPreparedMetadata(state: EngineSessionSnapshot, wantedPages: Set<PageId>,
+    plans: Map<EpisodeId, EpisodeAccessPlan>, pages: Map<PageId, PageContentIdentity>,
+): Map<PageId, PageContentIdentity> {
+    val episodes = wantedPages.mapTo(mutableSetOf()) { it.episodeId }
+    state.anchor?.pageId?.episodeId?.let { current ->
+        episodes += current
+        plans[current]?.manifest?.let { manifest ->
+            manifest.previousEpisodeId?.let { previous ->
+                episodes += previous
+                plans[previous]?.manifest?.previousEpisodeId?.let(episodes::add)
+            }
+            manifest.nextEpisodeId?.let(episodes::add)
+        }
+    }
+    // Identity metadata keeps budgeted resident pixels valid during a two-document reverse.
+    // It owns no file or texture lease; explicit navigation still clears the generation.
+    return if (pages.keys.any { it.episodeId !in episodes })
+        Collections.unmodifiableMap(pages.filterKeys { it.episodeId in episodes }) else pages
 }

@@ -42,6 +42,10 @@ data class StorageOwnershipSnapshot(
 interface EngineStoragePort {
     /** Consumes and closes this response body. Publication is a separate storage operation. */
     suspend fun prepare(pageId: PageId, contentRevision: String, opened: OpenedPage): PreparedPage
+    /** Header dimensions may precede EOF; ownership/publication remain identical to prepare(). */
+    suspend fun prepareWithGeometry(pageId: PageId, contentRevision: String, opened: OpenedPage,
+        reportGeometry: suspend (PageDimensions) -> Unit,
+    ): PreparedPage = prepare(pageId, contentRevision, opened)
     suspend fun publish(prepared: PreparedPage): StoredPageLease
     suspend fun discard(prepared: PreparedPage)
     suspend fun recover()

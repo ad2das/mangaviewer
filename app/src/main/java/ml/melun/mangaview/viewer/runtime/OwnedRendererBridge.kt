@@ -4,6 +4,7 @@ import android.view.Surface
 
 internal fun interface OwnedRendererCallback {
     fun onFramePresented(token: Long, atNanos: Long, timestampKind: Int, bufferFrameId: Long)
+    fun onCompletionPending() = Unit
 }
 
 internal object OwnedRendererBridge {
@@ -12,6 +13,8 @@ internal object OwnedRendererBridge {
     }
 
     external fun nativeCreate(callback: OwnedRendererCallback): Long
+    external fun nativeEnableBufferedCompositor(renderer: Long): Boolean
+    external fun nativeCanSubmit(renderer: Long): Boolean
     external fun nativePrepare(renderer: Long): Boolean
     external fun nativeAttach(renderer: Long, surface: Surface): Boolean
     external fun nativeDetach(renderer: Long)
@@ -32,6 +35,7 @@ internal object OwnedRendererBridge {
         sourceBottom: Int,
         sourceHeight: Int,
     ): Long
+
 
     external fun nativeReleaseTexture(renderer: Long, textureKey: Long)
     external fun nativeSetTextureBudget(renderer: Long, bytes: Long): Boolean

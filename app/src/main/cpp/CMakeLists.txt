@@ -14,6 +14,7 @@ add_library(viewer_native SHARED
         gl_texture_upload.cpp
         gl_viewer_renderer.cpp
         viewer_cpu_decode.cpp
+        buffered_frame_compositor.cpp
         )
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

@@ -5,8 +5,9 @@ bool GlViewerRenderer::rasterizationInfoForVerification(int* values) noexcept {
     static_cast<void>(values);
     return false;
 #else
-    if (values == nullptr || !onOwnerThread() || windowSurface_ == EGL_NO_SURFACE ||
-        !makeCurrent(windowSurface_)) return false;
+    if (values == nullptr || !onOwnerThread()) return false;
+    if (buffered_) { if (!makeOffscreenCurrent()) return false; }
+    else if (windowSurface_ == EGL_NO_SURFACE || !makeCurrent(windowSurface_)) return false;
     glGetIntegerv(GL_SUBPIXEL_BITS, &values[0]);
     glGetIntegerv(GL_SAMPLE_BUFFERS, &values[1]);
     glGetIntegerv(GL_SAMPLES, &values[2]);

@@ -16,6 +16,7 @@
 #include "gl_presentation_callback.h"
 #include "gl_strip_readback.h"
 #include "gl_texture_upload.h"
+#include "buffered_frame_compositor.h"
 
 struct GlSceneEntry final {
     std::uint64_t textureKey = 0;
@@ -47,6 +48,8 @@ public:
     GlViewerRenderer& operator=(const GlViewerRenderer&) = delete;
 
     bool valid() const noexcept;
+    bool enableBufferedCompositor() noexcept;
+    bool canSubmit() noexcept;
     bool contextLost() const noexcept { return contextLost_; }
     bool recreateContext() noexcept;
     void injectGlContextLossForVerification() noexcept { verificationGlContextLoss_ = true; }
@@ -82,6 +85,10 @@ public:
     std::array<std::int64_t, 5> readbackCounts() const noexcept;
 
 private:
+    std::uint64_t uploadGl(std::uint64_t cpuTileHandle, int width, int height,
+        int sourceTop, int sourceBottom, int sourceHeight) noexcept;
+    int presentBuffered(const GlViewerFrame& frame) noexcept;
+    int submitGl(const GlViewerFrame& frame) noexcept;
     struct Texture final {
         GLuint name = 0;
         int width = 0;
@@ -148,6 +155,8 @@ private:
     void close() noexcept;
 
     std::shared_ptr<GlPresentationCallback> callback_;
+    std::unique_ptr<BufferedFrameCompositor> buffered_;
+    bool bufferedEnabled_ = false;
     EGLDisplay display_ = EGL_NO_DISPLAY;
     EGLConfig config_ = nullptr;
     EGLContext context_ = EGL_NO_CONTEXT;

@@ -63,7 +63,8 @@ public:
         std::int64_t token,
         int width,
         int height,
-        EGLuint64KHR eglFrameId) noexcept;
+        EGLuint64KHR eglFrameId,
+        GLuint expectedFramebuffer = 0) noexcept;
     void fail(
         std::int64_t token,
         int width,

@@ -12,6 +12,7 @@ import java.util.UUID
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import ml.melun.mangaview.core.PageId
+import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.data.cache.IncrementalHeaderProbe
 import ml.melun.mangaview.data.cache.PageCacheKey
 import ml.melun.mangaview.engine.api.StoredPage
@@ -67,8 +68,11 @@ internal class EnginePageFiles(private val root: File, private val operations: E
     fun destination(page: StoredPage): String =
         "pages/${PageCacheKey.of(page.pageId)}-${digestText(page.contentRevision)}-${page.sha256}.page"
 
-    suspend fun transfer(pageId: PageId, revision: String, opened: OpenedPage, staging: File): StoredPage {
+    suspend fun transfer(pageId: PageId, revision: String, opened: OpenedPage, staging: File,
+        reportGeometry: suspend (PageDimensions) -> Unit,
+    ): StoredPage {
         val body = EngineBodyDigest()
+        var reported = false
         val buffer = ByteArray(BUFFER_BYTES)
         FileOutputStream(staging).use { output ->
             while (true) {
@@ -79,6 +83,7 @@ internal class EnginePageFiles(private val root: File, private val operations: E
                 require(count in 1..buffer.size) { "Invalid stream read length" }
                 body.accept(buffer, count)
                 output.write(buffer, 0, count)
+                if (!reported) body.dimensions?.let { reported = true; reportGeometry(it) }
             }
         }
         opened.contentLength?.let { require(it == body.length) { "Response body length mismatch" } }
@@ -167,6 +172,7 @@ private class EngineBodyDigest {
     private val header = IncrementalHeaderProbe(1024 * 1024)
     var length = 0L
         private set
+    val dimensions get() = header.value?.dimensions
 
     fun accept(bytes: ByteArray, count: Int) {
         length = Math.addExact(length, count.toLong())

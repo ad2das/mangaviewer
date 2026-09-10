@@ -296,23 +296,37 @@ internal class EngineViewerScreen(
             visibility = android.view.View.GONE
             isClickable = false
             isFocusable = false
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(0xFF6C5CE7.toInt())
         }
-        addView(progress, FrameLayout.LayoutParams(96, 96, Gravity.CENTER))
+        val progressSize = (48 * resources.displayMetrics.density).toInt()
+        addView(progress, FrameLayout.LayoutParams(progressSize, progressSize, Gravity.CENTER))
         failureText = TextView(this@EngineViewerScreen).apply {
             contentDescription = "viewer-failure"
             setTextColor(Color.WHITE)
-            setBackgroundColor(0xB3000000.toInt())
+            val padH = (20 * resources.displayMetrics.density).toInt()
+            val padV = (14 * resources.displayMetrics.density).toInt()
+            setPadding(padH, padV, padH, padV)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = 16 * resources.displayMetrics.density
+                setColor(0xF0181A22.toInt())
+                setStroke((1 * resources.displayMetrics.density).toInt(), 0x33FFFFFF.toInt())
+            }
             gravity = Gravity.CENTER
-            textSize = 15f
+            textSize = 14f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             visibility = android.view.View.GONE
             isClickable = false
             isFocusable = false
         }
+        val margin = (24 * resources.displayMetrics.density).toInt()
         addView(failureText, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM,
-        ))
+        ).apply {
+            setMargins(margin, margin, margin, margin + (48 * resources.displayMetrics.density).toInt())
+        })
         installChrome(this, runtime)
         }
 
@@ -396,7 +410,7 @@ internal class EngineViewerScreen(
     private fun showEpisodePicker(current: ViewerChromeState, episodes: List<SourceEpisode>) {
         if (episodes.isEmpty() || isFinishing || isDestroyed) return
         val currentIndex = episodes.indexOfFirst { it.id == current.episodeId }
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("회차 선택")
             .setSingleChoiceItems(episodes.map(SourceEpisode::title).toTypedArray(), currentIndex) {
                     dialog, index ->

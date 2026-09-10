@@ -94,9 +94,9 @@ internal class DocumentGeometry(
     }
 
     fun page(pageId: PageId): PageRef? {
-        val manifest = manifests[pageId.episodeId] ?: return null
-        val page = manifest.pages.firstOrNull { it.id == pageId } ?: return null
-        return PageRef(page.id, actualDimensions[page.id])
+        // Every accepted manifest page has an entry, including pages with unknown dimensions.
+        if (pageId.episodeId !in manifests || pageId !in actualDimensions) return null
+        return PageRef(pageId, actualDimensions[pageId])
     }
 
     fun move(delta: BigRational): MoveResult {

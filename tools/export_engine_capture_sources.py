@@ -13,7 +13,8 @@ from engine_cache_identity import cache_name
 def export(adb, directory):
     root = Path(directory).resolve()
     collection = json.loads((root / 'collection.json').read_text(encoding='utf-8'))
-    if collection.get('success') is not True or collection.get('traceStopped') is not True:
+    if collection.get('success') is not True or not (collection.get('traceStopped') is True or
+            collection.get('traceEnabled') is False):
         raise ValueError('collection is not complete')
     names = collection['captureDirectories']
     if len(names) != 1 or not re.fullmatch(r'engine-capture-[0-9]+', names[0]):

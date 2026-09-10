@@ -37,6 +37,7 @@ class EngineSession(
     private var startupInputHeld = false
     private var replayYielded = false
     private val presentation = SessionViewportReadiness()
+    private var publishedSnapshot: EngineSessionSnapshot? = null
 
     init {
         require(sessionId > 0L) { "Session id must be positive" }
@@ -45,7 +46,7 @@ class EngineSession(
     override val snapshot: EngineSessionSnapshot
         get() {
             checkOwner()
-            return buildSnapshot()
+            return publishedSnapshot ?: buildSnapshot()
         }
 
     override val inputReplayPending: Boolean
@@ -53,6 +54,8 @@ class EngineSession(
 
     override fun dispatch(event: SessionEvent): SessionUpdate {
         checkOwner()
+        // Readers share the completed immutable state; reads during reduction stay uncached.
+        publishedSnapshot = null
         val receipts = when (event) {
             is SessionEvent.PositionResolved -> positionResolved(event)
             is SessionEvent.ManifestResolved ->
@@ -69,7 +72,7 @@ class EngineSession(
             is SessionEvent.Navigate -> navigate(event.episodeId)
             SessionEvent.Close -> close()
         }
-        return SessionUpdate(buildSnapshot(), immutableList(receipts))
+        return SessionUpdate(buildSnapshot().also { publishedSnapshot = it }, immutableList(receipts))
     }
 
     private fun positionResolved(event: SessionEvent.PositionResolved): List<InputReceipt> {

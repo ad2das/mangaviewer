@@ -16,11 +16,11 @@ public:
     bool valid() const noexcept;
     void presented(std::int64_t token, std::int64_t atNanos, std::int32_t kind = 0,
                    std::uint64_t frameId = 0) noexcept;
+    void completionPending() noexcept;
 
 private:
-    JNIEnv* environment() const noexcept;
-
     JavaVM* vm_ = nullptr;
     jobject callback_ = nullptr;
     jmethodID presentedMethod_ = nullptr;
+    jmethodID completionMethod_ = nullptr;
 };

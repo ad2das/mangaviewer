@@ -40,7 +40,7 @@ internal class EngineNtkSessionWork(
     private val planner = NtkAccessPlanner(userAgent)
     private val catalog = NtkEpisodeCatalogPlanner(userAgent)
     private val documents = EngineEpisodeWork(principal, planner, transport, parsingDispatcher)
-    private val pages = EnginePageWork(principal, planner, pageTransport, storage) { _, _, _ ->
+    private val pages = EnginePageWork(principal, planner, NtkPageHeaderTransport(pageTransport), storage) { _, _, _ ->
         error("NTK page plan has an unfulfilled access prerequisite")
     }
 
@@ -59,8 +59,8 @@ internal class EngineNtkSessionWork(
         WorkKey(principal, episodeId.toString(), "ntk.episode", origin.toString(), EpisodeAccessPlan::class.java),
         WorkDomain.CONTROL, priority, execute = { parent ->
             coroutineScope {
-                // Bootstrap Chromium's local network implementation during document I/O. The H3
-                // pool still waits for the verified manifest's complete CDN hint set below.
+                // Bootstrap Chromium's TCP pool during document I/O, then reuse it for the
+                // CDN addresses supplied by the verified manifest below.
                 pageTransport.warmConnections(listOf(origin.toString()), preferQuic = false)
                 // Download independently of process binding, retaining both leases through authorization.
                 val browserReady = CompletableDeferred<Unit>()
@@ -91,9 +91,8 @@ internal class EngineNtkSessionWork(
         )) { proof -> withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) } }
         require(completed.manifest.id == episodeId && completed.documentSha256 == source.sha256 &&
             completed.finalDocumentUrl == source.finalUrl)
-        // Provider-verified candidates may use several CDN origins from the first viewport.
-        // Configure all of their QUIC hints before any page races to create the shared pool.
-        pageTransport.warmConnections(completed.pages.flatMap { it.candidates }.map(URI::toString), preferQuic = true)
+        // Reuse the initialized Chromium HTTP/2 pool for the provider-verified CDN addresses.
+        pageTransport.warmConnections(completed.pages.flatMap { it.candidates }.map(URI::toString), preferQuic = false)
         observer?.observed(episodeId, source, completed)
         return completed
     }

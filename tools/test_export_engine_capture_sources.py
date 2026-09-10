@@ -47,6 +47,25 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(len(result['sources'][0]['cacheBindings']), 2)
         self.assertEqual((self.root / 'original-sources' / (self.digest + '.page')).read_bytes(), self.body)
 
+    def test_closed_capture_without_trace_can_export_existing_originals(self):
+        path = self.root / 'collection.json'
+        record = json.loads(path.read_text())
+        record.update(traceStopped=False, traceEnabled=False)
+        path.write_text(json.dumps(record))
+        result, calls = self.run_export(self.names)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['networkRequests'], 0)
+        self.assertEqual(sorted(calls), sorted(self.names))
+
+    def test_active_or_unknown_trace_cannot_export(self):
+        path = self.root / 'collection.json'
+        for enabled in (True, None):
+            record = json.loads(path.read_text())
+            record.update(traceStopped=False, traceEnabled=enabled)
+            path.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, 'collection is not complete'):
+                self.run_export(self.names)
+
     def test_same_digest_from_other_page_is_insufficient(self):
         with self.assertRaisesRegex(ValueError, 'exact page/revision'):
             self.run_export(self.names[:1])

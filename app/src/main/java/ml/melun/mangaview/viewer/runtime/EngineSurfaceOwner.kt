@@ -32,6 +32,7 @@ internal class EngineSurfaceOwner(
     private val maximumPendingForVerification: Int? = null,
     private val presentationPollMillisForVerification: Long? = null,
     reportSubmitted: (EngineSurfaceScene) -> Unit = {},
+    private val bufferedCompositor: Boolean = false,
 ) : EngineTextureUploader {
     @Volatile private var callbacks = EngineSurfaceCallbacks(reportPresented, reportFailure,
         reportInvalidated, reportSurfaceLost, reportSubmitted)
@@ -47,7 +48,8 @@ internal class EngineSurfaceOwner(
     private val closed = CompletableDeferred<Unit>()
     @Volatile var closedSubmissionCount: Long? = null
         private set
-    private val native = OwnedRendererBridge.nativeCreate(OwnedRendererCallback(::presented)).also {
+    private val native = OwnedRendererBridge.nativeCreate(
+        EngineOwnerCallback(closing, { handler }, ::presented, ::pollPresentations)).also {
         check(it != 0L) { "GL owner creation failed" }
     }
     private val thread = HandlerThread("engine-gl-$rendererId", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
@@ -75,21 +77,25 @@ internal class EngineSurfaceOwner(
     private var pollPosted = false
     private val poll = Choreographer.FrameCallback {
         pollPosted = false
-        if (!destroyed.get()) {
-            traceEngineWork("engine_presentation_poll") {
-                OwnedRendererBridge.nativePollPresentations(native)
-                readbacks.poll()
-            }
-            if (maximumPendingForVerification != null && pending.size < maximumPendingForVerification &&
-                synchronized(lock) { latest != null }) renderLatest()
-            if (pending.isNotEmpty() || readbacks.pending) schedulePoll()
-        }
+        pollPresentations()
     }
     private val timedPoll = Runnable { poll.doFrame(System.nanoTime()) }
+
+    private fun pollPresentations() {
+        if (destroyed.get()) return
+        traceEngineWork("engine_presentation_poll") {
+            OwnedRendererBridge.nativePollPresentations(native)
+            acknowledgeRetirements()
+            readbacks.poll()
+        }
+        if (synchronized(lock) { latest != null }) renderLatest()
+        schedulePoll()
+    }
 
     init {
         check(handler.post {
             configured = OwnedRendererBridge.nativeSetTextureBudget(native, textureAllocationLimit)
+            if (configured && bufferedCompositor) configured = OwnedRendererBridge.nativeEnableBufferedCompositor(native)
             if (!configured) callbacks.failed(IllegalStateException("Native texture allocation limit rejected"))
         })
     }
@@ -221,20 +227,23 @@ internal class EngineSurfaceOwner(
         if (schedule) check(handler.post(::renderLatest)) { "GL owner queue rejected a frame" }
     }
 
-    override suspend fun upload(pixels: EnginePixels, expectedEpoch: Long): EngineTexture {
-        val nativePixels = pixels as? NativeEnginePixels ?: error("Native GL owner requires native pixels")
-        require(pixels.byteCount <= textureAllocationLimit) { "A texture exceeds the allocation limit" }
+    override suspend fun prepareTexture(pixels: EnginePixels) =
+        prepareOriginalUpload(pixels, textureAllocationLimit, ::uploadTransferred)
+    override suspend fun upload(pixels: EnginePixels, expectedEpoch: Long) =
+        uploadOriginal(pixels, textureAllocationLimit, expectedEpoch, ::uploadTransferred)
+
+    private suspend fun uploadTransferred(pixels: NativeEnginePixels, transfer: Long, expectedEpoch: Long): EngineTexture {
         val caller = currentCoroutineContext()[Job]
         var acquired = 0L
         try {
             while (acquired == 0L) {
                 val wait = onOwner("engine_owner_upload") {
                     caller?.ensureActive()
-                    check(!closing.get() && configured && expectedEpoch == rendererEpoch && !nativePixels.isClosed)
+                    check(!closing.get() && configured && expectedEpoch == rendererEpoch && !pixels.isClosed)
                     val used = OwnedRendererBridge.nativeTextureCounts(native)[1]
                     if (pixels.byteCount > textureAllocationLimit - used) return@onOwner capacityChanged
                     val tile = pixels.tile
-                    acquired = OwnedRendererBridge.nativeUpload(native, nativePixels.handle, tile.rasterWidth,
+                    acquired = OwnedRendererBridge.nativeUpload(native, transfer, tile.rasterWidth,
                         tile.decodedHeight, tile.sourceTop, tile.sourceBottom, tile.dimensions.heightPx)
                     if (acquired <= 0L && OwnedRendererBridge.nativeContextLost(native)) recoverContext()
                     check(acquired > 0L) { "Native texture upload failed" }
@@ -265,21 +274,15 @@ internal class EngineSurfaceOwner(
                 acknowledgeRetirements()
                 if (!OwnedRendererBridge.nativeHasTexture(native, texture.key)) done.complete(Unit)
                 else retiring.getOrPut(texture.key) { mutableListOf() }.add(done)
+                schedulePoll()
             }
             done
         }
         completion.await()
     }
 
-    suspend fun ownership(): EngineTextureOwnership {
-        if (destroyed.get()) return EngineTextureOwnership(0, 0, 0, 0, 0)
-        return onOwner {
-            if (destroyed.get()) EngineTextureOwnership(0, 0, 0, 0, 0) else {
-                val values = OwnedRendererBridge.nativeTextureCounts(native)
-                check(values.size == 5 && values.all { it >= 0 })
-                EngineTextureOwnership(values[0], values[1], values[2], values[3], values[4])
-            }
-        }
+    suspend fun ownership(): EngineTextureOwnership = if (destroyed.get()) EngineTextureOwnership(0, 0, 0, 0, 0) else onOwner {
+        if (destroyed.get()) EngineTextureOwnership(0, 0, 0, 0, 0) else readEngineTextureOwnership(native)
     }
 
     suspend fun close() = withContext(NonCancellable) {
@@ -306,6 +309,10 @@ internal class EngineSurfaceOwner(
     }
 
     private fun renderLatest() {
+        if (awaitingFrameBuffer(attached, closing.get(), native)) {
+            schedulePoll()
+            return
+        }
         if (maximumPendingForVerification != null && pending.size >= maximumPendingForVerification) return
         val scene = synchronized(lock) { posted = false; latest.also { if (attached) latest = null } }
         if (scene == null || !attached || closing.get()) return
@@ -347,16 +354,13 @@ internal class EngineSurfaceOwner(
         if (readbacks.pending) schedulePoll()
     }
 
-    private fun presented(token: Long, at: Long, kind: Int, frameId: Long) {
-        val record = pending[token] ?: return
-        if (record.timestamp == null) record.timestamp = Timestamp(PresentationTimestampKind.fromNative(kind), at, frameId)
-        deliver(record)
-    }
+    private fun presented(token: Long, at: Long, kind: Int, frameId: Long) =
+        pending[token]?.recordTimestamp(at, kind, frameId)?.let(::deliver)
 
     private fun deliver(record: Pending) = record.deliverFrom(pending, rendererId, callbacks.presented)
 
     private fun schedulePoll() {
-        if (pollPosted || (pending.isEmpty() && !readbacks.pending) || destroyed.get()) return
+        if (pollPosted || (pending.isEmpty() && retiring.isEmpty() && !readbacks.pending && synchronized(lock) { latest == null || !attached }) || destroyed.get()) return
         val delay = presentationPollMillisForVerification
         if (delay != null) {
             pollPosted = true
@@ -433,6 +437,11 @@ private class Pending(val identity: FrameIdentity, val scene: EngineSurfaceScene
     var submissionResult: Int? = null
     var timestamp: Timestamp? = null
 
+    fun recordTimestamp(at: Long, kind: Int, frameId: Long): Pending {
+        if (timestamp == null) timestamp = Timestamp(PresentationTimestampKind.fromNative(kind), at, frameId)
+        return this
+    }
+
     fun deliverFrom(pending: MutableMap<Long, Pending>, rendererId: Long, report: (EngineSurfacePresentation) -> Unit) {
         val timestamp = timestamp ?: return
         val latency = latency ?: return
@@ -444,3 +453,6 @@ private class Pending(val identity: FrameIdentity, val scene: EngineSurfaceScene
 }
 
 private data class Timestamp(val kind: PresentationTimestampKind, val at: Long, val frameId: Long)
+
+private fun awaitingFrameBuffer(attached: Boolean, closing: Boolean, native: Long): Boolean =
+    attached && !closing && !OwnedRendererBridge.nativeCanSubmit(native)

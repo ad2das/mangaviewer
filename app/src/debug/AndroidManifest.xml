@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <activity
+            android:name="ml.melun.mangaview.viewer.runtime.EngineBufferedProbeActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+        <activity
             android:name="ml.melun.mangaview.viewer.runtime.SurfaceTransactionProbeActivity"
             android:exported="false"
             android:screenOrientation="portrait"

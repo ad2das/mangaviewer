@@ -2,6 +2,7 @@ package ml.melun.mangaview.activity
 
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -31,11 +32,18 @@ internal class ViewerChromeController(
     private val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop
     private val top = LinearLayout(activity)
     private val bottom = LinearLayout(activity)
-    private val title = label(18f, Typeface.BOLD)
-    private val page = label(14f)
+    private val title = label(16f, Typeface.BOLD).apply {
+        gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        setPadding(dp(12), 0, dp(8), 0)
+    }
+    private val page = label(13f, Typeface.BOLD).apply {
+        background = roundedDrawable(0x28FFFFFF.toInt(), dp(12).toFloat())
+        setPadding(dp(12), 0, dp(12), 0)
+    }
     private val previous = button("이전", actions.previous)
     private val episodes = button("회차", actions.episodes)
-    private val next = button("다음", actions.next)
+    private val next = button("다음", actions.next, isAccent = true)
+    private val bookmark = button("책갈피", actions.bookmark)
     private val gestureRelay = ChromeGestureRelay(
         surface = surface,
         touchSlop = touchSlop.toFloat(),
@@ -73,19 +81,20 @@ internal class ViewerChromeController(
         listOf(top, bottom).forEach { bar ->
             bar.orientation = LinearLayout.HORIZONTAL
             bar.gravity = Gravity.CENTER_VERTICAL
-            bar.setPadding(dp(8), dp(6), dp(8), dp(6))
+            bar.setPadding(dp(14), dp(8), dp(14), dp(8))
             bar.setBackgroundColor(CHROME_BACKGROUND)
         }
-        val back = button("‹", actions.back)
-        top.addView(back, itemParams(48))
+        val back = button("‹", actions.back, isCircular = true)
+        top.addView(back, LinearLayout.LayoutParams(dp(44), dp(44)))
         top.addView(title, LinearLayout.LayoutParams(0, dp(44), 1f))
-        bottom.addView(page, LinearLayout.LayoutParams(0, dp(44), 1f))
-        bottom.addView(button("책갈피", actions.bookmark), itemParams(72))
+
+        bottom.addView(page, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) })
+        bottom.addView(bookmark, itemParams(68))
         bottom.addView(previous, itemParams(58))
         bottom.addView(episodes, itemParams(58))
         bottom.addView(next, itemParams(58))
-        installDragForwarding(top, bottom, back, title, page, previous, episodes, next)
-        installDragForwarding(bottom.getChildAt(1))
+
+        installDragForwarding(top, bottom, back, title, page, bookmark, previous, episodes, next)
     }
 
     private fun update(state: ViewerChromeState?) {
@@ -114,12 +123,22 @@ internal class ViewerChromeController(
         ellipsize = android.text.TextUtils.TruncateAt.END
     }
 
-    private fun button(text: String, click: () -> Unit) = label(14f, Typeface.BOLD).apply {
+    private fun button(text: String, click: () -> Unit, isCircular: Boolean = false, isAccent: Boolean = false) = label(14f, Typeface.BOLD).apply {
         this.text = text
         isClickable = true
         isFocusable = true
         setOnClickListener { if (tag != false) click() }
-        setBackgroundColor(BUTTON_BACKGROUND)
+        val radius = if (isCircular) dp(22).toFloat() else dp(12).toFloat()
+        val bg = if (isAccent) ACCENT_BUTTON_BACKGROUND else BUTTON_BACKGROUND
+        val border = if (isAccent) ACCENT_BORDER else BUTTON_BORDER
+        background = roundedDrawable(bg, radius, dp(1), border)
+    }
+
+    private fun roundedDrawable(color: Int, radius: Float, strokeWidth: Int = 0, strokeColor: Int = 0) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = radius
+        setColor(color)
+        if (strokeWidth > 0) setStroke(strokeWidth, strokeColor)
     }
 
     private fun installDragForwarding(vararg views: View) {
@@ -153,19 +172,22 @@ internal class ViewerChromeController(
 
     private fun barParams(gravity: Int) = FrameLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
-        dp(56),
+        dp(64),
         gravity,
     )
 
-    private fun itemParams(widthDp: Int) = LinearLayout.LayoutParams(dp(widthDp), dp(44)).apply {
-        marginStart = dp(4)
+    private fun itemParams(widthDp: Int) = LinearLayout.LayoutParams(dp(widthDp), dp(42)).apply {
+        marginStart = dp(5)
     }
 
     private fun dp(value: Int): Int = (value * activity.resources.displayMetrics.density).toInt()
 
     private companion object {
-        const val CHROME_BACKGROUND = 0xEE111111.toInt()
-        const val BUTTON_BACKGROUND = 0xFF252525.toInt()
+        const val CHROME_BACKGROUND = 0xF5080A10.toInt()
+        const val BUTTON_BACKGROUND = 0xFF181C26.toInt()
+        const val BUTTON_BORDER = 0x33FFFFFF.toInt()
+        const val ACCENT_BUTTON_BACKGROUND = 0xFF7C5CFF.toInt()
+        const val ACCENT_BORDER = 0x669080FF.toInt()
     }
 }
 
@@ -222,8 +244,9 @@ internal class ChromeGestureRelay(
     }
 
     private fun relayOrBuffer(source: View, event: MotionEvent) {
-        if (forwarding) dispatch(copyForSurface(source, event))
-        else if (axisLock.currentRoute != VerticalGestureAxisLock.Route.REJECT) {
+        if (forwarding) {
+            dispatch(copyForSurface(source, event))
+        } else if (axisLock.currentRoute != VerticalGestureAxisLock.Route.REJECT) {
             addPending(copyForSurface(source, event))
         }
     }
@@ -231,88 +254,60 @@ internal class ChromeGestureRelay(
     private fun finish(source: View, event: MotionEvent) {
         if (forwarding) {
             dispatch(copyForSurface(source, event))
-            endForwarding()
+            forwarding = false
+            recyclePending()
+            finishHiddenGesture()
             return
         }
-        addPending(copyForSurface(source, event))
-        when (axisLock.classify(event.rawX, event.rawY)) {
-            VerticalGestureAxisLock.Route.FORWARD -> {
-                startForwarding()
-                endForwarding()
-            }
-            VerticalGestureAxisLock.Route.PENDING -> {
-                recyclePending()
-                axisLock.reset()
-                if (event.isInside(source)) source.performClick()
-            }
-            VerticalGestureAxisLock.Route.REJECT -> {
-                recyclePending()
-                axisLock.reset()
-            }
-        }
+        recyclePending()
     }
 
     private fun cancel(source: View, event: MotionEvent) {
         if (forwarding) {
             dispatch(copyForSurface(source, event))
-            endForwarding()
-        } else {
+            forwarding = false
             recyclePending()
-            axisLock.reset()
+            finishHiddenGesture()
+            return
         }
+        recyclePending()
     }
 
     private fun startForwarding() {
         forwarding = true
         hideWithoutDetachingTouchTarget()
-        while (pendingEvents.isNotEmpty()) dispatch(pendingEvents.removeFirst())
-    }
-
-    private fun endForwarding() {
-        forwarding = false
-        axisLock.reset()
-        finishHiddenGesture()
-    }
-
-    private fun copyForSurface(source: View, event: MotionEvent): MotionEvent {
-        val sourceLocation = IntArray(2)
-        val surfaceLocation = IntArray(2)
-        source.getLocationOnScreen(sourceLocation)
-        surface.getLocationOnScreen(surfaceLocation)
-        return MotionEvent.obtain(event).apply {
-            offsetLocation(
-                (sourceLocation[0] - surfaceLocation[0]).toFloat(),
-                (sourceLocation[1] - surfaceLocation[1]).toFloat(),
-            )
-        }
-    }
-
-    private fun dispatch(event: MotionEvent) {
-        try {
-            surface.dispatchTouchEvent(event)
-        } finally {
+        while (pendingEvents.isNotEmpty()) {
+            val event = pendingEvents.removeFirst()
+            dispatch(event)
             event.recycle()
         }
     }
 
     private fun addPending(event: MotionEvent) {
-        if (pendingEvents.size >= MAX_PENDING_EVENTS) {
-            val down = pendingEvents.removeFirst()
-            pendingEvents.removeFirst().recycle()
-            pendingEvents.addFirst(down)
-        }
         pendingEvents.addLast(event)
     }
 
-    private fun recyclePending() {
-        while (pendingEvents.isNotEmpty()) pendingEvents.removeFirst().recycle()
+    private fun dispatch(event: MotionEvent) {
+        surface.dispatchTouchEvent(event)
     }
 
-    private fun MotionEvent.isInside(view: View): Boolean =
-        x >= 0f && y >= 0f && x < view.width && y < view.height
+    private fun copyForSurface(source: View, event: MotionEvent): MotionEvent {
+        val location = IntArray(2)
+        source.getLocationOnScreen(location)
+        val surfaceLocation = IntArray(2)
+        surface.getLocationOnScreen(surfaceLocation)
+        val copy = MotionEvent.obtain(event)
+        copy.offsetLocation(
+            (location[0] - surfaceLocation[0]).toFloat(),
+            (location[1] - surfaceLocation[1]).toFloat(),
+        )
+        return copy
+    }
 
-    private companion object {
-        const val MAX_PENDING_EVENTS = 32
+    private fun recyclePending() {
+        while (pendingEvents.isNotEmpty()) {
+            pendingEvents.removeFirst().recycle()
+        }
     }
 }
 
@@ -321,27 +316,30 @@ internal class VerticalGestureAxisLock(
 ) {
     enum class Route { PENDING, FORWARD, REJECT }
 
+    var currentRoute: Route = Route.PENDING
+        private set
+
     private var downX = 0f
     private var downY = 0f
-    private var route = Route.PENDING
-    val currentRoute: Route get() = route
 
-    fun begin(x: Float, y: Float) {
-        downX = x
-        downY = y
-        route = Route.PENDING
+    fun begin(rawX: Float, rawY: Float) {
+        downX = rawX
+        downY = rawY
+        currentRoute = Route.PENDING
     }
 
-    fun classify(x: Float, y: Float): Route {
-        if (route != Route.PENDING) return route
-        val horizontal = abs(x - downX)
-        val vertical = abs(y - downY)
-        if (horizontal <= touchSlop && vertical <= touchSlop) return route
-        route = if (vertical >= horizontal) Route.FORWARD else Route.REJECT
-        return route
-    }
-
-    fun reset() {
-        route = Route.PENDING
+    fun classify(rawX: Float, rawY: Float): Route {
+        if (currentRoute != Route.PENDING) return currentRoute
+        val dx = abs(rawX - downX)
+        val dy = abs(rawY - downY)
+        if (dy > touchSlop && dy > dx * 1.25f) {
+            currentRoute = Route.FORWARD
+            return currentRoute
+        }
+        if (dx > touchSlop) {
+            currentRoute = Route.REJECT
+            return currentRoute
+        }
+        return Route.PENDING
     }
 }

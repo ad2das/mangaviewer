@@ -46,6 +46,104 @@ import org.junit.Test
 class EngineSessionRuntimeTest {
     private val episode = EpisodeId(SeriesId(SourceId("test"), "series"), "1")
 
+    @Test fun reacquiringIdenticalPreparedPagesDoesNotRepeatContentUpdates() = runTest {
+        var executions = 0
+        val source = Source().apply { pageCount = 8; earlyGeometry = true; beforePage = { executions++ } }
+        val coordinator = WorkCoordinator(this)
+        val reducer = EngineSession(1, episode, EngineViewport(100, 100)) { 0L }
+        val updates = mutableListOf<EngineRuntimeSnapshot>()
+        val receipts = mutableListOf<InputReceipt>()
+        val runtime = EngineSessionRuntime(this, coordinator, reducer, source, episode,
+            { snapshot, values -> updates += snapshot; receipts += values }, { _, failure -> throw failure })
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(8, runtime.snapshot.pages.size)
+            val originalExecutions = executions
+            val preparedAt = runtime.diagnosticSnapshot().launchPreparation.allFirstVerifiedPreparedAtNanos
+            for ((index, delta) in listOf(700L, -700L, 700L, -700L).withIndex()) {
+                runtime.input(InputSample(index + 1L, 1, 0, delta * 1024))
+                val afterInput = updates.size
+                val snapshot = runtime.snapshot
+                runCurrent()
+                assertEquals("Identical ready results must not repeat rendering", afterInput, updates.size)
+                assertEquals(snapshot, runtime.snapshot)
+            }
+            assertTrue("The test must exercise newly acquired original subscriptions", executions > originalExecutions)
+            assertEquals(preparedAt, runtime.diagnosticSnapshot().launchPreparation.allFirstVerifiedPreparedAtNanos)
+            assertEquals((1L..4L).toList(), receipts.filter { it.outcome == InputOutcome.APPLIED }.map { it.sample.sequence })
+            assertEquals(SourceAnchor(PageId.at(episode, 0), 0), runtime.snapshot.session.anchor)
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+    }
+
+    @Test fun headerGeometryResolvesOrderedMovementBeforeOriginalBodiesAreReady() = runTest {
+        val tail = CompletableDeferred<Unit>()
+        val source = Source().apply { earlyGeometry = true; beforePage = { tail.await() } }
+        val receipts = mutableListOf<InputReceipt>()
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, receipts, failures)
+        try {
+            runtime.open()
+            runCurrent()
+            assertNotNull(runtime.snapshot.session.anchor)
+            assertTrue(runtime.snapshot.pages.isEmpty())
+            assertNull(runtime.diagnosticSnapshot().launchPreparation.allFirstVerifiedPreparedAtNanos)
+            runtime.input(InputSample(1, 1, 0, 150 * 1024L))
+            runCurrent()
+            assertEquals(0, runtime.snapshot.session.pendingInputCount)
+            assertEquals(PageId.at(episode, 1), runtime.snapshot.session.anchor!!.pageId)
+            assertEquals(50 * SourceAnchor.SOURCE_UNITS_PER_PIXEL, runtime.snapshot.session.anchor!!.sourceYQ32)
+            assertEquals(InputOutcome.APPLIED, receipts.last().outcome)
+            assertEquals(150 * 1024L, receipts.last().appliedScreenUnits)
+            assertTrue(runtime.snapshot.pages.isEmpty())
+            tail.complete(Unit)
+            runCurrent()
+            assertEquals(3, runtime.snapshot.pages.size)
+            assertTrue(failures.toString(), failures.isEmpty())
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+    }
+
+    @Test fun fastGeometryOnlyMovementFinishesStartedOriginalsWithoutCancellingAndRestartingTheirBodies() = runTest {
+        val tail = CompletableDeferred<Unit>()
+        val attempts = mutableMapOf<PageId, Int>()
+        var cancelledBodies = 0
+        val source = Source().apply {
+            earlyGeometry = true
+            pageCount = 14
+            beforePage = { id ->
+                attempts[id] = attempts.getOrDefault(id, 0) + 1
+                try { tail.await() } finally { if (!tail.isCompleted) cancelledBodies++ }
+            }
+        }
+        val coordinator = WorkCoordinator(this, WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12))
+        val session = EngineSession(1, episode, EngineViewport(100, 100)) { 0L }
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode, { _, _ -> },
+            { _, error -> throw error })
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(13, attempts.size)
+            runtime.input(InputSample(1, 1, 0, 1250 * 1024L))
+            runCurrent()
+            assertEquals(PageId.at(episode, 12), runtime.snapshot.session.anchor!!.pageId)
+            assertEquals(14, attempts.size)
+            runtime.input(InputSample(2, 1, 0, -1250 * 1024L))
+            runCurrent()
+            assertEquals(PageId.at(episode, 0), runtime.snapshot.session.anchor!!.pageId)
+            assertEquals(0, runtime.snapshot.session.pendingInputCount)
+            assertEquals(0, cancelledBodies)
+            assertTrue(runtime.snapshot.pages.isEmpty())
+            tail.complete(Unit)
+            runCurrent()
+            assertEquals(14, runtime.diagnosticSnapshot().launchPreparation.verifiedPages.size)
+            assertNotNull(runtime.diagnosticSnapshot().launchPreparation.allFirstVerifiedPreparedAtNanos)
+            assertTrue(attempts.values.all { it == 1 })
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+    }
+
     @Test fun adjacentDocumentStartsWhileLegacyAnchorWaitsForOriginalDimensions() = runTest {
         val next = episode.copy(remoteKey = "2")
         val saved = ReadingPosition(PageId.at(episode, 1), 17 * 1024L)
@@ -328,7 +426,7 @@ class EngineSessionRuntimeTest {
         assertEquals(listOf(2, 3, 4, 5).map { PageId.at(episode, it) },
             requested.filter { it.episodeId == episode }.distinct())
         assertTrue(source.requestedEpisodes.contains(source.nextEpisode))
-        assertEquals(listOf(0, 1).map { PageId.at(source.nextEpisode!!, it) },
+        assertEquals((0 until source.pageCount).map { PageId.at(source.nextEpisode!!, it) },
             requested.filter { it.episodeId == source.nextEpisode }.distinct())
         assertFalse(gate.isCompleted)
         gate.complete(Unit)
@@ -344,6 +442,61 @@ class EngineSessionRuntimeTest {
         assertEquals(0, source.livePages)
         assertEquals(0, coordinator.snapshot().subscribers)
         coordinator.close()
+    }
+
+    @Test fun openingOriginalsFillSpareNextBodyPermitsBeforeRenderingDespiteASlowCurrentTail() = runTest {
+        val next = episode.copy(remoteKey = "2")
+        val source = Source().apply { pageCount = 20; nextEpisode = next }
+        val currentGate = CompletableDeferred<Unit>()
+        val openingGate = CompletableDeferred<Unit>()
+        val nextGates = (0 until source.pageCount).associate { PageId.at(next, it) to CompletableDeferred<Unit>() }
+        var activeNext = 0
+        var peakNext = 0
+        source.beforePage = { id ->
+            if (id == PageId.at(episode, 0)) openingGate.await()
+            if (id == PageId.at(episode, 19)) currentGate.await()
+            nextGates[id]?.let { gate ->
+                activeNext++
+                peakNext = maxOf(peakNext, activeNext)
+                try { gate.await() } finally { activeNext-- }
+            }
+        }
+        val failures = mutableListOf<Throwable>()
+        val coordinator = WorkCoordinator(this, WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12))
+        val session = EngineSession(1, episode, EngineViewport(100, 100)) { 0L }
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
+            { _, _ -> }, { _, error -> failures += error }, awaitInitialPresentation = true)
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(2, activeNext)
+            assertEquals(listOf(0, 1).map { PageId.at(next, it) },
+                source.startedPriorities.keys.filter { it.episodeId == next })
+            openingGate.complete(Unit)
+            runCurrent()
+            assertEquals(11, activeNext)
+            assertTrue(PageId.at(episode, 19) in source.startedPriorities)
+            assertFalse(currentGate.isCompleted)
+            currentGate.complete(Unit)
+            runCurrent()
+            assertEquals(12, activeNext)
+            assertEquals((0 until 12).map { PageId.at(next, it) },
+                source.startedPriorities.keys.filter { it.episodeId == next })
+            nextGates.getValue(PageId.at(next, 1)).complete(Unit)
+            runCurrent()
+            assertEquals(12, activeNext)
+            assertTrue(PageId.at(next, 12) in source.startedPriorities)
+            assertFalse(PageId.at(next, 13) in source.startedPriorities)
+            assertEquals(12, peakNext)
+            assertEquals(PageId.at(episode, 0), runtime.snapshot.session.anchor!!.pageId)
+            assertTrue(failures.toString(), failures.isEmpty())
+        } finally {
+            runtime.close()
+            assertEquals(0, activeNext)
+            assertEquals(0, source.livePages)
+            assertEquals(0, coordinator.snapshot().subscribers)
+            coordinator.close()
+        }
     }
 
     @Test fun completedCurrentEpisodeFillsBoundedNextEpisodeWindowWithoutWaitingForItsFirstBodies() = runTest {
@@ -365,12 +518,13 @@ class EngineSessionRuntimeTest {
         val coordinator = WorkCoordinator(this, WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12))
         val session = EngineSession(1, episode, EngineViewport(100, 100)) { 0L }
         val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
-            { _, _ -> }, { _, error -> failures += error })
+            { _, _ -> }, { _, error -> failures += error }, awaitInitialPresentation = true)
         try {
             runtime.open()
             runCurrent()
-            assertEquals(2, activeNext)
-            assertEquals(listOf(0, 1).map { PageId.at(next, it) },
+            assertEquals(11, activeNext)
+            assertTrue(PageId.at(episode, 19) in source.startedPriorities)
+            assertEquals((0 until 11).map { PageId.at(next, it) },
                 source.startedPriorities.keys.filter { it.episodeId == next })
             currentGate.complete(Unit)
             runCurrent()
@@ -744,6 +898,32 @@ class EngineSessionRuntimeTest {
         coordinator.close()
     }
 
+    @Test fun crossingTwoDocumentsPreservesVerifiedReversePixelsUntilNavigationClearsThem() = runTest {
+        val next = episode.copy(remoteKey = "2")
+        val further = episode.copy(remoteKey = "3")
+        val source = Source().apply { nextEpisode = next; followingEpisode = further }
+        val (runtime, coordinator) = runtime(source)
+        try {
+            runtime.open()
+            runCurrent()
+            val original = runtime.snapshot.pages.filterKeys { it.episodeId == episode }
+            assertEquals(3, original.size)
+            runtime.input(InputSample(1, 1, 0, 650 * 1_024L))
+            runCurrent()
+            assertEquals(further, runtime.snapshot.session.anchor!!.pageId.episodeId)
+            assertEquals(original, runtime.snapshot.pages.filterKeys { it.episodeId == episode })
+            runtime.input(InputSample(2, 1, 0, -650 * 1_024L))
+            runCurrent()
+            assertEquals(PageId.at(episode, 0), runtime.snapshot.session.anchor!!.pageId)
+            assertEquals(0L, runtime.snapshot.session.anchor!!.sourceYQ32)
+            runtime.navigate(further)
+            runCurrent()
+            assertTrue(runtime.snapshot.pages.keys.none { it.episodeId == episode })
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+        assertTrue(runtime.snapshot.pages.isEmpty())
+    }
+
     @Test fun verifiedMetadataFeedsTheTileHorizonWithoutPinningEveryOriginal() = runTest {
         val source = Source().apply { pageCount = 9 }
         val coordinator = WorkCoordinator(this)
@@ -794,6 +974,57 @@ class EngineSessionRuntimeTest {
         assertEquals(0, coordinator.snapshot().subscribers)
     }
 
+    @Test fun bulkBodiesWaitForEveryOpeningOriginalButNeverForRendering() = runTest {
+        val source = Source().apply { pageCount = 20 }
+        val second = CompletableDeferred<Unit>()
+        source.beforePage = { if (it == PageId.at(episode, 1)) second.await() }
+        val coordinator = WorkCoordinator(this)
+        val session = EngineSession(1, episode, EngineViewport(100, 150)) { testScheduler.currentTime * 1_000_000L }
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
+            { _, _ -> }, { _, failure -> throw failure }, awaitInitialPresentation = true)
+        try {
+            runtime.open()
+            runCurrent()
+            assertFalse(runtime.snapshot.session.completeViewport)
+            assertEquals((0..3).map { PageId.at(episode, it) }.toSet(), source.startedPriorities.keys)
+            second.complete(Unit)
+            runCurrent()
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertEquals((0 until 20).map { PageId.at(episode, it) }.toSet(), source.startedPriorities.keys)
+            assertEquals(WorkPriority.VISIBLE, source.startedPriorities[PageId.at(episode, 1)])
+            assertEquals(0L, session.snapshot.inputRevision)
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun steadySubpixelScrollingReusesPageRequestsAndNavigationRefreshesThem() = runTest {
+        val source = Source()
+        val receipts = mutableListOf<InputReceipt>()
+        val (runtime, coordinator) = runtime(source, receipts)
+        try {
+            runtime.open()
+            runCurrent()
+            runtime.input(InputSample(1, 1, 0, 1024))
+            runCurrent()
+            val constructed = source.constructedPageRequests
+            for (sequence in 2L..101L) runtime.input(InputSample(sequence, 1, 0, 1))
+            runCurrent()
+            assertEquals(constructed, source.constructedPageRequests)
+            assertEquals(0, runtime.snapshot.session.pendingInputCount)
+            assertEquals(101, receipts.count { it.outcome == InputOutcome.APPLIED })
+            assertEquals((1024L + 100L) * SourceAnchor.SOURCE_UNITS_PER_PIXEL / 1024,
+                runtime.snapshot.session.anchor?.sourceYQ32)
+            runtime.navigate(episode)
+            runCurrent()
+            assertTrue(source.constructedPageRequests > constructed)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertEquals(0L, runtime.snapshot.session.anchor?.sourceYQ32)
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
     private fun TestScope.runtime(source: Source, receipts: MutableList<InputReceipt> = mutableListOf(),
         failures: MutableList<Throwable> = mutableListOf()): Pair<EngineSessionRuntime, WorkCoordinator> {
         val coordinator = WorkCoordinator(this)
@@ -803,9 +1034,11 @@ class EngineSessionRuntimeTest {
     }
 
     private inner class Source : EngineSessionWork {
+        var earlyGeometry = false
         var beforePage: suspend (PageId) -> Unit = {}
         var beforeEpisode: suspend (EpisodeId) -> Unit = {}
         var livePages = 0
+        var constructedPageRequests = 0
         var pageCount = 3
         var initialAnchor: SourceAnchor? = null
         var legacyPosition: ReadingPosition? = null
@@ -832,16 +1065,21 @@ class EngineSessionRuntimeTest {
         override fun navigation(episodeId: EpisodeId, priority: WorkPriority) = request(episodeId.toString(),
             "navigation", AdjacentEpisodes::class.java, WorkDomain.NETWORK, priority) { AdjacentEpisodes(null, null) }
 
-        override fun page(plan: EpisodeAccessPlan, pageId: PageId, priority: WorkPriority) = WorkRequest(
+        override fun page(plan: EpisodeAccessPlan, pageId: PageId, priority: WorkPriority): WorkRequest<StoredPage> {
+            constructedPageRequests++
+            return WorkRequest(
             WorkKey("test", pageId.toString(), "page", "revision", StoredPage::class.java), WorkDomain.BODY,
             priority, execute = { context ->
                 startedPriorities[pageId] = context.priority.value
+                if (earlyGeometry) context.publishMetadata(ml.melun.mangaview.engine.api.WorkMetadata.PageGeometry(
+                    pageId, plan.contentRevision, PageDimensions(100, 100)))
                 beforePage(pageId)
                 livePages++
                 StoredPage(pageId, plan.contentRevision, File("immutable-${pageId.remoteKey}.png"), 1,
                     "1".repeat(64), PageDimensions(100, 100), "image/png")
             }, dispose = { livePages-- },
         )
+        }
 
         private fun <T : Any> request(resource: String, operation: String, type: Class<T>, domain: WorkDomain,
             priority: WorkPriority, execute: suspend () -> T) = WorkRequest(WorkKey("test", resource, operation,

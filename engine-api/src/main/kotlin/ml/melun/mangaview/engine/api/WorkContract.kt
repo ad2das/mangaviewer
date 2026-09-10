@@ -2,6 +2,8 @@ package ml.melun.mangaview.engine.api
 
 import java.io.Closeable
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 enum class WorkPriority {
     FOCUS, VISIBLE, INTERACTIVE, NEXT_IMAGE, NEXT_EPISODE, ARTWORK, OFFLINE;
@@ -45,6 +47,9 @@ interface WorkContext {
     val attemptToken: Long
     val attempt: Int
     val priority: StateFlow<WorkPriority>
+
+    /** At most one immutable fact per work key; valid only during this execution attempt. */
+    suspend fun publishMetadata(value: WorkMetadata) = Unit
 
     /**
      * CONTROL executions only. Retains the dependency through disposal of this attempt's
@@ -94,6 +99,8 @@ interface WorkLease<T : Any> : Closeable {
 
 /** Owns one subscription immediately, including while execution is queued or running. */
 interface WorkSubscription<T : Any> : Closeable {
+    /** Replays the shared key's early fact to late subscribers; observe only while subscribed. */
+    val metadata: Flow<WorkMetadata> get() = emptyFlow()
     /** Repeated waits share the same subscriber and do not create additional ownership. */
     suspend fun await(): T
     fun promote(priority: WorkPriority)

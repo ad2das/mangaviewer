@@ -8,6 +8,7 @@ import ml.melun.mangaview.engine.api.WorkDomain
 import ml.melun.mangaview.engine.api.WorkKey
 import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.engine.api.WorkRequest
+import ml.melun.mangaview.engine.api.WorkMetadata
 
 internal enum class WorkRecordState {
     QUEUED,
@@ -38,6 +39,7 @@ internal interface WorkRecord {
     val sequence: Long
     val request: WorkRequest<*>
     val priority: MutableStateFlow<WorkPriority>
+    val metadata: MutableStateFlow<WorkMetadata?>
     val subscribers: MutableList<WorkSubscriber>
     val cleanupSubscribers: MutableList<WorkSubscriber>
     val completion: CompletableDeferred<Unit>
@@ -64,6 +66,7 @@ internal class TypedWorkRecord<T : Any>(
     override val requestDomain: WorkDomain = request.domain
     override val authEpoch: Long = request.authEpoch
     override val priority = MutableStateFlow(request.priority)
+    override val metadata = MutableStateFlow<WorkMetadata?>(null)
     override val subscribers = mutableListOf<WorkSubscriber>()
     override val cleanupSubscribers = mutableListOf<WorkSubscriber>()
     override val completion = CompletableDeferred<Unit>()

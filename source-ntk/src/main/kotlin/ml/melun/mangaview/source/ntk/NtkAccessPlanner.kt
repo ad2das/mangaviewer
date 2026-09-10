@@ -136,7 +136,7 @@ class NtkAccessPlanner(private val userAgent: String) : EpisodeDocumentPlanner {
             validation?.entityTag?.let { put("If-None-Match", it) }
             validation?.lastModified?.let { put("If-Modified-Since", it) }
         }
-        return SourceRequest(url, headers = headers, priority = priority.fetchPriority(), preferQuic = true)
+        return SourceRequest(url, headers = headers, priority = priority.fetchPriority(), preferQuic = false)
     }
 
     private fun navigation(document: NtkAccessDocument, catalog: AdjacentEpisodes?): Navigation {

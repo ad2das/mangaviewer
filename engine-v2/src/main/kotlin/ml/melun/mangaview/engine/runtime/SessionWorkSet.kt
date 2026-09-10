@@ -6,6 +6,9 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -14,10 +17,12 @@ import ml.melun.mangaview.engine.api.WorkCoordinatorPort
 import ml.melun.mangaview.engine.api.WorkKey
 import ml.melun.mangaview.engine.api.WorkRequest
 import ml.melun.mangaview.engine.api.WorkSubscription
+import ml.melun.mangaview.engine.api.WorkMetadata
 
 internal class SessionDemand<T : Any>(
     val request: WorkRequest<T>,
     val onFailure: ((Throwable) -> Unit)? = null,
+    val onMetadata: ((WorkMetadata) -> Unit)? = null,
     val accept: (T) -> Unit,
 ) {
     suspend fun subscribe(coordinator: WorkCoordinatorPort): WorkSubscription<T> = coordinator.submitAfterRetirement(request)
@@ -91,7 +96,7 @@ internal class SessionWorkSet(
             val subscription = demand.subscribe(coordinator)
             entry.subscription = subscription
             desired[entry.key]?.let { subscription.promote(it.request.priority) }
-            val result = subscription.await()
+            val result = awaitResult(entry, demand, subscription)
             if (entry.retiring || !desired.containsKey(entry.key) || closed) return
             entry.ready = true
             demand.accept(result)
@@ -105,6 +110,17 @@ internal class SessionWorkSet(
             finish(entry)
         }
     }
+
+    private suspend fun <T : Any> awaitResult(entry: Entry, demand: SessionDemand<T>, subscription: WorkSubscription<T>): T =
+        coroutineScope {
+            val observation = if (demand.onMetadata == null) null else launch(start = CoroutineStart.UNDISPATCHED) {
+                subscription.metadata.collect { value ->
+                    if (!entry.retiring && !closed) desired[entry.key]?.onMetadata?.invoke(value)
+                }
+            }
+            try { subscription.await() }
+            finally { withContext(NonCancellable) { observation?.cancelAndJoin() } }
+        }
 
     private suspend fun finish(entry: Entry) = withContext(NonCancellable) {
         try { entry.subscription?.awaitReleased() } catch (failure: Throwable) {

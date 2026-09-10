@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
+import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.data.cache.PageCacheKey
 import ml.melun.mangaview.data.db.EnginePublicationEntity
 import ml.melun.mangaview.engine.api.EnginePositionPort
@@ -42,7 +43,12 @@ class EngineRawStorage(
     private val ownership = EngineStorageOwnership(this)
     private var initialized = false
 
-    override suspend fun prepare(pageId: PageId, contentRevision: String, opened: OpenedPage): PreparedPage {
+    override suspend fun prepare(pageId: PageId, contentRevision: String, opened: OpenedPage): PreparedPage =
+        prepareWithGeometry(pageId, contentRevision, opened) {}
+
+    override suspend fun prepareWithGeometry(pageId: PageId, contentRevision: String, opened: OpenedPage,
+        reportGeometry: suspend (PageDimensions) -> Unit,
+    ): PreparedPage {
         val caller = currentCoroutineContext()
         var stage: File? = null
         var prepared: EnginePreparedPage? = null
@@ -54,7 +60,7 @@ class EngineRawStorage(
                     initializeLocked()
                     files.newStaging().also(ownership::beginTransfer)
                 }
-                val body = files.transfer(pageId, contentRevision, opened, checkNotNull(stage))
+                val body = files.transfer(pageId, contentRevision, opened, checkNotNull(stage), reportGeometry)
                 prepared = ownership.completeTransfer(body)
             }
         } catch (error: Throwable) {

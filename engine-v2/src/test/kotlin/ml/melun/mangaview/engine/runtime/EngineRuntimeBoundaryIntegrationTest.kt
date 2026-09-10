@@ -87,7 +87,7 @@ class EngineRuntimeBoundaryIntegrationTest {
             assertFalse(heldRender.completeCoverage)
             assertFalse(scenes.last().completeCoverage)
             assertTrue(PageId.at(current, 13) in source.requestedPages)
-            assertFalse(PageId.at(next, 2) in source.requestedPages)
+            assertTrue(PageId.at(next, 2) in source.requestedPages)
 
             visibleDecodeGate.complete(Unit)
             runCurrent()
@@ -98,7 +98,7 @@ class EngineRuntimeBoundaryIntegrationTest {
             assertTrue(releasedRender.completeCoverage)
             assertTrue(releasedRender.residentTextureTiles.containsAll(releasedRender.plannedVisibleTiles))
             assertTrue(PageId.at(current, 13) in source.requestedPages)
-            assertFalse(PageId.at(next, 2) in source.requestedPages)
+            assertTrue(PageId.at(next, 2) in source.requestedPages)
             assertTrue(scenes.any { it.completeCoverage && it.quads.map { quad -> quad.texture.tile.pageId }.toSet() == boundaryPages })
 
             reverseReadAheadGate.complete(Unit)

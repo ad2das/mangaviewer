@@ -9,6 +9,20 @@ GlViewerRenderer* renderer(jlong handle) noexcept {
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativeEnableBufferedCompositor(
+    JNIEnv*, jobject, jlong handle) {
+    auto* value = renderer(handle);
+    return value && value->enableBufferedCompositor() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativeCanSubmit(
+    JNIEnv*, jobject, jlong handle) {
+    auto* value = renderer(handle);
+    return value && value->canSubmit() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativeSetSwapIntervalForVerification(
     JNIEnv*, jobject, jlong handle, jint interval) {
     auto* value = renderer(handle);

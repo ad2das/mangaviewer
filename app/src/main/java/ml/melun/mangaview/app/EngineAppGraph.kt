@@ -50,7 +50,8 @@ internal class EngineAppGraph(
         create = {
             ml.melun.mangaview.viewer.runtime.EngineSurfaceOwner(
                 ml.melun.mangaview.engine.api.DeviceMemoryBudget.fromPhysicalRam(openingMemory.totalPhysicalBytes).glResidentBytes,
-                {}, { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) }, {})
+                {}, { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) }, {},
+                bufferedCompositor = Build.VERSION.SDK_INT >= 31)
         }, prepare = { it.prepare() }, dispose = { it.close() },
         reportFailure = { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) })
     private val openingDecode = AndroidWorkDispatcher("viewer-opening-decode", 1, android.os.Process.THREAD_PRIORITY_BACKGROUND)

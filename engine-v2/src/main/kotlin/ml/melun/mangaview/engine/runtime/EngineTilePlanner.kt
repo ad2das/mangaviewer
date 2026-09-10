@@ -22,7 +22,7 @@ data class EngineTilePlan(
 class EngineTilePlanner(private val textureBudgetBytes: Long, private val targetTileHeightPx: Int = 2048,
     private val preparationViewports: Int = 0,
 ) {
-    init { require(textureBudgetBytes > 0 && targetTileHeightPx > 2 && preparationViewports in 0..4) }
+    init { require(textureBudgetBytes > 0 && targetTileHeightPx > 2 && preparationViewports in 0..12) }
 
     fun plan(snapshot: EngineRuntimeSnapshot): EngineTilePlan {
         val visible = linkedMapOf<EngineTileSpec, WorkPriority>()

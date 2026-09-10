@@ -169,7 +169,8 @@ void GlStripReadback::issue(
     std::int64_t token,
     int width,
     int height,
-    EGLuint64KHR eglFrameId) noexcept {
+    EGLuint64KHR eglFrameId,
+    GLuint expectedFramebuffer) noexcept {
     const int requestIndex = findRequest(requests_, token);
     if (requestIndex < 0) return;
     const Request request = requests_[static_cast<std::size_t>(requestIndex)].value;
@@ -187,7 +188,8 @@ void GlStripReadback::issue(
     GLint drawFramebuffer = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFramebuffer);
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer);
-    if (glGetError() != GL_NO_ERROR || readFramebuffer != 0 || drawFramebuffer != 0) {
+    if (glGetError() != GL_NO_ERROR || readFramebuffer != static_cast<GLint>(expectedFramebuffer) ||
+        drawFramebuffer != static_cast<GLint>(expectedFramebuffer)) {
         retainFailure(request, width, eglFrameId, GlReadbackStatus::kGlError, 0, 0, 0);
         return;
     }

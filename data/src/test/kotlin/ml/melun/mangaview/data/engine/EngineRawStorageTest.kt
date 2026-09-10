@@ -30,6 +30,42 @@ import org.junit.rules.TemporaryFolder
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class EngineRawStorageTest {
+    @Test fun exactHeaderGeometryArrivesBeforeTheRemainingBodyAndDoesNotPublishBytes() = runTest {
+        val root = temporary.newFolder()
+        val index = MemoryIndex()
+        val store = store(root, index)
+        val tail = CompletableDeferred<Unit>()
+        var cursor = 0
+        var closes = 0
+        val stream = object : PageByteStream {
+            override suspend fun readAtMost(destination: ByteArray, offset: Int, byteCount: Int): Int {
+                if (cursor > 0) tail.await()
+                if (cursor == bytes.size) return -1
+                val count = minOf(byteCount, if (cursor == 0) 33 else bytes.size - cursor)
+                bytes.copyInto(destination, offset, cursor, cursor + count)
+                cursor += count
+                return count
+            }
+            override fun close() { closes++ }
+        }
+        val geometries = mutableListOf<ml.melun.mangaview.core.PageDimensions>()
+        val transfer = async { store.prepareWithGeometry(id, "v1",
+            OpenedPage(stream, bytes.size.toLong(), "image/png", null, null)) { geometries += it } }
+        runCurrent()
+        assertEquals(listOf(ml.melun.mangaview.core.PageDimensions(1, 1)), geometries)
+        assertEquals(33, cursor)
+        assertFalse(transfer.isCompleted)
+        assertTrue(index.pageRows.isEmpty())
+        assertNull(store.find(id, "v1"))
+        tail.complete(Unit)
+        val prepared = transfer.await()
+        assertArrayEquals(bytes, prepared.page.file.readBytes())
+        assertEquals(1, geometries.size)
+        assertEquals(1, closes)
+        store.publish(prepared).close()
+        assertEquals(0, store.ownership().fileLeases)
+    }
+
     @get:Rule val temporary = TemporaryFolder()
     private val id = PageId.at(EpisodeId(SeriesId(SourceId("wfwf"), "10001"), "1"), 0)
     private val bytes = Base64.getDecoder().decode(

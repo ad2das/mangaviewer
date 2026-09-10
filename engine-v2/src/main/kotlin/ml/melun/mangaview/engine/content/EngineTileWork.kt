@@ -1,6 +1,8 @@
 package ml.melun.mangaview.engine.content
 
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import ml.melun.mangaview.engine.api.EngineImageDecoder
 import ml.melun.mangaview.engine.api.EngineTexture
 import ml.melun.mangaview.engine.api.EngineTextureUploader
@@ -29,9 +31,12 @@ class EngineTileWork(
             parent.useDependency(page) { stored ->
                 validate(stored, tile)
                 parent.useDependency(pixels.request(page, tile, parent.priority.value)) { pixels ->
-                    parent.dependency(WorkRequest(uploadKey, WorkDomain.UPLOAD, parent.priority.value,
-                        authEpoch = page.authEpoch, execute = { uploader.upload(pixels, epoch) },
-                        dispose = { uploader.release(it) }))
+                    val transfer = uploader.prepareTexture(pixels)
+                    try {
+                        parent.dependency(WorkRequest(uploadKey, WorkDomain.UPLOAD, parent.priority.value,
+                            authEpoch = page.authEpoch, execute = { transfer.upload(epoch) },
+                            dispose = { uploader.release(it) }))
+                    } finally { withContext(NonCancellable) { transfer.close() } }
                 }
             }
         })

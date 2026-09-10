@@ -64,6 +64,39 @@ class EngineRenderRuntimeTest {
         fixture.close()
     }
 
+    @Test fun inputMovesReadyPixelsImmediatelyWhileTheRemainingDecodeIsBlocked() = runTest {
+        val fixture = Fixture(this, textureBudget = 240_000, tileHeight = 102)
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { if (it.sourceTop > 250) gate.await() }
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        runCurrent()
+        val before = fixture.scenes.last()
+        assertFalse(before.completeCoverage)
+        val ready = before.quads.single()
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val region = initial.session.visibleRegions.single()
+        val moved = initial.copy(session = initial.session.copy(
+            inputRevision = 2, geometryRevision = 2,
+            anchor = SourceAnchor(id, 260 * q),
+            visibleRegions = listOf(region.copy(sourceTopQ32 = 260 * q, sourceBottomQ32 = 360 * q))))
+        fixture.runtime.update(moved)
+        runCurrent()
+        val after = fixture.scenes.last()
+        assertEquals(2L, after.session.inputRevision)
+        assertEquals(moved.session.anchor, after.session.anchor)
+        assertFalse(after.completeCoverage)
+        assertEquals(ready.texture.key, after.quads.single().texture.key)
+        assertEquals(ready.topScreenUnits - 10 * 1024L, after.quads.single().topScreenUnits)
+        assertFalse(gate.isCompleted)
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(fixture.scenes.last().completeCoverage)
+        assertEquals(moved.session.anchor, fixture.scenes.last().session.anchor)
+        assertTrue(fixture.failures.isEmpty())
+        fixture.close()
+    }
+
     @Test fun fullSceneReleasesFileAndCpuBorrowsThenEmptySceneAllowsGpuRetirement() = runTest {
         val fixture = Fixture(this)
         fixture.runtime.update(snapshot())

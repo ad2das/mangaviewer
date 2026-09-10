@@ -1,13 +1,9 @@
-package ml.melun.mangaview.ui.library
+﻿package ml.melun.mangaview.ui.library
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
@@ -15,6 +11,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -25,19 +23,26 @@ internal fun SeriesActionsOverlay(
 ) {
     val series = state.activeSeries ?: return
     Box(
-        Modifier.fillMaxSize().clickable { accept(LibraryIntent.ToggleSeriesMenu) },
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .clickable { accept(LibraryIntent.ToggleSeriesMenu) },
         contentAlignment = Alignment.TopEnd,
     ) {
         Column(
-            Modifier.padding(top = 52.dp, end = 12.dp).width(210.dp)
-                .shadow(6.dp, RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp))
-                .background(colors.card),
+            Modifier.padding(top = 56.dp, end = 16.dp).width(220.dp)
+                .shadow(12.dp, RoundedCornerShape(16.dp), spotColor = Color.Black.copy(alpha = 0.2f))
+                .clip(RoundedCornerShape(16.dp))
+                .background(colors.card)
+                .border(1.dp, colors.outline, RoundedCornerShape(16.dp))
+                .padding(vertical = 6.dp),
         ) {
-            MenuRow("브라우저에서 열기", colors) {
+            MenuRow("브라우저에서 열기", LibraryIcon.SITE, colors) {
                 accept(LibraryIntent.OpenSeriesInBrowser(series))
             }
-            MenuRow("공유", colors) { accept(LibraryIntent.ShareSeries(series)) }
-            MenuRow("오프라인 저장", colors) {
+            MenuRow("공유", LibraryIcon.MORE, colors) {
+                accept(LibraryIntent.ShareSeries(series))
+            }
+            MenuRow("오프라인 저장", LibraryIcon.DOWNLOAD, colors) {
                 accept(LibraryIntent.ToggleDownloadSelection)
             }
         }
@@ -45,8 +50,18 @@ internal fun SeriesActionsOverlay(
 }
 
 @Composable
-private fun MenuRow(label: String, colors: LibraryColors, click: () -> Unit) {
-    Box(Modifier.fillMaxWidth().clickable(onClick = click).padding(horizontal = 18.dp, vertical = 15.dp)) {
-        BasicText(label, style = bodyStyle(colors, 14))
+private fun MenuRow(label: String, icon: LibraryIcon, colors: LibraryColors, click: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth()
+            .clickable(onClick = click)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LibraryIconView(icon, colors.accent, Modifier.size(18.dp))
+        Spacer(Modifier.width(12.dp))
+        BasicText(
+            label,
+            style = bodyStyle(colors, 14).copy(fontWeight = FontWeight.Medium),
+        )
     }
 }

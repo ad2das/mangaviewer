@@ -140,6 +140,27 @@ class EnginePageWorkIntegrationTest {
         coordinator.close()
     }
 
+    @Test fun headerTimeoutUsesDeclaredMirrorAndPublishesItsCompleteOriginal() = runTest {
+        val coordinator = WorkCoordinator(this)
+        val store = store()
+        val plan = plan(mirror = true)
+        val requests = mutableListOf<String>()
+        val original = Body()
+        val factory = factory(store, SourceTransport {
+            requests += it.url
+            if (requests.size == 1) throw java.net.SocketTimeoutException("Response headers timed out")
+            response(original)
+        })
+        val lease = coordinator.acquire(factory.request(plan, plan.pages.single().pageId, WorkPriority.FOCUS))
+        assertEquals(listOf("https://images.test/original.png", "https://mirror.test/original.png"), requests)
+        assertArrayEquals(bytes, lease.value.file.readBytes())
+        assertEquals(1, original.closes)
+        lease.awaitReleased()
+        assertEquals(0, store.ownership().preparedPages)
+        assertEquals(0, store.ownership().fileLeases)
+        coordinator.close()
+    }
+
     @Test fun authorizationFailureDoesNotTryAnImageMirror() = runTest {
         val coordinator = WorkCoordinator(this)
         val store = store()
