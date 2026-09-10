@@ -39,7 +39,9 @@ internal class EngineAppGraph(
     networkEvidenceObserver: () -> SourceExchangeObserver? = { null },
     private val origins: ProviderOriginDirectory = ProviderOriginDirectory(context, ioDispatcher, userAgent),
 ) {
-    private val workLimits = WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12)
+    // One body beyond the twelve background transfers and two visible reserves is kept for the
+    // document-end original so a fast reader cannot outrun a displayable episode end.
+    private val workLimits = WorkLimits(network = 16, bodies = 15, backgroundNetwork = 12)
     val coordinator: WorkCoordinatorPort = WorkCoordinator(scope, workLimits)
     private val openingMemory: ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment =
         ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment(context) {

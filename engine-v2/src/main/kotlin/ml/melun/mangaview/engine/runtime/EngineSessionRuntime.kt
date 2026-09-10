@@ -357,6 +357,7 @@ class EngineSessionRuntime(
         state.visibleRegions.forEach { region ->
             result.putIfAbsent(region.pageId, if (region.pageId == state.anchor?.pageId) WorkPriority.FOCUS else WorkPriority.VISIBLE)
         }
+        reserveDocumentEndOriginal(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, result)
         earlyTransfers.retain(result, prepared, failedReadAheadPages)
         addReadAhead(state, result)
         return result
@@ -406,20 +407,9 @@ class EngineSessionRuntime(
         result: LinkedHashMap<PageId, WorkPriority>,
     ) {
         // Stream originals to disk while the app reserves two BODY slots for visible work.
-        // Finish the forward phase before filling earlier pages; visible work keeps priority.
         val remainingSlots = (12 - result.count { (id, priority) -> priority == WorkPriority.NEXT_IMAGE && id !in prepared }).coerceAtLeast(0)
-        if (remainingSlots == 0) return
-        fun pending(indices: IntProgression) = indices.asSequence().map { manifest.pages[it].id }
-            .filter { it !in prepared && it !in failedReadAheadPages && it !in result }.take(remainingSlots).toList()
-        val ahead = pending(index + 1 until manifest.pages.size)
-        val forwardPending = (index + 1 until manifest.pages.size).any {
-            manifest.pages[it].id !in prepared && manifest.pages[it].id !in failedReadAheadPages
-        }
-        val pending = if (forwardPending) ahead else pending(index - 1 downTo 0)
-        if (pending.isNotEmpty()) {
-            pending.forEach { result.putIfAbsent(it, WorkPriority.NEXT_IMAGE) }
-            return
-        }
+        pendingOriginalPages(manifest, index, remainingSlots, prepared, failedReadAheadPages, result)
+            .forEach { result.putIfAbsent(it, WorkPriority.NEXT_IMAGE) }
     }
 
     private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest,
@@ -455,6 +445,37 @@ class EngineSessionRuntime(
 private fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmodifiableMap(LinkedHashMap(source))
 private fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
     Collections.unmodifiableMap(LinkedHashMap(source).apply { put(key, value) })
+
+// The final original of the reading document gets one spare interactive request so a fast
+// reader cannot outrun a displayable episode end. It is not visible work and never displaces
+// the twelve background transfer permits. Short documents are covered by the ordinary horizon,
+// and the reservation starts only after the opening viewport is presented.
+private fun reserveDocumentEndOriginal(state: EngineSessionSnapshot, plans: Map<EpisodeId, EpisodeAccessPlan>,
+    target: EpisodeId, prepared: Set<PageId>, failed: Set<PageId>, presented: Boolean,
+    result: LinkedHashMap<PageId, WorkPriority>,
+) {
+    if (!presented) return
+    val anchor = readAheadAnchor(state, target) ?: return
+    val manifest = plans[anchor.episodeId]?.manifest ?: return
+    val index = manifest.pages.indexOfFirst { it.id == anchor }
+    if (index < 0 || manifest.pages.size - index <= 8) return
+    val tail = manifest.pages.last().id
+    if (tail !in prepared && tail !in failed) result.putIfAbsent(tail, WorkPriority.INTERACTIVE)
+}
+
+// Stream forward pages in reading order for the bulk background window. Reverse input fills
+// earlier pages only once the forward phase is complete.
+private fun pendingOriginalPages(manifest: EpisodeManifest, index: Int, slots: Int,
+    prepared: Set<PageId>, failed: Set<PageId>, existing: Map<PageId, WorkPriority>,
+): List<PageId> {
+    fun pending(indices: IntProgression) = indices.asSequence().map { manifest.pages[it].id }
+        .filter { it !in prepared && it !in failed && it !in existing }
+    val forwardPending = (index + 1 until manifest.pages.size).any {
+        manifest.pages[it].id !in prepared && manifest.pages[it].id !in failed
+    }
+    if (!forwardPending) return pending(index - 1 downTo 0).take(slots).toList()
+    return pending(index + 1 until manifest.pages.size).take(slots).toList()
+}
 
 private fun matchesVerifiedGeometry(known: PageContentIdentity?, geometry: WorkMetadata.PageGeometry): Boolean {
     if (known == null) return false

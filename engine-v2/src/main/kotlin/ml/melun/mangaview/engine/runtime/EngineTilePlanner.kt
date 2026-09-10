@@ -65,6 +65,7 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
             if (last == count - 1) adjacentTile(snapshot, region.pageId, 1)?.let(speculative::add)
             collectDistantBands(snapshot, page, first, last, distant)
         }
+        addDocumentEndHorizon(snapshot, speculative)
         addPreparedHorizon(snapshot, distant, speculative)
         var bytes = visible.keys.fold(0L) { total, tile -> Math.addExact(total, tile.byteCount) }
         require(bytes <= textureBudgetBytes) { "Visible original-resolution tiles exceed the texture budget" }
@@ -129,6 +130,20 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
                     candidate.rasterWidth - 1L) / candidate.rasterWidth
             }
         }
+    }
+
+    /** Keep the anchored document's final band resident so queued input cannot outrun a displayable end. */
+    private fun addDocumentEndHorizon(snapshot: EngineRuntimeSnapshot, speculative: MutableSet<EngineTileSpec>) {
+        if (preparationViewports == 0) return
+        val anchor = snapshot.session.anchor ?: return
+        val manifest = snapshot.plans[anchor.pageId.episodeId]?.manifest ?: return
+        val index = manifest.pages.indexOfFirst { it.id == anchor.pageId }
+        // Short documents are covered by the ordinary preparation horizon.
+        if (index < 0 || manifest.pages.size - index <= 8) return
+        val last = manifest.pages.lastOrNull()?.id ?: return
+        val page = snapshot.pages[last] ?: return
+        val count = bandCount(page, snapshot.session.viewport.widthPx)
+        speculative += tile(page, count - 1, count, snapshot.session.viewport.widthPx)
     }
 
     private fun addPreparedHorizon(snapshot: EngineRuntimeSnapshot,

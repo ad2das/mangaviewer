@@ -124,7 +124,9 @@ class EngineSessionRuntimeTest {
         try {
             runtime.open()
             runCurrent()
-            assertEquals(13, attempts.size)
+            // The reserved document-end original now starts immediately, so every page of the
+            // short manifest is already attempted while all bodies remain gated.
+            assertEquals(14, attempts.size)
             runtime.input(InputSample(1, 1, 0, 1250 * 1024L))
             runCurrent()
             assertEquals(PageId.at(episode, 12), runtime.snapshot.session.anchor!!.pageId)
@@ -994,6 +996,22 @@ class EngineSessionRuntimeTest {
             assertEquals(WorkPriority.VISIBLE, source.startedPriorities[PageId.at(episode, 1)])
             assertEquals(0L, session.snapshot.inputRevision)
         } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun forwardReadAheadStartsTheFinalOriginalInTheFirstBulkWave() = runTest {
+        val source = Source().apply { pageCount = 60 }
+        val gate = CompletableDeferred<Unit>()
+        source.beforePage = { if (it == PageId.at(episode, 30)) gate.await() }
+        val (runtime, coordinator) = runtime(source)
+        try {
+            runtime.open()
+            runCurrent()
+            val order = source.startedPriorities.keys.filter { it.episodeId == episode }
+            assertTrue("final original was not in the early read-ahead wave: $order",
+                order.indexOf(PageId.at(episode, 59)) in 1 until 15)
+        } finally { gate.complete(Unit); runtime.close(); coordinator.close() }
         assertEquals(0, source.livePages)
         assertEquals(0, coordinator.snapshot().subscribers)
     }

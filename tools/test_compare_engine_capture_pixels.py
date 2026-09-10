@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 from PIL import Image
-from compare_engine_capture_pixels import compare
+from compare_engine_capture_pixels import compare, resample_raster
 
 
 class CapturePixelTest(unittest.TestCase):
@@ -52,6 +52,24 @@ class CapturePixelTest(unittest.TestCase):
         self.assertEqual(result['uncoveredCapturedRows'], 2)
         self.assertEqual(result['sourceBands'], [])
         self.assertFalse(result['wholeEpisodeVerified'])
+
+    def test_platform_point_resample_matches_device_control(self):
+        source = np.zeros((2, 4, 4), dtype=np.float64)
+        source[:, :, 3] = 255
+        source[:, 0, 0] = 255
+        target = resample_raster(source, 2, 1)
+        self.assertAlmostEqual(float(target[0, 0, 0]), 127.5)
+        self.assertAlmostEqual(float(target[0, 1, 0]), 0.0)
+        self.assertTrue(np.all(target[..., 3] == 255))
+        self.assertTrue(np.array_equal(resample_raster(source, 4, 2), source))
+
+    def test_point_resample_clamps_edges_like_the_platform(self):
+        column = np.zeros((2, 1, 4), dtype=np.float64)
+        column[:, :, 3] = 255
+        column[:, 0, 0] = 100
+        column[1, 0, 0] = 200
+        target = resample_raster(column, 1, 4)
+        self.assertEqual([100.0, 125.0, 175.0, 200.0], [float(value) for value in target[:, 0, 0]])
 
     def test_original_width_texture_uses_two_dimensional_gpu_sampling(self):
         source = np.array([[[0, 0, 0, 255], [200, 0, 200, 255]],

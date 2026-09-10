@@ -198,6 +198,31 @@ class EngineTilePlannerTest {
         assertEquals(80_000L, tight.plannedTextureBytes)
     }
 
+    @Test fun verifiedDocumentEndBandStaysPreparedWhileTheReaderIsFarFromIt() {
+        val base = neighboringSnapshot(false)
+        val ids = (0 until 20).map { PageId.at(pageId.episodeId, it) }
+        val old = base.plans.getValue(pageId.episodeId)
+        val plan = ml.melun.mangaview.engine.api.EpisodeAccessPlan(
+            old.manifest.copy(pages = ids.mapIndexed { index, id ->
+                ml.melun.mangaview.core.PageSpec(id, index, PageDimensions(100, 1000))
+            }), old.contentRevision, old.documentSha256, old.finalDocumentUrl, old.authEpoch,
+            ids.map { id -> ml.melun.mangaview.engine.api.PageAccessPlan(id, id.remoteKey, old.pages.first().candidates) })
+        val identity = base.pages.getValue(pageId)
+        val state = base.copy(plans = mapOf(pageId.episodeId to plan),
+            pages = ids.associateWith { identity.copy(pageId = it) })
+        val tail = PageId.at(pageId.episodeId, 19)
+        val output = EngineTilePlanner(1_000_000, 202, preparationViewports = 2).plan(state)
+        assertTrue("document end band must stay demanded: ${output.demands.map { it.tile.pageId to it.tile.sourceTop }}",
+            output.demands.any {
+                it.tile.pageId == tail && it.tile.sourceBottom == 1000 &&
+                    it.priority == ml.melun.mangaview.engine.api.WorkPriority.NEXT_IMAGE
+            })
+        assertTrue(output.placements.none { it.tile.pageId == tail })
+        val missing = EngineTilePlanner(1_000_000, 202, preparationViewports = 2)
+            .plan(state.copy(pages = state.pages.filterKeys { it != tail }))
+        assertTrue(missing.demands.none { it.tile.pageId == tail })
+    }
+
     @Test fun verifiedLeadingPageCanDecodeWhileCurrentGeometryIsMissingWithoutFalseCoverage() {
         val base = neighboringSnapshot(false)
         val next = base.pages.keys.single { it != pageId }

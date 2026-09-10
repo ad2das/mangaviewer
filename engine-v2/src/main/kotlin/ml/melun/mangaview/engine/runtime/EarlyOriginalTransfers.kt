@@ -8,9 +8,10 @@ internal class EarlyOriginalTransfers {
     private val pages = linkedSetOf<PageId>()
 
     fun observed(id: PageId) {
-        // Two interactive bodies can join twelve background bodies. Retain the whole
-        // admitted window so a reversal cannot cancel its last in-flight originals.
-        if (pages.size < 14) pages += id
+        // Twelve background bodies, two visible reserves and the document-end reservation can
+        // be in flight together. Retain the whole admitted window so a reversal cannot cancel
+        // its last in-flight originals.
+        if (pages.size < 15) pages += id
     }
 
     fun retain(result: LinkedHashMap<PageId, WorkPriority>, prepared: Set<PageId>, failed: Set<PageId>) {

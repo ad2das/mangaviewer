@@ -16,6 +16,30 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def resample_raster(rgba, rw, rh):
+    """Target-size decode sampling verified against the platform by PlatformOriginalResampleTest.
+
+    Android's AImageDecoder/ImageDecoder target-size draw samples at pixel centers with clamped
+    edges; PIL's antialiased BILINEAR resample differs at clamped edges and for downscales.
+    """
+    sh, sw = rgba.shape[:2]
+    if (sw, sh) == (rw, rh):
+        return rgba
+    xs = (np.arange(rw, dtype=np.float64) + 0.5) * sw / rw - 0.5
+    ys = (np.arange(rh, dtype=np.float64) + 0.5) * sh / rh - 0.5
+    left = np.floor(xs).astype(np.int64)
+    wx = (xs - left)[None, :, None]
+    top = np.floor(ys).astype(np.int64)
+    wy = (ys - top)[:, None, None]
+
+    def at(px, py):
+        return rgba[np.clip(py, 0, sh - 1)][:, np.clip(px, 0, sw - 1)]
+
+    upper = at(left, top) * (1 - wx) + at(left + 1, top) * wx
+    lower = at(left, top + 1) * (1 - wx) + at(left + 1, top + 1) * wx
+    return upper * (1 - wy) + lower * wy
+
+
 def compare(frame, raw, originals, raster_profile=None, include_source_sampling=False):
     width, top, bottom = (frame[key] for key in ('width', 'top', 'bottom'))
     units = frame['coordinateUnitsPerPixel']
@@ -53,7 +77,10 @@ def compare(frame, raw, originals, raster_profile=None, include_source_sampling=
             require(not original.info.get('icc_profile'), 'ICC source requires an explicit independent color transform')
             rgba = original.convert('RGBA')
             require(rgba.getchannel('A').getextrema() == (255, 255), 'transparent source requires premultiplied reference support')
-            raster = np.asarray(rgba.resize((rw, rh), Image.Resampling.BILINEAR).crop((0, rt, rw, rb)), dtype=np.float64)
+            if 'rasterWidth' in placement:
+                raster = resample_raster(np.asarray(rgba, dtype=np.float64), rw, rh)[rt:rb]
+            else:
+                raster = np.asarray(rgba.resize((rw, rh), Image.Resampling.BILINEAR).crop((0, rt, rw, rb)), dtype=np.float64)
         if rw != width:
             texture_x = (np.arange(width, dtype=np.float64) + 0.5) * rw / width - 0.5
             left = np.floor(texture_x).astype(np.int64)
