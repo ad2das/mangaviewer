@@ -42,7 +42,7 @@ def main():
     parser.add_argument('--quick-preparation', action='store_true', help='Startup and short-scroll diagnostic; skips full episode endpoint traversal')
     parser.add_argument('--cross-next-boundary', action='store_true', help='Continue through the actual next-episode boundary before reversing')
     parser.add_argument('--catalog-ui', action='store_true', help='Enter through live catalog/search and the real episode row')
-    parser.add_argument('--source', choices=('wfwf', 'ntk'), default='wfwf')
+    parser.add_argument('--source', choices=('wfwf', 'ntk', 'newxtoon'), default='wfwf')
     parser.add_argument('--kind', choices=('COMIC', 'WEBTOON'), default='COMIC')
     parser.add_argument('--series-key', default='comic:10001')
     parser.add_argument('--episode-key', default='1')

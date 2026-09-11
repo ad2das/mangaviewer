@@ -67,7 +67,16 @@ internal class CorpusUiEntry(
             val current = state()
             if (current.selectedSourceId == series.id.sourceId) return@repeat
             val label = current.sources.single { it.id == current.selectedSourceId }.label
-            requireNotNull(device.wait(Until.findObject(By.desc(label)), 5_000)).click()
+            val chip = device.wait(Until.findObject(By.desc(label)), 5_000)
+            if (chip == null) {
+                val evidence = requireNotNull(instrumentation.targetContext.getExternalFilesDir("ux-evidence"))
+                    .resolve("source-chip-failure-${System.nanoTime()}").apply { check(mkdirs()) }
+                device.dumpWindowHierarchy(evidence.resolve("hierarchy.xml"))
+                device.takeScreenshot(evidence.resolve("screen.png"))
+                error("Source chip not found: label=$label selected=${current.selectedSourceId} " +
+                    "target=${series.id.sourceId} evidence=$evidence")
+            }
+            chip.click()
         }
         check(state().selectedSourceId == series.id.sourceId) { "UI source selection failed" }
         timing.mark("source-selected")
