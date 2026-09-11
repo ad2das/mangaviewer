@@ -18,7 +18,7 @@ class OkHttpTransportFactory(
         create(cookieJar, listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
 
     fun protect(primary: ml.melun.mangaview.source.SourceTransport): SniRecoveryTransport =
-        SniRecoveryTransport(primary, createRecovery = { createRecovery() })
+        SniRecoveryTransport(primary, createRecovery = { createRecovery() }, sharedRecovery = true)
 
     private fun createRecovery(): ml.melun.mangaview.source.SourceTransport {
         val dns = EncryptedSourceDns()

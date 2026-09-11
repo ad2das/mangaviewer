@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.DataInputStream
+import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -118,6 +119,45 @@ class SniRecoveryTransportTest {
         }
         assertFalse(fallbackCreated)
         protected.close()
+    }
+
+    @Test fun recoveredHostsAndRelayAreSharedAcrossTransports() = runBlocking {
+        val directCalls = AtomicInteger()
+        val recoveredCalls = AtomicInteger()
+        val directWarms = AtomicInteger()
+        val recoveredWarms = AtomicInteger()
+        val direct = object : SourceTransport {
+            override suspend fun execute(request: SourceRequest): SourceResponse {
+                directCalls.incrementAndGet()
+                throw IOException("blocked")
+            }
+            override fun warmConnections(urls: List<String>, preferQuic: Boolean) { directWarms.incrementAndGet() }
+        }
+        val recovered = object : SourceTransport {
+            override suspend fun execute(request: SourceRequest): SourceResponse {
+                recoveredCalls.incrementAndGet()
+                return SourceResponse(
+                    200, request.url, emptyMap(),
+                    object : PageByteStream {
+                        override suspend fun readAtMost(destination: ByteArray, offset: Int, byteCount: Int) = -1
+                        override fun close() = Unit
+                    },
+                    0L, null,
+                )
+            }
+            override fun warmConnections(urls: List<String>, preferQuic: Boolean) { recoveredWarms.incrementAndGet() }
+        }
+        val first = SniRecoveryTransport(direct, { recovered }, sharedRecovery = true)
+        val second = SniRecoveryTransport(direct, { error("recovery must be shared") }, sharedRecovery = true)
+        try {
+            first.execute(SourceRequest("https://shared-recovery.test/one")).close()
+            second.execute(SourceRequest("https://shared-recovery.test/two")).close()
+            assertEquals(1, directCalls.get())
+            assertEquals(2, recoveredCalls.get())
+            second.warmConnections(listOf("https://shared-recovery.test/three"), false)
+            assertEquals(0, directWarms.get())
+            assertEquals(1, recoveredWarms.get())
+        } finally { first.close(); second.close(); SniRecoveryTransport.resetSharedForTest() }
     }
 
     @Test fun fragmentationPreservesTheHandshakeTranscriptAndAllFollowingBytes() {

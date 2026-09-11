@@ -16,9 +16,11 @@ class SniRecoveryTransport(
     private val primary: SourceTransport,
     createRecovery: () -> SourceTransport,
     private val nowNanos: () -> Long = System::nanoTime,
+    sharedRecovery: Boolean = false,
 ) : SourceTransport, Closeable {
-    private val recovery = lazy(createRecovery)
-    private val recoveredHosts = ConcurrentHashMap<String, Long>()
+    private val recovery = if (sharedRecovery) lazy { sharedRecoveryTransport(createRecovery) } else lazy(createRecovery)
+    private val ownsRecovery = !sharedRecovery
+    private val recoveredHosts = if (sharedRecovery) SHARED_RECOVERED_HOSTS else ConcurrentHashMap()
 
     override suspend fun execute(request: SourceRequest) = execute(request, primary::execute)
     override suspend fun executeOnFreshRoute(request: SourceRequest) = execute(request, primary::executeOnFreshRoute)
@@ -85,23 +87,48 @@ class SniRecoveryTransport(
 
     override fun routeParallelism() = primary.routeParallelism()
     override fun supportsProtocolSelection() = primary.supportsProtocolSelection()
-    override fun warmConnections(urls: List<String>, preferQuic: Boolean) = primary.warmConnections(urls, preferQuic)
+    override fun warmConnections(urls: List<String>, preferQuic: Boolean) {
+        val (recovered, direct) = urls.partition { isRecovered(URI(it).host) }
+        if (direct.isNotEmpty()) primary.warmConnections(direct, preferQuic)
+        if (recovered.isNotEmpty()) recovery.value.warmConnections(recovered, preferQuic)
+    }
     override fun retireIdleConnections() {
         primary.retireIdleConnections()
         if (recovery.isInitialized()) recovery.value.retireIdleConnections()
     }
     override fun close() {
         try { (primary as? Closeable)?.close() }
-        finally { if (recovery.isInitialized()) (recovery.value as? Closeable)?.close() }
-        recoveredHosts.clear()
+        finally { if (ownsRecovery && recovery.isInitialized()) (recovery.value as? Closeable)?.close() }
+        if (ownsRecovery) recoveredHosts.clear()
     }
+
+    private fun isRecovered(host: String): Boolean =
+        recoveredHosts[host]?.let { nowNanos() - it < RECOVERY_LIFETIME_NANOS } == true
 
     private fun Throwable.isCertificateFailure(): Boolean =
         generateSequence(this) { it.cause?.takeUnless { cause -> cause === it } }.take(16)
             .any { it is SSLPeerUnverifiedException || it is CertificateException }
 
-    private companion object {
+    companion object {
         const val DIRECT_HEADER_TIMEOUT_MILLIS = 1_000L
         const val RECOVERY_LIFETIME_NANOS = 10L * 60 * 1_000_000_000
+        // The library and the viewer engine run in one process; a host proven blocked once
+        // must not pay the direct-route timeout again in the other transport.
+        val SHARED_RECOVERED_HOSTS = ConcurrentHashMap<String, Long>()
+        @Volatile private var sharedInstance: SourceTransport? = null
+        private val sharedLock = Any()
+
+        fun sharedRecoveryTransport(create: () -> SourceTransport): SourceTransport {
+            sharedInstance?.let { return it }
+            return synchronized(sharedLock) {
+                sharedInstance ?: create().also { sharedInstance = it }
+            }
+        }
+
+        internal fun resetSharedForTest() {
+            (sharedInstance as? Closeable)?.close()
+            sharedInstance = null
+            SHARED_RECOVERED_HOSTS.clear()
+        }
     }
 }
