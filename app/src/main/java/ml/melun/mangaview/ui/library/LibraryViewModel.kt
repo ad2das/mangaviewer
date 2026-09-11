@@ -17,9 +17,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
 import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.data.library.SavedSeries
 import ml.melun.mangaview.app.EngineOpeningPreparations
 import ml.melun.mangaview.data.library.UserLibraryRepository
+import ml.melun.mangaview.data.library.UserLibrarySnapshot
 import ml.melun.mangaview.data.offline.OfflineDownloadManager
 import ml.melun.mangaview.data.offline.OfflineEpisodeStore
 import ml.melun.mangaview.source.CatalogOrder
@@ -307,6 +309,11 @@ internal class LibraryViewModel(
             selectedSourceId = if (offlineOnly) series.id.sourceId else it.selectedSourceId,
             lastSeries = if (offlineOnly) listOf(series) else it.lastSeries,
         ) }
+        // The reader's own series is almost always continued at the remembered episode, so start
+        // that preparation before the list round-trip finishes; the list result reconciles it.
+        if (!offlineOnly) {
+            recentEpisodeFor(state.value.saved, series.id)?.let(episodeWarmer::warm)
+        }
         launchContent(
             load = {
                 if (offlineOnly) offlineStore.episodes(series.id)
@@ -439,9 +446,13 @@ private fun preferredEpisode(
     series: SourceSeries,
     episodes: List<SourceEpisode>,
 ): EpisodeId? {
-    val recent = state.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
+    val recent = recentEpisodeFor(state.saved, series.id)
     return episodes.firstOrNull { it.id == recent }?.id ?: firstEpisode(episodes)?.id
 }
+
+/** The episode a returning reader is most likely to tap as soon as the series detail opens. */
+internal fun recentEpisodeFor(saved: UserLibrarySnapshot, seriesId: SeriesId): EpisodeId? =
+    saved.recent.firstOrNull { it.series.id == seriesId }?.episodeId
 
 internal fun mostLikelyContinuation(state: LibraryState): EpisodeId? {
     // An explicitly opened series takes priority over a late home/library refresh.

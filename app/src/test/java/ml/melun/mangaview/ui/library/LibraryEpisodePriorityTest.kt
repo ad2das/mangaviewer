@@ -26,6 +26,25 @@ class LibraryEpisodePriorityTest {
     }
 
     @Test
+    fun seriesOpenWarmsTheRememberedEpisodeOfThatSeriesOnly() {
+        val series = ml.melun.mangaview.data.library.SavedSeries(
+            SeriesId(SourceId("wfwf"), "opened"), "Opened", null, false, 200L)
+        val other = ml.melun.mangaview.data.library.SavedSeries(
+            SeriesId(SourceId("wfwf"), "other"), "Other", null, false, 100L)
+        val openedEpisode = EpisodeId(series.id, "9")
+        val otherEpisode = EpisodeId(other.id, "3")
+        val saved = ml.melun.mangaview.data.library.UserLibrarySnapshot(recent = listOf(
+            ml.melun.mangaview.data.library.RecentReading(other, otherEpisode,
+                ml.melun.mangaview.core.PageId.at(otherEpisode, 1), 210L, 200L),
+            ml.melun.mangaview.data.library.RecentReading(series, openedEpisode,
+                ml.melun.mangaview.core.PageId.at(openedEpisode, 2), 200L, 190L),
+        ))
+
+        assertEquals(openedEpisode, recentEpisodeFor(saved, series.id))
+        org.junit.Assert.assertNull(recentEpisodeFor(saved, SeriesId(SourceId("wfwf"), "unknown")))
+    }
+
+    @Test
     fun firstTimeReaderWarmsTheEarliestEpisodeEvenWhenCatalogIsNewestFirst() {
         val episodes = listOf(episode("12", 12.0), episode("2", 2.0), episode("1", 1.0))
 
