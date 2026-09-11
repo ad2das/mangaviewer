@@ -26,6 +26,15 @@ class NewxtoonHtmlParserTest {
         assertTrue(chapters.all { it.title.isNotBlank() })
     }
 
+    @Test fun parsesCatalogTitlesWithoutViewCounts() {
+        val cards = parser.seriesCards(fixture("comics.html"))
+        assertTrue(cards.any { it.id == "164" })
+        val target = cards.first { it.id == "164" }
+        assertEquals("나는 최약체 드래곤 테이머", target.title)
+        assertTrue(cards.none { it.title.contains("16,567") })
+        assertTrue(cards.all { it.thumbnailUrl?.startsWith("http") == true })
+    }
+
     @Test fun parsesGenresWithLabels() {
         val genres = parser.genres(fixture("comics.html"))
         assertTrue("expected many genres", genres.size > 10)

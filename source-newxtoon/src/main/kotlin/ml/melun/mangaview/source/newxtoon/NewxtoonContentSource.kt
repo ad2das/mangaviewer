@@ -5,7 +5,6 @@ import java.io.IOException
 import java.net.URLEncoder
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
-import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.PageSpec
 import ml.melun.mangaview.core.SeriesId
@@ -97,8 +96,8 @@ class NewxtoonContentSource(
         val html = fetch(episodePath(episodeId))
         val pages = parser.pages(html)
         check(pages.isNotEmpty()) { "NEWXTOON chapter has no page images" }
-        val specs = pages.mapIndexed { index, page ->
-            PageSpec(PageId(episodeId, page.url), index, dimensions(page))
+        val specs = pages.mapIndexed { index, _ ->
+            PageSpec(PageId(episodeId, pages[index].url), index)
         }
         val (previous, next) = neighbors(episodeId)
         val title = parser.title(html)?.takeIf { it.isNotBlank() } ?: episodeId.remoteKey
@@ -190,12 +189,6 @@ class NewxtoonContentSource(
 
     private fun series(card: NewxtoonSeriesCard) =
         SourceSeries(SeriesId(id, card.id), card.title, thumbnailKey = card.thumbnailUrl)
-
-    private fun dimensions(page: NewxtoonPage): PageDimensions? {
-        val width = page.width ?: return null
-        val height = page.height ?: return null
-        return if (width > 0 && height > 0) PageDimensions(width, height) else null
-    }
 
     private fun seriesPath(seriesId: SeriesId) = "/comics/${seriesId.remoteKey}"
 

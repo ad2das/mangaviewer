@@ -3,12 +3,12 @@ package ml.melun.mangaview.source.newxtoon
 import ml.melun.mangaview.source.SourceGenre
 import org.jsoup.Jsoup
 
-internal data class NewxtoonSeriesCard(val id: String, val title: String, val thumbnailUrl: String?)
-internal data class NewxtoonChapter(val id: String, val title: String)
-internal data class NewxtoonPage(val url: String, val width: Int?, val height: Int?)
+data class NewxtoonSeriesCard(val id: String, val title: String, val thumbnailUrl: String?)
+data class NewxtoonChapter(val id: String, val title: String)
+data class NewxtoonPage(val url: String, val width: Int?, val height: Int?)
 
 /** Pure HTML parsing for the Newxtoon server-rendered pages. */
-internal class NewxtoonHtmlParser(private val origin: String) {
+class NewxtoonHtmlParser(private val origin: String) {
     private val seriesLink = Regex("""(?:https?://[^/]+)?/comics/(\d+)(?:[?#].*)?$""")
     private val pageLink = Regex("""[?&]page=(\d+)""")
     private val genreLink = Regex("""[?&]genre=(\d+)""")
@@ -30,9 +30,11 @@ internal class NewxtoonHtmlParser(private val origin: String) {
         val result = linkedMapOf<String, NewxtoonSeriesCard>()
         for (anchor in document.select("a[href]")) {
             val id = seriesLink.matchEntire(anchor.attr("href").trim())?.groupValues?.get(1) ?: continue
-            val title = anchor.text().trim()
+            val title = anchor.selectFirst("h3")?.text()?.trim().orEmpty()
+                .ifEmpty { anchor.text().trim() }
             if (title.isEmpty()) continue
-            val thumbnail = anchor.selectFirst("img[src]")?.let { image ->
+            val cover = anchor.selectFirst("img.cover-image") ?: anchor.selectFirst("img[src]")
+            val thumbnail = cover?.let { image ->
                 image.absUrl("src").ifBlank { image.attr("src") }.ifBlank { null }
             }
             result.putIfAbsent(id, NewxtoonSeriesCard(id, title, thumbnail))

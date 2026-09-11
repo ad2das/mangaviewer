@@ -100,6 +100,9 @@ internal class EngineAppGraph(
         val live = when (spec.sourceId.value) {
             "wfwf" -> EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
+            "newxtoon" -> EngineNewxtoonSessionWork(userAgent, URI(
+                ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), transport, storage, positions,
+                parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
             "ntk" -> EngineNtkSessionWork(userAgent, ntkOrigin, transport, storage, positions,
                 parsingDispatcher, ntkBrowser, library::readingPosition, spec.initialPosition, observations, ntkPageTransport.value,
                 spec.initialAnchor)
