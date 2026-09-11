@@ -26,6 +26,13 @@ class NewxtoonHtmlParserTest {
         assertTrue(chapters.all { it.title.isNotBlank() })
     }
 
+    @Test fun parsesGenresWithLabels() {
+        val genres = parser.genres(fixture("comics.html"))
+        assertTrue("expected many genres", genres.size > 10)
+        assertTrue(genres.any { it.key == "genre:1" && it.label.isNotBlank() })
+        assertEquals(genres.size, genres.map { it.key }.toSet().size)
+    }
+
     @Test fun parsesReaderPagesInOrderWithDimensions() {
         val pages = parser.pages(fixture("chapter.html"))
         assertTrue("expected many reader pages", pages.size > 20)

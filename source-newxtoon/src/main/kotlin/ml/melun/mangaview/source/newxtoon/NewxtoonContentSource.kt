@@ -11,13 +11,16 @@ import ml.melun.mangaview.core.PageSpec
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.AdjacentEpisodes
+import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.PageValidation
 import ml.melun.mangaview.source.PreparationIntent
+import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceEpisode
+import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceSeries
@@ -25,6 +28,14 @@ import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 
 const val DEFAULT_NEWXTOON_ORIGIN = "https://newxtoon1.com"
+
+private val FALLBACK_NEWXTOON_GENRES = listOf(
+    "1" to "로맨스", "4" to "드라마", "2" to "판타지", "2739" to "로맨스판타지", "2753" to "성장물",
+    "3" to "액션", "2902" to "능력녀", "2774" to "소설원작", "2777" to "왕족/귀족", "2904" to "다정남",
+    "2772" to "먼치킨", "2903" to "로맨틱코미디", "2905" to "능력남", "3266" to "완결로맨스",
+    "2771" to "달달물", "6" to "개그/코미디", "2874" to "성장", "2754" to "복수", "2743" to "무협/사극",
+    "2757" to "빙의",
+).map { (id, label) -> SourceGenre("genre:$id", label) }
 
 data class NewxtoonConfig(
     val origin: String = DEFAULT_NEWXTOON_ORIGIN,
@@ -39,6 +50,15 @@ class NewxtoonContentSource(
     override val id = SourceId("newxtoon")
     private val parser = NewxtoonHtmlParser(config.origin)
     private val origin = config.origin
+    private var cachedGenres: List<SourceGenre>? = null
+
+    override suspend fun genres(kind: SeriesKind): List<SourceGenre> {
+        cachedGenres?.let { return it }
+        val parsed = runCatching { parser.genres(fetch("/comics")) }.getOrNull()
+        val result = parsed?.takeIf { it.isNotEmpty() } ?: FALLBACK_NEWXTOON_GENRES
+        cachedGenres = result
+        return result
+    }
 
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> {
         val html = fetch("/search?q=" + URLEncoder.encode(query, "UTF-8"))
@@ -47,8 +67,23 @@ class NewxtoonContentSource(
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         val page = query.cursor?.toIntOrNull() ?: 1
-        val html = fetch("/comics?page=$page")
+        val html = fetch("/comics?" + catalogQuery(query, page))
         return SourcePage(parser.seriesCards(html).map(::series), parser.nextPage(html, page)?.toString())
+    }
+
+    private fun catalogQuery(query: CatalogQuery, page: Int): String {
+        val params = mutableListOf(
+            "page=$page",
+            "sort=" + if (query.order == CatalogOrder.POPULAR) "popular" else "latest",
+        )
+        query.genre?.key?.let { key ->
+            when {
+                key.startsWith("genre:") -> params += "genre=" + key.removePrefix("genre:")
+                key.startsWith("category:") -> params +=
+                    "category=" + URLEncoder.encode(key.removePrefix("category:"), "UTF-8")
+            }
+        }
+        return params.joinToString("&")
     }
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> {

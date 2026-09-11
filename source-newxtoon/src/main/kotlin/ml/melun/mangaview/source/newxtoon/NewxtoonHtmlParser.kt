@@ -1,5 +1,6 @@
 package ml.melun.mangaview.source.newxtoon
 
+import ml.melun.mangaview.source.SourceGenre
 import org.jsoup.Jsoup
 
 internal data class NewxtoonSeriesCard(val id: String, val title: String, val thumbnailUrl: String?)
@@ -10,6 +11,19 @@ internal data class NewxtoonPage(val url: String, val width: Int?, val height: I
 internal class NewxtoonHtmlParser(private val origin: String) {
     private val seriesLink = Regex("""(?:https?://[^/]+)?/comics/(\d+)(?:[?#].*)?$""")
     private val pageLink = Regex("""[?&]page=(\d+)""")
+    private val genreLink = Regex("""[?&]genre=(\d+)""")
+
+    fun genres(html: String): List<SourceGenre> {
+        val document = Jsoup.parse(html, origin)
+        val result = linkedMapOf<String, SourceGenre>()
+        for (anchor in document.select("a[href*=genre=]")) {
+            val id = genreLink.find(anchor.attr("href"))?.groupValues?.get(1) ?: continue
+            val label = anchor.text().trim()
+            if (label.isEmpty()) continue
+            result.putIfAbsent(id, SourceGenre("genre:$id", label))
+        }
+        return result.values.toList()
+    }
 
     fun seriesCards(html: String): List<NewxtoonSeriesCard> {
         val document = Jsoup.parse(html, origin)

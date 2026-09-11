@@ -29,6 +29,14 @@ class NewxtoonSourceDeviceTest {
             val catalog = source.catalog(CatalogQuery(SeriesKind.COMIC, CatalogOrder.LATEST))
             result.put("catalogCount", catalog.items.size)
             result.put("catalogNextCursor", catalog.nextCursor)
+            val genres = source.genres(SeriesKind.COMIC)
+            result.put("genreCount", genres.size)
+            result.put("firstGenre", genres.firstOrNull()?.label)
+            val genreCatalog = source.catalog(CatalogQuery(
+                SeriesKind.COMIC, CatalogOrder.LATEST, genre = genres.first()))
+            result.put("genreCatalogCount", genreCatalog.items.size)
+            val popular = source.catalog(CatalogQuery(SeriesKind.COMIC, CatalogOrder.POPULAR))
+            result.put("popularCount", popular.items.size)
             val series = SeriesId(SourceId("newxtoon"), "17974")
             val episodes = source.episodes(series).items
             result.put("episodeCount", episodes.size)
