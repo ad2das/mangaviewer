@@ -1,5 +1,6 @@
 package ml.melun.mangaview.data.network
 
+import java.io.IOException
 import java.net.SocketTimeoutException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
@@ -128,6 +129,63 @@ class SniRecoveryDeadlineTest {
             assertEquals(1_500L, testScheduler.currentTime)
             assertEquals(1, calls)
             assertEquals(1, body.closes)
+        } finally { protected.close() }
+    }
+
+    @Test fun aPromptRecoveryIsNotDuplicated() = runTest {
+        var recoveryCalls = 0
+        val body = Body(byteArrayOf(5))
+        val protected = SniRecoveryTransport(SourceTransport { throw IOException("blocked") },
+            { SourceTransport { recoveryCalls++; response(body) } },
+            { testScheduler.currentTime * 1_000_000L })
+        try {
+            val result = protected.execute(request().copy(priority = PageFetchPriority.FOCUS))
+            assertArrayEquals(body.bytes, result.readBytes(1024))
+            assertEquals(1, recoveryCalls)
+            assertEquals(0L, testScheduler.currentTime)
+        } finally { protected.close() }
+    }
+
+    @Test fun aSlowRecoveryRacesASecondAttempt() = runTest {
+        var recoveryCalls = 0
+        val fast = Body(byteArrayOf(6))
+        val protected = SniRecoveryTransport(SourceTransport { throw IOException("blocked") },
+            { SourceTransport { recoveryCalls++; if (recoveryCalls == 1) awaitCancellation() else response(fast) } },
+            { testScheduler.currentTime * 1_000_000L })
+        try {
+            val result = protected.execute(request().copy(priority = PageFetchPriority.FORWARD))
+            assertArrayEquals(fast.bytes, result.readBytes(1024))
+            assertEquals(2, recoveryCalls)
+            assertEquals(800L, testScheduler.currentTime)
+            assertEquals(1, fast.closes)
+        } finally { protected.close() }
+    }
+
+    @Test fun ordinaryRequestsAreNotHedged() = runTest {
+        var recoveryCalls = 0
+        val protected = SniRecoveryTransport(SourceTransport { throw IOException("blocked") },
+            { SourceTransport { recoveryCalls++; delay(3_000); response(Body(byteArrayOf(8))) } },
+            { testScheduler.currentTime * 1_000_000L })
+        try {
+            protected.execute(request()).close()
+            assertEquals(1, recoveryCalls)
+            assertEquals(3_000L, testScheduler.currentTime)
+        } finally { protected.close() }
+    }
+
+    @Test fun hedgedRecoveryReportsTheLastFailureWhenBothAttemptsFail() = runTest {
+        var recoveryCalls = 0
+        val protected = SniRecoveryTransport(SourceTransport { throw IOException("blocked") },
+            { SourceTransport {
+                recoveryCalls++
+                delay(1_000)
+                throw IOException("recovery-$recoveryCalls")
+            } },
+            { testScheduler.currentTime * 1_000_000L })
+        try {
+            try { protected.execute(request().copy(priority = PageFetchPriority.VISIBLE)); fail("Expected recovery failure") }
+            catch (failure: IOException) { assertTrue(failure.message in setOf("recovery-1", "recovery-2")) }
+            assertEquals(2, recoveryCalls)
         } finally { protected.close() }
     }
 

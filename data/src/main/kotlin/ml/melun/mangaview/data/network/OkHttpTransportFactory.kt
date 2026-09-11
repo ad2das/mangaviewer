@@ -23,7 +23,9 @@ class OkHttpTransportFactory(
     private fun createRecovery(): ml.melun.mangaview.source.SourceTransport {
         val dns = EncryptedSourceDns()
         val relay = LocalTlsRelay(dns)
+        val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
         val client = OkHttpClient.Builder()
+            .dispatcher(dispatcher)
             .proxy(relay.proxy)
             .proxyAuthenticator { _, response ->
                 if (response.request.header("Proxy-Authorization") != null) null

@@ -6,7 +6,12 @@ import java.net.URI
 import java.net.SocketTimeoutException
 import java.security.cert.CertificateException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLPeerUnverifiedException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import ml.melun.mangaview.source.*
@@ -78,12 +83,38 @@ class SniRecoveryTransport(
         direct(request.copy(totalTimeoutMillis = remaining))
     }
 
-    private suspend fun recover(request: SourceRequest): SourceResponse {
+    private suspend fun recover(request: SourceRequest): SourceResponse =
+        if (request.qualifiesForHedge()) hedgedRecover(request) else sendRecovery(request)
+
+    private suspend fun sendRecovery(request: SourceRequest): SourceResponse {
         var acquired: SourceResponse? = null
         return try {
             withTimeout(request.totalTimeoutMillis) { recovery.value.execute(request).also { acquired = it } }
         } catch (failure: Throwable) { acquired?.close(); throw failure }
     }
+
+    /**
+     * The blocked origin answers the same request in anywhere between half a second and
+     * several seconds; a delayed duplicate turns that lottery into the faster of two draws.
+     */
+    private suspend fun hedgedRecover(request: SourceRequest): SourceResponse = coroutineScope {
+        val winner = CompletableDeferred<SourceResponse>()
+        val pending = AtomicInteger(2)
+        fun attempt(delayMillis: Long) = launch {
+            try {
+                if (delayMillis > 0) delay(delayMillis)
+                val response = sendRecovery(request)
+                if (!winner.complete(response)) response.close()
+            } catch (failure: Throwable) {
+                if (pending.decrementAndGet() == 0) winner.completeExceptionally(failure)
+            }
+        }
+        val attempts = listOf(attempt(0L), attempt(HEDGE_DELAY_MILLIS))
+        try { winner.await() } finally { attempts.forEach { it.cancel() } }
+    }
+
+    private fun SourceRequest.qualifiesForHedge(): Boolean =
+        method == SourceHttpMethod.GET && priority in HEDGED_PRIORITIES
 
     override fun routeParallelism() = primary.routeParallelism()
     override fun supportsProtocolSelection() = primary.supportsProtocolSelection()
@@ -112,6 +143,13 @@ class SniRecoveryTransport(
     companion object {
         const val DIRECT_HEADER_TIMEOUT_MILLIS = 1_000L
         const val RECOVERY_LIFETIME_NANOS = 10L * 60 * 1_000_000_000
+        const val HEDGE_DELAY_MILLIS = 800L
+        val HEDGED_PRIORITIES = setOf(
+            PageFetchPriority.FOCUS,
+            PageFetchPriority.VISIBLE,
+            PageFetchPriority.IMMINENT_FORWARD,
+            PageFetchPriority.FORWARD,
+        )
         // The library and the viewer engine run in one process; a host proven blocked once
         // must not pay the direct-route timeout again in the other transport.
         val SHARED_RECOVERED_HOSTS = ConcurrentHashMap<String, Long>()
