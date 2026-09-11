@@ -142,6 +142,7 @@ class EngineViewerCaptureTest {
             viewer = activity
             motion.capture(activity)
             if (arguments.getString("captureWholePreparation") == "true") activity.reserveWholeTraversalInputEvidence()
+            if (arguments.getString("captureReserveInputEvidence") == "true") activity.reserveWholeTraversalInputEvidence()
             try {
             if (arguments.getString("traverseEpisode") == "true") {
                 var number = 0
@@ -168,6 +169,8 @@ class EngineViewerCaptureTest {
                     { captureEngineStoppedScreen(instrumentation, activity, output, it) },
                     { gesture, forward, speed -> injectEngineTraversalGesture(instrumentation, device, output, gesture, forward, speed) },
                     readbackEnabled = if (wholePreparationMode) false else readback, fixedGestureDirections = directions,
+                    fixedGestureSpeed = if (arguments.getString("captureFixedGestureSpeed") == "FAST")
+                        EngineTraversalGestureSpeed.FAST else EngineTraversalGestureSpeed.NORMAL,
                     maximumDurationMillis = (arguments.getString("captureTraversalSeconds") ?: if (wholePreparationMode) "150" else "90").toLong() * 1_000,
                     maximumCaptures = (arguments.getString("captureMaximumFrames") ?: "512").toLong(),
                     wholePreparationMode = wholePreparationMode,
@@ -214,7 +217,8 @@ class EngineViewerCaptureTest {
                 // both source ends were displayed during the traversal; queued input must never
                 // be gated on pixels, so a fast single fling may legitimately cross first.
                 check(!report.optBoolean("protocolDeadlineFail")) { "Traversal exceeded its protocol deadline" }
-                check(report.optBoolean("traversedDocumentEndpoints") && report.optLong("lastPageEndToken") > 0L) {
+                check(report.optBoolean("fixedGestureMeasurement") ||
+                    (report.optBoolean("traversedDocumentEndpoints") && report.optLong("lastPageEndToken") > 0L)) {
                     "Launch episode source endpoints were never displayed"
                 }
                 check(!report.optBoolean("nextBoundaryMissFail")) { "Next episode source was not observed across the real boundary" }

@@ -79,6 +79,7 @@ internal suspend fun traverseCapturedEpisode(
     injectGesture: (Int, Boolean, EngineTraversalGestureSpeed) -> Unit,
     readbackEnabled: Boolean = true,
     fixedGestureDirections: List<Boolean>? = null,
+    fixedGestureSpeed: EngineTraversalGestureSpeed = EngineTraversalGestureSpeed.NORMAL,
     maximumDurationMillis: Long = 90_000,
     maximumCaptures: Long = 512,
     wholePreparationMode: Boolean = false,
@@ -213,7 +214,7 @@ internal suspend fun traverseCapturedEpisode(
         // Start input immediately, including when resuming in the middle of an existing episode.
         if (fixedGestureDirections != null) {
             require(fixedGestureDirections.isNotEmpty())
-            fixedGestureDirections.forEach { swipe(it) }
+            fixedGestureDirections.forEach { swipe(it, fixedGestureSpeed) }
         } else if (wholePreparationMode) {
             val openedAt = requireNotNull(activity.viewerStartupTimingSnapshot()).openStartedAtNanos
             val readiness = WholePreparationGate(launchRequestedAtNanos ?: openedAt, System::nanoTime)

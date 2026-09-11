@@ -63,21 +63,22 @@ internal class CorpusUiEntry(
         ml.melun.mangaview.ui.library.dismissAutomaticUpdateNotice(device)
         await { it.sources.isNotEmpty() }
         timing.mark("sources-ready")
-        repeat(state().sources.size) {
-            val current = state()
-            if (current.selectedSourceId == series.id.sourceId) return@repeat
-            val label = current.sources.single { it.id == current.selectedSourceId }.label
-            val chip = device.wait(Until.findObject(By.desc(label)), 5_000)
-            if (chip == null) {
-                val evidence = requireNotNull(instrumentation.targetContext.getExternalFilesDir("ux-evidence"))
-                    .resolve("source-chip-failure-${System.nanoTime()}").apply { check(mkdirs()) }
-                device.dumpWindowHierarchy(evidence.resolve("hierarchy.xml"))
-                device.takeScreenshot(evidence.resolve("screen.png"))
-                error("Source chip not found: label=$label selected=${current.selectedSourceId} " +
-                    "target=${series.id.sourceId} evidence=$evidence")
+        // The library snapshot may restore the saved provider while we cycle; drive the cycle
+        // purely from the visible chip so a restore can never desynchronise state and UI.
+        val targetLabel = state().sources.single { it.id == series.id.sourceId }.label
+        repeat(state().sources.size * 2 + 2) {
+            val shown = shownChipLabel()
+            if (shown == null) failSourceChip("no provider chip visible", targetLabel)
+            if (shown == targetLabel) return@repeat
+            clearUiAutomationCache()
+            val chip = requireNotNull(device.findObject(By.desc(shown)))
+            (clickableAncestor(chip) ?: chip).click()
+            val deadline = android.os.SystemClock.elapsedRealtime() + 5_000
+            while (android.os.SystemClock.elapsedRealtime() < deadline && shownChipLabel() == shown) {
+                android.os.SystemClock.sleep(100)
             }
-            chip.click()
         }
+        if (shownChipLabel() != targetLabel) failSourceChip("provider chip did not cycle to target", targetLabel)
         check(state().selectedSourceId == series.id.sourceId) { "UI source selection failed" }
         timing.mark("source-selected")
         requireNotNull(device.wait(Until.findObject(By.desc("하단 검색")), 5_000)).click()
@@ -212,6 +213,26 @@ internal class CorpusUiEntry(
         check(device.wait(Condition<UiDevice, Boolean> { predicate(state()) }, 30_000) == true) {
             "Library UI did not reach required navigation state: ${state().content}"
         }
+    }
+
+    /** The provider chip currently rendered by the library, or null when no known chip is visible. */
+    private fun shownChipLabel(): String? = state().sources.map { it.label }.firstOrNull { label ->
+        clearUiAutomationCache()
+        device.findObject(By.desc(label)) != null
+    }
+
+    private fun clearUiAutomationCache() {
+        if (android.os.Build.VERSION.SDK_INT >= 34) instrumentation.uiAutomation.clearCache()
+    }
+
+    private fun failSourceChip(reason: String, targetLabel: String): Nothing {
+        val settled = state()
+        val evidence = requireNotNull(instrumentation.targetContext.getExternalFilesDir("ux-evidence"))
+            .resolve("source-chip-failure-${System.nanoTime()}").apply { check(mkdirs()) }
+        device.dumpWindowHierarchy(evidence.resolve("hierarchy.xml"))
+        device.takeScreenshot(evidence.resolve("screen.png"))
+        error("Source chip $reason: target=$targetLabel selected=${settled.selectedSourceId} " +
+            "sources=${settled.sources.map { it.id }} evidence=$evidence")
     }
 
     private fun findTextInList(title: String): UiObject2 {

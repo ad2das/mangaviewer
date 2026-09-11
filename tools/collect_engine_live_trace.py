@@ -49,6 +49,7 @@ def main():
     parser.add_argument('--catalog-entry', type=Path, help='Previously discovered fixed sample identity/titles; actual UI still verifies identity')
     parser.add_argument('--no-readback', action='store_true', help='Timing control only; no pixel/row qualification')
     parser.add_argument('--gesture-plan', type=Path, help='Fixed boolean direction list for matched timing controls')
+    parser.add_argument('--gesture-plan-fast', action='store_true', help='Inject fixed-plan gestures at maximum move speed for stress controls')
     parser.add_argument('--no-trace', action='store_true', help='Fixed no-readback timing control only; cannot qualify display evidence')
     parser.add_argument('--trace-config', type=Path, help='Explicit diagnostic Perfetto config; copied into the capture evidence')
     parser.add_argument('--raw-monotonic-ftrace', action='store_true', help='Temporarily own/restore raw MONOTONIC tracefs clock and buffers')
@@ -99,6 +100,8 @@ def main():
         measurement_args += ['-e', 'captureNavigationAsyncMoves', 'true']
     if args.no_readback and not args.traverse_episode:
         parser.error('--no-readback requires --traverse-episode')
+    if args.gesture_plan_fast and not args.gesture_plan:
+        parser.error('--gesture-plan-fast requires --gesture-plan')
     if args.gesture_plan:
         import base64
         if not args.traverse_episode:
@@ -108,6 +111,9 @@ def main():
         if not isinstance(directions, list) or not 1 <= len(directions) <= 512 or not all(type(v) is bool for v in directions):
             parser.error('gesture plan must contain 1..512 boolean directions')
         measurement_args += ['-e', 'captureGesturePlanBase64', base64.b64encode(gesture_raw).decode('ascii')]
+        if args.gesture_plan_fast:
+            measurement_args += ['-e', 'captureFixedGestureSpeed', 'FAST',
+                                 '-e', 'captureReserveInputEvidence', 'true']
     if args.catalog_entry:
         import base64
         if not args.catalog_ui:
