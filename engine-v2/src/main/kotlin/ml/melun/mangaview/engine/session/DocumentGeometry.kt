@@ -156,7 +156,11 @@ internal class DocumentGeometry(
             boundary = DocumentBoundary.END)
         val moved = walkForward(bottom.cursor, distance, null)
         val top = walkBackward(moved.cursor, tail)
-        check(top.blocker == null) { "Forward movement lost its verified viewport geometry" }
+        // The top-edge correction can cross back into a page whose dimensions were
+        // never resolved (for example a restored deep position). That is a resolvable
+        // blocker: defer the pending input and request the page instead of failing.
+        if (top.blocker != null) return MoveResult(cursor, BigRational.ZERO, distance,
+            blocker = top.blocker)
         return moved.copy(cursor = top.cursor ?: cursor)
     }
 

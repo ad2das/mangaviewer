@@ -216,6 +216,40 @@ class EngineSessionTest {
     }
 
     @Test
+    fun forwardInputDefersOnUnknownPageInsteadOfFailing() {
+        val page0 = PageId.at(episode, 0)
+        val page1 = PageId.at(episode, 1)
+        val session = readySession(
+            sessionId = 20L,
+            viewport = EngineViewport(100, 50),
+            pages = listOf(
+                PageSpec(page0, 0, dimensions = PageDimensions(100, 100)),
+                PageSpec(page1, 1),
+                PageSpec(PageId.at(episode, 2), 2),
+            ),
+        )
+
+        val forward = session.dispatch(
+            SessionEvent.Input(sample(1L, 120L * SourceAnchor.SCREEN_UNITS_PER_PIXEL)),
+        )
+
+        assertEquals(InputOutcome.DEFERRED, forward.receipts.single().outcome)
+        assertEquals(50L * SourceAnchor.SCREEN_UNITS_PER_PIXEL,
+            forward.receipts.single().appliedScreenUnits)
+        assertTrue(page1 in forward.snapshot.requiredDimensions)
+
+        val resolved = session.dispatch(
+            SessionEvent.DimensionsResolved(1L, page1, PageDimensions(100, 100)),
+        )
+
+        assertEquals(0, resolved.snapshot.pendingInputCount)
+        assertEquals(InputOutcome.APPLIED, resolved.receipts.single().outcome)
+        assertEquals(120L * SourceAnchor.SCREEN_UNITS_PER_PIXEL,
+            resolved.receipts.single().appliedScreenUnits)
+        assertEquals(20L * SourceAnchor.SOURCE_UNITS_PER_PIXEL, resolved.snapshot.anchor?.sourceYQ32)
+    }
+
+    @Test
     fun unknownNavigationUsesProvisionalEndWithoutBackwardCorrection() {
         val page = PageId.at(episode, 0)
         val session = unknownReadySession(
