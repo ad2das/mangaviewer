@@ -259,6 +259,11 @@ internal class ChromeGestureRelay(
             finishHiddenGesture()
             return
         }
+        if (axisLock.currentRoute == VerticalGestureAxisLock.Route.PENDING) {
+            // The relay consumes DOWN while watching for a drag, so a stationary tap
+            // must be replayed as a click or the button listener would never fire.
+            source.performClick()
+        }
         recyclePending()
     }
 
