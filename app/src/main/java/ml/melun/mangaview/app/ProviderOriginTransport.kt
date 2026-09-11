@@ -4,11 +4,19 @@ import java.io.Closeable
 import java.io.IOException
 import java.net.URI
 import kotlinx.coroutines.withTimeout
+import ml.melun.mangaview.engine.content.PageHttpException
 import ml.melun.mangaview.source.*
+
+internal interface ProviderOrigins {
+    fun provider(url: String): String?
+    suspend fun current(provider: String, fallback: String): String
+    suspend fun recover(provider: String, failed: String, transport: SourceTransport): String?
+    suspend fun observeRedirect(provider: String, finalOrigin: String, transport: SourceTransport)
+}
 
 internal class ProviderOriginTransport(
     private val delegate: SourceTransport,
-    private val directory: ProviderOriginDirectory,
+    private val directory: ProviderOrigins,
 ) : SourceTransport by delegate, Closeable {
     override suspend fun execute(request: SourceRequest) = execute(request, delegate::execute)
     override suspend fun executeOnFreshRoute(request: SourceRequest) = execute(request, delegate::executeOnFreshRoute)
@@ -43,8 +51,10 @@ internal class ProviderOriginTransport(
 
     private fun checked(response: SourceResponse): SourceResponse {
         if (response.statusCode in RECOVERABLE_STATUS) {
+            // Typed status failure so engine catalog work can apply its alternate-document
+            // fallback for provider 404/405/410 instead of surfacing the raw origin error.
             response.close()
-            throw IOException("Provider origin returned ${response.statusCode}")
+            throw PageHttpException(response.statusCode)
         }
         return response
     }

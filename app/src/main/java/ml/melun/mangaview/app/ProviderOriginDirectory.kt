@@ -11,14 +11,14 @@ import ml.melun.mangaview.source.ntk.NtkOriginResolver
 import ml.melun.mangaview.source.wfwf.WfwfOriginResolver
 
 /** Catalogs, artwork and the native viewer share the same verified, persisted origin. */
-internal class ProviderOriginDirectory(context: Context, private val io: CoroutineDispatcher, private val userAgent: String) {
+internal class ProviderOriginDirectory(context: Context, private val io: CoroutineDispatcher, private val userAgent: String) : ProviderOrigins {
     private val preferences by lazy { context.getSharedPreferences("verified_source_origins", Context.MODE_PRIVATE) }
     private val known = java.util.concurrent.ConcurrentHashMap<String, String>()
     @Volatile private var loaded = false
     private val loadLock = Mutex()
     private val locks = mapOf("ntk" to Mutex(), "wfwf" to Mutex())
 
-    fun provider(url: String): String? {
+    override fun provider(url: String): String? {
         val host = URI(url).host ?: return null
         return when {
             host in NTK_HOSTS || Regex("toki[0-9]+\\.com").matches(host) -> "ntk"
@@ -27,7 +27,7 @@ internal class ProviderOriginDirectory(context: Context, private val io: Corouti
         }
     }
 
-    suspend fun current(provider: String, fallback: String): String {
+    override suspend fun current(provider: String, fallback: String): String {
         if (!loaded) withContext(io) {
             loadLock.withLock {
                 if (!loaded) {
@@ -44,7 +44,7 @@ internal class ProviderOriginDirectory(context: Context, private val io: Corouti
         preferences.edit().putString(provider, origin).apply()
     }
 
-    suspend fun recover(provider: String, failed: String, transport: SourceTransport): String? = withContext(io) {
+    override suspend fun recover(provider: String, failed: String, transport: SourceTransport): String? = withContext(io) {
         locks.getValue(provider).withLock {
             val published = current(provider, failed)
             if (published != failed) return@withLock published
@@ -58,7 +58,7 @@ internal class ProviderOriginDirectory(context: Context, private val io: Corouti
         }
     }
 
-    suspend fun observeRedirect(provider: String, finalOrigin: String, transport: SourceTransport) {
+    override suspend fun observeRedirect(provider: String, finalOrigin: String, transport: SourceTransport) {
         if (!validOrigin(finalOrigin)) return
         withContext(io) {
             locks.getValue(provider).withLock {
