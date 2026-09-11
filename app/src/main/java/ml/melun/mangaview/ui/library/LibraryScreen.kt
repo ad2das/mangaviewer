@@ -158,7 +158,7 @@ private fun MainTopBar(
                 .padding(start = 7.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val art = if (source?.id?.value == "ntk") LegacySiteArtwork.ntk else LegacySiteArtwork.wfwf
+            val art = LegacySiteArtwork.forSource(source?.id?.value)
             Image(art, null, Modifier.size(22.dp), contentScale = ContentScale.Fit)
             Spacer(Modifier.width(6.dp))
             BasicText(
