@@ -37,6 +37,8 @@ import ml.melun.mangaview.source.ntk.NtkBrowserIdentity
 import ml.melun.mangaview.source.ntk.NtkWebViewAccessGateway
 import ml.melun.mangaview.source.wfwf.WfwfConfig
 import ml.melun.mangaview.source.wfwf.WfwfContentSource
+import ml.melun.mangaview.source.newxtoon.NewxtoonConfig
+import ml.melun.mangaview.source.newxtoon.NewxtoonContentSource
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.viewer.runtime.PipelineRawPagePort
 import ml.melun.mangaview.viewer.runtime.ViewerCachedResume
@@ -79,6 +81,7 @@ internal class AppGraph(
     )
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
     private val wfwfSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createWfwfSource)
+    private val newxtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNewxtoonSource)
     val sources = SourceRegistry(
         registrations = listOf(
             SourceRegistration(NTK_ID, "NTK") {
@@ -89,6 +92,9 @@ internal class AppGraph(
             },
             SourceRegistration(WFWF_ID, "WFWF") {
                 OfflineContentSource(wfwfSource.value, offlineStore)
+            },
+            SourceRegistration(NEWXTOON_ID, "뉴엑스툰") {
+                OfflineContentSource(newxtoonSource.value, offlineStore)
             },
         ),
     )
@@ -176,7 +182,11 @@ internal class AppGraph(
             try {
                 if (wfwfSource.isInitialized()) wfwfSource.value.close()
             } finally {
-                ntkGateway.close()
+                try {
+                    if (newxtoonSource.isInitialized()) newxtoonSource.value.close()
+                } finally {
+                    ntkGateway.close()
+                }
             }
         }
     }
@@ -291,6 +301,31 @@ internal class AppGraph(
             transportFactory.create()
         }), "catalog-wfwf", { networkEvidenceObserver })
 
+    private fun createNewxtoonSource(): DeferredContentSource = DeferredContentSource(
+        id = NEWXTOON_ID,
+        scope = applicationScope,
+        start = CoroutineStart.LAZY,
+        initialize = ::initializeNewxtoonSource,
+    )
+
+    private suspend fun initializeNewxtoonSource(): DeferredSourceResource {
+        coroutineContext.ensureActive()
+        val transport = createNewxtoonTransport()
+        try {
+            val source = NewxtoonContentSource(NewxtoonConfig(userAgent = userAgent()), transport)
+            transport.warmConnections(listOf(ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), preferQuic = false)
+            return DeferredSourceResource(source) {
+                (transport as? Closeable)?.close()
+            }
+        } catch (failure: Throwable) {
+            (transport as? Closeable)?.close()
+            throw failure
+        }
+    }
+
+    private fun createNewxtoonTransport(): SourceTransport = ObservedSourceTransport(
+        transportFactory.protect(transportFactory.create()), "catalog-newxtoon", { networkEvidenceObserver })
+
     private fun userAgent(): String =
         "Mozilla/5.0 (Linux; Android ${android.os.Build.VERSION.RELEASE}; " +
             "${android.os.Build.MODEL}) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -302,5 +337,6 @@ internal class AppGraph(
         const val NTK_PRECONNECT_TIMEOUT_MILLIS = 4_000L
         val NTK_ID = SourceId("ntk")
         val WFWF_ID = SourceId("wfwf")
+        val NEWXTOON_ID = SourceId("newxtoon")
     }
 }
