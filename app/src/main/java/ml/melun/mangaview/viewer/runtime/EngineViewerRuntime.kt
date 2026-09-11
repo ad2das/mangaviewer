@@ -169,18 +169,28 @@ internal class EngineViewerRuntime(
             Math.toIntExact(viewport.height.units / 1024)))
     }
 
-    override fun surfaceAvailable(surface: Surface, width: Int, height: Int, refreshRate: Float) {
+    override fun surfaceAvailable(surface: Surface, width: Int, height: Int, refreshRate: Float,
+        reportAttached: (Boolean) -> Unit) {
         val generation = ++surfaceGeneration
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
                 val attached = renderer.attach(surface, width, height, refreshRate)
                 if (!closing && generation == surfaceGeneration) {
-                    check(attached) { "Viewer surface attach failed" }
-                    graphics.enabled(true)
-                    graphics.update(content.snapshot)
-                }
-            } catch (failure: Throwable) { if (!closing && generation == surfaceGeneration) reportFailure(failure) }
+                    if (attached) {
+                        graphics.enabled(true)
+                        graphics.update(content.snapshot)
+                    }
+                    reportAttached(attached)
+                } else reportAttached(false)
+            } catch (failure: Throwable) {
+                if (!closing && generation == surfaceGeneration) reportFailure(failure)
+                reportAttached(false)
+            }
         }
+    }
+
+    override fun surfaceAttachExhausted() {
+        if (!closing) reportFailure(IllegalStateException("Viewer surface attach failed"))
     }
 
     override fun surfaceUnavailable() {

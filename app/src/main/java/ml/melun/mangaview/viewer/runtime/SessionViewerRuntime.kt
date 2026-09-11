@@ -204,11 +204,13 @@ internal class SessionViewerRuntime(
         width: Int,
         height: Int,
         refreshRate: Float,
+        reportAttached: (Boolean) -> Unit,
     ) {
-        if (closed.get()) return
+        if (closed.get()) { reportAttached(false); return }
         renderer.attach(surface, width, height, refreshRate) { attachment ->
-            if (!attachment.attached || closed.get()) return@attach
+            if (!attachment.attached || closed.get()) { reportAttached(false); return@attach }
             refreshRenderer(attachment.rendererEpoch, attachment.invalidated)
+            reportAttached(true)
         }
     }
 

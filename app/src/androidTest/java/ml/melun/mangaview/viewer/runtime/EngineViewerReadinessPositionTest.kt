@@ -41,7 +41,9 @@ class EngineViewerReadinessPositionTest {
                     EngineViewport(100, 100), Dispatchers.IO, {}, {}, { failures += it })
                 try {
                     runtime.open()
-                    runtime.surfaceAvailable(surface, 100, 100, 60F)
+                    runtime.surfaceAvailable(surface, 100, 100, 60F) { attached ->
+                        if (!attached) failures += IllegalStateException("surface attach failed")
+                    }
                     withTimeout(10_000) {
                         while (runtime.bookmarkSnapshot() == null) {
                             assertTrue(failures.toString(), failures.isEmpty())

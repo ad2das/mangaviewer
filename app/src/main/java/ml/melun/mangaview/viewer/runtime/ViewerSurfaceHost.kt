@@ -16,8 +16,15 @@ import ml.melun.mangaview.viewer.Viewport
 
 internal interface ViewerSurfaceSink {
     fun viewportChanged(viewport: Viewport)
-    fun surfaceAvailable(surface: Surface, width: Int, height: Int, refreshRate: Float)
+    fun surfaceAvailable(
+        surface: Surface,
+        width: Int,
+        height: Int,
+        refreshRate: Float,
+        reportAttached: (Boolean) -> Unit,
+    )
     fun surfaceUnavailable()
+    fun surfaceAttachExhausted() {}
     fun userScroll(
         delta: FixedPx,
         velocityPixelsPerSecond: Float,
@@ -58,6 +65,9 @@ internal class ViewerSurfaceHost(
     private var foreground = true
     private var surfaceReady = false
     private var rendererAttached = false
+    private var attachPending = false
+    private var attachEpoch = 0L
+    private var attachFailures = 0
     private var attachedWidth = 0
     private var attachedHeight = 0
 
@@ -311,15 +321,40 @@ internal class ViewerSurfaceHost(
     }
 
     private fun attachIfReady() {
-        if (!foreground || rendererAttached || !surfaceReady || !isAttachedToWindow ||
+        if (!foreground || rendererAttached || attachPending || !surfaceReady || !isAttachedToWindow ||
             width <= 0 || height <= 0) return
+        attachPending = true
         rendererAttached = true
         attachedWidth = width
         attachedHeight = height
-        sink.surfaceAvailable(holder.surface, width, height, display?.refreshRate ?: 60.0F)
+        val epoch = ++attachEpoch
+        sink.surfaceAvailable(holder.surface, width, height, display?.refreshRate ?: 60.0F) { attached ->
+            if (epoch != attachEpoch) return@surfaceAvailable
+            attachPending = false
+            if (attached) {
+                attachFailures = 0
+                return@surfaceAvailable
+            }
+            // A window can die silently while backgrounded. Treat one failed attach as
+            // recoverable and wait for the next lifecycle event or a short retry instead of
+            // latching a permanent error the way the old single-shot attach did.
+            rendererAttached = false
+            attachedWidth = 0
+            attachedHeight = 0
+            attachFailures++
+            if (attachFailures <= MAXIMUM_ATTACH_RETRIES && foreground && surfaceReady && isAttachedToWindow) {
+                postDelayed({ if (epoch == attachEpoch) attachIfReady() }, ATTACH_RETRY_DELAY_MILLIS)
+            } else {
+                attachFailures = 0
+                sink.surfaceAttachExhausted()
+            }
+        }
     }
 
     private fun detachRenderer() {
+        attachEpoch++
+        attachPending = false
+        attachFailures = 0
         if (!rendererAttached) return
         rendererAttached = false
         attachedWidth = 0
@@ -340,5 +375,7 @@ internal class ViewerSurfaceHost(
     private companion object {
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val NANOS_PER_SECOND = 1_000_000_000.0
+        const val MAXIMUM_ATTACH_RETRIES = 25
+        const val ATTACH_RETRY_DELAY_MILLIS = 200L
     }
 }
