@@ -274,7 +274,7 @@ internal fun submittedSourcePosition(scene: EngineSurfaceScene): Pair<SourceAnch
     return anchor.copy(sourceYQ32 = sourceYQ32) to offset
 }
 
-/** Split reading is session-only: a right-half source row folds back onto the original page row. */
+/** Split reading is session-only: a second-half source row folds back onto the original page row. */
 internal fun foldSplitSource(sourceYQ32: Long, dimensions: PageDimensions): Long {
     if (!SpreadPages.isSpread(dimensions)) return sourceYQ32
     val half = dimensions.heightPx.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL
@@ -292,7 +292,8 @@ internal fun releasesStartupInput(
     ) return false
     return value.scene.placements.any { placement ->
         val tile = placement.texture.tile
-        val offsetRows = if (tile.cropLeftPx > 0) tile.dimensions.heightPx.toLong() else 0L
+        val offsetRows = SpreadPages.displayRowOffset(tile.dimensions, tile.cropLeftPx,
+            tile.cropRightPx).toLong()
         val tileTopQ32 = (tile.sourceTop.toLong() + offsetRows) * SourceAnchor.SOURCE_UNITS_PER_PIXEL
         val tileBottomQ32 = (tile.sourceBottom.toLong() + offsetRows) * SourceAnchor.SOURCE_UNITS_PER_PIXEL
         state.visibleRegions.any { region ->

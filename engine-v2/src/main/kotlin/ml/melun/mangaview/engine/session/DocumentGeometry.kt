@@ -64,10 +64,10 @@ internal class DocumentGeometry(
     fun applySplitMode(enabled: Boolean) {
         if (splitMode == enabled) return
         splitMode = enabled
-        if (!enabled) foldAnchorOutOfTheRightHalf()
+        if (!enabled) foldAnchorOutOfTheSecondHalf()
     }
 
-    private fun foldAnchorOutOfTheRightHalf() {
+    private fun foldAnchorOutOfTheSecondHalf() {
         val value = anchor ?: return
         val dimensions = page(value.pageId)?.dimensions ?: return
         if (!SpreadPages.isSpread(dimensions)) return

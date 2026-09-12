@@ -103,7 +103,7 @@ class EngineStartupInputReleaseTest {
         assertNull(submittedSourcePosition(scene.copy(anchor = null)))
     }
 
-    @Test fun splitResumeFoldsTheRightHalfRowsBackOntoTheOriginalPage() {
+    @Test fun splitResumeFoldsTheSecondHalfRowsBackOntoTheOriginalPage() {
         val spread = PageDimensions(700, 500)
         val half = 500L * q
         assertEquals(300L * q, foldSplitSource(800L * q, spread))

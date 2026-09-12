@@ -228,12 +228,13 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
     ): EngineTileSpec {
         if (!split) return tile(page, band, count, width)
         val perHalf = count / 2
-        return EngineTileBands.splitTile(page, band / perHalf, band % perHalf, perHalf, width)
+        val half = SpreadPages.displayOrder(band / perHalf)
+        return EngineTileBands.splitTile(page, half, band % perHalf, perHalf, width)
     }
 
-    /** A split page's right half starts one original page height into the document. */
+    /** The second displayed half starts one original page height into the document. */
     private fun sourceOffsetRows(tile: EngineTileSpec): Int =
-        if (tile.cropLeftPx > 0) tile.dimensions.heightPx else 0
+        SpreadPages.displayRowOffset(tile.dimensions, tile.cropLeftPx, tile.cropRightPx)
 
     private fun documentEndQ32(dimensions: PageDimensions, split: Boolean): Long =
         dimensions.heightPx.toLong() * (if (split) 2L else 1L) * SourceAnchor.SOURCE_UNITS_PER_PIXEL

@@ -308,15 +308,16 @@ class EngineTilePlannerTest {
         )
 
         val placement = plan.placements.single()
-        assertEquals(800, placement.tile.cropLeftPx)
-        assertEquals(1600, placement.tile.cropRightPx)
+        assertEquals(0, placement.tile.cropLeftPx)
+        assertEquals(800, placement.tile.cropRightPx)
         assertEquals(0, placement.tile.sourceTop)
         assertEquals(1200, placement.tile.sourceBottom)
         assertEquals(800, placement.tile.rasterWidth)
         assertEquals(halfHeight, placement.topScreenUnits)
         assertEquals(2 * halfHeight, placement.bottomScreenUnits)
         assertTrue(plan.demands.any {
-            it.tile.cropLeftPx == 0 && it.priority == ml.melun.mangaview.engine.api.WorkPriority.NEXT_IMAGE
+            it.tile.cropLeftPx == 800 && it.tile.cropRightPx == 1600 &&
+                it.priority == ml.melun.mangaview.engine.api.WorkPriority.NEXT_IMAGE
         })
     }
 
