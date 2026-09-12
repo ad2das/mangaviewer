@@ -20,6 +20,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -439,7 +441,11 @@ private fun RankedRow(
             Column(
                 Modifier.width(152.dp)
                     .height(246.dp)
-                    .clip(GridCardShape)
+                    .graphicsLayer {
+                        shape = GridCardShape
+                        clip = true
+                        compositingStrategy = CompositingStrategy.Offscreen
+                    }
                     .background(colors.card)
                     .border(1.dp, colors.cardBorder, GridCardShape)
                     .clickable { accept(LibraryIntent.SeriesSelected(series)) },
@@ -518,7 +524,11 @@ private fun SeriesGridCard(
 ) {
     Column(
         modifier.height(248.dp)
-            .clip(GridCardShape)
+            .graphicsLayer {
+                shape = GridCardShape
+                clip = true
+                compositingStrategy = CompositingStrategy.Offscreen
+            }
             .background(colors.card)
             .border(1.dp, colors.cardBorder, GridCardShape)
             .semantics { contentDescription = "작품: ${series.title}" }

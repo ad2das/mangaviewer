@@ -11,6 +11,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollFactory
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.ViewModelProvider
@@ -92,6 +95,7 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
     private fun showLibrary(graph: ml.melun.mangaview.app.AppGraph, viewModel: LibraryViewModel) {
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
@@ -124,8 +128,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            LibraryScreen(state, graph.artworkLoader, viewModel::accept, account,
-                updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE)
+            CompositionLocalProvider(LocalOverscrollFactory provides null) {
+                LibraryScreen(state, graph.artworkLoader, viewModel::accept, account,
+                    updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE)
+            }
             AppUpdateDialog(updateState, updates::dismiss, updates::check, updates::download, ::installUpdate)
         }
     }

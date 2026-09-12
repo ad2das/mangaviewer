@@ -85,7 +85,11 @@ internal class SeriesArtworkLoader(
         }
         val options = BitmapFactory.Options().apply {
             inSampleSize = sample
-            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+            inPreferredConfig = if (bounds.outMimeType == "image/jpeg") {
+                android.graphics.Bitmap.Config.RGB_565
+            } else {
+                android.graphics.Bitmap.Config.ARGB_8888
+            }
         }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }
@@ -93,7 +97,7 @@ internal class SeriesArtworkLoader(
     private fun bucketEdge(px: Int): Int = when {
         px <= 256 -> 256
         px <= 384 -> 384
-        px <= 512 -> 512
+        px <= 512 -> 448
         px <= 768 -> 768
         px <= 1024 -> 1024
         else -> 1536
