@@ -1,11 +1,13 @@
 package ml.melun.mangaview.engine.runtime
 
 import java.math.BigInteger
+import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.toLongExact
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineTileSpec
 import ml.melun.mangaview.engine.api.PageContentIdentity
 import ml.melun.mangaview.engine.api.SourceAnchor
+import ml.melun.mangaview.engine.api.SpreadPages
 import ml.melun.mangaview.engine.api.VisiblePageRegion
 import ml.melun.mangaview.engine.api.WorkPriority
 
@@ -31,36 +33,45 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         val placements = mutableListOf<EngineTilePlacement>()
         var complete = snapshot.session.completeViewport
         var previousRegion: VisiblePageRegion? = null
+        var previousComplete = false
         var previousLastPlacement: Int? = null
         for (region in snapshot.session.visibleRegions) {
             val page = snapshot.pages[region.pageId]
             if (page == null) {
                 complete = false
                 previousRegion = null
+                previousComplete = false
                 previousLastPlacement = null
                 continue
             }
             require(page.dimensions == region.dimensions)
-            val count = bandCount(page, snapshot.session.viewport.widthPx)
+            val split = splitPage(snapshot, page)
+            val width = snapshot.session.viewport.widthPx
+            val count = documentBandCount(page, width, split)
+            val documentHeight = region.dimensions.heightPx.toLong() * (if (split) 2L else 1L)
             val firstRow = region.sourceTopQ32 / SourceAnchor.SOURCE_UNITS_PER_PIXEL
             val endRow = (region.sourceBottomQ32 - 1) / SourceAnchor.SOURCE_UNITS_PER_PIXEL + 1
-            val first = (((firstRow + 1) * count - 1) / page.dimensions.heightPx).toInt()
-            val last = ((endRow * count - 1) / page.dimensions.heightPx).toInt()
+            val first = (((firstRow + 1) * count - 1) / documentHeight).toInt()
+            val last = ((endRow * count - 1) / documentHeight).toInt()
             val firstPlacement = placements.size
             for (band in first..last) {
-                val tile = tile(page, band, count, snapshot.session.viewport.widthPx)
+                val tile = documentTile(page, band, count, width, split)
                 val anchor = snapshot.session.anchor
+                val offsetRows = sourceOffsetRows(tile)
                 val focus = anchor?.pageId == tile.pageId &&
-                    anchor.sourceYQ32 >= tile.sourceTop.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL &&
-                    anchor.sourceYQ32 < tile.sourceBottom.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL
+                    anchor.sourceYQ32 >= (tile.sourceTop.toLong() + offsetRows) *
+                        SourceAnchor.SOURCE_UNITS_PER_PIXEL &&
+                    anchor.sourceYQ32 < (tile.sourceBottom.toLong() + offsetRows) *
+                        SourceAnchor.SOURCE_UNITS_PER_PIXEL
                 visible[tile] = if (focus) WorkPriority.FOCUS else WorkPriority.VISIBLE
                 placements += placement(tile, region)
             }
-            stitchBoundary(placements, previousRegion, previousLastPlacement, region, firstPlacement)
+            stitchBoundary(placements, previousRegion, previousLastPlacement, previousComplete, region, firstPlacement)
             previousRegion = region
+            previousComplete = region.sourceBottomQ32 == documentEndQ32(region.dimensions, split)
             previousLastPlacement = placements.lastIndex
-            if (first > 0) speculative += tile(page, first - 1, count, snapshot.session.viewport.widthPx)
-            if (last + 1 < count) speculative += tile(page, last + 1, count, snapshot.session.viewport.widthPx)
+            if (first > 0) speculative += documentTile(page, first - 1, count, width, split)
+            if (last + 1 < count) speculative += documentTile(page, last + 1, count, width, split)
             if (first == 0) adjacentTile(snapshot, region.pageId, -1)?.let(speculative::add)
             if (last == count - 1) adjacentTile(snapshot, region.pageId, 1)?.let(speculative::add)
             collectDistantBands(snapshot, page, first, last, distant)
@@ -107,6 +118,7 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
             if (tile in wanted || tile.byteCount > textureBudgetBytes - bytes) continue
             val page = snapshot.pages[tile.pageId] ?: continue
             if (tile.displayWidth != snapshot.session.viewport.widthPx ||
+                !matchesReadingMode(tile, page, snapshot.session.splitMode) ||
                 tile.contentRevision != page.contentRevision || tile.sha256 != page.sha256 ||
                 tile.dimensions != page.dimensions) continue
             wanted += tile
@@ -142,8 +154,10 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         if (index < 0 || manifest.pages.size - index <= 8) return
         val last = manifest.pages.lastOrNull()?.id ?: return
         val page = snapshot.pages[last] ?: return
-        val count = bandCount(page, snapshot.session.viewport.widthPx)
-        speculative += tile(page, count - 1, count, snapshot.session.viewport.widthPx)
+        val split = splitPage(snapshot, page)
+        val width = snapshot.session.viewport.widthPx
+        val count = documentBandCount(page, width, split)
+        speculative += documentTile(page, count - 1, count, width, split)
     }
 
     private fun addPreparedHorizon(snapshot: EngineRuntimeSnapshot,
@@ -162,7 +176,9 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
                 }
                 if (index >= 0) for (page in preparedPagesFrom(snapshot,
                     manifest.pages[leading].id, 1, includeStart = true).take(3)) {
-                    speculative += tile(page, 0, bandCount(page, snapshot.session.viewport.widthPx), snapshot.session.viewport.widthPx)
+                    val split = splitPage(snapshot, page)
+                    val width = snapshot.session.viewport.widthPx
+                    speculative += documentTile(page, 0, documentBandCount(page, width, split), width, split)
                 }
             }
         }
@@ -176,28 +192,62 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         val neighbors = preparedPagesFrom(snapshot, page.pageId, direction).iterator()
         val width = snapshot.session.viewport.widthPx
         while (true) {
-            var count = bandCount(page, width)
+            var split = splitPage(snapshot, page)
+            var count = documentBandCount(page, width, split)
             if (band !in 0 until count) {
                 if (!neighbors.hasNext()) break
                 page = neighbors.next()
-                count = bandCount(page, width)
+                split = splitPage(snapshot, page)
+                count = documentBandCount(page, width, split)
                 band = if (direction > 0) 0 else count - 1
             }
-            yield(tile(page, band, count, width))
+            yield(documentTile(page, band, count, width, split))
             band += direction
         }
     }
+
+    /** Keep only crops the current reading mode can place: whole pages, or either spread half. */
+    private fun matchesReadingMode(tile: EngineTileSpec, page: PageContentIdentity, splitMode: Boolean): Boolean {
+        if (!splitMode || !SpreadPages.isSpread(page.dimensions)) {
+            return tile.cropLeftPx == 0 && tile.cropRightPx == page.dimensions.widthPx
+        }
+        val half = SpreadPages.halfWidth(page.dimensions)
+        return tile.sourceWidthPx == half &&
+            (tile.cropLeftPx == 0 || tile.cropLeftPx == page.dimensions.widthPx - half)
+    }
+
+    private fun splitPage(snapshot: EngineRuntimeSnapshot, page: PageContentIdentity): Boolean =
+        snapshot.session.splitMode && SpreadPages.isSpread(page.dimensions)
+
+    private fun documentBandCount(page: PageContentIdentity, width: Int, split: Boolean): Int =
+        if (!split) bandCount(page, width) else 2 * EngineTileBands.count(page, width, targetTileHeightPx,
+            0, SpreadPages.halfWidth(page.dimensions))
+
+    private fun documentTile(page: PageContentIdentity, band: Int, count: Int, width: Int,
+        split: Boolean,
+    ): EngineTileSpec {
+        if (!split) return tile(page, band, count, width)
+        val perHalf = count / 2
+        return EngineTileBands.splitTile(page, band / perHalf, band % perHalf, perHalf, width)
+    }
+
+    /** A split page's right half starts one original page height into the document. */
+    private fun sourceOffsetRows(tile: EngineTileSpec): Int =
+        if (tile.cropLeftPx > 0) tile.dimensions.heightPx else 0
+
+    private fun documentEndQ32(dimensions: PageDimensions, split: Boolean): Long =
+        dimensions.heightPx.toLong() * (if (split) 2L else 1L) * SourceAnchor.SOURCE_UNITS_PER_PIXEL
 
     private fun stitchBoundary(
         placements: MutableList<EngineTilePlacement>,
         previousRegion: VisiblePageRegion?,
         previousLastPlacement: Int?,
+        previousComplete: Boolean,
         region: VisiblePageRegion,
         firstPlacement: Int,
     ) {
-        if (previousRegion == null || previousLastPlacement == null || previousRegion.pageId == region.pageId ||
-            previousRegion.sourceBottomQ32 != previousRegion.dimensions.heightPx.toLong() *
-                SourceAnchor.SOURCE_UNITS_PER_PIXEL ||
+        if (previousRegion == null || previousLastPlacement == null || !previousComplete ||
+            previousRegion.pageId == region.pageId ||
             region.sourceTopQ32 != 0L ||
             placements[previousLastPlacement].tile.sourceBottom != previousRegion.dimensions.heightPx ||
             placements[firstPlacement].tile.sourceTop != 0
@@ -224,8 +274,9 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         // are budgeted first, and this edge is never placed until actually visible.
         val page = snapshot.pages[adjacent] ?: return null
         val width = snapshot.session.viewport.widthPx
-        val count = bandCount(page, width)
-        return tile(page, if (direction > 0) 0 else count - 1, count, width)
+        val split = splitPage(snapshot, page)
+        val count = documentBandCount(page, width, split)
+        return documentTile(page, if (direction > 0) 0 else count - 1, count, width, split)
     }
 
     private fun bandCount(page: PageContentIdentity, width: Int) = EngineTileBands.count(page, width, targetTileHeightPx)
@@ -241,11 +292,12 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         val rasterHeight = BigInteger.valueOf(tile.rasterHeight.toLong())
         val sourceUnit = BigInteger.valueOf(SourceAnchor.SOURCE_UNITS_PER_PIXEL)
         val sourceAtRaster = BigInteger.valueOf(row.toLong()).multiply(BigInteger.valueOf(tile.dimensions.heightPx.toLong()))
+            .add(BigInteger.valueOf(sourceOffsetRows(tile).toLong()).multiply(rasterHeight))
             .multiply(sourceUnit)
         val relative = sourceAtRaster.subtract(BigInteger.valueOf(region.sourceTopQ32).multiply(rasterHeight))
         val numerator = relative.multiply(BigInteger.valueOf(tile.displayWidth.toLong()))
             .multiply(BigInteger.valueOf(SourceAnchor.SCREEN_UNITS_PER_PIXEL))
-        val denominator = rasterHeight.multiply(BigInteger.valueOf(tile.dimensions.widthPx.toLong())).multiply(sourceUnit)
+        val denominator = rasterHeight.multiply(BigInteger.valueOf(tile.sourceWidthPx.toLong())).multiply(sourceUnit)
         val divided = numerator.divideAndRemainder(denominator)
         val floor = if (divided[1].signum() < 0) divided[0].subtract(BigInteger.ONE) else divided[0]
         return Math.addExact(region.screenTopUnits, floor.toLongExact())

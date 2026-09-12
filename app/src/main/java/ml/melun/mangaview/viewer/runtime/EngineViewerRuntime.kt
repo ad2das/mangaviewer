@@ -25,6 +25,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.core.toLongExact
 import ml.melun.mangaview.engine.api.*
@@ -108,7 +109,7 @@ internal class EngineViewerRuntime(
         val index = manifest.pages.indexOfFirst { it.id == position.pageId }
         if (index < 0) return null
         return ViewerChromeState(manifest.id, manifest.title, index + 1, manifest.pages.size, position,
-            manifest.previousEpisodeId, manifest.nextEpisodeId)
+            manifest.previousEpisodeId, manifest.nextEpisodeId, content.snapshot.session.splitMode)
     }
 
     fun bookmarkSnapshot(): Pair<SourceAnchor, ReadingPosition>? = position()?.let {
@@ -133,6 +134,11 @@ internal class EngineViewerRuntime(
     }
 
     fun retryFailures() { content.retryFailures(); graphics.retryFailures() }
+
+    /** Session-only split reading; saved positions still address original page rows. */
+    fun setSplitMode(enabled: Boolean) {
+        if (!closing) content.setSplitMode(enabled)
+    }
 
     suspend fun close() = withContext(NonCancellable) {
         if (!closing) {
@@ -261,10 +267,18 @@ internal fun submittedSourcePosition(scene: EngineSurfaceScene): Pair<SourceAnch
     if (!scene.completeCoverage) return null
     val anchor = scene.anchor ?: return null
     val dimensions = scene.anchorDimensions ?: return null
-    val offset = BigInteger.valueOf(anchor.sourceYQ32).multiply(BigInteger.valueOf(scene.viewport.widthPx.toLong()))
+    val sourceYQ32 = if (scene.splitMode) foldSplitSource(anchor.sourceYQ32, dimensions) else anchor.sourceYQ32
+    val offset = BigInteger.valueOf(sourceYQ32).multiply(BigInteger.valueOf(scene.viewport.widthPx.toLong()))
         .multiply(BigInteger.valueOf(1024)).divide(BigInteger.valueOf(dimensions.widthPx.toLong())
             .multiply(BigInteger.valueOf(SourceAnchor.SOURCE_UNITS_PER_PIXEL))).toLongExact()
-    return anchor to offset
+    return anchor.copy(sourceYQ32 = sourceYQ32) to offset
+}
+
+/** Split reading is session-only: a right-half source row folds back onto the original page row. */
+internal fun foldSplitSource(sourceYQ32: Long, dimensions: PageDimensions): Long {
+    if (!SpreadPages.isSpread(dimensions)) return sourceYQ32
+    val half = dimensions.heightPx.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL
+    return if (sourceYQ32 >= half) sourceYQ32 - half else sourceYQ32
 }
 
 /** Successful submitted source must overlap what the exactly matching session currently exposes. */
@@ -278,8 +292,9 @@ internal fun releasesStartupInput(
     ) return false
     return value.scene.placements.any { placement ->
         val tile = placement.texture.tile
-        val tileTopQ32 = tile.sourceTop.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL
-        val tileBottomQ32 = tile.sourceBottom.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val offsetRows = if (tile.cropLeftPx > 0) tile.dimensions.heightPx.toLong() else 0L
+        val tileTopQ32 = (tile.sourceTop.toLong() + offsetRows) * SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val tileBottomQ32 = (tile.sourceBottom.toLong() + offsetRows) * SourceAnchor.SOURCE_UNITS_PER_PIXEL
         state.visibleRegions.any { region ->
             region.pageId == tile.pageId && tileTopQ32 < region.sourceBottomQ32 &&
                 tileBottomQ32 > region.sourceTopQ32

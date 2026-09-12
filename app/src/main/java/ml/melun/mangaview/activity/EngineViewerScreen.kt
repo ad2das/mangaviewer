@@ -341,6 +341,7 @@ internal class EngineViewerScreen(
                 episodes = ::loadEpisodePicker,
                 next = { navigateAdjacent(next = true) },
                 bookmark = ::bookmarkCurrentPosition,
+                split = ::toggleSplitMode,
             ),
         ).also { controller -> controller.install(root) }
         root.excludesSurfaceTap = chrome::contains
@@ -358,6 +359,11 @@ internal class EngineViewerScreen(
         val state = runtime?.chromeSnapshot() ?: return
         val target = if (next) state.nextEpisodeId else state.previousEpisodeId
         target?.let(::launchEpisode)
+    }
+
+    private fun toggleSplitMode() {
+        val state = runtime?.chromeSnapshot() ?: return
+        runtime?.setSplitMode(!state.splitMode)
     }
 
     private fun launchEpisode(episodeId: EpisodeId) = openEpisode(episodeId)

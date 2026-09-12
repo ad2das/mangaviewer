@@ -53,4 +53,41 @@ class EngineTileSpecTest {
     fun impossibleRasterHeightFailsBeforeNativeAllocation() {
         EngineTileSpec(id, "1", "0".repeat(64), PageDimensions(1, 2), 0, 1, 1_500_000_000).byteCount
     }
+
+    @Test fun aCompleteSpreadHalfKeepsEveryKeptSourcePixelWithoutUpscaling() {
+        val tile = EngineTileSpec(id, "1", "0".repeat(64), PageDimensions(1600, 1200), 0, 1200, 1080, 800, 1600)
+        assertEquals(800, tile.sourceWidthPx)
+        assertEquals(800, tile.rasterWidth)
+        assertEquals(1200, tile.rasterHeight)
+        assertEquals(0, tile.rasterTop)
+        assertEquals(1200, tile.rasterBottom)
+        assertEquals(3_840_000L, tile.byteCount)
+    }
+
+    @Test fun aCroppedBandProjectsRowsAgainstItsCropWidth() {
+        val tile = EngineTileSpec(id, "1", "0".repeat(64), PageDimensions(1600, 2400), 600, 1800, 1080, 0, 800)
+        assertEquals(3240, tile.rasterHeight)
+        assertEquals(810, tile.rasterTop)
+        assertEquals(2430, tile.rasterBottom)
+        assertEquals(1080 * 1620 * 4L, tile.byteCount)
+    }
+
+    @Test fun bothSpreadHalvesShareOneRasterGrid() {
+        val dimensions = PageDimensions(1600, 1200)
+        val left = EngineTileSpec(id, "1", "0".repeat(64), dimensions, 0, 600, 1080, 0, 800)
+        val right = EngineTileSpec(id, "1", "0".repeat(64), dimensions, 0, 600, 1080, 800, 1600)
+        assertEquals(800, right.sourceWidthPx)
+        assertEquals(left.rasterWidth, right.rasterWidth)
+        assertEquals(left.rasterHeight, right.rasterHeight)
+        assertEquals(left.byteCount, right.byteCount)
+    }
+
+    @Test fun invalidCropWindowsAreRejected() {
+        for (crop in listOf(-1 to 800, 800 to 800, 900 to 1700)) {
+            assertThrows(IllegalArgumentException::class.java) {
+                EngineTileSpec(id, "1", "0".repeat(64), PageDimensions(1600, 1200), 0, 1200, 1080,
+                    crop.first, crop.second)
+            }
+        }
+    }
 }

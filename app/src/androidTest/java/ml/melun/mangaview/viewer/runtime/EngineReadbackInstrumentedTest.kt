@@ -87,6 +87,8 @@ class EngineReadbackInstrumentedTest {
             0,
             HEIGHT,
             WIDTH,
+            0,
+            WIDTH,
         )
         assertTrue("Fixture CPU decode failed for ${source.name}", cpuHandle != 0L)
         return try {

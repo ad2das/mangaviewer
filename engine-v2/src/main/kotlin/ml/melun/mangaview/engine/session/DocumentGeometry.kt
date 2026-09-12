@@ -1,5 +1,6 @@
 package ml.melun.mangaview.engine.session
 
+import java.math.BigInteger
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageDimensions
@@ -7,6 +8,7 @@ import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.engine.api.DocumentBoundary
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.SourceAnchor
+import ml.melun.mangaview.engine.api.SpreadPages
 import ml.melun.mangaview.engine.api.VisiblePageRegion
 import java.util.LinkedHashMap
 
@@ -55,6 +57,34 @@ internal class DocumentGeometry(
     val navigationKnown: LinkedHashMap<EpisodeId, Boolean> = LinkedHashMap()
     val actualDimensions: LinkedHashMap<PageId, PageDimensions?> = LinkedHashMap()
     var anchor: AnchorState? = null
+
+    /** Session-only split reading; a two-page spread then occupies two vertical page heights. */
+    var splitMode: Boolean = false
+
+    fun applySplitMode(enabled: Boolean) {
+        if (splitMode == enabled) return
+        splitMode = enabled
+        if (!enabled) foldAnchorOutOfTheRightHalf()
+    }
+
+    private fun foldAnchorOutOfTheRightHalf() {
+        val value = anchor ?: return
+        val dimensions = page(value.pageId)?.dimensions ?: return
+        if (!SpreadPages.isSpread(dimensions)) return
+        val half = BigRational.of(pageSourceExtent(dimensions.heightPx))
+        if (value.sourceQ32 >= half) anchor = value.copy(sourceQ32 = value.sourceQ32 - half)
+    }
+
+    private fun splitFactor(dimensions: PageDimensions): Long =
+        if (splitMode && SpreadPages.isSpread(dimensions)) 2L else 1L
+
+    /** Vertical document extent: a split spread scrolls as two stacked original-page heights. */
+    private fun documentExtent(dimensions: PageDimensions): BigInteger =
+        pageSourceExtent(dimensions.heightPx).multiply(BigInteger.valueOf(splitFactor(dimensions)))
+
+    /** Horizontal projection width: a split half scales as its own page width. */
+    private fun scaleWidth(dimensions: PageDimensions): Int =
+        if (splitFactor(dimensions) == 2L) SpreadPages.halfWidth(dimensions) else dimensions.widthPx
 
     fun addManifest(manifest: EpisodeManifest, known: Boolean) {
         manifests[manifest.id] = manifest
@@ -192,7 +222,7 @@ internal class DocumentGeometry(
                 blocker = GeometryBlocker.Episode(current.pageId.episodeId))
             val dimensions = ref.dimensions ?: return MoveResult(current, consumed, remaining,
                 blocker = GeometryBlocker.Dimension(current.pageId))
-            val extent = BigRational.of(pageSourceExtent(dimensions.heightPx))
+            val extent = BigRational.of(documentExtent(dimensions))
             val source = current.sourceQ32
             if (source >= extent) {
                 when (val next = nextPage(current.pageId)) {
@@ -203,9 +233,9 @@ internal class DocumentGeometry(
                 }
                 continue
             }
-            val toEnd = sourceToScreenUnits(extent - source, dimensions.widthPx, viewport.widthPx)
+            val toEnd = sourceToScreenUnits(extent - source, scaleWidth(dimensions), viewport.widthPx)
             if (remaining <= toEnd) {
-                val moved = screenToSourceQ32(remaining, dimensions.widthPx, viewport.widthPx)
+                val moved = screenToSourceQ32(remaining, scaleWidth(dimensions), viewport.widthPx)
                 current = Cursor(current.pageId, source + moved)
                 return MoveResult(current, consumed + remaining, BigRational.ZERO)
             }
@@ -245,8 +275,7 @@ internal class DocumentGeometry(
                         val previousDimensions = page(previous.pageId)?.dimensions
                         if (previousDimensions == null) return BackwardWalk(current,
                             GeometryBlocker.Dimension(previous.pageId), remaining)
-                        current = Cursor(previous.pageId,
-                            BigRational.of(pageSourceExtent(previousDimensions.heightPx)))
+                        current = Cursor(previous.pageId, BigRational.of(documentExtent(previousDimensions)))
                     }
                     is PageStep.Missing -> return BackwardWalk(current, previous.blocker, remaining)
                     PageStep.End -> return BackwardWalk(current, null, remaining)
@@ -255,9 +284,9 @@ internal class DocumentGeometry(
             }
             val dimensions = ref.dimensions ?: return BackwardWalk(null,
                 GeometryBlocker.Dimension(current.pageId), remaining)
-            val toStart = sourceToScreenUnits(source, dimensions.widthPx, viewport.widthPx)
+            val toStart = sourceToScreenUnits(source, scaleWidth(dimensions), viewport.widthPx)
             if (remaining <= toStart) {
-                val moved = screenToSourceQ32(remaining, dimensions.widthPx, viewport.widthPx)
+                val moved = screenToSourceQ32(remaining, scaleWidth(dimensions), viewport.widthPx)
                 return BackwardWalk(Cursor(current.pageId, source - moved), null)
             }
             current = Cursor(current.pageId, BigRational.ZERO)
@@ -287,15 +316,14 @@ internal class DocumentGeometry(
             val previous = previousPage(current.pageId)
             if (previous !is PageStep.Known) return null
             val previousDimensions = page(previous.pageId)?.dimensions ?: return null
-            current = Cursor(previous.pageId,
-                BigRational.of(pageSourceExtent(previousDimensions.heightPx)))
+            current = Cursor(previous.pageId, BigRational.of(documentExtent(previousDimensions)))
         }
         return total + (screenDelta(current.sourceQ32 - to.sourceQ32, to.pageId) ?: return null)
     }
 
     private fun screenDelta(source: BigRational, pageId: PageId): BigRational? {
         val dimensions = page(pageId)?.dimensions ?: return null
-        return sourceToScreenUnits(source, dimensions.widthPx, viewport.widthPx)
+        return sourceToScreenUnits(source, scaleWidth(dimensions), viewport.widthPx)
     }
 
     private fun mapForward(
@@ -320,7 +348,8 @@ internal class DocumentGeometry(
                 requirements.add(GeometryBlocker.Dimension(current.pageId))
                 return MappedRegions(regions, false)
             }
-            val extent = BigRational.of(pageSourceExtent(dimensions.heightPx))
+            val documentLength = documentExtent(dimensions)
+            val extent = BigRational.of(documentLength)
             val source = current.sourceQ32.coerceAtLeast(BigRational.ZERO)
             if (source >= extent) {
                 when (val next = nextPage(current.pageId)) {
@@ -335,13 +364,13 @@ internal class DocumentGeometry(
                     PageStep.End -> return MappedRegions(regions, true)
                 }
             }
-            val pageRemaining = sourceToScreenUnits(extent - source, dimensions.widthPx, viewport.widthPx)
+            val pageRemaining = sourceToScreenUnits(extent - source, scaleWidth(dimensions), viewport.widthPx)
             val take = if (remaining <= pageRemaining) remaining else pageRemaining
-            val endSource = source + screenToSourceQ32(take, dimensions.widthPx, viewport.widthPx)
+            val endSource = source + screenToSourceQ32(take, scaleWidth(dimensions), viewport.widthPx)
             if (take.signum() <= 0) return MappedRegions(regions, false)
             appendRegion(
                 regions, current.pageId, dimensions, source, endSource, screen, screen + take,
-                viewportHeightUnits(),
+                viewportHeightUnits(), saturatingLong(documentLength),
             )
             screen += take
             remaining -= take
@@ -385,8 +414,8 @@ private fun appendRegion(
     screen: BigRational,
     endScreen: BigRational,
     maxScreen: Long,
+    maxSource: Long,
 ) {
-    val maxSource = saturatingLong(pageSourceExtent(dimensions.heightPx))
     if (maxSource <= 1L || maxScreen <= 1L) return
     val top = source.floorToLong().coerceIn(0L, maxSource - 1L)
     val bottom = endSource.ceilToLong().coerceIn(top + 1L, maxSource)

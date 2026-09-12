@@ -17,7 +17,9 @@ internal object NativeCpuDecodeBridge {
         sourceHeight: Int,
         sourceTop: Int,
         sourceBottom: Int,
-        displayWidth: Int,
+        rasterWidth: Int,
+        cropLeft: Int,
+        cropRight: Int,
     ): Long
 
     external fun nativeByteCount(handle: Long): Long
@@ -35,6 +37,8 @@ internal class NativeCpuDecodePort : ImageDecodePort {
             rows.top,
             rows.bottomExclusive,
             request.displayWidthPx,
+            0,
+            request.dimensions.widthPx,
         )
         check(handle != 0L) { "Native CPU decode failed for ${request.page.id}" }
         return NativeCpuTileLease(

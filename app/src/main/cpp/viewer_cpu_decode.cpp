@@ -116,18 +116,28 @@ bool projectedGeometry(
     int sourceHeight,
     int sourceTop,
     int sourceBottom,
-    int displayWidth,
+    int rasterWidth,
+    int cropLeft,
+    int cropRight,
+    int* targetWidth,
     int* scaledHeight,
     int* displayTop,
     int* displayBottom) noexcept {
     if (sourceWidth <= 0 || sourceHeight <= 0 || sourceTop < 0 ||
-        sourceBottom <= sourceTop || sourceBottom > sourceHeight || displayWidth <= 0) {
+        sourceBottom <= sourceTop || sourceBottom > sourceHeight || rasterWidth <= 0 ||
+        cropLeft < 0 || cropRight <= cropLeft || cropRight > sourceWidth) {
         return false;
     }
+    const std::int64_t cropWidth = static_cast<std::int64_t>(cropRight) - cropLeft;
+    const std::int64_t fullWidth =
+        (static_cast<std::int64_t>(sourceWidth) * rasterWidth + cropWidth - 1) / cropWidth;
     const std::int64_t height =
-        (static_cast<std::int64_t>(sourceHeight) * displayWidth + sourceWidth - 1LL) /
-        sourceWidth;
-    if (height <= 0 || height > std::numeric_limits<int>::max()) return false;
+        (static_cast<std::int64_t>(sourceHeight) * rasterWidth + cropWidth - 1) / cropWidth;
+    if (fullWidth <= 0 || height <= 0 || fullWidth > std::numeric_limits<int>::max() ||
+        height > std::numeric_limits<int>::max()) {
+        return false;
+    }
+    *targetWidth = static_cast<int>(fullWidth);
     *scaledHeight = static_cast<int>(height);
     *displayTop = static_cast<int>(static_cast<std::int64_t>(sourceTop) * height / sourceHeight);
     *displayBottom = static_cast<int>(
@@ -142,28 +152,33 @@ std::unique_ptr<CpuTile> decode(
     int sourceHeight,
     int sourceTop,
     int sourceBottom,
-    int displayWidth) noexcept {
+    int rasterWidth,
+    int cropLeft,
+    int cropRight) noexcept {
     FileDescriptor file(path);
     Decoder ownedDecoder(file.get());
     AImageDecoder* decoder = ownedDecoder.get();
     if (decoder == nullptr || !sourceMatches(decoder, sourceWidth, sourceHeight)) return nullptr;
+    int targetWidth = 0;
     int scaledHeight = 0;
     int displayTop = 0;
     int displayBottom = 0;
     if (!projectedGeometry(
-            sourceWidth, sourceHeight, sourceTop, sourceBottom, displayWidth,
-            &scaledHeight, &displayTop, &displayBottom)) return nullptr;
+            sourceWidth, sourceHeight, sourceTop, sourceBottom, rasterWidth, cropLeft, cropRight,
+            &targetWidth, &scaledHeight, &displayTop, &displayBottom)) return nullptr;
     if (AImageDecoder_setAndroidBitmapFormat(decoder, ANDROID_BITMAP_FORMAT_RGBA_8888) !=
             ANDROID_IMAGE_DECODER_SUCCESS ||
         AImageDecoder_setDataSpace(decoder, ADATASPACE_SRGB) != ANDROID_IMAGE_DECODER_SUCCESS ||
-        AImageDecoder_setTargetSize(decoder, displayWidth, scaledHeight) !=
+        AImageDecoder_setTargetSize(decoder, targetWidth, scaledHeight) !=
             ANDROID_IMAGE_DECODER_SUCCESS) return nullptr;
+    const int cropX = static_cast<int>(static_cast<std::int64_t>(cropLeft) * targetWidth / sourceWidth);
+    if (static_cast<std::int64_t>(cropX) + rasterWidth > targetWidth) return nullptr;
     // An unnecessary full-image crop makes the platform allocate an intermediate
     // bitmap even when the original already has the requested raster dimensions.
-    if ((displayTop != 0 || displayBottom != scaledHeight) &&
-        AImageDecoder_setCrop(decoder, ARect{0, displayTop, displayWidth, displayBottom}) !=
+    if ((cropX != 0 || rasterWidth != targetWidth || displayTop != 0 || displayBottom != scaledHeight) &&
+        AImageDecoder_setCrop(decoder, ARect{cropX, displayTop, cropX + rasterWidth, displayBottom}) !=
             ANDROID_IMAGE_DECODER_SUCCESS) return nullptr;
-    const std::size_t rowBytes = static_cast<std::size_t>(displayWidth) * 4U;
+    const std::size_t rowBytes = static_cast<std::size_t>(rasterWidth) * 4U;
     const std::size_t rowCount = static_cast<std::size_t>(displayBottom - displayTop);
     if (rowCount > std::numeric_limits<std::size_t>::max() / rowBytes) return nullptr;
     auto tile = std::unique_ptr<CpuTile>(new (std::nothrow) CpuTile());
@@ -203,12 +218,14 @@ Java_ml_melun_mangaview_viewer_runtime_NativeCpuDecodeBridge_nativeDecode(
     jint sourceHeight,
     jint sourceTop,
     jint sourceBottom,
-    jint displayWidth) {
+    jint rasterWidth,
+    jint cropLeft,
+    jint cropRight) {
     if (env == nullptr || encodedPath == nullptr) return 0;
     const char* path = env->GetStringUTFChars(encodedPath, nullptr);
     if (path == nullptr) return 0;
     auto tile = decode(
-        path, sourceWidth, sourceHeight, sourceTop, sourceBottom, displayWidth);
+        path, sourceWidth, sourceHeight, sourceTop, sourceBottom, rasterWidth, cropLeft, cropRight);
     env->ReleaseStringUTFChars(encodedPath, path);
     return static_cast<jlong>(reinterpret_cast<std::uintptr_t>(tile.release()));
 }

@@ -57,7 +57,7 @@ data class VisiblePageRegion(
 ) {
     init {
         require(sourceTopQ32 >= 0L && sourceBottomQ32 > sourceTopQ32)
-        require(sourceBottomQ32 <= dimensions.heightPx.toLong() * SourceAnchor.SOURCE_UNITS_PER_PIXEL)
+        require(sourceBottomQ32 <= SpreadPages.documentSourceExtentQ32(dimensions))
         require(screenTopUnits >= 0L && screenBottomUnits > screenTopUnits)
     }
 }
@@ -82,6 +82,8 @@ data class EngineSessionSnapshot(
     val anchorDimensions: PageDimensions? = null,
     /** Distinguishes consecutive movements even when queued input returns to an earlier anchor. */
     val movementRevision: Long = 0L,
+    /** Session-only two-page split reading; starts off for every session. */
+    val splitMode: Boolean = false,
 )
 
 sealed interface SessionEvent {
@@ -115,6 +117,8 @@ sealed interface SessionEvent {
     /** All source tiles for this viewport are ready; stale acknowledgements cannot advance input. */
     data class ViewportReady(val snapshot: EngineSessionSnapshot) : SessionEvent
     data class Resize(val viewport: EngineViewport) : SessionEvent
+    /** Splits two-page spreads into stacked single pages without moving the source anchor. */
+    data class SetSplitMode(val enabled: Boolean) : SessionEvent
     data class Navigate(val episodeId: EpisodeId) : SessionEvent
     data object Close : SessionEvent
 }

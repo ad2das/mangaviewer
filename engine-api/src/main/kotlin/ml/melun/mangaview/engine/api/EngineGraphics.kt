@@ -4,7 +4,11 @@ import java.io.Closeable
 import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.PageId
 
-/** Source rows identify original content; raster rows identify the full-width decoded image crop. */
+/**
+ * Source rows identify original content; raster rows identify the decoded image crop. Crop
+ * columns select a horizontal window of the original, which split reading uses for one page
+ * of a two-page spread. Row coordinates always address the original page height.
+ */
 data class EngineTileSpec(
     val pageId: PageId,
     val contentRevision: String,
@@ -13,19 +17,25 @@ data class EngineTileSpec(
     val sourceTop: Int,
     val sourceBottom: Int,
     val displayWidth: Int,
+    val cropLeftPx: Int = 0,
+    val cropRightPx: Int = dimensions.widthPx,
 ) {
     init {
         require(contentRevision.isNotBlank() && isSha256Hex(sha256))
         require(sourceTop >= 0 && sourceBottom > sourceTop && sourceBottom <= dimensions.heightPx)
         require(displayWidth > 0)
+        require(cropLeftPx >= 0 && cropRightPx > cropLeftPx && cropRightPx <= dimensions.widthPx)
     }
+
+    /** Source columns this raster keeps. Raster sizing and row projection share this width. */
+    val sourceWidthPx: Int get() = cropRightPx - cropLeftPx
 
     // A complete small page can be sampled directly by the GPU. Cropped bands
     // retain the existing resized raster and its shared sampling grid at seams.
     val rasterWidth: Int get() = if (sourceTop == 0 && sourceBottom == dimensions.heightPx)
-        minOf(displayWidth, dimensions.widthPx) else displayWidth
+        minOf(displayWidth, sourceWidthPx) else displayWidth
     val rasterHeight: Int get() = Math.toIntExact((dimensions.heightPx.toLong() * rasterWidth +
-        dimensions.widthPx - 1L) / dimensions.widthPx)
+        sourceWidthPx - 1L) / sourceWidthPx)
     val rasterTop: Int get() = (sourceTop.toLong() * rasterHeight / dimensions.heightPx).toInt()
     val rasterBottom: Int get() = ((sourceBottom.toLong() * rasterHeight + dimensions.heightPx - 1L) /
         dimensions.heightPx).toInt()

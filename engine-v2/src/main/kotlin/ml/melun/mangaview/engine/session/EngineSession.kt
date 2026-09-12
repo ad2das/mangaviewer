@@ -69,6 +69,7 @@ class EngineSession(
             SessionEvent.ReleaseStartupInput -> releaseStartupInput()
             is SessionEvent.ViewportReady -> viewportReady(event.snapshot)
             is SessionEvent.Resize -> resize(event.viewport)
+            is SessionEvent.SetSplitMode -> setSplitMode(event.enabled)
             is SessionEvent.Navigate -> navigate(event.episodeId)
             SessionEvent.Close -> close()
         }
@@ -203,6 +204,15 @@ class EngineSession(
         return emptyList()
     }
 
+    private fun setSplitMode(enabled: Boolean): List<InputReceipt> {
+        if (phaseValue == EngineSessionPhase.CLOSED || geometry.splitMode == enabled) return emptyList()
+        geometry.applySplitMode(enabled)
+        geometryRevisionValue++
+        presentation.invalidate()
+        validateCurrentAnchor(geometry)
+        return replayPending(emptySet())
+    }
+
     private fun navigate(episodeId: EpisodeId): List<InputReceipt> {
         if (phaseValue == EngineSessionPhase.CLOSED) return emptyList()
         require(episodeId.seriesId == geometry.targetEpisodeId.seriesId) {
@@ -327,6 +337,7 @@ class EngineSession(
                 completeViewport = false,
                 anchorDimensions = geometry.anchor?.pageId?.let { geometry.actualDimensions[it] },
                 movementRevision = presentation.revision,
+                splitMode = geometry.splitMode,
             )
         }
         val visible = geometry.visible()
@@ -363,6 +374,7 @@ class EngineSession(
             completeViewport = visible.complete,
             anchorDimensions = geometry.anchor?.pageId?.let { geometry.actualDimensions[it] },
             movementRevision = presentation.revision,
+            splitMode = geometry.splitMode,
         )
     }
 

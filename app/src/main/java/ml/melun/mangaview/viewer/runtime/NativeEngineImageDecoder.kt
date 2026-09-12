@@ -19,7 +19,8 @@ internal class NativeEngineImageDecoder : EngineImageDecoder {
                 "${tile.sourceTop}:${tile.sourceBottom}:${tile.displayWidth}:r${tile.rasterWidth}")
             try {
                 NativeCpuDecodeBridge.nativeDecode(page.file.absolutePath, tile.dimensions.widthPx,
-                    tile.dimensions.heightPx, tile.sourceTop, tile.sourceBottom, tile.rasterWidth)
+                    tile.dimensions.heightPx, tile.sourceTop, tile.sourceBottom, tile.rasterWidth,
+                    tile.cropLeftPx, tile.cropRightPx)
             } finally { if (tracing) Trace.endSection() }
         }
         check(handle != 0L) { "Native original-image decode failed" }

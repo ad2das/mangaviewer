@@ -118,6 +118,13 @@ class EngineSessionRuntime(
         if (!closed) process(session.dispatch(SessionEvent.Resize(viewport)))
     }
 
+    /** Session-only split reading; the caller re-projects visible regions and tiles in place. */
+    fun setSplitMode(enabled: Boolean) {
+        checkOwner()
+        if (closed || session.snapshot.splitMode == enabled) return
+        process(session.dispatch(SessionEvent.SetSplitMode(enabled)))
+    }
+
     fun navigate(episodeId: EpisodeId) {
         checkOwner()
         if (closed) return

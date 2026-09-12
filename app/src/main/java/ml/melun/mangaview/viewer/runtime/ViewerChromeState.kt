@@ -11,6 +11,7 @@ internal data class ViewerChromeState(
     val position: ReadingPosition,
     val previousEpisodeId: EpisodeId?,
     val nextEpisodeId: EpisodeId?,
+    val splitMode: Boolean = false,
 ) {
     init {
         require(title.isNotBlank())

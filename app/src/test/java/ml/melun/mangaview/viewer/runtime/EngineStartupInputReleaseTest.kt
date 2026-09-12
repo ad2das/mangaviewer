@@ -103,6 +103,25 @@ class EngineStartupInputReleaseTest {
         assertNull(submittedSourcePosition(scene.copy(anchor = null)))
     }
 
+    @Test fun splitResumeFoldsTheRightHalfRowsBackOntoTheOriginalPage() {
+        val spread = PageDimensions(700, 500)
+        val half = 500L * q
+        assertEquals(300L * q, foldSplitSource(800L * q, spread))
+        assertEquals(0L, foldSplitSource(half, spread))
+        assertEquals(499L * q, foldSplitSource(499L * q, spread))
+        assertEquals(900L * q, foldSplitSource(900L * q, dimensions))
+        assertEquals(900L * q, foldSplitSource(900L * q, PageDimensions(500, 500)))
+        val state = readySession().snapshot
+        val tile = EngineTileSpec(currentPage, "revision", "a".repeat(64), spread, 0, 500, 700)
+        val anchor = SourceAnchor(currentPage, 750L * q, 7)
+        val scene = presentation(state, currentPage, 0, 500).scene.copy(completeCoverage = true,
+            anchor = anchor, viewport = EngineViewport(700, 50), anchorDimensions = spread,
+            placements = listOf(EngineTexturePlacement(EngineTexture(tile, 1, 1, 1, tile.byteCount), 0, 500 * 1024)))
+        assertEquals(anchor to 750L * 1024L, submittedSourcePosition(scene))
+        assertEquals(SourceAnchor(currentPage, 250L * q, 7) to 250L * 1024L,
+            submittedSourcePosition(scene.copy(splitMode = true)))
+    }
+
     private fun readySession(): EngineSession {
         val session = EngineSession(2, current, viewport) { 1_000L }.apply { engageStartupInputBarrier() }
         val generation = session.snapshot.generation

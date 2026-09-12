@@ -23,6 +23,7 @@ internal data class EngineSurfaceScene(
     val completeCoverage: Boolean = false,
     val movementRevision: Long = 0L,
     val anchorDimensions: PageDimensions? = null,
+    val splitMode: Boolean = false,
 ) {
     init {
         require(sessionId > 0 && generation > 0 && inputRevision >= 0 && geometryRevision >= 0)
@@ -51,7 +52,7 @@ internal data class EngineSurfaceScene(
             scene.session.geometryRevision, scene.session.viewport, scene.session.anchor,
             scene.quads.map { EngineTexturePlacement(it.texture, Math.toIntExact(it.topScreenUnits),
                 Math.toIntExact(it.bottomScreenUnits)) }, 1024, scene.completeCoverage, scene.session.movementRevision,
-            scene.session.anchorDimensions,
+            scene.session.anchorDimensions, scene.session.splitMode,
         )
     }
 }

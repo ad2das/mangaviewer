@@ -294,6 +294,40 @@ class EngineTilePlannerTest {
             .demands.all { it.tile.pageId == pageId })
     }
 
+    @Test fun splitReadingPlacesSinglePageHalvesWithIndependentSourceOffsets() {
+        val dimensions = PageDimensions(1600, 1200)
+        val page = PageContentIdentity(pageId, "1", "1".repeat(64), dimensions, 1)
+        val halfHeight = 1200L * 1080L * 1024L / 800L
+        val session = EngineSessionSnapshot(1, 1, EngineSessionPhase.ACTIVE, EngineViewport(1080, 2000),
+            SourceAnchor(pageId, halfHeight), 1, 1, 0,
+            listOf(VisiblePageRegion(pageId, dimensions, 1200L * q, 2400L * q,
+                halfHeight, 2 * halfHeight)),
+            emptySet(), emptySet(), true, splitMode = true)
+        val plan = EngineTilePlanner(20_000_000, 2000).plan(
+            EngineRuntimeSnapshot(session, emptyMap(), mapOf(pageId to page)),
+        )
+
+        val placement = plan.placements.single()
+        assertEquals(800, placement.tile.cropLeftPx)
+        assertEquals(1600, placement.tile.cropRightPx)
+        assertEquals(0, placement.tile.sourceTop)
+        assertEquals(1200, placement.tile.sourceBottom)
+        assertEquals(800, placement.tile.rasterWidth)
+        assertEquals(halfHeight, placement.topScreenUnits)
+        assertEquals(2 * halfHeight, placement.bottomScreenUnits)
+        assertTrue(plan.demands.any {
+            it.tile.cropLeftPx == 0 && it.priority == ml.melun.mangaview.engine.api.WorkPriority.NEXT_IMAGE
+        })
+    }
+
+    @Test fun splitReadingNeverCropsPortraitPages() {
+        val plan = EngineTilePlanner(1_000_000, 202).plan(
+            snapshot(100, 1000, 100, 0, 1000 * q).let { it.copy(session = it.session.copy(splitMode = true)) },
+        )
+        assertTrue(plan.placements.isNotEmpty())
+        assertTrue(plan.placements.all { it.tile.cropLeftPx == 0 && it.tile.cropRightPx == 100 })
+    }
+
     private fun snapshotWithPreparationGap(reverse: Boolean, missingCount: Int = 1): EngineRuntimeSnapshot {
         val base = neighboringSnapshot(reverse)
         val ids = (listOf(pageId) + (1..missingCount + 1).map { PageId.at(pageId.episodeId, it) })

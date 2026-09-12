@@ -27,6 +27,7 @@ internal class ViewerChromeController(
         val episodes: () -> Unit,
         val next: () -> Unit,
         val bookmark: () -> Unit,
+        val split: () -> Unit,
     )
 
     private val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop
@@ -44,6 +45,7 @@ internal class ViewerChromeController(
     private val episodes = button("회차", actions.episodes)
     private val next = button("다음", actions.next, isAccent = true)
     private val bookmark = button("책갈피", actions.bookmark)
+    private val split = button("나눔", actions.split).apply { contentDescription = "양면 나눠보기" }
     private val gestureRelay = ChromeGestureRelay(
         surface = surface,
         touchSlop = touchSlop.toFloat(),
@@ -87,6 +89,7 @@ internal class ViewerChromeController(
         val back = button("‹", actions.back, isCircular = true)
         top.addView(back, LinearLayout.LayoutParams(dp(44), dp(44)))
         top.addView(title, LinearLayout.LayoutParams(0, dp(44), 1f))
+        top.addView(split, LinearLayout.LayoutParams(dp(58), dp(44)).apply { marginStart = dp(6) })
 
         bottom.addView(page, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) })
         bottom.addView(bookmark, itemParams(68))
@@ -94,7 +97,7 @@ internal class ViewerChromeController(
         bottom.addView(episodes, itemParams(58))
         bottom.addView(next, itemParams(58))
 
-        installDragForwarding(top, bottom, back, title, page, bookmark, previous, episodes, next)
+        installDragForwarding(top, bottom, back, title, page, bookmark, previous, episodes, next, split)
     }
 
     private fun update(state: ViewerChromeState?) {
@@ -103,6 +106,8 @@ internal class ViewerChromeController(
         previous.enable(state?.previousEpisodeId != null)
         next.enable(state?.nextEpisodeId != null)
         episodes.enable(state != null)
+        split.enable(state != null)
+        accent(split, state?.splitMode == true)
     }
 
     private fun setVisible(show: Boolean) {
@@ -139,6 +144,13 @@ internal class ViewerChromeController(
         cornerRadius = radius
         setColor(color)
         if (strokeWidth > 0) setStroke(strokeWidth, strokeColor)
+    }
+
+    private fun accent(view: TextView, enabled: Boolean) {
+        view.background = roundedDrawable(
+            if (enabled) ACCENT_BUTTON_BACKGROUND else BUTTON_BACKGROUND,
+            dp(12).toFloat(), dp(1), if (enabled) ACCENT_BORDER else BUTTON_BORDER,
+        )
     }
 
     private fun installDragForwarding(vararg views: View) {

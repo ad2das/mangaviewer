@@ -47,6 +47,7 @@ class EnginePixelWork(
     companion object {
         internal fun revision(page: WorkRequest<StoredPage>, tile: EngineTileSpec) =
             "${page.key.contentRevision}:${tile.sha256}:${tile.sourceTop}:${tile.sourceBottom}:" +
-                "${tile.displayWidth}:${tile.dimensions.widthPx}:${tile.dimensions.heightPx}"
+                "${tile.displayWidth}:${tile.dimensions.widthPx}:${tile.dimensions.heightPx}:" +
+                "${tile.cropLeftPx}:${tile.cropRightPx}"
     }
 }
