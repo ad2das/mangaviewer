@@ -50,7 +50,7 @@ internal fun PreferencesOverlay(state: LibraryState, colors: LibraryColors, acce
                 ) {
                     val source = state.sources.firstOrNull { it.id == state.selectedSourceId }
                     PreferenceRow("사이트 변경", source?.label.orEmpty(), colors) {
-                        nextSource(state)?.let { accept(LibraryIntent.SourceSelected(it.id)) }
+                        accept(LibraryIntent.ToggleSourcePicker)
                     }
                     Box(Modifier.fillMaxWidth().height(1.dp).background(colors.outline))
                     PreferenceRow(
@@ -133,9 +133,4 @@ private fun PreferenceSwitch(label: String, checked: Boolean, colors: LibraryCol
             }
         }
     }
-}
-
-private fun nextSource(state: LibraryState): ml.melun.mangaview.app.SourceOption? {
-    val index = state.sources.indexOfFirst { it.id == state.selectedSourceId }
-    return state.sources.getOrNull((index + 1).mod(state.sources.size.coerceAtLeast(1)))
 }

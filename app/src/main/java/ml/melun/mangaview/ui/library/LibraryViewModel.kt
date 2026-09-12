@@ -130,6 +130,13 @@ internal class LibraryViewModel(
             LibraryIntent.TogglePreferences -> update {
                 it.copy(preferencesVisible = !it.preferencesVisible, settingsVisible = false)
             }
+            LibraryIntent.ToggleSourcePicker -> update {
+                it.copy(
+                    sourcePickerVisible = !it.sourcePickerVisible,
+                    settingsVisible = false,
+                    preferencesVisible = false,
+                )
+            }
             LibraryIntent.AccountSignIn, LibraryIntent.AccountSignOut, LibraryIntent.AccountRetry -> {
                 effectChannel.trySend(intent.accountEffect())
             }
@@ -189,6 +196,7 @@ internal class LibraryViewModel(
             content = LibraryContent.Empty,
             settingsVisible = false,
             preferencesVisible = false,
+            sourcePickerVisible = false,
             seriesMenuVisible = false,
             downloadSelectionVisible = false,
         ) }
@@ -211,6 +219,7 @@ internal class LibraryViewModel(
             selectedGenre = null,
             genreStatusFilter = null,
             genreCatalog = LibraryContent.Empty,
+            sourcePickerVisible = false,
         ) }
         actions.updateSettings { it.copy(sourceKey = sourceId.value) }
         loadHome()
@@ -388,6 +397,10 @@ internal class LibraryViewModel(
         }
         if (state.value.downloadSelectionVisible) {
             update { it.copy(downloadSelectionVisible = false) }
+            return
+        }
+        if (state.value.sourcePickerVisible) {
+            update { it.copy(sourcePickerVisible = false) }
             return
         }
         if (state.value.preferencesVisible) {

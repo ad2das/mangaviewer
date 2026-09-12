@@ -42,6 +42,7 @@ internal data class LibraryState(
     val downloadStates: Map<EpisodeId, EpisodeDownloadState> = emptyMap(),
     val settingsVisible: Boolean = false,
     val preferencesVisible: Boolean = false,
+    val sourcePickerVisible: Boolean = false,
     val seriesMenuVisible: Boolean = false,
     val downloadSelectionVisible: Boolean = false,
     val pendingOfflineRemoval: EpisodeId? = null,
@@ -125,6 +126,7 @@ internal sealed interface LibraryIntent {
     data object LoadMoreGenre : LibraryIntent
     data object ToggleSettings : LibraryIntent
     data object TogglePreferences : LibraryIntent
+    data object ToggleSourcePicker : LibraryIntent
     data object AccountSignIn : LibraryIntent
     data object AccountSignOut : LibraryIntent
     data object AccountRetry : LibraryIntent

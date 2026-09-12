@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ml.melun.mangaview.app.SourceOption
 
 @Composable
 internal fun LibraryScreen(
@@ -48,7 +49,7 @@ internal fun LibraryScreen(
     val genreCatalogVisible = state.selectedGenre != null
     BackHandler(
         enabled = detailVisible || genreCatalogVisible || state.settingsVisible ||
-            state.preferencesVisible || state.downloadSelectionVisible,
+            state.preferencesVisible || state.downloadSelectionVisible || state.sourcePickerVisible,
     ) { accept(LibraryIntent.Back) }
 
     Box(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
@@ -64,6 +65,7 @@ internal fun LibraryScreen(
         if (state.pendingOfflineRemoval != null) OfflineRemovalConfirmation(state, colors, accept)
         if (state.settingsVisible) SettingsOverlay(colors, accept, account, updateAvailable)
         if (state.preferencesVisible) PreferencesOverlay(state, colors, accept)
+        if (state.sourcePickerVisible) SourcePickerOverlay(state, colors, accept)
     }
 }
 
@@ -141,10 +143,6 @@ private fun MainTopBar(
         }
 
         val source = state.sources.firstOrNull { it.id == state.selectedSourceId }
-        val next = state.sources.let { options ->
-            val index = options.indexOfFirst { it.id == state.selectedSourceId }
-            options.getOrNull((index + 1).mod(options.size.coerceAtLeast(1)))
-        }
 
         // Provider Selector pill chip
         Row(
@@ -154,7 +152,7 @@ private fun MainTopBar(
                 .background(colors.card)
                 .border(1.dp, colors.cardBorder, RoundedCornerShape(19.dp))
                 .semantics { contentDescription = source?.label ?: "" }
-                .clickable { next?.let { accept(LibraryIntent.SourceSelected(it.id)) } }
+                .clickable { accept(LibraryIntent.ToggleSourcePicker) }
                 .padding(start = 7.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -287,6 +285,78 @@ internal fun LibraryMessage(value: String, colors: LibraryColors, modifier: Modi
             }
             Spacer(Modifier.height(16.dp))
             BasicText(value, style = hintStyle(colors, 15).copy(fontWeight = FontWeight.Medium))
+        }
+    }
+}
+
+@Composable
+private fun SourcePickerOverlay(
+    state: LibraryState,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .clickable { accept(LibraryIntent.ToggleSourcePicker) },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.padding(28.dp).fillMaxWidth()
+                .shadow(16.dp, RoundedCornerShape(22.dp), spotColor = Color.Black.copy(alpha = 0.2f))
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.card)
+                .border(1.dp, colors.cardBorder, RoundedCornerShape(22.dp))
+                .clickable {}
+                .padding(vertical = 10.dp),
+        ) {
+            BasicText(
+                "사이트 선택",
+                Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                labelStyle(colors, true).copy(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+            )
+            state.sources.forEach { option ->
+                SourcePickerRow(
+                    option = option,
+                    selected = option.id == state.selectedSourceId,
+                    colors = colors,
+                ) { accept(LibraryIntent.SourceSelected(option.id)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourcePickerRow(
+    option: SourceOption,
+    selected: Boolean,
+    colors: LibraryColors,
+    click: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth()
+            .background(if (selected) colors.accentSurface else Color.Transparent)
+            .clickable(onClick = click)
+            .padding(horizontal = 20.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(
+            LegacySiteArtwork.forSource(option.id.value),
+            null,
+            Modifier.size(24.dp),
+            contentScale = ContentScale.Fit,
+        )
+        Spacer(Modifier.width(12.dp))
+        BasicText(
+            option.label,
+            Modifier.weight(1f),
+            bodyStyle(colors, 15).copy(
+                color = if (selected) colors.accent else colors.text,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            ),
+        )
+        if (selected) {
+            LibraryIconView(LibraryIcon.CHECK, colors.accent, Modifier.size(18.dp))
         }
     }
 }
