@@ -19,6 +19,7 @@ import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.PageValidation
 import ml.melun.mangaview.source.PreparationIntent
 import ml.melun.mangaview.source.SeriesKind
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
@@ -71,7 +72,13 @@ class NewxtoonContentSource(
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         val page = query.cursor?.toIntOrNull() ?: 1
         val html = fetch("/comics?" + catalogQuery(query, page))
-        return SourcePage(parser.seriesCards(html).map(::series), parser.nextPage(html, page)?.toString())
+        val segmentStatus = query.statusFilter?.let {
+            if (it == SeriesStatus.HIATUS) SeriesStatus.ONGOING else it
+        }
+        return SourcePage(
+            parser.seriesCards(html).map { series(it, segmentStatus) },
+            parser.nextPage(html, page)?.toString(),
+        )
     }
 
     private fun catalogQuery(query: CatalogQuery, page: Int): String {
@@ -86,6 +93,8 @@ class NewxtoonContentSource(
                     "category=" + URLEncoder.encode(key.removePrefix("category:"), "UTF-8")
             }
         }
+        // The provider filters the whole catalog by its Korean status labels.
+        query.statusFilter?.let { params += "status=" + URLEncoder.encode(it.statusParam(), "UTF-8") }
         return params.joinToString("&")
     }
 
@@ -237,18 +246,24 @@ class NewxtoonContentSource(
         "Accept-Language" to "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     )
 
-    private fun series(card: NewxtoonSeriesCard) =
+    private fun series(card: NewxtoonSeriesCard, fallbackStatus: SeriesStatus? = null) =
         SourceSeries(
             SeriesId(id, card.id),
             card.title,
             subtitle = card.subtitle,
             thumbnailKey = card.thumbnailUrl,
-            status = card.status,
+            status = card.status ?: fallbackStatus,
         )
 
     private fun seriesPath(seriesId: SeriesId) = "/comics/${seriesId.remoteKey}"
 
     private fun episodePath(episodeId: EpisodeId) = "${seriesPath(episodeId.seriesId)}/chapters/${episodeId.remoteKey}"
+
+    /** The provider files paused works under its ongoing segment, so HIATUS maps there too. */
+    private fun SeriesStatus.statusParam(): String = when (this) {
+        SeriesStatus.ONGOING, SeriesStatus.HIATUS -> "연재중"
+        SeriesStatus.COMPLETED -> "완결"
+    }
 
     private companion object {
         const val MAX_DOCUMENT_BYTES = 8 * 1024 * 1024

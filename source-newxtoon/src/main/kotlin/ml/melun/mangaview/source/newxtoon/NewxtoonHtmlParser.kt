@@ -80,17 +80,15 @@ class NewxtoonHtmlParser(private val origin: String) {
 
     private fun statusFrom(label: String): SeriesStatus? = when {
         label.contains("완결") -> SeriesStatus.COMPLETED
-        label.contains("휴재") -> SeriesStatus.HIATUS
-        label.contains("연재") -> SeriesStatus.ONGOING
+        label.contains("휴재") || label.contains("연재") -> SeriesStatus.ONGOING
         else -> null
     }
 
     /** The catalog marks completion inside the episode line, e.g. "43화(완결)". */
     private fun cardStatus(anchor: Element): SeriesStatus? {
         val paragraphs = anchor.select("p").map { it.text().trim() }
-        if (paragraphs.any { it.contains("휴재") }) return SeriesStatus.HIATUS
         if (paragraphs.any { it.contains("완결") }) return SeriesStatus.COMPLETED
-        return if (paragraphs.any { it.contains("화") }) SeriesStatus.ONGOING else null
+        return if (paragraphs.any { it.contains("휴재") || it.contains("화") }) SeriesStatus.ONGOING else null
     }
 
     fun nextPage(html: String, current: Int): Int? {
