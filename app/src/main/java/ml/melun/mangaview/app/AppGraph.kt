@@ -93,7 +93,7 @@ internal class AppGraph(
             SourceRegistration(WFWF_ID, "WFWF") {
                 OfflineContentSource(wfwfSource.value, offlineStore)
             },
-            SourceRegistration(NEWXTOON_ID, "뉴엑스툰") {
+            SourceRegistration(NEWXTOON_ID, "뉴엑스툰", distinguishesKinds = false) {
                 OfflineContentSource(newxtoonSource.value, offlineStore)
             },
         ),

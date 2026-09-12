@@ -6,11 +6,13 @@ import ml.melun.mangaview.source.ContentSource
 internal data class SourceOption(
     val id: SourceId,
     val label: String,
+    val distinguishesKinds: Boolean = true,
 )
 
 internal data class SourceRegistration(
     val id: SourceId,
     val label: String,
+    val distinguishesKinds: Boolean = true,
     val create: () -> ContentSource,
 )
 
@@ -20,7 +22,7 @@ internal class SourceRegistry(
     private val lock = Any()
     private val registrationsById = registrations.associateBy(SourceRegistration::id)
     private val instances = mutableMapOf<SourceId, ContentSource>()
-    val options = registrations.map { SourceOption(it.id, it.label) }
+    val options = registrations.map { SourceOption(it.id, it.label, it.distinguishesKinds) }
 
     init {
         require(registrations.isNotEmpty()) { "At least one content source is required" }

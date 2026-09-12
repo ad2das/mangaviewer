@@ -124,11 +124,15 @@ private fun SearchControls(state: LibraryState, colors: LibraryColors, accept: (
             }
         }
         Spacer(Modifier.height(10.dp))
+        val selectedSource = state.sources.firstOrNull { it.id == state.selectedSourceId }
+        val showKindFilter = selectedSource?.distinguishesKinds ?: true
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            KindFilter(state.searchKind, colors, Modifier.weight(1f), accept)
+            if (showKindFilter) {
+                KindFilter(state.searchKind, colors, Modifier.weight(1f), accept)
+            }
             FieldFilter(state.searchField, colors, Modifier.weight(1f), accept)
         }
     }

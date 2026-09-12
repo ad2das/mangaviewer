@@ -36,13 +36,17 @@ internal fun HomeScreen(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
+    val selectedSource = state.sources.firstOrNull { it.id == state.selectedSourceId }
+    val showKindSelector = selectedSource?.distinguishesKinds ?: true
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         item { HomeHeading(colors) }
         item { HomeContinuations(state.saved.recent, artworkLoader, colors, accept) }
-        item { KindSelector(state.homeKind, colors, accept) }
+        if (showKindSelector) {
+            item { KindSelector(state.homeKind, colors, accept) }
+        }
         item { Spacer(Modifier.height(16.dp)) }
         item { HomeTabs(state.homeTab, colors, accept) }
         item { Spacer(Modifier.height(12.dp)) }
