@@ -31,6 +31,10 @@ import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SourceSeriesDetails
 
+private val EpisodeCardShape = RoundedCornerShape(18.dp)
+private val EpisodeIconShape = RoundedCornerShape(14.dp)
+private val EpisodeActionShape = RoundedCornerShape(12.dp)
+
 @Composable
 internal fun SeriesDetailScreen(
     state: LibraryState,
@@ -385,17 +389,16 @@ private fun EpisodeCard(
 ) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).height(88.dp)
-            .shadow(4.dp, RoundedCornerShape(18.dp), spotColor = Color.Black.copy(alpha = 0.06f))
-            .clip(RoundedCornerShape(18.dp))
+            .clip(EpisodeCardShape)
             .background(colors.card)
-            .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp))
+            .border(1.dp, colors.cardBorder, EpisodeCardShape)
             .clickable(onClick = open)
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             Modifier.size(48.dp)
-                .clip(RoundedCornerShape(14.dp))
+                .clip(EpisodeIconShape)
                 .background(colors.mutedSurface),
             contentAlignment = Alignment.Center,
         ) {
@@ -419,7 +422,7 @@ private fun EpisodeCard(
                 .semantics {
                     contentDescription = if (saved) "${episode.title} 오프라인 저장 삭제" else "${episode.title} 다운로드"
                 }
-                .clip(RoundedCornerShape(12.dp))
+                .clip(EpisodeActionShape)
                 .background(colors.mutedSurface)
                 .clickable(
                     enabled = saved || downloadState == null || downloadState is EpisodeDownloadState.Failed,

@@ -69,6 +69,8 @@ internal class LibraryViewModel(
     private val statusQueue = ArrayDeque<SeriesId>()
     private val statusCache = mutableMapOf<SeriesId, SeriesStatus?>()
     private val statusUnsupported = mutableSetOf<SourceId>()
+    private val pendingStatusUpdates = mutableMapOf<SeriesId, SeriesStatus>()
+    private var statusFlushJob: Job? = null
     private var contentVersion = 0L
     private var homeVersion = 0L
     private val observers = LibraryStateObservers(sourceRegistry, userLibrary, offlineStore, offlineDownloads)
@@ -521,7 +523,11 @@ internal class LibraryViewModel(
         if (statusWorker?.isActive == true) return
         statusWorker = viewModelScope.launch {
             while (true) {
-                val id = statusQueue.removeFirstOrNull() ?: break
+                val id = statusQueue.removeFirstOrNull()
+                if (id == null) {
+                    flushStatusUpdates()
+                    break
+                }
                 val source = runCatching { sourceRegistry.require(id.sourceId) }.getOrNull() ?: continue
                 val details = runCatching {
                     withContext(ioDispatcher) { source.seriesDetails(id) }
@@ -532,11 +538,27 @@ internal class LibraryViewModel(
                     continue
                 }
                 statusCache[id] = details.status
-                details.status?.let { status ->
-                    update { state -> state.withSeriesStatus(id, status) }
-                }
+                details.status?.let { status -> queueStatusUpdate(id, status) }
                 delay(STATUS_ENRICH_DELAY_MILLIS)
             }
+        }
+    }
+
+    private fun queueStatusUpdate(id: SeriesId, status: SeriesStatus) {
+        pendingStatusUpdates[id] = status
+        if (statusFlushJob?.isActive == true) return
+        statusFlushJob = viewModelScope.launch {
+            delay(STATUS_FLUSH_INTERVAL_MILLIS)
+            flushStatusUpdates()
+        }
+    }
+
+    private fun flushStatusUpdates() {
+        if (pendingStatusUpdates.isEmpty()) return
+        val batch = pendingStatusUpdates.toMap()
+        pendingStatusUpdates.clear()
+        update { state ->
+            batch.entries.fold(state) { patched, (id, status) -> patched.withSeriesStatus(id, status) }
         }
     }
 
@@ -544,6 +566,9 @@ internal class LibraryViewModel(
         statusWorker?.cancel()
         statusWorker = null
         statusQueue.clear()
+        flushStatusUpdates()
+        statusFlushJob?.cancel()
+        statusFlushJob = null
     }
 
     private fun cancelGenres() = genreJob?.cancel().also { genreJob = null }
@@ -568,6 +593,7 @@ private fun failureDisplayMessage(failure: Throwable, fallback: String): String 
     }
 
 private const val STATUS_ENRICH_DELAY_MILLIS = 250L
+private const val STATUS_FLUSH_INTERVAL_MILLIS = 500L
 
 private fun currentSeries(state: LibraryState): SourceSeries =
     state.activeSeries ?: error("Episode selection requires an active series")

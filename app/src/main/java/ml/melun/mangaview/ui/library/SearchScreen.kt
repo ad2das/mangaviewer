@@ -35,6 +35,10 @@ import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceSeries
 
+private val SearchResultCardShape = RoundedCornerShape(18.dp)
+private val SearchResultThumbShape = RoundedCornerShape(12.dp)
+private val SearchResultBadgeShape = RoundedCornerShape(6.dp)
+
 @Composable
 internal fun SearchScreen(
     state: LibraryState,
@@ -382,18 +386,17 @@ private fun SearchSeriesCard(
     Row(
         Modifier.fillMaxWidth()
             .height(112.dp)
-            .shadow(4.dp, RoundedCornerShape(18.dp), spotColor = Color.Black.copy(alpha = 0.08f))
-            .clip(RoundedCornerShape(18.dp))
+            .clip(SearchResultCardShape)
             .background(colors.card)
-            .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp))
+            .border(1.dp, colors.cardBorder, SearchResultCardShape)
             .clickable { accept(LibraryIntent.SeriesSelected(series)) }
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             Modifier.width(76.dp).fillMaxHeight()
-                .clip(RoundedCornerShape(12.dp))
-                .border(0.5.dp, colors.cardBorder, RoundedCornerShape(12.dp)),
+                .clip(SearchResultThumbShape)
+                .border(0.5.dp, colors.cardBorder, SearchResultThumbShape),
         ) {
             SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
         }
@@ -415,7 +418,7 @@ private fun SearchSeriesCard(
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    Modifier.clip(RoundedCornerShape(6.dp))
+                    Modifier.clip(SearchResultBadgeShape)
                         .background(colors.accentSurface)
                         .padding(horizontal = 7.dp, vertical = 2.dp),
                 ) {

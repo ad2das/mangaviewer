@@ -13,7 +13,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -23,6 +22,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ml.melun.mangaview.data.library.RecentReading
 import ml.melun.mangaview.source.SourceSeries
+
+private val ContinuationCardShape = RoundedCornerShape(20.dp)
+private val ContinuationThumbShape = RoundedCornerShape(14.dp)
+private val ContinuationBadgeShape = RoundedCornerShape(8.dp)
 
 /** Uses local reading history, independently of the selected catalog and its loading state. */
 @Composable
@@ -68,10 +71,9 @@ internal fun HomeContinuations(
             items(recent.take(6), key = { "${it.series.id.sourceId.value}:${it.series.id.remoteKey}" }) { item ->
                 Row(
                     Modifier.width(320.dp).height(118.dp)
-                        .shadow(6.dp, RoundedCornerShape(20.dp), spotColor = Color.Black.copy(alpha = 0.12f))
-                        .clip(RoundedCornerShape(20.dp))
+                        .clip(ContinuationCardShape)
                         .background(colors.card)
-                        .border(1.dp, colors.cardBorder, RoundedCornerShape(20.dp))
+                        .border(1.dp, colors.cardBorder, ContinuationCardShape)
                         .semantics { contentDescription = "이어보기: ${item.series.title}" }
                         .clickable { accept(LibraryIntent.ResumeEpisode(item.episodeId)) }
                         .padding(10.dp),
@@ -79,9 +81,8 @@ internal fun HomeContinuations(
                 ) {
                     Box(
                         Modifier.width(78.dp).height(98.dp)
-                            .shadow(3.dp, RoundedCornerShape(14.dp), spotColor = Color.Black.copy(alpha = 0.15f))
-                            .clip(RoundedCornerShape(14.dp))
-                            .border(0.5.dp, colors.cardBorder, RoundedCornerShape(14.dp)),
+                            .clip(ContinuationThumbShape)
+                            .border(0.5.dp, colors.cardBorder, ContinuationThumbShape),
                     ) {
                         SeriesArtwork(
                             SourceSeries(item.series.id, item.series.title, thumbnailKey = item.series.thumbnailKey),
@@ -114,7 +115,7 @@ internal fun HomeContinuations(
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Box(
-                                Modifier.clip(RoundedCornerShape(8.dp))
+                                Modifier.clip(ContinuationBadgeShape)
                                     .background(colors.accentSurface)
                                     .padding(horizontal = 9.dp, vertical = 4.dp),
                             ) {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +30,20 @@ import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceSeries
 
+private val GridCardShape = RoundedCornerShape(18.dp)
+private val GenreButtonShape = RoundedCornerShape(14.dp)
+private val GridScrimBrush = Brush.verticalGradient(
+    listOf(Color.Transparent, Color.Black.copy(alpha = 0.35f)),
+    startY = 90f,
+)
+private val RankedScrimBrush = Brush.verticalGradient(
+    listOf(Color.Transparent, Color.Black.copy(alpha = 0.50f)),
+    startY = 80f,
+)
+private val RankedNeutralBrush = Brush.linearGradient(
+    listOf(Color.Black.copy(alpha = 0.70f), Color.Black.copy(alpha = 0.70f)),
+)
+
 @Composable
 internal fun HomeScreen(
     state: LibraryState,
@@ -38,6 +53,9 @@ internal fun HomeScreen(
 ) {
     val selectedSource = state.sources.firstOrNull { it.id == state.selectedSourceId }
     val showKindSelector = selectedSource?.distinguishesKinds ?: true
+    val readyHome = state.home as? HomeContent.Ready
+    val popularRows = remember(readyHome?.popular) { readyHome?.popular.orEmpty().chunked(2) }
+    val newRows = remember(readyHome?.new) { readyHome?.new.orEmpty().chunked(2) }
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(bottom = 24.dp),
@@ -58,8 +76,8 @@ internal fun HomeScreen(
                 is HomeContent.Failure -> item { HomeFailure(home.message, colors, accept) }
                 is HomeContent.Ready -> when (state.homeTab) {
                     HomeTab.HOME -> homeRows(home, artworkLoader, colors, accept)
-                    HomeTab.POPULAR -> seriesGrid(home.popular, artworkLoader, colors, accept)
-                    HomeTab.NEW -> seriesGrid(home.new, artworkLoader, colors, accept)
+                    HomeTab.POPULAR -> gridRows(popularRows, artworkLoader, colors, accept)
+                    HomeTab.NEW -> gridRows(newRows, artworkLoader, colors, accept)
                     HomeTab.GENRES -> Unit
                 }
             }
@@ -93,17 +111,17 @@ private fun androidx.compose.foundation.lazy.LazyListScope.homeRows(
     }
 }
 
-internal fun androidx.compose.foundation.lazy.LazyListScope.seriesGrid(
-    series: List<SourceSeries>,
+internal fun androidx.compose.foundation.lazy.LazyListScope.gridRows(
+    rows: List<List<SourceSeries>>,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
-    if (series.isEmpty()) {
+    if (rows.isEmpty()) {
         item { HomeFailure("표시할 작품이 없습니다", colors, accept) }
         return
     }
-    items(series.chunked(2), key = { row -> row.joinToString("|") { it.id.remoteKey } }) { row ->
+    items(rows, key = { row -> row.joinToString("|") { it.id.remoteKey } }) { row ->
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -150,10 +168,9 @@ private fun GenreRow(
         row.forEach { genre ->
             Box(
                 Modifier.weight(1f).height(46.dp)
-                    .shadow(2.dp, RoundedCornerShape(14.dp), spotColor = Color.Black.copy(alpha = 0.05f))
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(GenreButtonShape)
                     .background(colors.card)
-                    .border(1.dp, colors.cardBorder, RoundedCornerShape(14.dp))
+                    .border(1.dp, colors.cardBorder, GenreButtonShape)
                     .clickable { accept(LibraryIntent.GenreSelected(genre)) }
                     .padding(horizontal = 6.dp),
                 contentAlignment = Alignment.Center,
@@ -422,22 +439,14 @@ private fun RankedRow(
             Column(
                 Modifier.width(152.dp)
                     .height(246.dp)
-                    .shadow(3.dp, RoundedCornerShape(18.dp), spotColor = Color.Black.copy(alpha = 0.06f))
-                    .clip(RoundedCornerShape(18.dp))
+                    .clip(GridCardShape)
                     .background(colors.card)
-                    .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp))
+                    .border(1.dp, colors.cardBorder, GridCardShape)
                     .clickable { accept(LibraryIntent.SeriesSelected(series)) },
             ) {
                 Box(Modifier.fillMaxWidth().height(162.dp)) {
                     SeriesArtwork(series, loader, colors, Modifier.matchParentSize())
-                    Box(
-                        Modifier.matchParentSize().background(
-                            Brush.verticalGradient(
-                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.50f)),
-                                startY = 80f,
-                            ),
-                        ),
-                    )
+                    Box(Modifier.matchParentSize().background(RankedScrimBrush))
                     // Real rank medal badge (1, 2, 3 medals, 4..10 frosted number)
                     Box(
                         Modifier.padding(8.dp)
@@ -448,7 +457,7 @@ private fun RankedRow(
                                     1 -> colors.goldGradient
                                     2 -> Brush.linearGradient(listOf(colors.silver, Color(0xFF94A3B8)))
                                     3 -> Brush.linearGradient(listOf(colors.bronze, Color(0xFFB45309)))
-                                    else -> Brush.linearGradient(listOf(Color.Black.copy(alpha = 0.70f), Color.Black.copy(alpha = 0.70f)))
+                                    else -> RankedNeutralBrush
                                 }
                             ),
                         contentAlignment = Alignment.Center,
@@ -509,23 +518,15 @@ private fun SeriesGridCard(
 ) {
     Column(
         modifier.height(248.dp)
-            .shadow(3.dp, RoundedCornerShape(18.dp), spotColor = Color.Black.copy(alpha = 0.06f))
-            .clip(RoundedCornerShape(18.dp))
+            .clip(GridCardShape)
             .background(colors.card)
-            .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp))
+            .border(1.dp, colors.cardBorder, GridCardShape)
             .semantics { contentDescription = "작품: ${series.title}" }
             .clickable { accept(LibraryIntent.SeriesSelected(series)) },
     ) {
         Box(Modifier.fillMaxWidth().height(166.dp)) {
             SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
-            Box(
-                Modifier.matchParentSize().background(
-                    Brush.verticalGradient(
-                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.35f)),
-                        startY = 90f,
-                    ),
-                ),
-            )
+            Box(Modifier.matchParentSize().background(GridScrimBrush))
             series.status?.let { status ->
                 SeriesStatusBadge(status, colors, Modifier.align(Alignment.TopStart).padding(8.dp))
             }

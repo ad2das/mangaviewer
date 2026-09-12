@@ -32,6 +32,10 @@ import ml.melun.mangaview.data.library.RecentReading
 import ml.melun.mangaview.data.library.SavedSeries
 import ml.melun.mangaview.source.SourceSeries
 
+private val SavedCardShape = RoundedCornerShape(18.dp)
+private val SavedThumbShape = RoundedCornerShape(12.dp)
+private val SavedBadgeShape = RoundedCornerShape(6.dp)
+
 @Composable
 internal fun SavedLibraryScreen(
     state: LibraryState,
@@ -299,10 +303,9 @@ private fun SavedSourceSeriesCard(
     Row(
         Modifier.fillMaxWidth()
             .height(110.dp)
-            .shadow(4.dp, RoundedCornerShape(18.dp), spotColor = Color.Black.copy(alpha = 0.08f))
-            .clip(RoundedCornerShape(18.dp))
+            .clip(SavedCardShape)
             .background(colors.card)
-            .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp))
+            .border(1.dp, colors.cardBorder, SavedCardShape)
             .combinedClickable(
                 onClick = click,
                 onLongClickLabel = "삭제",
@@ -313,8 +316,8 @@ private fun SavedSourceSeriesCard(
     ) {
         Box(
             Modifier.width(74.dp).fillMaxHeight()
-                .clip(RoundedCornerShape(12.dp))
-                .border(0.5.dp, colors.cardBorder, RoundedCornerShape(12.dp)),
+                .clip(SavedThumbShape)
+                .border(0.5.dp, colors.cardBorder, SavedThumbShape),
         ) {
             SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
         }
@@ -331,7 +334,7 @@ private fun SavedSourceSeriesCard(
             if (badge != null) {
                 Spacer(Modifier.height(6.dp))
                 Row(
-                    Modifier.clip(RoundedCornerShape(6.dp))
+                    Modifier.clip(SavedBadgeShape)
                         .background(colors.accentSurface)
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                 ) {
