@@ -1,5 +1,6 @@
 package ml.melun.mangaview.source.newxtoon
 
+import ml.melun.mangaview.source.SeriesStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,6 +41,19 @@ class NewxtoonHtmlParserTest {
         assertTrue("expected many genres", genres.size > 10)
         assertTrue(genres.any { it.key == "genre:1" && it.label.isNotBlank() })
         assertEquals(genres.size, genres.map { it.key }.toSet().size)
+    }
+
+    @Test fun parsesSeriesStatusDescriptionAndAuthors() {
+        val details = parser.seriesDetails(fixture("series.html"))
+        assertEquals(SeriesStatus.ONGOING, details.status)
+        assertTrue("synopsis must be parsed", details.description?.contains("전세사기") == true)
+        assertEquals("평형, 석지", details.authors)
+    }
+
+    @Test fun parsesCardSubtitlesFromAriaLabel() {
+        val cards = parser.seriesCards(fixture("comics.html"))
+        val target = cards.first { it.id == "334" }
+        assertTrue("platform label must be kept", target.subtitle?.contains("탑툰") == true)
     }
 
     @Test fun parsesReaderPagesInOrderWithDimensions() {

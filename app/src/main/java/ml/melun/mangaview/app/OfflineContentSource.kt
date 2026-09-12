@@ -18,6 +18,7 @@ import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceSeriesDetails
 import ml.melun.mangaview.source.SourceSearchQuery
 
 internal class OfflineContentSource(
@@ -47,6 +48,9 @@ internal class OfflineContentSource(
 
     override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest =
         offline.manifest(episodeId) ?: online.manifest(episodeId)
+
+    override suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? =
+        online.seriesDetails(seriesId)
 
     override suspend fun adjacent(episodeId: EpisodeId): AdjacentEpisodes {
         val manifest = offline.manifest(episodeId)

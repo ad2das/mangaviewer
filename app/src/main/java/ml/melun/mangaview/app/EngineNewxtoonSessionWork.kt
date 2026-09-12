@@ -79,9 +79,11 @@ internal class EngineNewxtoonSessionWork(
                     parser.chapters(value.openBody().use { it.readBytes().toString(Charsets.UTF_8) })
                 }
             }
+            // Chapters arrive newest-first, so positional sequence numbers count down and the
+            // first chapter ends up with the smallest number.
             EngineEpisodeCatalog(seriesId, chapters.mapIndexed { index, chapter ->
                 SourceEpisode(EpisodeId(seriesId, chapter.id), chapter.title,
-                    sequenceNumber = (index + 1).toDouble())
+                    sequenceNumber = (chapters.size - index).toDouble())
             })
         },
     )

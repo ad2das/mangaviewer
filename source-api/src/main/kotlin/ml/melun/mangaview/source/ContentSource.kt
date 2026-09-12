@@ -22,6 +22,9 @@ interface ContentSource {
 
     suspend fun episodes(seriesId: SeriesId, cursor: String? = null): SourcePage<SourceEpisode>
 
+    /** Optional series metadata (status/synopsis/authors); sources that expose it may override. */
+    suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? = null
+
     suspend fun manifest(episodeId: EpisodeId): EpisodeManifest
 
     suspend fun adjacent(episodeId: EpisodeId): AdjacentEpisodes

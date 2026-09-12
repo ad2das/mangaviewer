@@ -31,6 +31,7 @@ import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceSearchQuery
+import ml.melun.mangaview.source.SourceThrottledException
 
 internal class LibraryViewModel(
     private val sourceRegistry: SourceRegistry,
@@ -59,6 +60,7 @@ internal class LibraryViewModel(
     private var contentJob: Job? = null
     private var homeJob: Job? = null
     private var genreJob: Job? = null
+    private var detailsJob: Job? = null
     private var contentVersion = 0L
     private var homeVersion = 0L
     private val observers = LibraryStateObservers(sourceRegistry, userLibrary, offlineStore, offlineDownloads)
@@ -244,7 +246,7 @@ internal class LibraryViewModel(
                 throw cancelled
             } catch (failure: Throwable) {
                 if (version == homeVersion) update {
-                    it.copy(home = HomeContent.Failure(failure.message ?: "목록을 불러오지 못했습니다"))
+                    it.copy(home = HomeContent.Failure(failureDisplayMessage(failure, "목록을 불러오지 못했습니다")))
                 }
             }
         }
@@ -269,7 +271,7 @@ internal class LibraryViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                update { it.copy(genres = GenreContent.Failure(failure.message ?: "장르 목록을 불러오지 못했습니다")) }
+                update { it.copy(genres = GenreContent.Failure(failureDisplayMessage(failure, "장르 목록을 불러오지 못했습니다"))) }
             }
         }
     }
@@ -306,6 +308,7 @@ internal class LibraryViewModel(
     private fun episodes(series: SourceSeries, offlineOnly: Boolean = false) {
         val source = sourceRegistry.require(series.id.sourceId)
         update { it.copy(activeSeries = series, detailTab = DetailTab.INTRO,
+            activeSeriesDetails = null,
             selectedSourceId = if (offlineOnly) series.id.sourceId else it.selectedSourceId,
             lastSeries = if (offlineOnly) listOf(series) else it.lastSeries,
         ) }
@@ -322,6 +325,7 @@ internal class LibraryViewModel(
             success = { result: List<SourceEpisode> ->
                 update { it.copy(content = LibraryContent.Episodes(series, result)) }
                 preferredEpisode(state.value, series, result)?.let(episodeWarmer::warm)
+                if (!offlineOnly) loadSeriesDetails(source, series)
             },
             failureMessage = "회차를 불러오지 못했습니다",
         )
@@ -343,7 +347,7 @@ internal class LibraryViewModel(
                 throw cancelled
             } catch (failure: Throwable) {
                 if (version == contentVersion) update {
-                    it.copy(content = LibraryContent.Failure(failure.message ?: failureMessage))
+                    it.copy(content = LibraryContent.Failure(failureDisplayMessage(failure, failureMessage)))
                 }
             }
         }
@@ -416,6 +420,20 @@ internal class LibraryViewModel(
         contentVersion += 1L
         contentJob?.cancel()
         contentJob = null
+        detailsJob?.cancel()
+        detailsJob = null
+    }
+
+    private fun loadSeriesDetails(source: ContentSource, series: SourceSeries) {
+        detailsJob?.cancel()
+        detailsJob = viewModelScope.launch {
+            val details = runCatching {
+                withContext(ioDispatcher) { source.seriesDetails(series.id) }
+            }.getOrNull()
+            if (state.value.activeSeries?.id == series.id) {
+                update { it.copy(activeSeriesDetails = details) }
+            }
+        }
     }
 
     private fun cancelHome() {
@@ -436,6 +454,13 @@ private suspend fun homeCatalogs(source: ContentSource, kind: SeriesKind): HomeC
         val latest = async { source.catalog(CatalogQuery(kind, CatalogOrder.LATEST)).items }
         val new = async { source.catalog(CatalogQuery(kind, CatalogOrder.NEW)).items }
         HomeContent.Ready(popular.await(), latest.await(), new.await())
+    }
+
+/** Turns provider-specific failures into reader-friendly Korean copy. */
+private fun failureDisplayMessage(failure: Throwable, fallback: String): String =
+    when (failure) {
+        is SourceThrottledException -> "요청이 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요"
+        else -> failure.message ?: fallback
     }
 
 private fun currentSeries(state: LibraryState): SourceSeries =

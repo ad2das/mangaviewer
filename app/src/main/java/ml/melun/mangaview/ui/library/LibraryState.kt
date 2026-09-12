@@ -13,6 +13,7 @@ import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceSeriesDetails
 
 internal data class LibraryState(
     val query: String,
@@ -31,6 +32,7 @@ internal data class LibraryState(
     val searchField: SearchField = SearchField.TITLE,
     val detailTab: DetailTab = DetailTab.INTRO,
     val activeSeries: SourceSeries? = null,
+    val activeSeriesDetails: SourceSeriesDetails? = null,
     val lastSeries: List<SourceSeries> = emptyList(),
     val saved: UserLibrarySnapshot = UserLibrarySnapshot(),
     val offlineEpisodes: List<DownloadedEpisode> = emptyList(),

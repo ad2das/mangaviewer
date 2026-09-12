@@ -1,11 +1,22 @@
 package ml.melun.mangaview.source.newxtoon
 
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceGenre
 import org.jsoup.Jsoup
 
-data class NewxtoonSeriesCard(val id: String, val title: String, val thumbnailUrl: String?)
+data class NewxtoonSeriesCard(
+    val id: String,
+    val title: String,
+    val thumbnailUrl: String?,
+    val subtitle: String? = null,
+)
 data class NewxtoonChapter(val id: String, val title: String)
 data class NewxtoonPage(val url: String, val width: Int?, val height: Int?)
+data class NewxtoonSeriesDetails(
+    val status: SeriesStatus?,
+    val description: String?,
+    val authors: String?,
+)
 
 /** Pure HTML parsing for the Newxtoon server-rendered pages. */
 class NewxtoonHtmlParser(private val origin: String) {
@@ -37,9 +48,38 @@ class NewxtoonHtmlParser(private val origin: String) {
             val thumbnail = cover?.let { image ->
                 image.absUrl("src").ifBlank { image.attr("src") }.ifBlank { null }
             }
-            result.putIfAbsent(id, NewxtoonSeriesCard(id, title, thumbnail))
+            val subtitle = anchor.attr("aria-label").trim()
+                .split(",")
+                .map(String::trim)
+                .drop(1)
+                .filter(String::isNotEmpty)
+                .takeIf { it.isNotEmpty() }
+                ?.joinToString(" · ")
+            result.putIfAbsent(id, NewxtoonSeriesCard(id, title, thumbnail, subtitle))
         }
         return result.values.toList()
+    }
+
+    fun seriesDetails(html: String): NewxtoonSeriesDetails {
+        val document = Jsoup.parse(html, origin)
+        val status = document.select("div > strong").firstNotNullOfOrNull { strong ->
+            statusFrom(strong.text().trim())
+        }
+        val description = document.selectFirst("p[data-comic-description]")
+            ?.text()?.trim()?.takeIf { it.isNotEmpty() }
+        val authors = document.select("h1#comic-title + p a")
+            .map { it.text().trim() }
+            .filter(String::isNotEmpty)
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(", ")
+        return NewxtoonSeriesDetails(status, description, authors)
+    }
+
+    private fun statusFrom(label: String): SeriesStatus? = when {
+        label.contains("완결") -> SeriesStatus.COMPLETED
+        label.contains("휴재") -> SeriesStatus.HIATUS
+        label.contains("연재") -> SeriesStatus.ONGOING
+        else -> null
     }
 
     fun nextPage(html: String, current: Int): Int? {

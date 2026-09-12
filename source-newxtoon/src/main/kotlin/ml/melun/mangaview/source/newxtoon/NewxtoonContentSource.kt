@@ -3,6 +3,7 @@ package ml.melun.mangaview.source.newxtoon
 import java.io.Closeable
 import java.io.IOException
 import java.net.URLEncoder
+import kotlinx.coroutines.delay
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -23,6 +24,8 @@ import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceSeriesDetails
+import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 
@@ -50,6 +53,7 @@ class NewxtoonContentSource(
     private val parser = NewxtoonHtmlParser(config.origin)
     private val origin = config.origin
     private var cachedGenres: List<SourceGenre>? = null
+    private var lastSeriesDetails: Pair<SeriesId, SourceSeriesDetails>? = null
 
     override suspend fun genres(kind: SeriesKind): List<SourceGenre> {
         cachedGenres?.let { return it }
@@ -87,8 +91,14 @@ class NewxtoonContentSource(
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> {
         val chapters = chapters(seriesId)
+        // The provider lists chapters newest-first, so positional sequence numbers count down:
+        // the final entry (the first chapter) gets 1 and wins firstEpisode()'s minimum.
         return SourcePage(chapters.mapIndexed { index, chapter ->
-            SourceEpisode(EpisodeId(seriesId, chapter.id), chapter.title, sequenceNumber = (index + 1).toDouble())
+            SourceEpisode(
+                EpisodeId(seriesId, chapter.id),
+                chapter.title,
+                sequenceNumber = (chapters.size - index).toDouble(),
+            )
         }, null)
     }
 
@@ -149,8 +159,28 @@ class NewxtoonContentSource(
 
     override fun close() = Unit
 
-    private suspend fun chapters(seriesId: SeriesId): List<NewxtoonChapter> =
-        parser.chapters(fetch(seriesPath(seriesId)))
+    private suspend fun chapters(seriesId: SeriesId): List<NewxtoonChapter> {
+        val html = fetch(seriesPath(seriesId))
+        val details = parser.seriesDetails(html)
+        lastSeriesDetails = seriesId to SourceSeriesDetails(
+            status = details.status,
+            description = details.description,
+            authors = details.authors,
+        )
+        return parser.chapters(html)
+    }
+
+    /** The series page fetched for the chapter list already carries status/synopsis/authors. */
+    override suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? {
+        lastSeriesDetails?.takeIf { it.first == seriesId }?.let { return it.second }
+        val html = fetch(seriesPath(seriesId))
+        val details = parser.seriesDetails(html)
+        return SourceSeriesDetails(
+            status = details.status,
+            description = details.description,
+            authors = details.authors,
+        ).also { lastSeriesDetails = seriesId to it }
+    }
 
     private suspend fun neighbors(episodeId: EpisodeId): Pair<EpisodeId?, EpisodeId?> {
         val chapters = runCatching { chapters(episodeId.seriesId) }.getOrElse { return null to null }
@@ -166,18 +196,38 @@ class NewxtoonContentSource(
         extra: Map<String, String> = emptyMap(),
         priority: PageFetchPriority = PageFetchPriority.NORMAL,
     ): String {
-        val response = transport.execute(SourceRequest(
-            url = origin + path,
-            headers = baseHeaders() + extra,
-            priority = priority,
-        ))
-        try {
-            if (response.statusCode !in 200..299) {
-                throw IOException("NEWXTOON request failed with ${response.statusCode}: $path")
+        var attempt = 0
+        while (true) {
+            val response = transport.execute(SourceRequest(
+                url = origin + path,
+                headers = baseHeaders() + extra,
+                priority = priority,
+            ))
+            val status = response.statusCode
+            if (status in 200..299) {
+                try {
+                    return response.readBytes(MAX_DOCUMENT_BYTES).toString(Charsets.UTF_8)
+                } finally {
+                    response.close()
+                }
             }
-            return response.readBytes(MAX_DOCUMENT_BYTES).toString(Charsets.UTF_8)
-        } finally {
+            val retryable = status in RETRYABLE_STATUS_CODES && attempt < MAX_FETCH_ATTEMPTS - 1
+            val retryAfterMillis = if (retryable) {
+                response.header("Retry-After")?.trim()?.toLongOrNull()
+                    ?.times(1_000L)
+                    ?.coerceIn(MIN_RETRY_DELAY_MILLIS, MAX_RETRY_DELAY_MILLIS)
+            } else {
+                null
+            }
             response.close()
+            if (!retryable) {
+                if (status == 429) {
+                    throw SourceThrottledException("NEWXTOON request throttled with 429: $path")
+                }
+                throw IOException("NEWXTOON request failed with $status: $path")
+            }
+            delay(retryAfterMillis ?: RETRY_DELAYS_MILLIS[minOf(attempt, RETRY_DELAYS_MILLIS.lastIndex)])
+            attempt += 1
         }
     }
 
@@ -188,7 +238,12 @@ class NewxtoonContentSource(
     )
 
     private fun series(card: NewxtoonSeriesCard) =
-        SourceSeries(SeriesId(id, card.id), card.title, thumbnailKey = card.thumbnailUrl)
+        SourceSeries(
+            SeriesId(id, card.id),
+            card.title,
+            subtitle = card.subtitle,
+            thumbnailKey = card.thumbnailUrl,
+        )
 
     private fun seriesPath(seriesId: SeriesId) = "/comics/${seriesId.remoteKey}"
 
@@ -196,5 +251,10 @@ class NewxtoonContentSource(
 
     private companion object {
         const val MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+        const val MAX_FETCH_ATTEMPTS = 3
+        const val MIN_RETRY_DELAY_MILLIS = 250L
+        const val MAX_RETRY_DELAY_MILLIS = 3_000L
+        val RETRYABLE_STATUS_CODES = setOf(429, 502, 503, 504)
+        val RETRY_DELAYS_MILLIS = longArrayOf(600L, 1_400L)
     }
 }

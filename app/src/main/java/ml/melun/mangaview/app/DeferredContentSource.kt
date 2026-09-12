@@ -25,6 +25,7 @@ import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceSeriesDetails
 import ml.melun.mangaview.source.SourceSearchQuery
 import ml.melun.mangaview.source.SeriesKind
 
@@ -88,6 +89,9 @@ internal class DeferredContentSource(
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> =
         source().episodes(seriesId, cursor)
+
+    override suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? =
+        source().seriesDetails(seriesId)
 
     override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest =
         source().manifest(episodeId)

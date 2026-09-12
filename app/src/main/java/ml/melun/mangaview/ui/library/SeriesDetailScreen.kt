@@ -26,8 +26,10 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import ml.melun.mangaview.data.offline.EpisodeDownloadState
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
+import ml.melun.mangaview.source.SourceSeriesDetails
 
 @Composable
 internal fun SeriesDetailScreen(
@@ -99,7 +101,7 @@ private fun DetailLoading(
 ) {
     val series = state.activeSeries ?: return
     Column(Modifier.fillMaxSize()) {
-        DetailHeader(series, null, isFavorite(state, series), loader, colors, accept)
+        DetailHeader(series, null, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept)
         LibraryMessage("회차를 불러오는 중…", colors, Modifier.weight(1f))
     }
 }
@@ -114,7 +116,7 @@ private fun DetailFailure(
 ) {
     val series = state.activeSeries ?: return
     Column(Modifier.fillMaxSize()) {
-        DetailHeader(series, null, isFavorite(state, series), loader, colors, accept)
+        DetailHeader(series, null, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept)
         LibraryMessage(message, colors, Modifier.weight(1f))
     }
 }
@@ -133,10 +135,10 @@ private fun DetailBody(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 28.dp),
     ) {
-        item { DetailHeader(series, quickRead, isFavorite(state, series), loader, colors, accept) }
+        item { DetailHeader(series, quickRead, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept) }
         item { DetailTabs(state.detailTab, colors, accept) }
         if (state.detailTab != DetailTab.EPISODES) {
-            item { DetailInformation(state.detailTab, series, episodes.size, colors) }
+            item { DetailInformation(state.detailTab, series, episodes.size, state.activeSeriesDetails, colors) }
         }
         item {
             Row(
@@ -182,6 +184,7 @@ private fun DetailHeader(
     series: SourceSeries,
     firstEpisode: SourceEpisode?,
     favorite: Boolean,
+    details: SourceSeriesDetails?,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
@@ -199,7 +202,11 @@ private fun DetailHeader(
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween) {
                 Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        details?.status?.let { status -> StatusChip(status, colors) }
                         Box(
                             Modifier.clip(RoundedCornerShape(7.dp))
                                 .background(colors.accentGradient)
@@ -218,21 +225,22 @@ private fun DetailHeader(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    series.subtitle?.takeIf(String::isNotBlank)?.let { subtitle ->
-                        Spacer(Modifier.height(6.dp))
-                        BasicText(
-                            subtitle,
-                            style = hintStyle(colors, 12),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            subtitle.split(",", "/", "·").take(2).forEach { tag ->
-                                if (tag.isNotBlank()) TagChip(tag.trim(), colors)
+                    (details?.authors?.takeIf(String::isNotBlank) ?: series.subtitle?.takeIf(String::isNotBlank))
+                        ?.let { subtitle ->
+                            Spacer(Modifier.height(6.dp))
+                            BasicText(
+                                subtitle,
+                                style = hintStyle(colors, 12),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                subtitle.split(",", "/", "·").take(2).forEach { tag ->
+                                    if (tag.isNotBlank()) TagChip(tag.trim(), colors)
+                                }
                             }
                         }
-                    }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     LibraryIconView(
@@ -292,6 +300,22 @@ private fun DetailHeader(
 }
 
 @Composable
+private fun StatusChip(status: SeriesStatus, colors: LibraryColors) {
+    val (label, background, textColor) = when (status) {
+        SeriesStatus.ONGOING -> Triple("연재중", Modifier.background(colors.newGradient), Color.White)
+        SeriesStatus.COMPLETED -> Triple("완결", Modifier.background(colors.mutedSurface), colors.secondary)
+        SeriesStatus.HIATUS -> Triple("휴재", Modifier.background(colors.mutedSurface), colors.gold)
+    }
+    Box(
+        Modifier.clip(RoundedCornerShape(7.dp))
+            .then(background)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        BasicText(label, style = microBadgeStyle(colors, 10).copy(color = textColor))
+    }
+}
+
+@Composable
 private fun TagChip(label: String, colors: LibraryColors) {
     Box(
         Modifier.clip(RoundedCornerShape(8.dp))
@@ -334,10 +358,24 @@ private fun DetailTabs(selected: DetailTab, colors: LibraryColors, accept: (Libr
 }
 
 @Composable
-private fun DetailInformation(tab: DetailTab, series: SourceSeries, episodeCount: Int, colors: LibraryColors) {
+private fun DetailInformation(
+    tab: DetailTab,
+    series: SourceSeries,
+    episodeCount: Int,
+    details: SourceSeriesDetails?,
+    colors: LibraryColors,
+) {
     val text = when (tab) {
-        DetailTab.INTRO -> series.subtitle?.takeIf(String::isNotBlank) ?: "등록된 소개가 없습니다."
-        DetailTab.INFO -> "출처: ${series.id.sourceId.value.uppercase()}\n총 회차: ${episodeCount}개\n원작 식별자: ${series.id.remoteKey}"
+        DetailTab.INTRO -> details?.description?.takeIf(String::isNotBlank)
+            ?: series.subtitle?.takeIf(String::isNotBlank)
+            ?: "등록된 소개가 없습니다."
+        DetailTab.INFO -> buildString {
+            append("출처: ${series.id.sourceId.value.uppercase()}")
+            details?.status?.let { append("\n상태: ${it.label()}") }
+            details?.authors?.takeIf(String::isNotBlank)?.let { append("\n작가: $it") }
+            append("\n총 회차: ${episodeCount}개")
+            append("\n원작 식별자: ${series.id.remoteKey}")
+        }
         DetailTab.EPISODES -> return
     }
     Box(
@@ -433,5 +471,11 @@ internal fun quickReadEpisode(
 private fun formatDate(epochMillis: Long): String = DATE_FORMAT.format(
     Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()),
 )
+
+private fun SeriesStatus.label(): String = when (this) {
+    SeriesStatus.ONGOING -> "연재중"
+    SeriesStatus.COMPLETED -> "완결"
+    SeriesStatus.HIATUS -> "휴재"
+}
 
 private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd")

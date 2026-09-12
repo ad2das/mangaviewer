@@ -48,14 +48,18 @@ internal fun SearchScreen(
         when (val content = state.content) {
             LibraryContent.Empty -> SearchEmpty(colors, accept)
             LibraryContent.Loading -> LibraryMessage("작품을 찾는 중…", colors)
-            is LibraryContent.Failure -> LibraryMessage(content.message, colors)
-            is LibraryContent.Series -> SearchSeriesList(
-                content.items,
-                state.saved.favorites.mapTo(hashSetOf()) { it.id },
-                artworkLoader,
-                colors,
-                accept,
-            )
+            is LibraryContent.Failure -> SearchFailure(content.message, colors) { accept(LibraryIntent.Search) }
+            is LibraryContent.Series -> if (content.items.isEmpty()) {
+                SearchNoResults(state.query, colors)
+            } else {
+                SearchSeriesList(
+                    content.items,
+                    state.saved.favorites.mapTo(hashSetOf()) { it.id },
+                    artworkLoader,
+                    colors,
+                    accept,
+                )
+            }
             is LibraryContent.Episodes -> Unit
         }
     }
@@ -275,6 +279,63 @@ private fun SearchEmpty(colors: LibraryColors, accept: (LibraryIntent) -> Unit) 
 }
 
 @Composable
+private fun SearchNoResults(query: String, colors: LibraryColors) {
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(28.dp))
+        Box(
+            Modifier.size(80.dp)
+                .shadow(8.dp, CircleShape, spotColor = Color.Black.copy(alpha = 0.10f))
+                .clip(CircleShape)
+                .background(colors.mutedSurface),
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.SEARCH, colors.muted, Modifier.size(36.dp))
+        }
+        Spacer(Modifier.height(20.dp))
+        BasicText(
+            "검색 결과가 없습니다",
+            style = titleStyle(colors, 17).copy(fontWeight = FontWeight.Bold),
+        )
+        Spacer(Modifier.height(6.dp))
+        BasicText(
+            "\"$query\"에 해당하는 작품을 찾지 못했어요. 다른 검색어를 입력해 보세요",
+            style = hintStyle(colors, 13),
+        )
+    }
+}
+
+@Composable
+private fun SearchFailure(message: String, colors: LibraryColors, retry: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(28.dp))
+        Box(
+            Modifier.size(80.dp)
+                .shadow(8.dp, CircleShape, spotColor = colors.accent.copy(alpha = 0.30f))
+                .clip(CircleShape)
+                .background(colors.mutedSurface),
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.REFRESH, colors.accent, Modifier.size(36.dp))
+        }
+        Spacer(Modifier.height(20.dp))
+        BasicText(
+            "검색에 실패했습니다",
+            style = titleStyle(colors, 17).copy(fontWeight = FontWeight.Bold),
+        )
+        Spacer(Modifier.height(6.dp))
+        BasicText(message, style = hintStyle(colors, 13))
+        Spacer(Modifier.height(24.dp))
+        LibraryAction("다시 시도", colors) { retry() }
+    }
+}
+
+@Composable
 private fun SearchSeriesList(
     items: List<SourceSeries>,
     favorites: Set<SeriesId>,
@@ -287,6 +348,19 @@ private fun SearchSeriesList(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BasicText(
+                    "검색 결과",
+                    style = titleStyle(colors, 14).copy(fontWeight = FontWeight.ExtraBold),
+                )
+                Spacer(Modifier.width(6.dp))
+                BasicText("${items.size}개", style = hintStyle(colors, 12))
+            }
+        }
         items(items, key = { it.id.remoteKey }) { series ->
             SearchSeriesCard(series, series.id in favorites, loader, colors, accept)
         }

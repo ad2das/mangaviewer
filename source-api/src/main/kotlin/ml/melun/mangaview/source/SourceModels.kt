@@ -8,6 +8,20 @@ data class SourceSeries(
     val title: String,
     val subtitle: String? = null,
     val thumbnailKey: String? = null,
+    val status: SeriesStatus? = null,
+)
+
+enum class SeriesStatus {
+    ONGOING,
+    COMPLETED,
+    HIATUS,
+}
+
+/** Optional per-series metadata a source can supply when its pages expose it. */
+data class SourceSeriesDetails(
+    val status: SeriesStatus? = null,
+    val description: String? = null,
+    val authors: String? = null,
 )
 
 enum class SeriesKind {
