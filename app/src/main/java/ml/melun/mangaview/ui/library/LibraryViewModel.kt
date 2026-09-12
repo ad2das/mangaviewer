@@ -160,7 +160,10 @@ internal class LibraryViewModel(
             is LibraryIntent.SeriesSelected -> episodes(intent.series)
             is LibraryIntent.EpisodeSelected -> openEpisode(intent.episodeId, currentSeries(state.value))
             is LibraryIntent.SavedSeriesSelected -> openSavedSeries(intent.series)
-            is LibraryIntent.OfflineSeriesSelected -> episodes(intent.series, offlineOnly = true)
+            is LibraryIntent.OfflineSeriesSelected -> {
+                switchSourceForSeries(intent.series)
+                episodes(intent.series, offlineOnly = true)
+            }
             is LibraryIntent.SavedEpisodeSelected -> openSavedPosition(intent.position)
             is LibraryIntent.ResumeEpisode -> {
                 episodeWarmer.warm(intent.episodeId)
@@ -441,8 +444,19 @@ internal class LibraryViewModel(
 
     private fun openSavedSeries(saved: SavedSeries) {
         val series = saved.asSourceSeries()
-        update { it.copy(selectedSourceId = series.id.sourceId, lastSeries = listOf(series)) }
+        switchSourceForSeries(series)
+        update { it.copy(lastSeries = listOf(series)) }
         episodes(series, offlineOnly = saved.updatedAtEpochMillis == 0L)
+    }
+
+    /**
+     * Opening a series owned by another provider completes the provider switch (home, genres,
+     * persisted settings) so the header chip can never disagree with the list below it.
+     */
+    private fun switchSourceForSeries(series: SourceSeries) {
+        if (series.id.sourceId != mutableState.value.selectedSourceId) {
+            selectSource(series.id.sourceId)
+        }
     }
 
     private fun openEpisode(episodeId: EpisodeId, series: SourceSeries) {
