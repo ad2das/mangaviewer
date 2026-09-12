@@ -243,6 +243,7 @@ class NewxtoonContentSource(
             card.title,
             subtitle = card.subtitle,
             thumbnailKey = card.thumbnailUrl,
+            status = card.status,
         )
 
     private fun seriesPath(seriesId: SeriesId) = "/comics/${seriesId.remoteKey}"

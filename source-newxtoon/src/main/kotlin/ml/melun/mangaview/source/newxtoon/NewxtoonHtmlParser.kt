@@ -3,12 +3,14 @@ package ml.melun.mangaview.source.newxtoon
 import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceGenre
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
 
 data class NewxtoonSeriesCard(
     val id: String,
     val title: String,
     val thumbnailUrl: String?,
     val subtitle: String? = null,
+    val status: SeriesStatus? = null,
 )
 data class NewxtoonChapter(val id: String, val title: String)
 data class NewxtoonPage(val url: String, val width: Int?, val height: Int?)
@@ -55,7 +57,8 @@ class NewxtoonHtmlParser(private val origin: String) {
                 .filter(String::isNotEmpty)
                 .takeIf { it.isNotEmpty() }
                 ?.joinToString(" · ")
-            result.putIfAbsent(id, NewxtoonSeriesCard(id, title, thumbnail, subtitle))
+            val status = cardStatus(anchor)
+            result.putIfAbsent(id, NewxtoonSeriesCard(id, title, thumbnail, subtitle, status))
         }
         return result.values.toList()
     }
@@ -80,6 +83,14 @@ class NewxtoonHtmlParser(private val origin: String) {
         label.contains("휴재") -> SeriesStatus.HIATUS
         label.contains("연재") -> SeriesStatus.ONGOING
         else -> null
+    }
+
+    /** The catalog marks completion inside the episode line, e.g. "43화(완결)". */
+    private fun cardStatus(anchor: Element): SeriesStatus? {
+        val paragraphs = anchor.select("p").map { it.text().trim() }
+        if (paragraphs.any { it.contains("휴재") }) return SeriesStatus.HIATUS
+        if (paragraphs.any { it.contains("완결") }) return SeriesStatus.COMPLETED
+        return if (paragraphs.any { it.contains("화") }) SeriesStatus.ONGOING else null
     }
 
     fun nextPage(html: String, current: Int): Int? {

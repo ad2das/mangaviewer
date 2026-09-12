@@ -522,6 +522,9 @@ private fun SeriesGridCard(
                     ),
                 ),
             )
+            series.status?.let { status ->
+                SeriesStatusBadge(status, colors, Modifier.align(Alignment.TopStart).padding(8.dp))
+            }
         }
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp)) {
             BasicText(

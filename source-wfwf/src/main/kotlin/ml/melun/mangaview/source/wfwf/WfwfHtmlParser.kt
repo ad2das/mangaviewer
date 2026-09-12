@@ -5,6 +5,7 @@ import java.net.URLDecoder
 import java.nio.charset.Charset
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceSeries
@@ -27,11 +28,13 @@ class WfwfHtmlParser {
             val title = directTitle(link) ?: context?.let { contextTitle(it, key) }
             val image = directImageUrl(link) ?: context?.let { contextImageUrl(it, key) }
             val subtitle = directSubtitle(link) ?: context?.let(::contextSubtitle)
+            val status = directStatus(link)
             val old = found[key.encode()] ?: SeriesEvidence(key)
             found[key.encode()] = old.copy(
                 title = old.title ?: title,
                 subtitle = old.subtitle ?: subtitle,
                 thumbnail = old.thumbnail ?: image,
+                status = old.status ?: status,
             )
         }
         return found.values.mapNotNull { evidence ->
@@ -41,6 +44,7 @@ class WfwfHtmlParser {
                 title = title,
                 subtitle = evidence.subtitle,
                 thumbnailKey = evidence.thumbnail,
+                status = evidence.status,
             )
         }
     }
@@ -254,6 +258,13 @@ class WfwfHtmlParser {
     private fun directSubtitle(link: Element): String? =
         link.selectFirst(SUBTITLE_SELECTORS)?.text()?.clean()?.takeIf(String::isNotEmpty)
 
+    /** The provider marks completed cards with an explicit 완결 badge; plain cards are ongoing. */
+    private fun directStatus(link: Element): SeriesStatus? = when {
+        link.selectFirst("span.badge-end") != null -> SeriesStatus.COMPLETED
+        link.hasClass("t-card") || link.selectFirst("span.badge-up") != null -> SeriesStatus.ONGOING
+        else -> null
+    }
+
     private fun contextImageUrl(context: Element, key: WfwfSeriesKey): String? = context
         .select("a[href]")
         .asSequence()
@@ -319,4 +330,5 @@ private data class SeriesEvidence(
     val title: String? = null,
     val subtitle: String? = null,
     val thumbnail: String? = null,
+    val status: SeriesStatus? = null,
 )

@@ -420,6 +420,10 @@ private fun SearchSeriesCard(
                         style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.Bold),
                     )
                 }
+                series.status?.let { status ->
+                    Spacer(Modifier.width(6.dp))
+                    SeriesStatusBadge(status, colors)
+                }
             }
         }
         Box(

@@ -206,7 +206,7 @@ private fun DetailHeader(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        details?.status?.let { status -> StatusChip(status, colors) }
+                        details?.status?.let { status -> SeriesStatusBadge(status, colors) }
                         Box(
                             Modifier.clip(RoundedCornerShape(7.dp))
                                 .background(colors.accentGradient)
@@ -296,22 +296,6 @@ private fun DetailHeader(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun StatusChip(status: SeriesStatus, colors: LibraryColors) {
-    val (label, background, textColor) = when (status) {
-        SeriesStatus.ONGOING -> Triple("연재중", Modifier.background(colors.newGradient), Color.White)
-        SeriesStatus.COMPLETED -> Triple("완결", Modifier.background(colors.mutedSurface), colors.secondary)
-        SeriesStatus.HIATUS -> Triple("휴재", Modifier.background(colors.mutedSurface), colors.gold)
-    }
-    Box(
-        Modifier.clip(RoundedCornerShape(7.dp))
-            .then(background)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-    ) {
-        BasicText(label, style = microBadgeStyle(colors, 10).copy(color = textColor))
     }
 }
 

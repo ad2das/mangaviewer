@@ -56,6 +56,35 @@ class NewxtoonHtmlParserTest {
         assertTrue("platform label must be kept", target.subtitle?.contains("탑툰") == true)
     }
 
+    @Test fun parsesCardStatusFromEpisodeLineWithoutGenreTraps() {
+        val html = """
+            <a href="https://newxtoon1.com/comics/1" aria-label="끝난 작품, 일반만화, 탑툰">
+              <div class="cover-shell">
+                <img class="cover-image" src="https://cdn.test/1.webp">
+                <div class="absolute left-2 top-2 z-10 flex gap-1">
+                  <span class="rounded-full bg-black/75 px-2 py-1 text-[10px] font-bold leading-none text-white">로맨스</span>
+                </div>
+              </div>
+              <h3>끝난 작품</h3>
+              <p class="mt-2 truncate text-xs font-semibold text-ink" title="43화(완결)">43화(완결)</p>
+            </a>
+            <a href="https://newxtoon1.com/comics/2" aria-label="연재 작품, 일반만화, 네이버">
+              <div class="cover-shell">
+                <img class="cover-image" src="https://cdn.test/2.webp">
+                <div class="absolute left-2 top-2 z-10 flex gap-1">
+                  <span class="rounded-full bg-black/75 px-2 py-1 text-[10px] font-bold leading-none text-white">완결로맨스</span>
+                </div>
+              </div>
+              <h3>연재 작품</h3>
+              <p class="mt-2 truncate text-xs font-semibold text-ink">12화</p>
+            </a>
+        """.trimIndent()
+        val cards = parser.seriesCards(html)
+        assertEquals(SeriesStatus.COMPLETED, cards.first { it.id == "1" }.status)
+        assertEquals("a 완결로맨스 genre tag is not a status", SeriesStatus.ONGOING,
+            cards.first { it.id == "2" }.status)
+    }
+
     @Test fun parsesReaderPagesInOrderWithDimensions() {
         val pages = parser.pages(fixture("chapter.html"))
         assertTrue("expected many reader pages", pages.size > 20)
