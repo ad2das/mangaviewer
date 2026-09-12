@@ -4,33 +4,59 @@ import android.graphics.BitmapFactory
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.SourceSeries
 
+/**
+ * Decodes cover artwork at the edge length it is actually drawn at, keeps it in a byte-bounded
+ * LRU, and deduplicates concurrent requests for the same thumbnail. Small decodes keep the
+ * per-frame texture upload cheap, which is what long catalog scrolls spend their time on.
+ */
 internal class SeriesArtworkLoader(
     private val sources: SourceRegistry,
     private val ioDispatcher: CoroutineDispatcher,
 ) {
-    private val cache = object : LinkedHashMap<String, ImageBitmap>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>): Boolean =
-            size > MAX_CACHE_ENTRIES
+    private val cache = object : android.util.LruCache<String, ImageBitmap>(MAX_CACHE_KB) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int =
+            value.width * value.height * 4 / 1_024
+    }
+    private val inFlight = HashMap<String, CompletableDeferred<ImageBitmap?>>()
+
+    suspend fun load(series: SourceSeries, targetEdgePx: Int): ImageBitmap? {
+        val artwork = series.thumbnailKey?.takeIf(String::isNotBlank) ?: return null
+        val edge = bucketEdge(targetEdgePx)
+        val key = "${series.id.sourceId.value}:${series.id.remoteKey}:$artwork@$edge"
+        cache.get(key)?.let { return it }
+        val (deferred, owner) = synchronized(inFlight) {
+            val existing = inFlight[key]
+            if (existing != null) {
+                existing to false
+            } else {
+                CompletableDeferred<ImageBitmap?>().also { inFlight[key] = it } to true
+            }
+        }
+        if (!owner) return deferred.await()
+        try {
+            val decoded = runCatching {
+                withContext(NonCancellable + ioDispatcher) { fetchAndDecode(series, edge) }
+            }.getOrNull()
+            if (decoded != null) cache.put(key, decoded)
+            deferred.complete(decoded)
+            return decoded
+        } finally {
+            synchronized(inFlight) { inFlight.remove(key) }
+        }
     }
 
-    suspend fun load(series: SourceSeries): ImageBitmap? {
-        val artwork = series.thumbnailKey?.takeIf(String::isNotBlank) ?: return null
-        val key = "${series.id.sourceId.value}:${series.id.remoteKey}:$artwork"
-        synchronized(cache) { cache[key] }?.let { return it }
-        return withContext(ioDispatcher) {
-            synchronized(cache) { cache[key] }?.let { return@withContext it }
-            val opened = sources.require(series.id.sourceId).openArtwork(series) ?: return@withContext null
-            val bytes = opened.readArtworkBytes() ?: return@withContext null
-            val decoded = decode(bytes)?.asImageBitmap() ?: return@withContext null
-            synchronized(cache) { cache[key] = decoded }
-            decoded
-        }
+    private suspend fun fetchAndDecode(series: SourceSeries, edge: Int): ImageBitmap? {
+        val opened = sources.require(series.id.sourceId).openArtwork(series) ?: return null
+        val bytes = opened.readArtworkBytes() ?: return null
+        return decode(bytes, edge)?.asImageBitmap()
     }
 
     private suspend fun OpenedPage.readArtworkBytes(): ByteArray? = use { opened ->
@@ -47,12 +73,14 @@ internal class SeriesArtworkLoader(
         output.toByteArray().takeIf { it.isNotEmpty() }
     }
 
-    private fun decode(bytes: ByteArray): android.graphics.Bitmap? {
+    private fun decode(bytes: ByteArray, edge: Int): android.graphics.Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val limit = edge.coerceAtLeast(MIN_DECODE_EDGE)
         var sample = 1
-        while (bounds.outWidth / sample > MAX_DECODE_EDGE * 2 || bounds.outHeight / sample > MAX_DECODE_EDGE * 2) {
+        while (bounds.outWidth / sample > limit || bounds.outHeight / sample > limit) {
+            if (sample > MAX_SAMPLE) break
             sample *= 2
         }
         val options = BitmapFactory.Options().apply {
@@ -62,9 +90,19 @@ internal class SeriesArtworkLoader(
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }
 
+    private fun bucketEdge(px: Int): Int = when {
+        px <= 256 -> 256
+        px <= 384 -> 384
+        px <= 512 -> 512
+        px <= 768 -> 768
+        px <= 1024 -> 1024
+        else -> 1536
+    }
+
     private companion object {
-        const val MAX_CACHE_ENTRIES = 48
+        const val MAX_CACHE_KB = 32 * 1_024
         const val MAX_ARTWORK_BYTES = 8 * 1_024 * 1_024
-        const val MAX_DECODE_EDGE = 640
+        const val MIN_DECODE_EDGE = 128
+        const val MAX_SAMPLE = 64
     }
 }
