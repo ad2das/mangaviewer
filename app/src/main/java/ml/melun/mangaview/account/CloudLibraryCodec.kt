@@ -77,7 +77,7 @@ internal object CloudLibraryCodec {
     fun validate(record: CloudLibraryRecord) {
         require(record.kind in setOf("series", "favorite", "progress", "bookmark") && record.updatedAt >= 0)
         val p = record.payload
-        require(p.text("source") in setOf("ntk", "wfwf"))
+        require(p.text("source").isNotBlank() && p.text("source").length <= 64)
         require(p.text("series").isNotBlank() && p.text("series").length <= 2048)
         require(record.key == key(record.kind, p))
         if (record.kind == "series") {

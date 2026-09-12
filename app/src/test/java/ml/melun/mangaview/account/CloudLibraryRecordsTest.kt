@@ -92,6 +92,19 @@ class CloudLibraryRecordsTest {
         assertNull(CloudLibraryCodec.readingAnchor(CloudLibraryCodec.snapshot(snapshot).single()))
     }
 
+    @Test fun everyRegisteredSourceSurvivesSnapshotRoundTrip() {
+        val entry = LibraryEntryEntity("newxtoon", "series-1", "신작", null, true, 100)
+        val reading = ReadingProgressEntity("newxtoon", "series-1", "ep-1", "p0002", 4096, 110)
+        val bookmark = BookmarkEntity("newxtoon", "series-1", "ep-1", "p0003", 8192, 120)
+        val snapshot = CloudLibrarySnapshot(listOf(entry), listOf(reading), listOf(bookmark), emptyList(), emptyList())
+        val records = CloudLibraryCodec.snapshot(snapshot)
+        assertEquals(records, CloudLibraryRecords.decode(CloudLibraryRecords.encode(records)))
+        assertEquals(records.sortedBy { it.identity },
+            CloudLibraryRecords.localChanges(emptyList(), records, 200).sortedBy { it.identity })
+        assertEquals("newxtoon", CloudLibraryCodec.progress(records.single { it.kind == "progress" }).sourceKey)
+        assertEquals("newxtoon", CloudLibraryCodec.bookmark(records.single { it.kind == "bookmark" }).sourceKey)
+    }
+
     @Test fun corruptedCloudRecordCannotBecomeAnEmptySuccessfulRestore() {
         assertThrows(IllegalArgumentException::class.java) { CloudLibraryRecords.decode("{\"version\":2,\"records\":[]}") }
         val record = progress(10, 10)
