@@ -17,6 +17,7 @@ import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogStatusCursor
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.SeriesKind
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
@@ -60,7 +61,12 @@ internal class NtkCatalogService(
 
     suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         val includeCompleted = query.genre != null
-        val cursor = CatalogStatusCursor.parse(query.cursor, includeCompleted)
+        val forcedSegment = query.statusFilter?.let { it == SeriesStatus.COMPLETED }
+        val parsedCursor = CatalogStatusCursor.parse(
+            query.cursor,
+            includeCompleted = forcedSegment == true || includeCompleted,
+        )
+        val cursor = if (forcedSegment == null) parsedCursor else parsedCursor.copy(completed = forcedSegment)
         val page = cursor.page
         val endpoint = if (query.kind == SeriesKind.COMIC) "manhwa-list" else "works"
         val parameters = buildList {
@@ -88,14 +94,20 @@ internal class NtkCatalogService(
             val hasNext = parsed.total?.let { page.toLong() * searchPageSize < it }
                 ?: (parsed.series.size == searchPageSize)
             check(parsed.series.isNotEmpty() || !hasNext) { "NTK returned an empty page before the catalog end" }
-            return SourcePage(parsed.series, cursor.next(if (hasNext) (page + 1).toString() else null, includeCompleted))
+            // The provider filters the whole page by the requested status segment.
+            val status = if (cursor.completed) SeriesStatus.COMPLETED else SeriesStatus.ONGOING
+            return SourcePage(parsed.series.map { it.copy(status = status) },
+                cursor.next(
+                    if (hasNext) (page + 1).toString() else null,
+                    includeCompleted && query.statusFilter == null,
+                ))
         }
         check(query.genre == null && page == 1) { "NTK 목록을 불러오지 못했습니다. 다시 시도해 주세요." }
         return SourcePage(parser.searchHtml(
             documents.text(catalogPath(query), false),
             sourceId,
             if (query.kind == SeriesKind.COMIC) NtkKind.MANHWA else NtkKind.WEBTOON,
-        ))
+        ).map { it.copy(status = SeriesStatus.ONGOING) })
     }
 
     fun genres(kind: SeriesKind): List<SourceGenre> = normalizeGenres(kind, fallbackGenres(kind))

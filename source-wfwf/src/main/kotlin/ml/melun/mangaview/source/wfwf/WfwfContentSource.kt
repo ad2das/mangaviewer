@@ -35,6 +35,7 @@ import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SourceSearchQuery
 import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SeriesKind
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 import org.jsoup.Jsoup
@@ -91,7 +92,13 @@ class WfwfContentSource(
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         val includeCompleted = query.genre != null && query.kind == SeriesKind.WEBTOON
-        val cursor = CatalogStatusCursor.parse(query.cursor, includeCompleted)
+        val forcedSegment = if (includeCompleted) {
+            query.statusFilter?.let { it == SeriesStatus.COMPLETED }
+        } else {
+            null
+        }
+        val parsedCursor = CatalogStatusCursor.parse(query.cursor, includeCompleted)
+        val cursor = if (forcedSegment == null) parsedCursor else parsedCursor.copy(completed = forcedSegment)
         val page = cursor.page
         if (query.kind == SeriesKind.COMIC && query.order == CatalogOrder.LATEST && query.genre == null) {
             val live = fetchComicCatalogPage(page)
@@ -100,11 +107,20 @@ class WfwfContentSource(
         }
         val firstPagePath = WfwfCatalogPagination.path(query, page = 1, completed = cursor.completed)
         val catalogDocument = document(WfwfCatalogPagination.path(query, page, completed = cursor.completed))
-        val items = parser.search(catalogDocument, ::seriesId).filter { item ->
-            runCatching { WfwfSeriesKey.decode(item.id).kind }.getOrNull().matches(query.kind)
-        }
+        val items = parser.search(catalogDocument, ::seriesId)
+            .filter { item ->
+                runCatching { WfwfSeriesKey.decode(item.id).kind }.getOrNull().matches(query.kind)
+            }
+            .map { item ->
+                when {
+                    cursor.completed -> item.copy(status = SeriesStatus.COMPLETED)
+                    query.statusFilter == SeriesStatus.ONGOING && item.status == null ->
+                        item.copy(status = SeriesStatus.ONGOING)
+                    else -> item
+                }
+            }
         val nextCursor = WfwfCatalogPagination.nextPageCursor(catalogDocument, firstPagePath, page)
-        return SourcePage(items, cursor.next(nextCursor, includeCompleted))
+        return SourcePage(items, cursor.next(nextCursor, includeCompleted && query.statusFilter == null))
     }
 
     override suspend fun genres(kind: SeriesKind): List<SourceGenre> = when (kind) {

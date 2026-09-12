@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -20,6 +21,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.distinctUntilChanged
+import ml.melun.mangaview.source.SeriesStatus
 
 @Composable
 internal fun GenreCatalogScreen(
@@ -56,16 +58,65 @@ internal fun GenreCatalogScreen(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        Row(
+            Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            StatusFilterChip("전체", state.genreStatusFilter == null, colors) {
+                accept(LibraryIntent.GenreFilterSelected(null))
+            }
+            StatusFilterChip("연재중", state.genreStatusFilter == SeriesStatus.ONGOING, colors) {
+                accept(LibraryIntent.GenreFilterSelected(SeriesStatus.ONGOING))
+            }
+            StatusFilterChip("완결", state.genreStatusFilter == SeriesStatus.COMPLETED, colors) {
+                accept(LibraryIntent.GenreFilterSelected(SeriesStatus.COMPLETED))
+            }
+        }
         when (val catalog = state.genreCatalog) {
             LibraryContent.Empty, LibraryContent.Loading ->
                 LibraryMessage(genre.label + " 작품을 불러오는 중…", colors, Modifier.weight(1f))
             is LibraryContent.Failure ->
                 LibraryMessage(catalog.message, colors, Modifier.weight(1f))
-            is LibraryContent.Series -> GenreSeriesList(catalog, artworkLoader, colors,
-                Modifier.weight(1f), list, accept)
+            is LibraryContent.Series -> GenreSeriesList(
+                catalog, artworkLoader, colors,
+                Modifier.weight(1f), list, state.genreStatusFilter, accept,
+            )
             is LibraryContent.Episodes -> Unit
         }
     }
+}
+
+@Composable
+private fun StatusFilterChip(
+    label: String,
+    selected: Boolean,
+    colors: LibraryColors,
+    click: () -> Unit,
+) {
+    Box(
+        Modifier.clip(RoundedCornerShape(18.dp))
+            .then(if (selected) Modifier.background(colors.accentGradient) else Modifier.background(colors.card))
+            .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp))
+            .clickable(onClick = click)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        BasicText(
+            label,
+            style = labelStyle(colors, selected).copy(
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (selected) Color.White else colors.secondary,
+            ),
+        )
+    }
+}
+
+private fun SeriesStatus?.accepts(status: SeriesStatus?): Boolean = when {
+    this == null -> true
+    status == null -> true
+    this == SeriesStatus.ONGOING -> status != SeriesStatus.COMPLETED
+    else -> status == this
 }
 
 @Composable
@@ -75,8 +126,10 @@ private fun GenreSeriesList(
     colors: LibraryColors,
     modifier: Modifier,
     list: androidx.compose.foundation.lazy.LazyListState,
+    filter: SeriesStatus?,
     accept: (LibraryIntent) -> Unit,
 ) {
+    val visible = catalog.items.filter { filter.accepts(it.status) }
     LaunchedEffect(list, catalog.items.size, catalog.nextCursor, catalog.loadingNext, catalog.nextFailure) {
         if (catalog.loadingNext || catalog.nextFailure != null || catalog.nextCursor == null) return@LaunchedEffect
         snapshotFlow {
@@ -87,7 +140,7 @@ private fun GenreSeriesList(
         }
     }
     LazyColumn(modifier.fillMaxWidth(), state = list, contentPadding = PaddingValues(bottom = 20.dp)) {
-        if (catalog.items.isNotEmpty()) seriesGrid(catalog.items, loader, colors, accept)
+        if (visible.isNotEmpty()) seriesGrid(visible, loader, colors, accept)
         item(key = "catalog-status") {
             Column(
                 Modifier.fillMaxWidth().padding(24.dp),
@@ -96,9 +149,9 @@ private fun GenreSeriesList(
                 val message = when {
                     catalog.loadingNext -> "다음 작품을 불러오는 중…"
                     catalog.nextFailure != null -> catalog.nextFailure
-                    catalog.nextCursor != null -> catalog.items.size.toString() + "개 불러옴"
-                    catalog.items.isEmpty() -> "이 장르에 등록된 작품이 없습니다"
-                    else -> "목록 끝 · " + catalog.items.size.toString() + "개"
+                    catalog.nextCursor != null -> visible.size.toString() + "개 불러옴"
+                    visible.isEmpty() -> "조건에 맞는 작품이 없습니다"
+                    else -> "목록 끝 · " + visible.size.toString() + "개"
                 }
                 BasicText(message, style = hintStyle(colors, 14).copy(fontWeight = FontWeight.Medium))
                 if (catalog.nextFailure != null || (!catalog.loadingNext && catalog.nextCursor != null)) {

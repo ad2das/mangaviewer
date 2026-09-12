@@ -3,12 +3,14 @@ package ml.melun.mangaview.ui.library
 import ml.melun.mangaview.app.SourceOption
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.ReadingPosition
+import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.data.library.SavedSeries
 import ml.melun.mangaview.data.library.UserLibrarySnapshot
 import ml.melun.mangaview.data.offline.DownloadedEpisode
 import ml.melun.mangaview.data.offline.EpisodeDownloadState
 import ml.melun.mangaview.source.SeriesKind
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SearchField
@@ -27,6 +29,7 @@ internal data class LibraryState(
     val home: HomeContent = HomeContent.Loading,
     val genres: GenreContent = GenreContent.Empty,
     val selectedGenre: SourceGenre? = null,
+    val genreStatusFilter: SeriesStatus? = null,
     val genreCatalog: LibraryContent = LibraryContent.Empty,
     val searchKind: SeriesKind? = null,
     val searchField: SearchField = SearchField.TITLE,
@@ -113,6 +116,7 @@ internal sealed interface LibraryIntent {
     data class HomeTabSelected(val value: HomeTab) : LibraryIntent
     data class SavedTabSelected(val value: SavedTab) : LibraryIntent
     data class GenreSelected(val value: SourceGenre) : LibraryIntent
+    data class GenreFilterSelected(val value: SeriesStatus?) : LibraryIntent
     data class DetailTabSelected(val value: DetailTab) : LibraryIntent
     data class SearchKindSelected(val value: SeriesKind?) : LibraryIntent
     data class SearchFieldSelected(val value: SearchField) : LibraryIntent
@@ -153,6 +157,24 @@ internal fun LibraryIntent.accountEffect(): LibraryEffect = when (this) {
     LibraryIntent.AccountSignOut -> LibraryEffect.AccountSignOut
     LibraryIntent.AccountRetry -> LibraryEffect.AccountRetry
     else -> error("Not an account intent: $this")
+}
+
+internal fun LibraryState.withSeriesStatus(id: SeriesId, status: SeriesStatus): LibraryState {
+    fun List<SourceSeries>.patched() = map { series ->
+        if (series.id == id) series.copy(status = status) else series
+    }
+
+    val catalog = genreCatalog
+    val list = content
+    return copy(
+        genreCatalog = if (catalog is LibraryContent.Series) {
+            catalog.copy(items = catalog.items.patched())
+        } else {
+            catalog
+        },
+        content = if (list is LibraryContent.Series) list.copy(items = list.items.patched()) else list,
+        lastSeries = lastSeries.patched(),
+    )
 }
 
 internal sealed interface LibraryEffect {

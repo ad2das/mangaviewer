@@ -66,6 +66,7 @@ data class CatalogQuery(
     val order: CatalogOrder,
     val genre: SourceGenre? = null,
     val cursor: String? = null,
+    val statusFilter: SeriesStatus? = null,
 )
 
 data class SourceEpisode(

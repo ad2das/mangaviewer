@@ -5,8 +5,12 @@ import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.source.CatalogOrder
+import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.PageByteStream
 import ml.melun.mangaview.source.PreparationIntent
+import ml.melun.mangaview.source.SeriesStatus
+import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceTransport
@@ -14,6 +18,7 @@ import ml.melun.mangaview.source.SourceSearchQuery
 import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SeriesKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -27,15 +32,40 @@ class NtkContentSourceTest {
             ml.melun.mangaview.source.CatalogOrder.LATEST, ml.melun.mangaview.source.SourceGenre("5", "판타지"))
         val ongoing = source.catalog(query)
         assertEquals("end:1", ongoing.nextCursor)
+        assertEquals(ml.melun.mangaview.source.SeriesStatus.ONGOING, ongoing.items.single().status)
         try { source.catalog(query.copy(cursor = ongoing.nextCursor)); org.junit.Assert.fail("API failure must not claim end of catalog") }
         catch (_: IllegalStateException) { }
         val completed = source.catalog(query.copy(cursor = ongoing.nextCursor))
         assertEquals(listOf("/webtoon/22"), completed.items.map { it.id.remoteKey })
+        assertEquals(ml.melun.mangaview.source.SeriesStatus.COMPLETED, completed.items.single().status)
         org.junit.Assert.assertNull(completed.nextCursor)
         assertTrue(transport.requests[0].url.contains("status=ongoing"))
         assertTrue(transport.requests[1].url.contains("status=completed"))
         assertTrue(transport.requests.all { it.url.contains("tag=5") })
         assertEquals(transport.requests[1].url, transport.requests[2].url)
+    }
+
+    @Test
+    fun statusFilterWalksOnlyTheRequestedSegment() = runTest {
+        val ongoing = """{"works":[{"sourceWorkId":"11","title":"Ongoing"}],"total":1}"""
+        val completed = """{"works":[{"sourceWorkId":"22","title":"Completed"}],"total":1}"""
+        val transport = NtkQueueTransport(ongoing, completed)
+        val source = NtkContentSource(
+            NtkConfig("https://ntk.test", "agent"),
+            transport,
+            RecordingGateway(emptyList()),
+        )
+        val base = CatalogQuery(SeriesKind.WEBTOON, CatalogOrder.LATEST, SourceGenre("5", "판타지"))
+
+        val ongoingPage = source.catalog(base.copy(statusFilter = SeriesStatus.ONGOING))
+        assertEquals(SeriesStatus.ONGOING, ongoingPage.items.single().status)
+        assertNull(ongoingPage.nextCursor)
+
+        val completedPage = source.catalog(base.copy(statusFilter = SeriesStatus.COMPLETED))
+        assertEquals(SeriesStatus.COMPLETED, completedPage.items.single().status)
+        assertNull(completedPage.nextCursor)
+        assertTrue(transport.requests[0].url.contains("status=ongoing"))
+        assertTrue(transport.requests[1].url.contains("status=completed"))
     }
 
     @Test fun stableEntryPointsRequireARealCatalogAndFallbackToTheSecondAddress() = runTest {

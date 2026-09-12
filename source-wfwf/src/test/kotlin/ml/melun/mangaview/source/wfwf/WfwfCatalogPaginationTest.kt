@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.PageByteStream
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceHttpMethod
 import ml.melun.mangaview.source.SourceRequest
@@ -67,6 +68,38 @@ class WfwfCatalogPaginationTest {
         assertEquals(listOf("webtoon:10003"), completed.items.map { it.id.remoteKey })
         assertNull(completed.nextCursor)
         assertEquals(listOf(firstPath, secondPath, completedPath), transport.requestPaths)
+    }
+
+    @Test
+    fun statusFilterKeepsPaginationInsideTheRequestedSegment() = runTest {
+        val ongoingFirst = "/ing?o=n&pg=1&t1=&t2=3&t3="
+        val ongoingSecond = "/ing?o=n&pg=2&t1=&t2=3&t3="
+        val completedFirst = "/end?o=n&pg=1&t1=&t2=3&t3="
+        val transport = CatalogPaginationTransport(mapOf(
+            ongoingFirst to catalogPage("webtoon:10001", "연재 작품", "/ing?t1=&t2=3&t3=&o=n&pg=2"),
+            ongoingSecond to catalogPage("webtoon:10002", "다음 연재", "/ing?t1=&t2=3&t3=&o=n&pg=1"),
+            completedFirst to catalogPage("webtoon:10003", "완결 작품", "/end?t1=&t2=3&t3=&o=n&pg=1"),
+        ))
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val ongoingQuery = CatalogQuery(
+            kind = SeriesKind.WEBTOON,
+            order = CatalogOrder.LATEST,
+            genre = SourceGenre("t2:3", "성인"),
+            statusFilter = SeriesStatus.ONGOING,
+        )
+
+        val first = source.catalog(ongoingQuery)
+        assertEquals(SeriesStatus.ONGOING, first.items.single().status)
+        assertEquals("2", first.nextCursor)
+        val second = source.catalog(ongoingQuery.copy(cursor = first.nextCursor))
+        assertNull(second.nextCursor)
+        assertEquals(SeriesStatus.ONGOING, second.items.single().status)
+
+        val completed = source.catalog(ongoingQuery.copy(statusFilter = SeriesStatus.COMPLETED))
+        assertEquals(listOf("webtoon:10003"), completed.items.map { it.id.remoteKey })
+        assertEquals(SeriesStatus.COMPLETED, completed.items.single().status)
+        assertNull(completed.nextCursor)
+        assertEquals(listOf(ongoingFirst, ongoingSecond, completedFirst), transport.requestPaths)
     }
 
     @Test

@@ -9,6 +9,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
+import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.data.library.SavedSeries
 import ml.melun.mangaview.app.EngineOpeningPreparations
 import ml.melun.mangaview.data.library.UserLibraryRepository
@@ -30,6 +32,7 @@ import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SeriesKind
+import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceSearchQuery
 import ml.melun.mangaview.source.SourceThrottledException
 
@@ -55,12 +58,17 @@ internal class LibraryViewModel(
     private val genrePager = GenreCatalogPager(viewModelScope, ioDispatcher) { catalog ->
         update { it.copy(genreCatalog = catalog,
             lastSeries = (catalog as? LibraryContent.Series)?.items ?: it.lastSeries) }
+        if (catalog is LibraryContent.Series) enrichSeriesStatuses(catalog.items)
     }
     private val episodeWarmer = LibraryEpisodeWarmer(openings)
     private var contentJob: Job? = null
     private var homeJob: Job? = null
     private var genreJob: Job? = null
     private var detailsJob: Job? = null
+    private var statusWorker: Job? = null
+    private val statusQueue = ArrayDeque<SeriesId>()
+    private val statusCache = mutableMapOf<SeriesId, SeriesStatus?>()
+    private val statusUnsupported = mutableSetOf<SourceId>()
     private var contentVersion = 0L
     private var homeVersion = 0L
     private val observers = LibraryStateObservers(sourceRegistry, userLibrary, offlineStore, offlineDownloads)
@@ -87,6 +95,7 @@ internal class LibraryViewModel(
             is LibraryIntent.HomeTabSelected,
             is LibraryIntent.SavedTabSelected,
             is LibraryIntent.GenreSelected,
+            is LibraryIntent.GenreFilterSelected,
             is LibraryIntent.DetailTabSelected,
             is LibraryIntent.SearchKindSelected,
             is LibraryIntent.SearchFieldSelected,
@@ -104,6 +113,7 @@ internal class LibraryViewModel(
             is LibraryIntent.HomeTabSelected -> selectHomeTab(intent.value)
             is LibraryIntent.SavedTabSelected -> update { it.copy(libraryTab = intent.value) }
             is LibraryIntent.GenreSelected -> loadGenre(intent.value)
+            is LibraryIntent.GenreFilterSelected -> selectGenreFilter(intent.value)
             is LibraryIntent.DetailTabSelected -> update { it.copy(detailTab = intent.value) }
             is LibraryIntent.SearchKindSelected -> update { it.copy(searchKind = intent.value) }
             is LibraryIntent.SearchFieldSelected -> update { it.copy(searchField = intent.value) }
@@ -191,6 +201,7 @@ internal class LibraryViewModel(
         sourceRegistry.require(sourceId)
         cancelContent()
         cancelGenres()
+        cancelStatusEnrichment()
         genrePager.reset()
         update { it.copy(
             selectedSourceId = sourceId,
@@ -198,6 +209,7 @@ internal class LibraryViewModel(
             homeTab = HomeTab.HOME,
             genres = GenreContent.Empty,
             selectedGenre = null,
+            genreStatusFilter = null,
             genreCatalog = LibraryContent.Empty,
         ) }
         actions.updateSettings { it.copy(sourceKey = sourceId.value) }
@@ -207,12 +219,14 @@ internal class LibraryViewModel(
     private fun selectHomeKind(kind: ml.melun.mangaview.source.SeriesKind) {
         if (mutableState.value.homeKind == kind) return
         cancelGenres()
+        cancelStatusEnrichment()
         genrePager.reset()
         update { it.copy(
             homeKind = kind,
             homeTab = HomeTab.HOME,
             genres = GenreContent.Empty,
             selectedGenre = null,
+            genreStatusFilter = null,
             genreCatalog = LibraryContent.Empty,
         ) }
         actions.updateSettings { it.copy(seriesKind = kind.ordinal) }
@@ -283,9 +297,22 @@ internal class LibraryViewModel(
         update { it.copy(homeTab = HomeTab.GENRES, selectedGenre = genre) }
         genrePager.start { cursor ->
             sourceRegistry.require(snapshot.selectedSourceId).catalog(
-                CatalogQuery(snapshot.homeKind, CatalogOrder.LATEST, genre, cursor),
+                CatalogQuery(
+                    snapshot.homeKind,
+                    CatalogOrder.LATEST,
+                    genre,
+                    cursor,
+                    snapshot.genreStatusFilter,
+                ),
             )
         }
+    }
+
+    private fun selectGenreFilter(status: SeriesStatus?) {
+        if (state.value.genreStatusFilter == status) return
+        val genre = state.value.selectedGenre ?: return
+        update { it.copy(genreStatusFilter = status) }
+        loadGenre(genre)
     }
 
     private fun search() {
@@ -300,6 +327,7 @@ internal class LibraryViewModel(
             },
             success = { result: List<SourceSeries> ->
                 update { it.copy(content = LibraryContent.Series(result), lastSeries = result) }
+                enrichSeriesStatuses(result)
             },
             failureMessage = "검색에 실패했습니다",
         )
@@ -442,6 +470,55 @@ internal class LibraryViewModel(
         homeJob = null
     }
 
+    /**
+     * Providers that omit the series status from catalog markup (newxtoon) are filled in from
+     * series detail pages: one request at a time, paced, cached, and skipped when the provider
+     * does not expose details at all (ntk/wfwf).
+     */
+    private fun enrichSeriesStatuses(series: List<SourceSeries>) {
+        val cached = series.mapNotNull { item ->
+            statusCache[item.id]?.takeIf { item.status == null }?.let { status -> item.id to status }
+        }
+        if (cached.isNotEmpty()) {
+            update { state ->
+                cached.fold(state) { patched, (id, status) -> patched.withSeriesStatus(id, status) }
+            }
+        }
+        val added = series.asSequence()
+            .filter { it.status == null && it.id.sourceId !in statusUnsupported }
+            .map { it.id }
+            .filter { !statusCache.containsKey(it) && it !in statusQueue }
+            .toList()
+        if (added.isEmpty()) return
+        statusQueue.addAll(added)
+        if (statusWorker?.isActive == true) return
+        statusWorker = viewModelScope.launch {
+            while (true) {
+                val id = statusQueue.removeFirstOrNull() ?: break
+                val source = runCatching { sourceRegistry.require(id.sourceId) }.getOrNull() ?: continue
+                val details = runCatching {
+                    withContext(ioDispatcher) { source.seriesDetails(id) }
+                }.getOrNull()
+                if (details == null) {
+                    statusUnsupported += id.sourceId
+                    statusQueue.removeAll { it.sourceId == id.sourceId }
+                    continue
+                }
+                statusCache[id] = details.status
+                details.status?.let { status ->
+                    update { state -> state.withSeriesStatus(id, status) }
+                }
+                delay(STATUS_ENRICH_DELAY_MILLIS)
+            }
+        }
+    }
+
+    private fun cancelStatusEnrichment() {
+        statusWorker?.cancel()
+        statusWorker = null
+        statusQueue.clear()
+    }
+
     private fun cancelGenres() = genreJob?.cancel().also { genreJob = null }
     private fun update(transform: (LibraryState) -> LibraryState) {
         mutableState.value = transform(mutableState.value)
@@ -462,6 +539,8 @@ private fun failureDisplayMessage(failure: Throwable, fallback: String): String 
         is SourceThrottledException -> "요청이 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요"
         else -> failure.message ?: fallback
     }
+
+private const val STATUS_ENRICH_DELAY_MILLIS = 250L
 
 private fun currentSeries(state: LibraryState): SourceSeries =
     state.activeSeries ?: error("Episode selection requires an active series")

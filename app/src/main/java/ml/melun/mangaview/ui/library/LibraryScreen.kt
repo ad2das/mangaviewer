@@ -39,7 +39,7 @@ internal fun LibraryScreen(
     val focus = LocalFocusManager.current
     LaunchedEffect(state.settingsVisible) { if (state.settingsVisible) focus.clearFocus() }
     val genreScroll = androidx.compose.runtime.saveable.rememberSaveable(
-        state.selectedSourceId, state.homeKind, state.selectedGenre,
+        state.selectedSourceId, state.homeKind, state.selectedGenre, state.genreStatusFilter,
         saver = androidx.compose.foundation.lazy.LazyListState.Saver,
     ) {
         androidx.compose.foundation.lazy.LazyListState()
