@@ -91,6 +91,7 @@ dependencies {
     implementation project(':source-ntk')
     implementation project(':source-wfwf')
     implementation project(':source-newxtoon')
+    implementation project(':source-goodtoon')
     implementation project(':data')
     implementation project(':viewer')
     implementation project(':viewer-content')

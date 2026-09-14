@@ -9,12 +9,16 @@ internal object LegacySiteArtwork {
     val wfwf: ImageBitmap by lazy { decode(WFWF) }
     val ntk: ImageBitmap by lazy { decode(NTK) }
     val newxtoon: ImageBitmap by lazy { decode(NEWXTOON) }
+    val goodtoon: ImageBitmap by lazy { decode(GOODTOON) }
 
     fun forSource(sourceId: String?): ImageBitmap = when (sourceId) {
         "ntk" -> ntk
         "newxtoon" -> newxtoon
+        "goodtoon" -> goodtoon
         else -> wfwf
     }
+
+    private const val GOODTOON = "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAASTSURBVHhe7Z09aBRBGIavtLS0tLS00ezaRCQ7ERFMZ0q1EtJYiKQznQhCGkG7qySFhWCTUgv7CBaWAb298w8johxicfLu3Z53387szv7MTrh7X3gg7M7O7nzv7jc/B5lOpyH1LkRnByvrF3sr0Y04jHYWFbQP7fx4fi2QMWhNh6urJ3phtNkPVTcOo0E/VKOlJVDDfqD2YMznc1dOyVg1qsHK+mkEPfMQZEocRvvIBjJ2tXS4unqyH0a7iduamxIt3Ua+COS6fqCONDcgRQRqGIdqQ8bUWshrfOvrE4dqW8a2UOjxZUWkFl0ZY6N6wdptTQWkLkH0QMY6I4xxmXbcgeG7jPlU6LXZ4TomUEPjMDUZasoLSPME0QsZ+04cqjNMPe2BVD9nAFyRhYhDAnUwDf54pqspRJwyXdBLJlyaAsQtmGtN0o/akydJCwTR+9QADj09MR77a06QdhivdmpOkHbA+H9DHiTt0YkDdUceJO3BZWfP0ADP0ADP0ADP0ADP0ADP0ADP0ADP0ADP0ADPeDXg682t0Y9Hj0c/n3ZHw9dv5sAxnEMZeV0eX67fytTVFKhb3q8urRswuHQtCWxZ4RpcK+uTwDBXKvsy2NCqAd/v3ZdtKq2iINAAA7+ePZftqSwYKetPoQEamgx+KlM+pgGConz/90Mv6XDxVqOBAH8XmYbr5L0A+om0HhM6/Xn7LlNOYtMHlcWpAZ+ubsp2zikvlQA0+PfLfXnZVEXXm9AJoxxZrg2cGpAXPFMK0WGqB2+tLGuDTgtnQN7bXyb4AF+CSVXSgk4LZ8DRzkPZxkTI7bKsDegnUiFYab9BAwygQTqVfftTEGh8VfJ4FXRaOANMkuV8oNNCGWDK/74aKdHJ17M5McA01rZppFwAK6LKUFQnm2dzwbEzoKww0ZN1FKGTzbO5gAZMZPNsLnBiAEY6Otk0sqxogAGTZDlJWdEAA1gm0KloHiAXwFJMEzsaYGB25jorHJdlbTD1KzTAgClgUJXlA1N9NCAHrNnrhNVNWbYIGlCBvN+AsShn+yXk1UMDCkDDTMIXYlrRxHIGOl7TV5SKBhRgWheSwqgJQQBFQZ8VDbDANDGrq6q/Lei00AYAmGCaG5QVvpBvW3cz97BFp4U3IMUmr5sEA6usfkp0WhoDUvAGI4UUmYHAIM8XzaDLoNPSGSCRSw9N/fyoQ94LNGlwGY6NAcsKDfAMDfAMDfAMDfAMDfAMDfAMDfAMDfAMDfAMDfAMDfAMDfAMDfAMDfAM/nHrtjxI2qMz2RMyc4K0w3jXJM0J0g7pBp2ZE6QdxvsHaE6QdkgNeCVPEPdgL+bEAI6EvDHeXzLZQyx7krgmUJcTAyb7yBxkChBnIP1ga/ipAdxJo12wccY0+P9NiPZlQeKA2V30ZoVdPjOFSePkbnPOPWVcE+3KmGc0CNWT7IWkLkjxMtZaoXdmf9AwgTrApqky1kbBBEwUMhWR0uBlLhX8WbFPqItFzi9SsmTNiVop4jA6zB3tVBF+vEHF8mZkhkAdaSdZTQrOYqSE6XTmAZYRbAccqD28oHPLCxb6B19O6rLMayK6AAAAAElFTkSuQmCC"
 
     private fun decode(value: String): ImageBitmap {
         val bytes = Base64.decode(value, Base64.DEFAULT)

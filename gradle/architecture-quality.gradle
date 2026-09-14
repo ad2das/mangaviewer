@@ -449,6 +449,7 @@ def productionRoots = [
     'source-api/src/main',
     'source-ntk/src/main',
     'source-wfwf/src/main',
+    'source-goodtoon/src/main',
     'data/src/main',
     'viewer/src/main',
     'viewer-content/src/main',

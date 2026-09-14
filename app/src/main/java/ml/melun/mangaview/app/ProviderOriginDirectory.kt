@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.ntk.NtkOriginResolver
 import ml.melun.mangaview.source.wfwf.WfwfOriginResolver
+import ml.melun.mangaview.source.goodtoon.GoodtoonOriginResolver
 
 /** Catalogs, artwork and the native viewer share the same verified, persisted origin. */
 internal class ProviderOriginDirectory(context: Context, private val io: CoroutineDispatcher, private val userAgent: String) : ProviderOrigins {
@@ -16,13 +17,14 @@ internal class ProviderOriginDirectory(context: Context, private val io: Corouti
     private val known = java.util.concurrent.ConcurrentHashMap<String, String>()
     @Volatile private var loaded = false
     private val loadLock = Mutex()
-    private val locks = mapOf("ntk" to Mutex(), "wfwf" to Mutex())
+    private val locks = mapOf("ntk" to Mutex(), "wfwf" to Mutex(), "goodtoon" to Mutex())
 
     override fun provider(url: String): String? {
         val host = URI(url).host ?: return null
         return when {
             host in NTK_HOSTS || Regex("toki[0-9]+\\.com").matches(host) -> "ntk"
             Regex("wfwf[0-9]+\\.com").matches(host) -> "wfwf"
+            GOODTOON_NUMBERED.matches(host) || GOODTOON_APEX.matches(host) -> "goodtoon"
             else -> known.entries.firstOrNull { URI(it.value).host == host }?.key
         }
     }
@@ -51,6 +53,7 @@ internal class ProviderOriginDirectory(context: Context, private val io: Corouti
             val resolved = when (provider) {
                 "ntk" -> NtkOriginResolver(transport, userAgent).resolve(failed)
                 "wfwf" -> WfwfOriginResolver(transport, userAgent).resolve(failed)
+                "goodtoon" -> GoodtoonOriginResolver(transport, userAgent).resolve(failed)
                 else -> null
             }?.takeIf(::validOrigin)
             if (resolved != null) remember(provider, resolved)
@@ -66,6 +69,7 @@ internal class ProviderOriginDirectory(context: Context, private val io: Corouti
                 val verified = when (provider) {
                     "ntk" -> NtkOriginResolver(transport, userAgent).resolve(finalOrigin)
                     "wfwf" -> WfwfOriginResolver(transport, userAgent).resolve(finalOrigin)
+                    "goodtoon" -> GoodtoonOriginResolver(transport, userAgent).resolve(finalOrigin)
                     else -> null
                 }
                 if (verified == finalOrigin) remember(provider, finalOrigin)
@@ -79,5 +83,9 @@ internal class ProviderOriginDirectory(context: Context, private val io: Corouti
             uri.query == null && uri.fragment == null && uri.path.isNullOrEmpty()
     }.getOrDefault(false)
 
-    private companion object { val NTK_HOSTS = setOf("sbxh9.com", "newtoki1.org") }
+    private companion object {
+        val NTK_HOSTS = setOf("sbxh9.com", "newtoki1.org")
+        val GOODTOON_NUMBERED = Regex("(?:www\\.)?goodtoon[0-9]{1,4}\\.com")
+        val GOODTOON_APEX = Regex("(?:www\\.)?goodtoon\\.top")
+    }
 }

@@ -39,6 +39,8 @@ import ml.melun.mangaview.source.wfwf.WfwfConfig
 import ml.melun.mangaview.source.wfwf.WfwfContentSource
 import ml.melun.mangaview.source.newxtoon.NewxtoonConfig
 import ml.melun.mangaview.source.newxtoon.NewxtoonContentSource
+import ml.melun.mangaview.source.goodtoon.GoodtoonConfig
+import ml.melun.mangaview.source.goodtoon.GoodtoonContentSource
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.viewer.runtime.PipelineRawPagePort
 import ml.melun.mangaview.viewer.runtime.ViewerCachedResume
@@ -82,6 +84,7 @@ internal class AppGraph(
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
     private val wfwfSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createWfwfSource)
     private val newxtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNewxtoonSource)
+    private val goodtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createGoodtoonSource)
     val sources = SourceRegistry(
         registrations = listOf(
             SourceRegistration(NTK_ID, "NTK") {
@@ -95,6 +98,9 @@ internal class AppGraph(
             },
             SourceRegistration(NEWXTOON_ID, "뉴엑스툰", distinguishesKinds = false) {
                 OfflineContentSource(newxtoonSource.value, offlineStore)
+            },
+            SourceRegistration(GOODTOON_ID, "굿툰", distinguishesKinds = false) {
+                OfflineContentSource(goodtoonSource.value, offlineStore)
             },
         ),
     )
@@ -185,7 +191,11 @@ internal class AppGraph(
                 try {
                     if (newxtoonSource.isInitialized()) newxtoonSource.value.close()
                 } finally {
-                    ntkGateway.close()
+                    try {
+                        if (goodtoonSource.isInitialized()) goodtoonSource.value.close()
+                    } finally {
+                        ntkGateway.close()
+                    }
                 }
             }
         }
@@ -326,6 +336,40 @@ internal class AppGraph(
     private fun createNewxtoonTransport(): SourceTransport = ObservedSourceTransport(
         transportFactory.protect(transportFactory.create()), "catalog-newxtoon", { networkEvidenceObserver })
 
+    private fun createGoodtoonSource(): DeferredContentSource = DeferredContentSource(
+        id = GOODTOON_ID,
+        scope = applicationScope,
+        start = CoroutineStart.LAZY,
+        initialize = ::initializeGoodtoonSource,
+    )
+
+    private suspend fun initializeGoodtoonSource(): DeferredSourceResource {
+        coroutineContext.ensureActive()
+        val transport = createGoodtoonTransport()
+        try {
+            val source = GoodtoonContentSource(GoodtoonConfig(DEFAULT_GOODTOON_ORIGIN, userAgent()), transport, applicationScope)
+            transport.warmConnections(listOf(DEFAULT_GOODTOON_ORIGIN), preferQuic = false)
+            source.warm()
+            return DeferredSourceResource(source) {
+                (transport as? Closeable)?.close()
+            }
+        } catch (failure: Throwable) {
+            (transport as? Closeable)?.close()
+            throw failure
+        }
+    }
+
+    private fun createGoodtoonTransport(): SourceTransport = ObservedSourceTransport(
+        resilient(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            HttpEngineSourceTransport(
+                appContext,
+                userAgent(),
+                protocolAlternatesEnabled = false,
+            )
+        } else {
+            transportFactory.create()
+        }), "catalog-goodtoon", { networkEvidenceObserver })
+
     private fun userAgent(): String =
         "Mozilla/5.0 (Linux; Android ${android.os.Build.VERSION.RELEASE}; " +
             "${android.os.Build.MODEL}) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -333,10 +377,12 @@ internal class AppGraph(
 
     private companion object {
         const val DEFAULT_NTK_ORIGIN = ml.melun.mangaview.source.ntk.NtkOriginResolver.DEFAULT_ORIGIN
-        const val DEFAULT_WFWF_ORIGIN = ml.melun.mangaview.source.wfwf.DEFAULT_WFWF_ORIGIN
+        const         val DEFAULT_WFWF_ORIGIN = ml.melun.mangaview.source.wfwf.DEFAULT_WFWF_ORIGIN
+        val DEFAULT_GOODTOON_ORIGIN = ml.melun.mangaview.source.goodtoon.DEFAULT_GOODTOON_ORIGIN
         const val NTK_PRECONNECT_TIMEOUT_MILLIS = 4_000L
         val NTK_ID = SourceId("ntk")
         val WFWF_ID = SourceId("wfwf")
         val NEWXTOON_ID = SourceId("newxtoon")
+        val GOODTOON_ID = SourceId("goodtoon")
     }
 }

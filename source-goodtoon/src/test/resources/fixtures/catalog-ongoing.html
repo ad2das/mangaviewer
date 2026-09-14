@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GoodToon | 무료 웹툰 — 웹툰</title>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-Z8RLRDRKSM"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-Z8RLRDRKSM');
+</script>
+<link rel="icon" href="/favicon.ico?v=4">
+
+
+<link rel="stylesheet" href="/fonts/noto-sans-kr.css">
+<style>
+/* ====== GoodToon CSS ====== */
+:root {
+  --bg: #f4f5f7;
+  --surface: #fff;
+  --text: #1f232b;
+  --t2: #8b93a3;
+  --accent: #e63946;
+  --border: #e5e7eb;
+  --radius: 10px;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: "Noto Sans KR", sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  min-height: 100vh;
+}
+
+/* ====== 상단 내비게이션 ====== */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top:0; z-index:100;
+}
+.h-inner {
+  max-width: 1200px; margin:0 auto; padding:0 16px;
+  height: 72px; display:flex; align-items:center; gap:6px;
+}
+.logo {
+  font-size: 18px; font-weight:700; color:var(--accent);
+  text-decoration: none; white-space:nowrap;
+}
+.search {
+  flex:1; display:flex; max-width:320px;
+  height:36px; border:1px solid var(--border); border-radius:8px;
+  overflow:hidden;
+}
+.search input {
+  flex:1; border:none; padding:0 12px; font-size:13px;
+  outline:none; background:transparent;
+}
+.search button {
+  border:none; background:var(--accent); color:#fff;
+  padding:0 16px; cursor:pointer; font-size:14px;
+}
+.nav-links {
+  display:flex; align-items:center; gap:6px;
+  margin:0;
+}
+.nav-btn {
+  font-size:16px; font-weight:500; color:#000;
+  text-decoration:none; padding:6px 12px;
+  border-radius:8px; transition:all .15s;
+  display:inline-flex; align-items:center; gap:4px;
+  white-space:nowrap;
+}
+.nav-btn:hover { color:var(--text); background:#f0f0f0; }
+.nav-btn .emoji { width:14px; height:14px; vertical-align:middle; }
+.telegram-icon { padding:4px 6px; }
+.telegram-icon svg { display:block; width:29px; height:29px; }
+.header-right-group {
+  display:flex; align-items:center; gap:8px;
+  margin-left:auto;
+}
+.chapter-menu-wrapper { position:relative; }
+.chapter-menu-btn {
+  border:none; background:none; font-size:20px;
+  cursor:pointer; padding:4px 8px; border-radius:6px;
+  color:var(--t2); line-height:1;
+}
+.chapter-menu-btn:hover { background:#f0f0f0; color:var(--text); }
+.chapter-menu-dropdown {
+  position:absolute; top:100%; left:0; right:auto; z-index:200;
+  background:#fff; border:1px solid var(--border);
+  border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,.08);
+  display:none; min-width:200px; max-height:400px;
+  overflow-y:auto;
+  
+}
+.chapter-menu-dropdown.open, .chapter-menu-dropdown.show { display:block; }.chapter-menu-dropdown a{display:block;padding:12px 16px;font-size:13px;color:#333;text-decoration:none;border-bottom:1px solid #f0f0f0}.chapter-menu-dropdown a:hover{background:#f5f5f5}.chapter-menu-dropdown a.current{color:#e63946;font-weight:600}.chapter-menu-dropdown .menu-header{padding:10px 14px;font-size:12px;font-weight:600;color:#999;border-bottom:1px solid #eee}
+
+/* ====== Hamburger Menu (Mobile Only) ====== */
+.hamburger-btn {
+  display: none;
+  border: none; background: none;
+  font-size: 22px; cursor: pointer;
+  padding: 4px 6px; line-height: 1; color: #333;
+  flex-shrink: 0;
+}
+.hamburger-overlay {
+  display: none;
+  position: fixed; top:0; left:0; right:0; bottom:0;
+  z-index: 1999; background: rgba(0,0,0,.4);
+}
+.hamburger-overlay.open { display: block; }
+.hamburger-dropdown {
+  display: none;
+  position: fixed; top: 0; left: 0;
+  width: 260px; height: 100%;
+  z-index: 2000;
+  background: #fff;
+  box-shadow: 4px 0 20px rgba(0,0,0,.1);
+  overflow-y: auto;
+}
+.hamburger-dropdown.open { display: block; }
+.hamburger-nav { padding: 12px 0; }
+.hamburger-item {
+  display: block;
+  padding: 14px 20px;
+  font-size: 15px; font-weight: 500;
+  color: #333;
+  text-decoration: none;
+  border-bottom: 1px solid #f0f0f0;
+}
+.hamburger-item:hover { background: #f4f5f7; }
+
+/* ====== 브레드크럼 + 로딩 모드 ====== */
+.breadcrumb {
+  max-width:1200px; margin:16px auto 0; padding:0 16px;
+  font-size:12px; color:var(--t2);
+}
+.breadcrumb a { color:var(--t2); text-decoration:none; }
+.breadcrumb a:hover { color:var(--text); }
+
+.view-toggle {
+  max-width:1200px; margin:12px auto 0; padding:0 16px;
+  display:flex; gap:8px;
+}
+.view-toggle button {
+  font-size:12px; padding:0 12px; border-radius:6px;
+  border:1px solid var(--border); background:var(--surface);
+  color:var(--t2); cursor:pointer;
+}
+.view-toggle button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+
+/* ====== 필터 영역 ====== */
+.filter {
+  max-width:1200px; margin:16px auto 0; padding:12px 0;
+  background:var(--surface); border-radius:16px;
+}
+.filter-row { padding: 6px 16px;
+  display:flex; align-items:flex-start; gap:14px;
+  margin-bottom:12px;
+}
+.filter-row:last-child { margin-bottom:0; }
+.filter-row .label {
+  padding:6px 0;
+  font-size:13px; color:var(--text); font-weight:500;
+  width:60px;flex-shrink:0; white-space:nowrap;
+}
+.chips {
+  display:flex; flex-wrap:wrap; gap:6px;
+}
+.chip {
+  font-size:14px; padding:0 13px; height:30px; line-height:28px;
+  border-radius:999px; border:1px solid var(--border);
+  background:#f1f2f5; color:var(--text);
+  cursor:pointer; transition:all .15s; white-space:nowrap;
+  text-decoration:none; display:inline-block;
+}
+.chip:hover { background:#e6e8ec; }
+.chip.active, .chip.on {
+  background:var(--accent); color:#fff; border-color:var(--accent);
+}
+.chip.active::before, .chip.on::before { content:"✓ "; }
+.chip.reset {
+  background:transparent; border-color:transparent;
+  color:var(--accent); font-size:12px;
+}
+
+/* ====== 플랫폼 (filter-row 내) ====== */
+.plat-chip {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:30px; height:30px; border-radius:8px;
+  background:#f1f2f5; border:1px solid var(--border);
+  transition:all .15s; padding:0; cursor:pointer;
+}
+.plat-chip:hover { background:#e6e8ec; }
+.plat-chip.active { border-color:var(--accent); background:rgba(230,57,70,.08); }
+.plat-chip img { width:22px; height:22px; border-radius:3px; }
+
+/* ====== 카드 그리드 ====== */
+.card-grid {
+  max-width:1200px; margin:16px auto; padding:0 16px;
+  display:grid;
+  grid-template-columns:repeat(7, 1fr);
+  gap:12px;
+}
+.card {
+  background:var(--surface); border-radius:16px;
+  overflow:hidden; text-decoration:none; color:var(--text);
+  transition:transform .15s, box-shadow .15s;
+  display:block;
+}
+.card:hover { transform:translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,.08); }
+.card .thumb {
+  position:relative; width:100%; aspect-ratio:4/3;
+  overflow:hidden; background:#e5e7eb;
+}
+.card .thumb img {
+  width:100%; height:100%; object-fit:cover;
+  display:block; background:#e8eaed;
+}
+.card .thumb .platform-icon {
+  position:absolute; top:4px; right:4px; width:23px; height:23px;
+  border-radius:3px; z-index:1;
+}
+.card .thumb .up-badge {
+  position:absolute; top:4px; left:4px;
+  width:23px; height:23px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:700;
+  border-radius:4px;
+  background:var(--accent); color:#fff;
+  z-index:2;
+}
+.wp-manga-chapter .up-badge-inline {
+  display:inline-block; margin-right:4px; padding:0 4px;
+  font-size:9px; font-weight:700; line-height:16px;
+  border-radius:3px; background:var(--accent); color:#fff; vertical-align:2px;
+}
+.card .info { padding:8px 10px 10px; }
+.card .subject {
+  font-size:13px; font-weight:500; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.card .genre {
+  font-size:11.5px; color:var(--t2);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  margin-top:2px;
+}
+.card .ep {
+  font-size:11.5px; color:var(--text); margin-top:2px;
+}
+.card .ep .ep-no { font-weight:500; font-size:10.5px; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.card .ep .ep-date { font-size:11px; color:var(--t2); margin-left:6px; }
+.ep-date-ov {
+  position:absolute; bottom:4px; right:4px; z-index:2;
+  background:rgba(0,0,0,.55); color:#fff;
+  font-size:11px; font-weight:500; padding:2px 6px;
+  border-radius:4px; line-height:1.3;
+  backdrop-filter:blur(2px);
+}
+.adult-badge {
+  position:absolute; bottom:4px; left:4px; z-index:2;
+  width:23px; height:23px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:700;
+  border-radius:4px;
+  background:#e63946; color:#fff;
+}
+.card .ep .ep-date { color:var(--t2); margin-left:4px; }
+
+/* ====== 페이지네이션 ====== */
+.pagination {
+  max-width:1200px; margin:0 auto 32px; padding:0 16px;
+  display:flex; justify-content:center; gap:4px;
+}
+.pagination a, .pagination span {
+  font-size:13px; padding:6px 12px; border-radius:6px;
+  border:1px solid var(--border); background:var(--surface);
+  color:var(--text); text-decoration:none;
+  transition:all .15s; min-width:36px; text-align:center;
+}
+.pagination a:hover { border-color:var(--accent); color:var(--accent); }
+.pagination .current {
+  background:var(--accent); color:#fff; border-color:var(--accent);
+}
+
+/* ====== Footer ====== */
+footer {
+  text-align:center; padding:24px;
+  font-size:12px; color:var(--t2);
+}
+footer a { color:var(--t2); text-decoration:none; }
+
+/* ====== 반응형 ====== */
+@media (max-width:900px) {
+  .card-grid { grid-template-columns:repeat(4,1fr); }
+}
+@media (max-width: 768px) {
+  /* Hamburger visible, nav-links hidden */
+  .hamburger-btn{display:block!important}
+  .nav-links{display:none!important}
+
+  /* Header compact */
+  .h-inner{height:48px!important;padding:0 8px!important;gap:4px!important}
+  .logo{font-size:16px!important}
+  .search{max-width:180px!important;height:30px!important;overflow:visible!important;flex-shrink:0!important}
+  .search input{font-size:12px!important;padding:0 8px!important}
+  .search{display:flex!important;max-width:200px!important;height:30px!important;border:1px solid #e5e7eb!important;border-radius:8px!important;overflow:hidden!important}.search input{flex:1!important;border:none!important;padding:0 8px!important;font-size:12px!important;outline:none!important;background:#f4f5f7!important;min-width:0!important}.search button{width:34px!important;height:30px!important;padding:0!important;background:#e63946!important;border:none!important;display:flex!important;align-items:center!important;justify-content:center!important;flex-shrink:0!important;cursor:pointer!important}
+  .nav-btn{font-size:11px!important;padding:3px 5px!important}
+  .nav-btn .emoji{width:12px!important;height:12px!important}
+  .nav-links{gap:2px!important}
+  .telegram-icon svg{width:28px!important;height:28px!important}
+  .header-right-group{gap:4px!important}
+
+  /* Filter: chip horizontal scroll */
+  .filter{padding:6px 0!important;margin:6px auto 0!important;border-radius:0!important;background:transparent!important}
+  .filter-row{padding:4px 8px!important;gap:5px!important;margin-bottom:5px!important}
+  .filter-row .label{font-size:11px!important;width:36px!important;min-width:36px!important;padding:2px 0!important}
+  .chips{flex-wrap:nowrap!important;overflow-x:auto!important;gap:4px!important;-webkit-overflow-scrolling:touch!important;scrollbar-width:none!important}
+  .chips::-webkit-scrollbar{display:none!important}
+  .chip{font-size:11px!important;padding:0 10px!important;height:26px!important;line-height:24px!important}
+  .chip.active::before,.chip.on::before{content:unset!important}
+  .chip.reset{font-size:10px!important}
+
+  /* Platform chips: circular on mobile */
+  .plat-chip{width:28px!important;height:28px!important;border-radius:50%!important;background:#f0f0f0!important}
+  .plat-chip img{width:18px!important;height:18px!important;border-radius:50%!important}
+  .plat-chip.active{border-color:var(--accent)!important;background:#fff!important}
+
+  /* Card Grid: 3 columns compact */
+  .card-grid{grid-template-columns:repeat(3,1fr)!important;gap:6px!important;padding:0 6px!important;margin:6px auto!important}
+  .card{border-radius:8px!important}
+  .card .thumb{aspect-ratio:3/4!important}
+  .card .thumb .platform-icon{width:16px!important;height:16px!important;top:3px!important;right:3px!important}
+  .card .thumb .up-badge{width:20px!important;height:20px!important;font-size:10px!important;top:3px!important;left:3px!important}
+  .card .info{padding:5px 6px 6px!important}
+  .card .subject{font-size:11px!important;overflow:hidden!important;text-overflow:ellipsis!important;display:-webkit-box!important;-webkit-line-clamp:2!important;-webkit-box-orient:vertical!important;white-space:normal!important}
+  .card .genre{font-size:10px!important}
+  .card .ep{font-size:10px!important}
+  .card .ep .ep-date{font-size:10px!important;margin-left:3px!important}
+
+  /* Date overlay */
+  .ep-date-ov{font-size:9px!important;padding:1px 4px!important}
+  .adult-badge{width:18px!important;height:18px!important;font-size:9px!important;bottom:3px!important;left:3px!important}
+
+  /* Pagination */
+  .pagination{gap:3px!important;padding:6px!important}
+  .pagination a,.pagination span{font-size:11px!important;padding:4px 8px!important;min-width:28px!important}
+
+  /* Result bar */
+}
+
+@media (max-width: 480px) {
+  .card-grid{grid-template-columns:repeat(3,1fr)!important;gap:4px!important;padding:0 4px!important}
+  .card .info{padding:3px 4px 4px!important}
+  .card .subject{font-size:10px!important}
+  .filter-row .label{width:28px!important;min-width:28px!important}
+  .chip{font-size:10px!important;padding:0 8px!important;height:24px!important;line-height:22px!important}
+  .h-inner{height:44px!important}
+  .search{max-width:170px!important;height:28px!important}.search input{font-size:11px!important}.search button{width:30px!important;height:28px!important}
+  .nav-btn{font-size:10px!important;padding:2px 4px!important}
+}
+}
+
+</style>
+</head>
+<body>
+
+<script>var SERVER_TIME=1789357224;</script>
+<!-- ====== 내비게이션 ====== -->
+<header>
+<div class="h-inner">
+    <button class="hamburger-btn" onclick="document.getElementById('hb-overlay').classList.toggle('open');document.getElementById('hb-dropdown').classList.toggle('open')" title="메뉴">☰</button>
+    <a href="/" class="logo"><img src="/wp-content/themes/madara/images/logo.png" alt="ManhwaFun" style="width:88px;height:45px"></a>
+    <nav class="nav-links">
+      <a href="/" class="nav-btn">웹툰</a>
+      <a href="/ongoing/" class="nav-btn">연재</a>
+      <a href="/end/" class="nav-btn">완결</a>
+      <a href="/board/" class="nav-btn"><img draggable="false" role="img" class="emoji" alt="💬" src="https://s.w.org/images/core/emoji/17.0.2/svg/1f4ac.svg">자유게시판</a>
+      <a href="/notice/" class="nav-btn"><img draggable="false" role="img" class="emoji" alt="📢" src="https://s.w.org/images/core/emoji/17.0.2/svg/1f4e2.svg">공지사항</a>
+      <a href="https://t.me/goodtoon_001" target="_blank" class="nav-btn telegram-icon" title="Telegram"><svg width="29" height="29" viewBox="0 0 24 24" fill="#0088cc"><path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0a12 12 0 00-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 01.171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"></path></svg><span>광고문의</span></a>
+      <a href="https://t.me/goodtoon_url" target="_blank" class="nav-btn telegram-icon" title="최신 주소"><svg width="29" height="29" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="12" fill="#e63946"/><g transform="translate(4.2 3) scale(0.65)"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" fill="#fff"/></g></svg><span>최신 주소</span></a>
+    </nav>
+    <div class="header-right-group">
+      <!-- chapter menu removed from homepage -->
+      <form class="search" method="get" action="/" onsubmit="return this.s.value.trim()!=''">
+      <input type="text" name="q" placeholder="작품, 작가 검색">
+      <button type="submit"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
+      </form>
+    </div>
+  </div>
+</header>
+
+<!-- Mobile Hamburger Menu -->
+<div id="hb-overlay" class="hamburger-overlay" onclick="document.getElementById('hb-dropdown').classList.remove('open');this.classList.remove('open')"></div>
+<div id="hb-dropdown" class="hamburger-dropdown">
+  <nav class="hamburger-nav">
+    <a href="/" class="hamburger-item">웹툰</a>
+    <a href="/ongoing/" class="hamburger-item">연재</a>
+    <a href="/end/" class="hamburger-item">완결</a>
+    <a href="/board/" class="hamburger-item">💬 자유게시판</a>
+    <a href="/notice/" class="hamburger-item">📢 공지사항</a>
+    <a href="https://t.me/goodtoon_001" target="_blank" class="hamburger-item"><svg width="18" height="18" viewBox="0 0 24 24" fill="#0088cc" style="vertical-align:middle;margin-right:6px"><path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0a12 12 0 00-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 01.171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"></path></svg> Telegram</a>
+  </nav>
+</div>
+
+<!-- ===== 모바일 스크롤 내리면 내비게이션 숨김, 올리면 표시 ===== -->
+<style>
+@media (max-width: 768px) {
+  header { transition: transform .3s ease; }
+  header.header-hide { transform: translateY(-100%); }
+}
+</style>
+<script>
+(function(){
+  var lastY = 0, ticking = false;
+  window.addEventListener('scroll', function(){
+    if (ticking) return; ticking = true;
+    requestAnimationFrame(function(){
+      ticking = false;
+      if (window.innerWidth > 768) return;
+      var h = document.querySelector('header');
+      if (!h) return;
+      var y = window.scrollY;
+      if (y > lastY && y > 80) h.classList.add('header-hide');
+      else if (y < lastY) h.classList.remove('header-hide');
+      lastY = y;
+    });
+  }, {passive:true});
+})();
+</script>
+
+<!-- ====== 필터 ====== -->
+<div class="filter">
+  <!-- 분류 -->
+  <div class="filter-row">
+    <div class="label">분류</div>
+    <div class="chips">
+              <button data-mcat="all" data-genre="" data-mday="all"
+           class="chip chip--cat active">전체</button>
+              <button data-mcat="webtoon" data-genre="" data-mday="all"
+           class="chip chip--cat ">일반웹툰</button>
+              <button data-mcat="bl-gl" data-genre="" data-mday="all"
+           class="chip chip--cat ">BL/GL</button>
+              <button data-mcat="adult" data-genre="" data-mday="all"
+           class="chip chip--cat ">성인웹툰</button>
+          </div>
+  </div>
+  <!-- 요일 -->
+    <div class="filter-row">
+    <div class="label">요일</div>
+    <div class="chips">
+              <button data-mcat="all" data-genre="" data-mday="all"
+           class="chip day active">전체</button>
+              <button data-mcat="all" data-genre="" data-mday="mon"
+           class="chip day ">월</button>
+              <button data-mcat="all" data-genre="" data-mday="tue"
+           class="chip day ">화</button>
+              <button data-mcat="all" data-genre="" data-mday="wed"
+           class="chip day ">수</button>
+              <button data-mcat="all" data-genre="" data-mday="thu"
+           class="chip day ">목</button>
+              <button data-mcat="all" data-genre="" data-mday="fri"
+           class="chip day ">금</button>
+              <button data-mcat="all" data-genre="" data-mday="sat"
+           class="chip day ">토</button>
+              <button data-mcat="all" data-genre="" data-mday="sun"
+           class="chip day ">일</button>
+              <button data-mcat="all" data-genre="" data-mday="etc"
+           class="chip day ">열흘</button>
+          </div>
+  </div>
+    <!-- 장르 -->
+  <div class="filter-row">
+    <div class="label">장르</div>
+    <div class="chips">
+<button data-mcat="all" data-genre="" data-mday="all" class="chip genre active">전체</button><button data-mcat="all" data-genre="school" data-mday="all" class="chip genre ">학원</button><button data-mcat="all" data-genre="action" data-mday="all" class="chip genre ">액션</button><button data-mcat="all" data-genre="sci-fi" data-mday="all" class="chip genre ">SF</button><button data-mcat="all" data-genre="story" data-mday="all" class="chip genre ">스토리</button><button data-mcat="all" data-genre="fantasy" data-mday="all" class="chip genre ">판타지</button><button data-mcat="all" data-genre="bl" data-mday="all" class="chip genre ">BL</button><button data-mcat="all" data-genre="gag" data-mday="all" class="chip genre ">개그</button><button data-mcat="all" data-genre="romance-drama" data-mday="all" class="chip genre ">연애</button><button data-mcat="all" data-genre="drama" data-mday="all" class="chip genre ">드라마</button><button data-mcat="all" data-genre="romance" data-mday="all" class="chip genre ">로맨스</button><button data-mcat="all" data-genre="period" data-mday="all" class="chip genre ">시대극</button><button data-mcat="all" data-genre="sports" data-mday="all" class="chip genre ">스포츠</button><button data-mcat="all" data-genre="slice-of-life" data-mday="all" class="chip genre ">일상</button><button data-mcat="all" data-genre="mystery" data-mday="all" class="chip genre ">추리</button><button data-mcat="all" data-genre="horror" data-mday="all" class="chip genre ">공포</button><button data-mcat="all" data-genre="adult" data-mday="all" class="chip genre ">성인</button><button data-mcat="all" data-genre="omnibus" data-mday="all" class="chip genre ">옴니버스</button><button data-mcat="all" data-genre="episode" data-mday="all" class="chip genre ">에피소드</button><button data-mcat="all" data-genre="martial-arts" data-mday="all" class="chip genre ">무협</button><button data-mcat="all" data-genre="shounen" data-mday="all" class="chip genre ">소년</button><button data-mcat="all" data-genre="etc" data-mday="all" class="chip genre ">기타</button><button data-mcat="all" data-genre="novelpia" data-mday="all" class="chip genre ">노벨피아</button><button data-mcat="all" data-genre="married" data-mday="all" class="chip genre ">유부녀</button><button data-mcat="all" data-genre="hardcore" data-mday="all" class="chip genre ">하드코어</button><button data-mcat="all" data-genre="training" data-mday="all" class="chip genre ">조교</button><button data-mcat="all" data-genre="high-level" data-mday="all" class="chip genre ">고수위</button><button data-mcat="all" data-genre="abuse" data-mday="all" class="chip genre ">능욕</button><button data-mcat="all" data-genre="harem" data-mday="all" class="chip genre ">하렘</button><button data-mcat="all" data-genre="forced" data-mday="all" class="chip genre ">강제</button><button data-mcat="all" data-genre="female-popular" data-mday="all" class="chip genre ">여성인기</button><button data-mcat="all" data-genre="male-popular" data-mday="all" class="chip genre ">남성인기</button><button data-mcat="all" data-genre="threesome" data-mday="all" class="chip genre ">3P</button><button data-mcat="all" data-genre="adult-warning" data-mday="all" class="chip genre ">후방주의</button><button data-mcat="all" data-genre="yuri" data-mday="all" class="chip genre ">백합</button>    </div>
+  </div>
+  <!-- 플랫폼 -->
+  <div class="filter-row">
+    <div class="label">플랫폼</div>
+    <div class="chips">
+    <button data-mcat="all" data-genre="" data-mday="all" data-plat="" class="plat-chip active" title="전체"><img src="/wp-content/themes/madara/icons/all.png" alt="전체"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="naver" class="plat-chip " title="네이버"><img src="/wp-content/themes/madara/icons/naver.png" alt="네이버"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="daum" class="plat-chip " title="다음"><img src="/wp-content/themes/madara/icons/daum.png" alt="다음"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="kakao" class="plat-chip " title="카카오"><img src="/wp-content/themes/madara/icons/kakao.png" alt="카카오"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="rejin" class="plat-chip " title="레진"><img src="/wp-content/themes/madara/icons/rejin.png" alt="레진"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="tomics" class="plat-chip " title="투믹스"><img src="/wp-content/themes/madara/icons/tomics.png" alt="투믹스"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="toptoon" class="plat-chip " title="탑툰"><img src="/wp-content/themes/madara/icons/toptoon.png" alt="탑툰"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="ridi" class="plat-chip " title="리디"><img src="/wp-content/themes/madara/icons/ridi.png" alt="리디"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="comica" class="plat-chip " title="코미카"><img src="/wp-content/themes/madara/icons/comica.png" alt="코미카"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="battlecomics" class="plat-chip " title="배틀코믹스"><img src="/wp-content/themes/madara/icons/battlecomics.png" alt="배틀코믹스"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="comicgt" class="plat-chip " title="코믹GT"><img src="/wp-content/themes/madara/icons/comicgt.png" alt="코믹GT"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="ktoon" class="plat-chip " title="케이툰"><img src="/wp-content/themes/madara/icons/ktoon.png" alt="케이툰"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="anitoon" class="plat-chip " title="애니툰"><img src="/wp-content/themes/madara/icons/anitoon.png" alt="애니툰"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="foxtoon" class="plat-chip " title="폭스툰"><img src="/wp-content/themes/madara/icons/foxtoon.png" alt="폭스툰"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="peanutoon" class="plat-chip " title="피너툰"><img src="/wp-content/themes/madara/icons/peanutoon.png" alt="피너툰"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="bom" class="plat-chip " title="봄툰"><img src="/wp-content/themes/madara/icons/bom.png" alt="봄툰"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="comico" class="plat-chip " title="코미코"><img src="/wp-content/themes/madara/icons/comico.png" alt="코미코"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="mootoon" class="plat-chip " title="무툰"><img src="/wp-content/themes/madara/icons/mootoon.png" alt="무툰"></button><button data-mcat="all" data-genre="" data-mday="all" data-plat="etc" class="plat-chip " title="기타"><img src="/wp-content/themes/madara/icons/etc.png" alt="기타"></button>    </div>
+  </div>
+</div>
+<!-- ====== 필터 JS (PHP로 genre 사전 계산) ====== -->
+<script>
+(function(){
+  // 장르 다중 선택 — PHP로 계산된 data-genre 직접 사용
+  document.querySelectorAll("button.chip.genre").forEach(function(btn){
+    btn.addEventListener("click", function(e){
+      e.preventDefault();e.stopPropagation();
+      var gv=this.dataset.genre||"";
+      var p=new URLSearchParams(location.search);
+      var u=location.origin+location.pathname,q=[];
+      p.forEach(function(v,k){if(k!=="genre"&&k!=="ajax"&&v!=="all") q.push(k+"="+v)});
+      if(gv) q.push("genre="+gv);
+      if(q.length) u+="?"+q.join("&");
+      window.location.assign(u);
+    });
+  });
+  // 기타 버튼: 간단 내비게이션
+  function nav(k,v){
+    var p=new URLSearchParams(location.search);
+    var u=location.origin+location.pathname,q=[];
+    p.forEach(function(vv,kk){if(kk!==k&&kk!=="ajax"&&vv!=="all") q.push(kk+"="+vv)});
+    if(v&&v!=="all") q.push(k+"="+v);
+    if(q.length) u+="?"+q.join("&");
+    window.location.assign(u);
+  }
+  document.querySelectorAll("button.chip.day").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();var v=this.dataset.mday;var cur=(new URLSearchParams(location.search)).get("mday")||"all";if(v===cur)v="all";nav("mday",v)})});
+  document.querySelectorAll("button.chip--cat").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();var v=this.dataset.mcat;var cur=(new URLSearchParams(location.search)).get("mcat")||"all";if(v===cur)v="all";nav("mcat",v)})});
+  document.querySelectorAll("button.plat-chip").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();nav("plat",this.dataset.plat)})});
+})();
+</script>
+
+<!-- ====== 카드 그리드 ====== -->
+<div class="card-grid">
+  <a href="https://www.goodtoon004.com/manga/gt-22476/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789348586" data-date="09-14"></span>                                      <img src="https://img.goodtoon9001.top/gt-22476/cover.jpg" alt="시녀의 유혹" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">2시간</span>    </div>
+    <div class="info">
+      <div class="subject">시녀의 유혹</div>
+      <div class="genre">판타지/로맨스</div>
+      <div class="ep">
+        <span class="ep-no">41화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/%ec%82%ac%eb%9e%91%ed%95%a9%eb%8b%88%eb%8b%a4-%ec%95%84%ec%a3%bc%eb%a7%8e%ec%9d%b4/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/toptoon.png" alt=""><span class="up-badge">UP</span><span class="adult-badge">19</span><span class="ep-time" data-time="1789348016" data-date="09-14"></span>                                      <img src="https://img.goodtoon9001.top/gt-61463/cover.jpg" alt="사랑합니다 아주많이" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">2시간</span>    </div>
+    <div class="info">
+      <div class="subject">사랑합니다 아주많이</div>
+      <div class="genre">드라마/성인</div>
+      <div class="ep">
+        <span class="ep-no">제1화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-60687/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789348008" data-date="09-14"></span>                                      <img src="https://img.goodtoon9001.top/gt-60687/cover.jpg" alt="제목이 보이는데요" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">2시간</span>    </div>
+    <div class="info">
+      <div class="subject">제목이 보이는데요</div>
+      <div class="genre">판타지/로맨스</div>
+      <div class="ep">
+        <span class="ep-no">제목이 보이는데요 21화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-16635/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/rejin.png" alt=""><span class="up-badge">UP</span><span class="adult-badge">19</span><span class="ep-time" data-time="1789347606" data-date="09-14"></span>                            <img width="300" height="177" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/15165_cover-300x177.jpg" class="attachment-medium size-medium" alt="고백 대리" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/15165_cover-300x177.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/15165_cover.jpg 440w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">2시간</span>    </div>
+    <div class="info">
+      <div class="subject">고백 대리</div>
+      <div class="genre">드라마/로맨스/성인</div>
+      <div class="ep">
+        <span class="ep-no">38화. 집으로... (1)</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-60969/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/bom.png" alt=""><span class="up-badge">UP</span><span class="adult-badge">19</span><span class="ep-time" data-time="1789347423" data-date="09-14"></span>                                      <img src="https://img.goodtoon9001.top/gt-60969/cover.jpg" alt="그저 보통의 가족" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">2시간</span>    </div>
+    <div class="info">
+      <div class="subject">그저 보통의 가족</div>
+      <div class="genre">BL/성인</div>
+      <div class="ep">
+        <span class="ep-no">16화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-15934/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/toptoon.png" alt=""><span class="up-badge">UP</span><span class="adult-badge">19</span><span class="ep-time" data-time="1789347410" data-date="09-14"></span>                                      <img src="https://img.goodtoon9001.top/gt-15934/cover.jpg" alt="여자 일진에게 찍혔다!" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">2시간</span>    </div>
+    <div class="info">
+      <div class="subject">여자 일진에게 찍혔다!</div>
+      <div class="genre">드라마/성인</div>
+      <div class="ep">
+        <span class="ep-no">여자 일진에게 찍혔다! 1화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-17264/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789346406" data-date="09-14"></span>                                      <img src="https://img.goodtoon9001.top/gt-17264/cover.jpg" alt="킬러 배드로" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">3시간</span>    </div>
+    <div class="info">
+      <div class="subject">킬러 배드로</div>
+      <div class="genre">액션</div>
+      <div class="ep">
+        <span class="ep-no">킬러 배드로 131화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-20000/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789346106" data-date="09-14"></span>                            <img width="300" height="151" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/cover_74343.jpg" class="attachment-medium size-medium" alt="피폐물 속 폭군의 치료제가 되었습니다" loading="lazy" decoding="async" />            <span class="ep-date-ov">3시간</span>    </div>
+    <div class="info">
+      <div class="subject">피폐물 속 폭군의 치료제가 되었습니다</div>
+      <div class="genre">판타지/로맨스</div>
+      <div class="ep">
+        <span class="ep-no">피폐물 속 폭군의 치료제가 되었습니다 79화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-16569/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789345275" data-date="09-14"></span>                            <img width="300" height="177" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/11863_cover-300x177.jpg" class="attachment-medium size-medium" alt="환생좌" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/11863_cover-300x177.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/11863_cover.jpg 440w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">3시간</span>    </div>
+    <div class="info">
+      <div class="subject">환생좌</div>
+      <div class="genre">액션</div>
+      <div class="ep">
+        <span class="ep-no">환생좌 151화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-61381/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789314008" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-61381/cover.jpg" alt="상속자들 사이에서 살아남기" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">상속자들 사이에서 살아남기</div>
+      <div class="genre">액션/로맨스/학원</div>
+      <div class="ep">
+        <span class="ep-no">상속자들 사이에서 살아남기 1화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-14556/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789312625" data-date="09-13"></span>                            <img width="300" height="189" src="https://www.goodtoon004.com/wp-content/uploads/2026/05/3827_cover-300x189.jpg" class="attachment-medium size-medium" alt="무련전봉" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/05/3827_cover-300x189.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/05/3827_cover.jpg 385w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">무련전봉</div>
+      <div class="genre">판타지/액션</div>
+      <div class="ep">
+        <span class="ep-no">무련전봉 2081화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-59958/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789312324" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-59958/cover.jpg" alt="내일도 흔들릴 나에게" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">내일도 흔들릴 나에게</div>
+      <div class="genre">드라마</div>
+      <div class="ep">
+        <span class="ep-no">29. 용기</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-20676/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789312229" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-20676/cover.jpg" alt="퀘스트: 지상 최고의 산적" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">퀘스트: 지상 최고의 산적</div>
+      <div class="genre">드라마/액션/무협</div>
+      <div class="ep">
+        <span class="ep-no">퀘스트 지상 최고의 산적 376화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-19530/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/etc.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789312206" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-19530/cover.jpg" alt="레가스" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">레가스</div>
+      <div class="genre">드라마/판타지/BL</div>
+      <div class="ep">
+        <span class="ep-no">레가스 111화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21916/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789312205" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21916/cover.jpg" alt="폭군 아빠가 내 생각대로 움직여요" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">폭군 아빠가 내 생각대로 움직여요</div>
+      <div class="genre">드라마</div>
+      <div class="ep">
+        <span class="ep-no">폭군 아빠가 내 생각대로 움직여요 80화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-13391/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789311906" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-13391/cover.jpg" alt="S급 나무로 레벨업" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">S급 나무로 레벨업</div>
+      <div class="genre">판타지</div>
+      <div class="ep">
+        <span class="ep-no">S급 나무로 레벨업 270화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-20666/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/kakao.png" alt=""><span class="up-badge">UP</span><span class="adult-badge">19</span><span class="ep-time" data-time="1789310949" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-20666/cover.jpg" alt="매리지 클래식 [19세 완전판]" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">매리지 클래식 [19세 완전판]</div>
+      <div class="genre">드라마/로맨스/성인</div>
+      <div class="ep">
+        <span class="ep-no">매리지 클래식 [19세 완전판] 42화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-59936/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310851" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-59936/cover.jpg" alt="킬링가드" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">킬링가드</div>
+      <div class="genre">판타지/액션</div>
+      <div class="ep">
+        <span class="ep-no">8화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-60533/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310843" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-60533/cover.jpg" alt="청부입학" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">청부입학</div>
+      <div class="genre">액션/학원</div>
+      <div class="ep">
+        <span class="ep-no">13화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-15714/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310828" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-15714/cover.jpg" alt="코너트 성 집사로 살아남기" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">코너트 성 집사로 살아남기</div>
+      <div class="genre">판타지/로맨스</div>
+      <div class="ep">
+        <span class="ep-no">47화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-15616/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310827" data-date="09-13"></span>                            <img width="300" height="164" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/10113_cover-300x164.jpg" class="attachment-medium size-medium" alt="천재 타자가 강속구를 숨김" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/10113_cover-300x165.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/10113_cover-254x140.jpg 254w, https://www.goodtoon004.com/wp-content/uploads/2026/06/10113_cover.jpg 365w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">천재 타자가 강속구를 숨김</div>
+      <div class="genre">드라마/로맨스/학원/스포츠</div>
+      <div class="ep">
+        <span class="ep-no">133화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21895/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310751" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21895/cover.jpg" alt="첩보원 악어새" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">첩보원 악어새</div>
+      <div class="genre">액션</div>
+      <div class="ep">
+        <span class="ep-no">47화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21869/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310729" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21869/cover.jpg" alt="철이 없어서 그래" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">철이 없어서 그래</div>
+      <div class="genre">로맨스</div>
+      <div class="ep">
+        <span class="ep-no">32화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21971/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310706" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21971/cover.jpg" alt="채널명 : 구찬지아" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">채널명 : 구찬지아</div>
+      <div class="genre">로맨스</div>
+      <div class="ep">
+        <span class="ep-no">[041화] 이러다 죽어..!!!!!!</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-20462/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310705" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-20462/cover.jpg" alt="소녀의 세계" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">소녀의 세계</div>
+      <div class="genre">드라마/학원/개그/스토리</div>
+      <div class="ep">
+        <span class="ep-no">2부 287화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-14238/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310630" data-date="09-13"></span>                            <img width="300" height="177" src="https://www.goodtoon004.com/wp-content/uploads/2026/05/15288_cover-300x177.jpg" class="attachment-medium size-medium" alt="샤MONEY즘" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/05/15288_cover-300x177.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/05/15288_cover.jpg 440w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">샤MONEY즘</div>
+      <div class="genre">드라마/판타지</div>
+      <div class="ep">
+        <span class="ep-no">63화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21852/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310607" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21852/cover.jpg" alt="세상도 구해본 놈이 잘 구한다" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">세상도 구해본 놈이 잘 구한다</div>
+      <div class="genre">소년</div>
+      <div class="ep">
+        <span class="ep-no">38화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21924/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310583" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21924/cover.jpg" alt="히어로메이커" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">히어로메이커</div>
+      <div class="genre">드라마/옴니버스</div>
+      <div class="ep">
+        <span class="ep-no">금강</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-60733/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310574" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-60733/cover.jpg" alt="세림의 철칙" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">세림의 철칙</div>
+      <div class="genre">로맨스</div>
+      <div class="ep">
+        <span class="ep-no">10화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21928/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310573" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21928/cover.jpg" alt="상사폭행" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">상사폭행</div>
+      <div class="genre">드라마/액션</div>
+      <div class="ep">
+        <span class="ep-no">25화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-17928/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310549" data-date="09-13"></span>                            <img width="300" height="165" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/12175_cover-300x165.jpg" class="attachment-medium size-medium" alt="회귀한 공작가의 막내도련님은 암살자" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/12175_cover-300x165.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/12175_cover-254x140.jpg 254w, https://www.goodtoon004.com/wp-content/uploads/2026/06/12175_cover.jpg 451w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">회귀한 공작가의 막내도련님은 암살자</div>
+      <div class="genre">판타지</div>
+      <div class="ep">
+        <span class="ep-no">134화. 합의(1)</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21858/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310527" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21858/cover.jpg" alt="빌런의 순정" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">빌런의 순정</div>
+      <div class="genre">로맨스/순정/스토리</div>
+      <div class="ep">
+        <span class="ep-no">38화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-17798/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310526" data-date="09-13"></span>                            <img width="300" height="153" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/12300_cover-300x153.jpg" class="attachment-medium size-medium" alt="환생천마" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/12300_cover-300x153.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/12300_cover.jpg 438w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">환생천마</div>
+      <div class="genre">판타지/무협</div>
+      <div class="ep">
+        <span class="ep-no">132화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-15144/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310516" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-15144/cover.jpg" alt="우주천마 3077" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">우주천마 3077</div>
+      <div class="genre">무협</div>
+      <div class="ep">
+        <span class="ep-no">105화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21890/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310515" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21890/cover.jpg" alt="한국에서 히어로 하기 힘들더라" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">한국에서 히어로 하기 힘들더라</div>
+      <div class="genre">판타지</div>
+      <div class="ep">
+        <span class="ep-no">95화 보이즈 나잇2</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-13957/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310492" data-date="09-13"></span>                            <img width="300" height="189" src="https://www.goodtoon004.com/wp-content/uploads/2026/05/4132_cover-300x189.jpg" class="attachment-medium size-medium" alt="백수세끼" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/05/4132_cover-300x189.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/05/4132_cover.jpg 385w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">백수세끼</div>
+      <div class="genre">로맨스/일상</div>
+      <div class="ep">
+        <span class="ep-no">293화 갈치구이</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-17732/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310470" data-date="09-13"></span>                            <img width="300" height="177" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/15034_cover-300x177.jpg" class="attachment-medium size-medium" alt="해피 페이스" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/15034_cover-300x177.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/15034_cover.jpg 440w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">해피 페이스</div>
+      <div class="genre">판타지/액션</div>
+      <div class="ep">
+        <span class="ep-no">71화 - 1년 마무리</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21881/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310470" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21881/cover.jpg" alt="뻐꾸기는 운다" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">뻐꾸기는 운다</div>
+      <div class="genre">판타지</div>
+      <div class="ep">
+        <span class="ep-no">17</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21846/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310468" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21846/cover.jpg" alt="빌" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">빌</div>
+      <div class="genre">판타지/액션</div>
+      <div class="ep">
+        <span class="ep-no">40화 망치무덤 (6)</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-17726/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310468" data-date="09-13"></span>                            <img width="300" height="177" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/12070_cover-300x177.jpg" class="attachment-medium size-medium" alt="함부로 친절하지 말라" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/12070_cover-300x177.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/12070_cover.jpg 440w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">12시간</span>    </div>
+    <div class="info">
+      <div class="subject">함부로 친절하지 말라</div>
+      <div class="genre">순정</div>
+      <div class="ep">
+        <span class="ep-no">89화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21882/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310393" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21882/cover.jpg" alt="헤어져서 팝니다" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">헤어져서 팝니다</div>
+      <div class="genre">로맨스</div>
+      <div class="ep">
+        <span class="ep-no">17화 유일한 친구</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21920/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310391" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21920/cover.jpg" alt="비터사이드 크렌베리스" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">비터사이드 크렌베리스</div>
+      <div class="genre">판타지/액션</div>
+      <div class="ep">
+        <span class="ep-no"># 055. 스러지는 밤달 (1)</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-17694/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310369" data-date="09-13"></span>                            <img width="300" height="160" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/12738_cover-300x160.jpg" class="attachment-medium size-medium" alt="피폐물을 힐링물로 만드는 방법" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/12738_cover-300x160.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/12738_cover.jpg 428w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">피폐물을 힐링물로 만드는 방법</div>
+      <div class="genre">판타지/로맨스</div>
+      <div class="ep">
+        <span class="ep-no">90화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-14040/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310368" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-14040/cover.jpg" alt="불완전한 이혼의 결말" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">불완전한 이혼의 결말</div>
+      <div class="genre">판타지/로맨스</div>
+      <div class="ep">
+        <span class="ep-no">74화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21880/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310344" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21880/cover.jpg" alt="비공식 CC" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">비공식 CC</div>
+      <div class="genre">로맨스</div>
+      <div class="ep">
+        <span class="ep-no">15화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21412/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310335" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21412/cover.jpg" alt="모솔대첩" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">모솔대첩</div>
+      <div class="genre">로맨스/개그</div>
+      <div class="ep">
+        <span class="ep-no">84화. 12시가 지나면~</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21934/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310313" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21934/cover.jpg" alt="변경백의 10클래스 망나니" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">변경백의 10클래스 망나니</div>
+      <div class="genre">소년</div>
+      <div class="ep">
+        <span class="ep-no">22화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-17650/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310312" data-date="09-13"></span>                            <img width="300" height="177" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/14976_cover-300x177.jpg" class="attachment-medium size-medium" alt="프로젝트 마르스" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/14976_cover-300x177.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/14976_cover.jpg 440w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">프로젝트 마르스</div>
+      <div class="genre">판타지/액션</div>
+      <div class="ep">
+        <span class="ep-no">72화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-60539/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310289" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-60539/cover.jpg" alt="반도대탈출" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">반도대탈출</div>
+      <div class="genre">드라마</div>
+      <div class="ep">
+        <span class="ep-no">15화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-59937/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310288" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-59937/cover.jpg" alt="부활성녀" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">부활성녀</div>
+      <div class="genre">판타지/액션</div>
+      <div class="ep">
+        <span class="ep-no">11화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-17598/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310288" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-17598/cover.jpg" alt="파브르 in 사천당가" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">파브르 in 사천당가</div>
+      <div class="genre">판타지/액션</div>
+      <div class="ep">
+        <span class="ep-no">100화 ： 산채(山寨) (3)</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-15576/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310287" data-date="09-13"></span>                            <img width="300" height="202" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/5377_cover-300x202.jpg" class="attachment-medium size-medium" alt="참교육" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/5377_cover-300x202.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/5377_cover.jpg 393w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">참교육</div>
+      <div class="genre">드라마/액션/학원/스토리</div>
+      <div class="ep">
+        <span class="ep-no">259화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21855/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310286" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21855/cover.jpg" alt="먹는 인생2" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">먹는 인생2</div>
+      <div class="genre">일상</div>
+      <div class="ep">
+        <span class="ep-no">79화 착한 샌드위치와 나쁜 샌드위치(2)</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21841/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310212" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21841/cover.jpg" alt="포도가 익기 전에" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">포도가 익기 전에</div>
+      <div class="genre">로맨스</div>
+      <div class="ep">
+        <span class="ep-no">52화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21875/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310212" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21875/cover.jpg" alt="머저리 M수생" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">머저리 M수생</div>
+      <div class="genre">드라마</div>
+      <div class="ep">
+        <span class="ep-no">제 41강 미련이라고 이름을 붙이자 (6)</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21863/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310189" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21863/cover.jpg" alt="프레스턴경의비밀가정교사" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">프레스턴경의비밀가정교사</div>
+      <div class="genre">판타지/로맨스</div>
+      <div class="ep">
+        <span class="ep-no">25화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-16557/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310188" data-date="09-13"></span>                            <img width="300" height="193" src="https://www.goodtoon004.com/wp-content/uploads/2026/06/5570_cover-300x193.jpg" class="attachment-medium size-medium" alt="라서드" loading="lazy" decoding="async" srcset="https://www.goodtoon004.com/wp-content/uploads/2026/06/5570_cover-300x193.jpg 300w, https://www.goodtoon004.com/wp-content/uploads/2026/06/5570_cover.jpg 374w" sizes="auto, (max-width: 300px) 100vw, 300px" />            <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">라서드</div>
+      <div class="genre">판타지/스토리</div>
+      <div class="ep">
+        <span class="ep-no">182화 족쇄</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-16431/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310165" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-16431/cover.jpg" alt="더블클릭" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">더블클릭</div>
+      <div class="genre">액션/스토리</div>
+      <div class="ep">
+        <span class="ep-no">266화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21840/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310091" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21840/cover.jpg" alt="마왕의 빛나는 별" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">마왕의 빛나는 별</div>
+      <div class="genre">판타지</div>
+      <div class="ep">
+        <span class="ep-no">51화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21824/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310068" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21824/cover.jpg" alt="오늘은 뭐하고 놀까?" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">오늘은 뭐하고 놀까?</div>
+      <div class="genre">일상</div>
+      <div class="ep">
+        <span class="ep-no">111화 촉과 미신</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-60541/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310047" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-60541/cover.jpg" alt="마귀공주" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">마귀공주</div>
+      <div class="genre">로맨스</div>
+      <div class="ep">
+        <span class="ep-no">12화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-21870/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/naver.png" alt=""><span class="up-badge">UP</span><span class="ep-time" data-time="1789310047" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-21870/cover.jpg" alt="데빌 캐피탈" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">데빌 캐피탈</div>
+      <div class="genre">공포</div>
+      <div class="ep">
+        <span class="ep-no">34화</span>
+      </div>
+    </div>
+  </a>
+  <a href="https://www.goodtoon004.com/manga/gt-61492/" target="_blank" class="card">
+    <div class="thumb">
+      <img class="platform-icon" src="/wp-content/themes/madara/icons/rejin.png" alt=""><span class="up-badge">UP</span><span class="adult-badge">19</span><span class="ep-time" data-time="1789309989" data-date="09-13"></span>                                      <img src="https://img.goodtoon9001.top/gt-61492/cover.jpg" alt="불행한 명기 양과 절륜 엘리트 군 - 탐욕스러운 섹스가 너무 달콤해" loading="lazy" class="img-responsive">
+                    <span class="ep-date-ov">13시간</span>    </div>
+    <div class="info">
+      <div class="subject">불행한 명기 양과 절륜 엘리트 군 - 탐욕스러운 섹스가 너무 달콤해</div>
+      <div class="genre">로맨스/성인/일상</div>
+      <div class="ep">
+        <span class="ep-no">불행한 명기 양과 절륜 엘리트 군 28화</span>
+      </div>
+    </div>
+  </a>
+
+<script>
+(function(){
+    document.querySelectorAll('.ep-no').forEach(function(el){
+        if (el.scrollWidth > el.clientWidth) {
+            var t = el.textContent;
+            var lo = 1, hi = t.length, best = t;
+            while (lo <= hi) {
+                var mid = (lo + hi) >> 1;
+                el.textContent = '\u2026' + t.slice(t.length - mid);
+                if (el.scrollWidth <= el.clientWidth) { best = el.textContent; lo = mid + 1; }
+                else { hi = mid - 1; }
+            }
+            el.textContent = best;
+        }
+    });
+})();
+</script>
+
+</div>
+
+<!-- ====== 페이지네이션 ====== -->
+<div class="pagination">
+<a href="/ongoing/?pg=1" class="page-numbers current">1</a><a href="/ongoing/?pg=2" class="page-numbers">2</a><a href="/ongoing/?pg=3" class="page-numbers">3</a><a href="/ongoing/?pg=2" class="page-numbers">다음 &raquo;</a></div>
+
+</body>
+</html>
