@@ -407,10 +407,15 @@ class NtkDocumentParser {
     private fun String.clean(): String = replace('\u00a0', ' ').replace(Regex("<[^>]+>"), " ")
         .replace(Regex("\\s+"), " ").trim()
 
-    private fun episodeNumber(title: String): Double? =
-        Regex("([0-9]+(?:\\.[0-9]+)?)\\s*화").find(title)?.groupValues?.get(1)?.toDoubleOrNull()
+    private fun episodeNumber(title: String): Double? {
+        val match = EPISODE_NUMBER.find(title) ?: return null
+        val whole = match.groupValues[1]
+        val fraction = match.groupValues[2]
+        return (if (fraction.isEmpty()) whole else "$whole.$fraction").toDoubleOrNull()
+    }
 
     private companion object {
+        val EPISODE_NUMBER = Regex("([0-9]+)(?:[.\\-]([0-9]+))?\\s*화")
         val NON_EPISODE_LABELS = listOf(
             "목록", "최신화 보기", "첫화부터", "처음부터", "정주행", "이어보기", "전체보기",
         )
