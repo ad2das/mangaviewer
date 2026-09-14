@@ -20,6 +20,7 @@ import ml.melun.mangaview.engine.api.WorkCoordinatorPort
 import ml.melun.mangaview.engine.api.WorkLimits
 import ml.melun.mangaview.engine.work.WorkCoordinator
 import ml.melun.mangaview.source.wfwf.DEFAULT_WFWF_ORIGIN
+import ml.melun.mangaview.source.goodtoon.DEFAULT_GOODTOON_ORIGIN
 import ml.melun.mangaview.source.ntk.NtkBrowserIdentity
 import ml.melun.mangaview.source.ntk.NtkEngineBrowserClient
 import ml.melun.mangaview.source.ntk.NtkEngineAuthorization
@@ -116,6 +117,8 @@ internal class EngineAppGraph(
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
             "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent, URI(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
+                parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
+            "goodtoon" -> EngineGoodtoonSessionWork(userAgent, URI(DEFAULT_GOODTOON_ORIGIN), transport, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
             "ntk" -> EngineNtkSessionWork(userAgent, ntkOrigin, transport, storage, positions,
                 parsingDispatcher, ntkBrowser, ntkIdentity, library::readingPosition, spec.initialPosition, observations, ntkPageTransport.value,
