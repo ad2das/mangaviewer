@@ -59,6 +59,35 @@ class LibraryEpisodePriorityTest {
     }
 
     @Test
+    fun firstTimeReaderPrefersTheFirstEpisodeOverANewestFirstHyphenatedSpecial() {
+        val series = SourceSeries(
+            id = SeriesId(SourceId("test"), "series"),
+            title = "series",
+        )
+        val episodes = listOf(
+            episode("221-1", 221.1),
+            episode("221", 221.0),
+            episode("12", 12.0),
+            episode("2", 2.0),
+            episode("1", 1.0),
+        )
+
+        assertEquals("1", firstEpisode(episodes)?.id?.remoteKey)
+        assertEquals(
+            "1",
+            quickReadEpisode(
+                LibraryState(
+                    query = "",
+                    sources = listOf(SourceOption(series.id.sourceId, "test")),
+                    selectedSourceId = series.id.sourceId,
+                ),
+                series,
+                episodes,
+            )?.id?.remoteKey,
+        )
+    }
+
+    @Test
     fun quickReadUsesTheSameFirstEpisodeAsTheWarmerForANewSeries() {
         val series = SourceSeries(
             id = SeriesId(SourceId("test"), "series"),

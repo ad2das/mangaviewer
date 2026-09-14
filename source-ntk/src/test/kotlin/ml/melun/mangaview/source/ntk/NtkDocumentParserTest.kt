@@ -228,4 +228,25 @@ class NtkDocumentParserTest {
         assertEquals(6, parser.episodePageCount(payload))
         assertEquals("/manhwa/3540/135918", parser.episodes(payload, series).episodes.single().episode.id.remoteKey)
     }
+
+    @Test
+    fun hyphenatedChapterTitlesSortNearTheirMainEpisodeWithoutCollidingWithTheFirst() {
+        val series = SeriesId(sourceId, "/webtoon/42")
+        val html = """
+            <a href="/webtoon/42/ep-1"><strong>1화</strong></a>
+            <a href="/webtoon/42/ep-10-5"><strong>외전 10.5화</strong></a>
+            <a href="/webtoon/42/ep-221"><strong>221화</strong></a>
+            <a href="/webtoon/42/ep-221-1"><strong>221-1화</strong></a>
+        """.trimIndent()
+
+        val sequences = parser.episodes(html, series).episodes
+            .associate { it.episode.title to it.episode.sequenceNumber }
+
+        assertEquals(1.0, sequences.getValue("1화")!!, 0.0)
+        assertEquals(10.5, sequences.getValue("외전 10.5화")!!, 0.0)
+        assertEquals(221.0, sequences.getValue("221화")!!, 0.0)
+        assertEquals(221.1, sequences.getValue("221-1화")!!, 0.0)
+        assertTrue(sequences.getValue("221-1화")!! > sequences.getValue("221화")!!)
+        assertTrue(sequences.getValue("221화")!! > sequences.getValue("1화")!!)
+    }
 }
