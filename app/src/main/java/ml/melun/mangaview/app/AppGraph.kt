@@ -82,6 +82,7 @@ internal class AppGraph(
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
     private val wfwfSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createWfwfSource)
     private val newxtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNewxtoonSource)
+    private val newxtoonClearance by lazy { NewxtoonClearance(appContext) }
     val sources = SourceRegistry(
         registrations = listOf(
             SourceRegistration(NTK_ID, "NTK") {
@@ -119,14 +120,15 @@ internal class AppGraph(
             ioDispatcher,
         ),
     )
-    val artworkLoader = SeriesArtworkLoader(sources, ioDispatcher)
+    val artworkLoader = SeriesArtworkLoader(sources, ioDispatcher, applicationScope)
     val account = ml.melun.mangaview.account.AccountSync(appContext, applicationScope, ioDispatcher,
         ml.melun.mangaview.account.LocalCloudLibrary(database::database)) { series ->
             sources.require(series.sourceId).episodes(series).items
         }
     val engine: EngineAppGraph by lazy {
         EngineAppGraph(appContext, applicationScope, sourceDispatcher, ioDispatcher, database, userLibrary, userAgent(),
-            java.net.URI(DEFAULT_NTK_ORIGIN), { networkEvidenceObserver }, origins)
+            java.net.URI(DEFAULT_NTK_ORIGIN), { networkEvidenceObserver }, origins, newxtoonClearance,
+            newxtoonClearance.sourceUserAgent)
     }
 
     init {
@@ -278,6 +280,8 @@ internal class AppGraph(
                 WfwfConfig(DEFAULT_WFWF_ORIGIN, userAgent()),
                 transport,
                 applicationScope,
+                originProbeObserver = { android.util.Log.i("WfwfOrigin", it) },
+                onOriginResolved = { origins.remember("wfwf", it) },
             )
             transport.warmConnections(listOf(DEFAULT_WFWF_ORIGIN), preferQuic = false)
             source.warm()
@@ -312,7 +316,7 @@ internal class AppGraph(
         coroutineContext.ensureActive()
         val transport = createNewxtoonTransport()
         try {
-            val source = NewxtoonContentSource(NewxtoonConfig(userAgent = userAgent()), transport)
+            val source = NewxtoonContentSource(NewxtoonConfig(userAgent = newxtoonClearance.sourceUserAgent), transport)
             transport.warmConnections(listOf(ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), preferQuic = false)
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
@@ -324,7 +328,15 @@ internal class AppGraph(
     }
 
     private fun createNewxtoonTransport(): SourceTransport = ObservedSourceTransport(
-        transportFactory.protect(transportFactory.create()), "catalog-newxtoon", { networkEvidenceObserver })
+        NewxtoonClearanceTransport(
+            transportFactory.protect(
+                transportFactory.create(newxtoonClearance.cookieJar),
+                newxtoonClearance.cookieJar,
+            ),
+            ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN,
+            newxtoonClearance::solve,
+            newxtoonClearance::solveFresh,
+        ), "catalog-newxtoon", { networkEvidenceObserver })
 
     private fun userAgent(): String =
         "Mozilla/5.0 (Linux; Android ${android.os.Build.VERSION.RELEASE}; " +

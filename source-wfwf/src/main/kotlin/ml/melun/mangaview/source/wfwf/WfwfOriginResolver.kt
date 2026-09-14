@@ -25,6 +25,7 @@ class WfwfOriginResolver(
     private val transport: SourceTransport,
     private val userAgent: String,
     private val probeParallelism: Int = 4,
+    private val onProbe: (String) -> Unit = {},
 ) {
     init { require(probeParallelism in 1..4) }
     private val flightLock = Mutex()
@@ -48,11 +49,14 @@ class WfwfOriginResolver(
                 }
             }
         }
-        return claim.result.await().getOrThrow()
+        val outcome = claim.result.await().getOrThrow()
+        onProbe("resolve result = $outcome")
+        return outcome
     }
 
     private suspend fun resolveNow(currentOrigin: String): String? = coroutineScope {
         val candidates = candidates(currentOrigin)
+        onProbe("resolve start current=$currentOrigin candidates=${candidates.size}")
         val cursor = AtomicInteger()
         val results = Channel<String?>(probeParallelism)
         val workerCount = minOf(probeParallelism, candidates.size)
@@ -92,23 +96,27 @@ class WfwfOriginResolver(
             ),
         )
         if (response.statusCode !in 200..499) {
+            onProbe("probe $candidate -> status=${response.statusCode}")
             response.close()
             null
         } else {
             val finalOrigin = originOf(response.finalUrl)
             val body = response.readBytes(MAX_PROBE_BYTES).toString(Charsets.UTF_8)
             val updated = updatedOrigin(body)?.takeIf { it != candidate }
+            val alive = response.statusCode in 200..299 && looksAlive(body)
+            onProbe("probe $candidate -> status=${response.statusCode} bytes=${body.length} updated=$updated alive=$alive")
             when {
                 updated != null && updated !in visited && visited.size < MAX_ADDRESS_HOPS ->
                     probe(updated, visited + candidate)
                 updated != null -> null
-                response.statusCode in 200..299 && looksAlive(body) -> finalOrigin
+                alive -> finalOrigin
                 else -> null
             }
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
-    } catch (_: Exception) {
+    } catch (failure: Exception) {
+        onProbe("probe $candidate -> ${failure.javaClass.simpleName}")
         null
     }
 

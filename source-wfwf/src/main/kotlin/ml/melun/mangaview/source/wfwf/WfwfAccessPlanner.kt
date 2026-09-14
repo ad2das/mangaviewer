@@ -1,5 +1,6 @@
 package ml.melun.mangaview.source.wfwf
 
+import java.io.IOException
 import java.io.InputStream
 import java.net.URI
 import java.nio.ByteBuffer
@@ -57,7 +58,9 @@ class WfwfAccessPlanner(
             parseDocument(input, document.finalUrl)
         }
         val images = WfwfAccessImages.select(parsed, document.finalUrl)
-        require(images.isNotEmpty()) { "WFWF episode contains no page images" }
+        // A moved provider address serves a live HTTP page without images; classify it as a
+        // recoverable document failure so origin recovery can replay against the new address.
+        if (images.isEmpty()) throw IOException("WFWF episode contains no page images")
         val metadata = parser.viewerMetadata(parsed, key, episodeId.remoteKey)
         val navigation = navigation(episodeId, metadata, catalogAdjacency)
         val pageIds = images.mapIndexed { index, _ -> PageId.at(episodeId, index) }

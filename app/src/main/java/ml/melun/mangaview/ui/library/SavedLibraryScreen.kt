@@ -322,26 +322,7 @@ private fun SavedSourceSeriesCard(
             SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
         }
         Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            BasicText(
-                series.title,
-                style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(4.dp))
-            BasicText(subtitle, style = hintStyle(colors, 12), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (badge != null) {
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    Modifier.clip(SavedBadgeShape)
-                        .background(colors.accentSurface)
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                ) {
-                    BasicText(badge, style = labelStyle(colors, true).copy(fontSize = 11.sp, fontWeight = FontWeight.Bold))
-                }
-            }
-        }
+        SavedSeriesDescription(series, subtitle, badge, colors, Modifier.weight(1f))
         BasicText("›", style = hintStyle(colors, 18).copy(fontWeight = FontWeight.Light))
     }
 }
@@ -376,4 +357,27 @@ private fun savedCount(state: LibraryState): Int = when (state.libraryTab) {
     SavedTab.RECENT -> state.saved.recent.size
     SavedTab.FAVORITES -> state.saved.favorites.size
     SavedTab.OFFLINE -> state.offlineEpisodes.map { it.series.id }.distinct().size
+}
+@Composable
+private fun SavedSeriesDescription(series: SourceSeries, subtitle: String, badge: String?, colors: LibraryColors, modifier: Modifier) {
+    Column(modifier) {
+        BasicText(
+            series.title,
+            style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(4.dp))
+        BasicText(subtitle, style = hintStyle(colors, 12), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (badge != null) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                Modifier.clip(SavedBadgeShape)
+                    .background(colors.accentSurface)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            ) {
+                BasicText(badge, style = labelStyle(colors, true).copy(fontSize = 11.sp, fontWeight = FontWeight.Bold))
+            }
+        }
+    }
 }

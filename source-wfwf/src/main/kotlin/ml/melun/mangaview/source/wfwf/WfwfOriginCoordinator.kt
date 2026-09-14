@@ -17,6 +17,7 @@ internal class WfwfOriginCoordinator(
     initialOrigin: String,
     private val resolver: WfwfOriginResolver,
     scope: CoroutineScope?,
+    private val onOriginResolved: (String) -> Unit = {},
 ) {
     private val originLock = Mutex()
     private var origin = normalizeOrigin(initialOrigin)
@@ -66,13 +67,18 @@ internal class WfwfOriginCoordinator(
 
     private suspend fun discover(baseOrigin: String): String {
         val resolved = resolver.resolve(baseOrigin) ?: return current()
-        return originLock.withLock {
-            if (origin == baseOrigin && origin != normalizeOrigin(resolved)) {
-                origin = normalizeOrigin(resolved)
+        val normalized = normalizeOrigin(resolved)
+        var published = false
+        val publishedOrigin = originLock.withLock {
+            if (origin == baseOrigin && origin != normalized) {
+                origin = normalized
                 revision += 1L
+                published = true
             }
             origin
         }
+        if (published) onOriginResolved(normalized)
+        return publishedOrigin
     }
 
     private suspend fun <T> raceStartup(
@@ -83,12 +89,15 @@ internal class WfwfOriginCoordinator(
         val direct = async { request(attemptedOrigin) }
         select {
             direct.onAwait { it }
-            readiness.onAwait { readyOrigin ->
-                if (readyOrigin == attemptedOrigin) {
+            readiness.onAwait {
+                // A completed startup may hold an origin older than one already published by a
+                // document observation or a recovery. The published origin is authoritative.
+                val published = current()
+                if (published == attemptedOrigin) {
                     direct.await()
                 } else {
                     direct.cancelAndJoin()
-                    request(readyOrigin)
+                    request(published)
                 }
             }
         }

@@ -205,47 +205,7 @@ private fun DetailHeader(
             }
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween) {
-                Column {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        details?.status?.let { status -> SeriesStatusBadge(status, colors) }
-                        Box(
-                            Modifier.clip(RoundedCornerShape(7.dp))
-                                .background(colors.accentGradient)
-                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                        ) {
-                            BasicText(
-                                if (series.id.sourceId.value == "ntk") "만화" else "웹툰",
-                                style = microBadgeStyle(colors, 10).copy(color = Color.White),
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    BasicText(
-                        series.title,
-                        style = titleStyle(colors, 21).copy(fontWeight = FontWeight.Black),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    (details?.authors?.takeIf(String::isNotBlank) ?: series.subtitle?.takeIf(String::isNotBlank))
-                        ?.let { subtitle ->
-                            Spacer(Modifier.height(6.dp))
-                            BasicText(
-                                subtitle,
-                                style = hintStyle(colors, 12),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                subtitle.split(",", "/", "·").take(2).forEach { tag ->
-                                    if (tag.isNotBlank()) TagChip(tag.trim(), colors)
-                                }
-                            }
-                        }
-                }
+                DetailDescription(series, details, colors)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     LibraryIconView(
                         LibraryIcon.HEART,
@@ -261,45 +221,7 @@ private fun DetailHeader(
             }
         }
         Spacer(Modifier.height(20.dp))
-        Row(
-            Modifier.fillMaxWidth().height(52.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier.weight(1f).fillMaxHeight()
-                    .shadow(6.dp, RoundedCornerShape(16.dp), spotColor = colors.accent.copy(alpha = 0.40f))
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(colors.accentGradient)
-                    .clickable { firstEpisode?.let { accept(LibraryIntent.EpisodeSelected(it.id)) } },
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    LibraryIconView(LibraryIcon.PLAY, Color.White, Modifier.size(14.dp))
-                    Spacer(Modifier.width(8.dp))
-                    BasicText(
-                        "바로 읽기",
-                        style = bodyStyle(colors, 15).copy(color = Color.White, fontWeight = FontWeight.Bold),
-                    )
-                }
-            }
-            Box(
-                Modifier.width(52.dp).fillMaxHeight()
-                    .semantics { contentDescription = "좋아요" }
-                    .shadow(3.dp, RoundedCornerShape(16.dp), spotColor = Color.Black.copy(alpha = 0.06f))
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(colors.card)
-                    .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp))
-                    .clickable { accept(LibraryIntent.FavoriteToggled(series)) },
-                contentAlignment = Alignment.Center,
-            ) {
-                LibraryIconView(
-                    LibraryIcon.HEART,
-                    if (favorite) colors.favoriteActive else colors.secondary,
-                    Modifier.size(24.dp),
-                )
-            }
-        }
+        DetailReadingActions(series, firstEpisode, favorite, colors, accept)
     }
 }
 
@@ -417,29 +339,7 @@ private fun EpisodeCard(
                 BasicText(formatDate(it), style = hintStyle(colors, 11))
             }
         }
-        Box(
-            Modifier.size(42.dp)
-                .semantics {
-                    contentDescription = if (saved) "${episode.title} 오프라인 저장 삭제" else "${episode.title} 다운로드"
-                }
-                .clip(EpisodeActionShape)
-                .background(colors.mutedSurface)
-                .clickable(
-                    enabled = saved || downloadState == null || downloadState is EpisodeDownloadState.Failed,
-                    onClick = storageAction,
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            when {
-                saved || downloadState is EpisodeDownloadState.Complete ->
-                    BasicText("✓", style = bodyStyle(colors, 18).copy(color = colors.accent, fontWeight = FontWeight.Bold))
-                downloadState is EpisodeDownloadState.Running -> BasicText(
-                    "${downloadState.completedPages}/${downloadState.totalPages}",
-                    style = hintStyle(colors, 9).copy(color = colors.accent),
-                )
-                else -> LibraryIconView(LibraryIcon.DOWNLOAD, colors.secondary, Modifier.size(20.dp))
-            }
-        }
+        EpisodeStorageAction(episode, saved, downloadState, colors, storageAction)
     }
 }
 
@@ -466,3 +366,117 @@ private fun SeriesStatus.label(): String = when (this) {
 }
 
 private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd")
+@Composable
+private fun DetailReadingActions(series: SourceSeries, firstEpisode: SourceEpisode?, favorite: Boolean, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().height(52.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.weight(1f).fillMaxHeight()
+                .shadow(6.dp, RoundedCornerShape(16.dp), spotColor = colors.accent.copy(alpha = 0.40f))
+                .clip(RoundedCornerShape(16.dp))
+                .background(colors.accentGradient)
+                .clickable { firstEpisode?.let { accept(LibraryIntent.EpisodeSelected(it.id)) } },
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                LibraryIconView(LibraryIcon.PLAY, Color.White, Modifier.size(14.dp))
+                Spacer(Modifier.width(8.dp))
+                BasicText(
+                    "바로 읽기",
+                    style = bodyStyle(colors, 15).copy(color = Color.White, fontWeight = FontWeight.Bold),
+                )
+            }
+        }
+        Box(
+            Modifier.width(52.dp).fillMaxHeight()
+                .semantics { contentDescription = "좋아요" }
+                .shadow(3.dp, RoundedCornerShape(16.dp), spotColor = Color.Black.copy(alpha = 0.06f))
+                .clip(RoundedCornerShape(16.dp))
+                .background(colors.card)
+                .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp))
+                .clickable { accept(LibraryIntent.FavoriteToggled(series)) },
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(
+                LibraryIcon.HEART,
+                if (favorite) colors.favoriteActive else colors.secondary,
+                Modifier.size(24.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DetailDescription(series: SourceSeries, details: SourceSeriesDetails?, colors: LibraryColors) {
+    Column {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            details?.status?.let { status -> SeriesStatusBadge(status, colors) }
+            Box(
+                Modifier.clip(RoundedCornerShape(7.dp))
+                    .background(colors.accentGradient)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            ) {
+                BasicText(
+                    if (series.id.sourceId.value == "ntk") "만화" else "웹툰",
+                    style = microBadgeStyle(colors, 10).copy(color = Color.White),
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        BasicText(
+            series.title,
+            style = titleStyle(colors, 21).copy(fontWeight = FontWeight.Black),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        (details?.authors?.takeIf(String::isNotBlank) ?: series.subtitle?.takeIf(String::isNotBlank))
+            ?.let { subtitle ->
+                Spacer(Modifier.height(6.dp))
+                BasicText(
+                    subtitle,
+                    style = hintStyle(colors, 12),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    subtitle.split(",", "/", "·").take(2).forEach { tag ->
+                        if (tag.isNotBlank()) TagChip(tag.trim(), colors)
+                    }
+                }
+            }
+    }
+}
+
+@Composable
+private fun EpisodeStorageAction(episode: SourceEpisode, saved: Boolean, downloadState: EpisodeDownloadState?, colors: LibraryColors, storageAction: () -> Unit) {
+    Box(
+        Modifier.size(42.dp)
+            .semantics {
+                contentDescription = if (saved) "${episode.title} 오프라인 저장 삭제" else "${episode.title} 다운로드"
+            }
+            .clip(EpisodeActionShape)
+            .background(colors.mutedSurface)
+            .clickable(
+                enabled = saved || downloadState == null || downloadState is EpisodeDownloadState.Failed,
+                onClick = storageAction,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            saved || downloadState is EpisodeDownloadState.Complete ->
+                BasicText("✓", style = bodyStyle(colors, 18).copy(color = colors.accent, fontWeight = FontWeight.Bold))
+            downloadState is EpisodeDownloadState.Running -> BasicText(
+                "${downloadState.completedPages}/${downloadState.totalPages}",
+                style = hintStyle(colors, 9).copy(color = colors.accent),
+            )
+            else -> LibraryIconView(LibraryIcon.DOWNLOAD, colors.secondary, Modifier.size(20.dp))
+        }
+    }
+}

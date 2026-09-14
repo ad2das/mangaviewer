@@ -121,6 +121,7 @@ private:
 
     bool initialize(ANativeWindow* initialWindow = nullptr) noexcept;
     bool makeOffscreenCurrent() noexcept;
+    bool offscreenContextIsCurrent() const noexcept;
     bool glSucceeded(const char* operation) noexcept;
     bool glFailure(const char* operation) noexcept;
 #ifndef NDEBUG

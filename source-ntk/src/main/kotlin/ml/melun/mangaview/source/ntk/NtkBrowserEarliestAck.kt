@@ -21,6 +21,7 @@ internal object NtkBrowserEarliestAck {
             typeof key.keyId === 'string' && /^[A-Za-z0-9_-]{43}${'$'}/.test(key.keyId) &&
             typeof key.certificate === 'string' && key.certificate.length >= 100 &&
             Number(key.certificateExpiresAt || 0) > Date.now() + 300000;
+// __NTK_ROWS_HELPER_BEGIN__
           const rowsReady = () => {
             const rows = Array.from(document.querySelectorAll('[data-br="1"][data-br-n]'));
             return rows.length > 0 && rows.every(row =>
@@ -29,10 +30,85 @@ internal object NtkBrowserEarliestAck {
               row.getBoundingClientRect().height > 0
             );
           };
+          const rowsDiag = (phase, startedAt) => {
+            if (!nativeCaptureEvidence) return;
+            try {
+              const diagStart = performance.now();
+              const rows = Array.from(document.querySelectorAll('[data-br="1"][data-br-n]'));
+              let visible = 0;
+              for (const row of rows) {
+                if (row.getClientRects().length > 0 &&
+                    row.getBoundingClientRect().width > 0 &&
+                    row.getBoundingClientRect().height > 0) visible += 1;
+              }
+              const nowMs = Math.max(0, Math.round(performance.now()));
+              const elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+              const diagMs = Math.max(0, Math.round(performance.now() - diagStart));
+              report(phase + ':ms=' + nowMs + ',rows=' + rows.length + ',visible=' + visible +
+                ',elapsedMs=' + elapsedMs + ',diagMs=' + diagMs);
+            } catch (_) {}
+          };
+          const __startLateWatch = waitStartedAt => {
+            if (!nativeCaptureEvidence) return;
+            if (window.__nativeAckRequestStarted) return;
+            let closed = false;
+            let pending = false;
+            let observer = null;
+            let backstop = 0;
+            const cleanup = () => {
+              if (closed) return;
+              closed = true;
+              pending = false;
+              try { if (observer) observer.disconnect(); } catch (_) {}
+              try { window.removeEventListener('pagehide', onHide); } catch (_) {}
+              try { window.removeEventListener('beforeunload', onHide); } catch (_) {}
+              try { window.clearTimeout(backstop); } catch (_) {}
+            };
+            const onHide = () => { try { cleanup(); } catch (_) {} };
+            const finish = phase => {
+              if (closed) return;
+              rowsDiag(phase, waitStartedAt);
+              cleanup();
+            };
+            const check = () => {
+              if (closed || !pending) return;
+              pending = false;
+              if (window.__nativeAckRequestStarted) { finish('rows-late-ack'); return; }
+              if (rowsReady()) finish('rows-late-ready');
+            };
+            try {
+              observer = new MutationObserver(() => {
+                if (closed || pending) return;
+                pending = true;
+                Promise.resolve().then(check);
+              });
+              observer.observe(document.documentElement || document, {
+                childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style']
+              });
+              window.addEventListener('pagehide', onHide);
+              window.addEventListener('beforeunload', onHide);
+              backstop = window.setTimeout(() => {
+                if (closed) return;
+                try { if (nativeCaptureEvidence) report('rows-late-expired'); } catch (_) {}
+                cleanup();
+              }, 30000);
+              if (window.__nativeAckStartedPromise && typeof window.__nativeAckStartedPromise.then === 'function') {
+                window.__nativeAckStartedPromise.then(() => { finish('rows-late-ack'); }, () => { try { cleanup(); } catch (_) {} });
+              }
+            } catch (_) { try { cleanup(); } catch (_) {} }
+          };
           const waitForRows = () => new Promise(resolve => {
-            if (rowsReady()) return resolve(true);
+            const waitStartedAt = performance.now();
+            if (rowsReady()) {
+              rowsDiag('rows-ready-immediate', waitStartedAt);
+              return resolve(true);
+            }
+            let settled = false;
+            rowsDiag('rows-wait-start', waitStartedAt);
             const observer = new MutationObserver(() => {
-              if (!rowsReady()) return;
+              if (settled || !rowsReady()) return;
+              settled = true;
+              rowsDiag('rows-ready', waitStartedAt);
               observer.disconnect();
               resolve(true);
             });
@@ -41,9 +117,15 @@ internal object NtkBrowserEarliestAck {
             });
             window.setTimeout(() => {
               observer.disconnect();
-              resolve(rowsReady());
+              if (settled) return;
+              settled = true;
+              const ready = rowsReady();
+              rowsDiag('rows-timeout', waitStartedAt);
+              if (!ready) { try { __startLateWatch(waitStartedAt); } catch (_) {} }
+              resolve(ready);
             }, 2500);
           });
+// __NTK_ROWS_HELPER_END__
           const initializeGuard = guard => {
             if (!guard || guard.__i5() !== true || typeof guard._hk !== 'function' ||
                 typeof guard._vc !== 'function') return false;

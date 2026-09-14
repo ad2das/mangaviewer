@@ -12,6 +12,7 @@ internal interface ProviderOrigins {
     suspend fun current(provider: String, fallback: String): String
     suspend fun recover(provider: String, failed: String, transport: SourceTransport): String?
     suspend fun observeRedirect(provider: String, finalOrigin: String, transport: SourceTransport)
+    fun remember(provider: String, origin: String)
 }
 
 internal class ProviderOriginTransport(

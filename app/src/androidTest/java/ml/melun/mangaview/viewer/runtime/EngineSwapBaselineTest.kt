@@ -33,7 +33,9 @@ class EngineSwapBaselineTest {
         ActivityScenario.launch<EngineSwapBaselineActivity>(Intent(instrumentation.targetContext, EngineSwapBaselineActivity::class.java)
             .putExtra("baselineWidth", 1080).putExtra("baselineHeight", 2138)
             .putExtra("baselineSwapInterval", interval).putExtra("baselineMaximumPending", maximumPending)
-            .putExtra("baselinePollMillis", pollMillis)).use { scenario ->
+            .putExtra("baselinePollMillis", pollMillis)
+            .putExtra("baselineBufferedCompositor",
+                arguments.getString("baselineBufferedCompositor") == "true")).use { scenario ->
             var activity: EngineSwapBaselineActivity? = null
             scenario.onActivity { activity = it }
             val probe = requireNotNull(activity)
@@ -49,6 +51,7 @@ class EngineSwapBaselineTest {
                 put("swapInterval", interval)
                 put("maximumPending", maximumPending)
                 put("presentationPollMillis", pollMillis)
+                put("bufferedCompositorRequested", arguments.getString("baselineBufferedCompositor") == "true")
                 put("width", 1080); put("height", 2138); put("durationMillis", duration)
                 put("submittedFrameCount", frames.size); put("nativeP95Millis", costs[(costs.size * 0.95).toInt().coerceAtMost(costs.lastIndex)])
                 put("nativeMaxMillis", costs.last()); put("atLeast100ms", costs.count { it >= 100 })

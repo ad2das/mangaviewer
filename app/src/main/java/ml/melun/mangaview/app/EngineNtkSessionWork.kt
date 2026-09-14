@@ -1,6 +1,7 @@
 package ml.melun.mangaview.app
 
 import java.net.URI
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -23,13 +24,14 @@ import ml.melun.mangaview.source.ntk.*
 
 /** NTK document -> browser proof -> immutable page plan under the app's sole work coordinator. */
 internal class EngineNtkSessionWork(
-    userAgent: String,
+    private val userAgent: String,
     private val origin: URI,
     private val transport: SourceTransport,
     storage: EngineStoragePort,
     private val positions: EnginePositionPort,
     private val parsingDispatcher: CoroutineDispatcher,
     private val browser: NtkEngineBrowserClient,
+    private val identity: NtkBrowserIdentity,
     private val loadLegacy: suspend (EpisodeId) -> ReadingPosition?,
     private val initialPosition: ReadingPosition?,
     private val observer: EpisodePlanObserver? = null,
@@ -39,6 +41,7 @@ internal class EngineNtkSessionWork(
     private val principal = "ntk:engine"
     private val planner = NtkAccessPlanner(userAgent)
     private val catalog = NtkEpisodeCatalogPlanner(userAgent)
+    private val nativeManifest = NtkNativeManifestClient(transport, userAgent)
     private val documents = EngineEpisodeWork(principal, planner, transport, parsingDispatcher)
     private val pages = EnginePageWork(principal, planner, NtkPageHeaderTransport(pageTransport), storage) { _, _, _ ->
         error("NTK page plan has an unfulfilled access prerequisite")
@@ -87,7 +90,18 @@ internal class EngineNtkSessionWork(
         val completed = if (parsed.descriptor == null) withContext(parsingDispatcher) { planner.complete(parsed) }
         else parent.useDependency(WorkRequest(
             WorkKey(principal, episodeId.toString(), "ntk.browser", source.replaySha256, NtkEngineAuthorization::class.java),
-            WorkDomain.BROWSER, parent.priority.value, execute = { browser.capture(parsed) },
+            WorkDomain.BROWSER, parent.priority.value, execute = {
+                try {
+                    // The provider's own challenge/nv/HMAC flight returns the identical manifest
+                    // without the isolated WebView; the browser capture stays the fallback.
+                    nativeManifest.capture(origin, parsed, identity)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    android.util.Log.w("EngineNtkNative", "Native NTK manifest unavailable; using browser capture", failure)
+                    browser.capture(parsed)
+                }
+            },
         )) { proof -> withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) } }
         require(completed.manifest.id == episodeId && completed.documentSha256 == source.sha256 &&
             completed.finalDocumentUrl == source.finalUrl)

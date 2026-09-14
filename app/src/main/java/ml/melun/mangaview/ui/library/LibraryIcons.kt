@@ -13,32 +13,27 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 
-internal enum class LibraryIcon {
-    HOME, SEARCH, LIBRARY, PROFILE, BACK, HEART, DOWNLOAD, MORE, SITE, REFRESH,
-    STAR, CHECK, CLOSE, PLAY, BOOKMARK
+internal enum class LibraryIcon(val draw: DrawScope.(Color) -> Unit) {
+    HOME(DrawScope::drawHome),
+    SEARCH(DrawScope::drawSearch),
+    LIBRARY(DrawScope::drawLibrary),
+    PROFILE(DrawScope::drawProfile),
+    BACK(DrawScope::drawBack),
+    HEART(DrawScope::drawHeart),
+    DOWNLOAD(DrawScope::drawDownload),
+    MORE(DrawScope::drawMore),
+    SITE(DrawScope::drawSite),
+    REFRESH(DrawScope::drawRefresh),
+    STAR(DrawScope::drawStar),
+    CHECK(DrawScope::drawCheck),
+    CLOSE(DrawScope::drawClose),
+    PLAY(DrawScope::drawPlay),
+    BOOKMARK(DrawScope::drawBookmark)
 }
 
 @Composable
 internal fun LibraryIconView(icon: LibraryIcon, color: Color, modifier: Modifier) {
-    Canvas(modifier) {
-        when (icon) {
-            LibraryIcon.HOME -> drawHome(color)
-            LibraryIcon.SEARCH -> drawSearch(color)
-            LibraryIcon.LIBRARY -> drawLibrary(color)
-            LibraryIcon.PROFILE -> drawProfile(color)
-            LibraryIcon.BACK -> drawBack(color)
-            LibraryIcon.HEART -> drawHeart(color)
-            LibraryIcon.DOWNLOAD -> drawDownload(color)
-            LibraryIcon.MORE -> drawMore(color)
-            LibraryIcon.SITE -> drawSite(color)
-            LibraryIcon.REFRESH -> drawRefresh(color)
-            LibraryIcon.STAR -> drawStar(color)
-            LibraryIcon.CHECK -> drawCheck(color)
-            LibraryIcon.CLOSE -> drawClose(color)
-            LibraryIcon.PLAY -> drawPlay(color)
-            LibraryIcon.BOOKMARK -> drawBookmark(color)
-        }
-    }
+    Canvas(modifier) { icon.draw(this, color) }
 }
 
 private val DrawScope.iconStroke: Float get() = minOf(size.width, size.height) * 0.095f

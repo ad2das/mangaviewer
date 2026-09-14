@@ -15,10 +15,14 @@ add_library(viewer_native SHARED
         gl_viewer_renderer.cpp
         viewer_cpu_decode.cpp
         buffered_frame_compositor.cpp
+        release_fence_watcher.cpp
         )
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_include_directories(viewer_native PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_sources(viewer_native PRIVATE ../../debug/cpp/surface_transaction_probe.cpp)
+    target_sources(viewer_native PRIVATE ../../debug/cpp/release_fence_watcher_probe.cpp)
+    target_sources(viewer_native PRIVATE ../../debug/cpp/source_tile_geometry_probe.cpp)
 endif()
 
 target_compile_features(viewer_native PRIVATE cxx_std_20)

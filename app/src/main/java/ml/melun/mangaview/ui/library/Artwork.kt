@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -33,14 +34,16 @@ internal fun SeriesArtwork(
     contentScale: ContentScale = ContentScale.Crop,
 ) {
     var bounds by remember { mutableStateOf(IntSize.Zero) }
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, series.id, series.thumbnailKey) {
-        snapshotFlow { maxOf(bounds.width, bounds.height) }
-            .filter { it > 0 }
-            .distinctUntilChanged()
-            .collectLatest { edge ->
-                val loaded = runCatching { loader.load(series, edge) }.getOrNull()
-                if (loaded != null) value = loaded
-            }
+    val bitmap by key(series.id, series.thumbnailKey, loader) {
+        produceState<ImageBitmap?>(initialValue = null) {
+            snapshotFlow { maxOf(bounds.width, bounds.height) }
+                .filter { it > 0 }
+                .distinctUntilChanged()
+                .collectLatest { edge ->
+                    val loaded = loader.load(series, edge)
+                    if (loaded != null) value = loaded
+                }
+        }
     }
     Box(modifier.onSizeChanged { bounds = it }) {
         val image = bitmap

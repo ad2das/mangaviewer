@@ -1,12 +1,15 @@
 package ml.melun.mangaview.ui.library
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -47,6 +50,7 @@ private val RankedNeutralBrush = Brush.linearGradient(
 )
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 internal fun HomeScreen(
     state: LibraryState,
     artworkLoader: SeriesArtworkLoader,
@@ -58,8 +62,11 @@ internal fun HomeScreen(
     val readyHome = state.home as? HomeContent.Ready
     val popularRows = remember(readyHome?.popular) { readyHome?.popular.orEmpty().chunked(2) }
     val newRows = remember(readyHome?.new) { readyHome?.new.orEmpty().chunked(2) }
+    val cacheWindow = remember { LazyLayoutCacheWindow(aheadFraction = 0.5f, behindFraction = 1f) }
+    val scroll = rememberLazyListState(cacheWindow = cacheWindow)
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),
+        state = scroll,
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         item { HomeHeading(colors) }
@@ -123,7 +130,8 @@ internal fun androidx.compose.foundation.lazy.LazyListScope.gridRows(
         item { HomeFailure("표시할 작품이 없습니다", colors, accept) }
         return
     }
-    items(rows, key = { row -> row.joinToString("|") { it.id.remoteKey } }) { row ->
+    items(rows, key = { row -> row.joinToString("|") { it.id.remoteKey } },
+        contentType = { "series-grid-row" }) { row ->
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -232,7 +240,6 @@ private fun KindSelector(selected: SeriesKind, colors: LibraryColors, accept: (L
         Modifier.fillMaxWidth()
             .padding(horizontal = 18.dp)
             .height(52.dp)
-            .shadow(2.dp, RoundedCornerShape(16.dp), spotColor = Color.Black.copy(alpha = 0.06f))
             .clip(RoundedCornerShape(16.dp))
             .background(colors.mutedSurface)
             .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp))
@@ -320,68 +327,7 @@ private fun HeroCarousel(
             pageSpacing = 12.dp,
         ) { page ->
             val series = items[page]
-            Box(
-                Modifier.fillMaxSize()
-                    .shadow(8.dp, RoundedCornerShape(22.dp), spotColor = Color.Black.copy(alpha = 0.22f))
-                    .clip(RoundedCornerShape(22.dp))
-                    .border(1.dp, colors.cardBorder, RoundedCornerShape(22.dp))
-                    .clickable { accept(LibraryIntent.SeriesSelected(series)) },
-            ) {
-                SeriesArtwork(series, loader, colors, Modifier.matchParentSize())
-                Box(Modifier.matchParentSize().background(colors.heroOverlayGradient))
-                Column(
-                    Modifier.matchParentSize().padding(20.dp),
-                    verticalArrangement = Arrangement.Bottom,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier.clip(RoundedCornerShape(8.dp))
-                                .background(colors.accentSurface)
-                                .border(0.5.dp, colors.cardBorder, RoundedCornerShape(8.dp))
-                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                        ) {
-                            BasicText(
-                                if (series.id.sourceId.value == "ntk") "만화" else "웹툰",
-                                style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.Bold),
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    BasicText(
-                        series.title,
-                        style = titleStyle(colors, 22).copy(color = Color.White, fontWeight = FontWeight.Black),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    series.subtitle?.takeIf(String::isNotBlank)?.let { subtitle ->
-                        Spacer(Modifier.height(4.dp))
-                        BasicText(
-                            subtitle,
-                            style = bodyStyle(colors, 13).copy(color = Color.White.copy(alpha = 0.85f)),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Spacer(Modifier.height(14.dp))
-                    Box(
-                        Modifier.height(40.dp)
-                            .shadow(4.dp, RoundedCornerShape(20.dp), spotColor = colors.accent.copy(alpha = 0.35f))
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(colors.accentGradient)
-                            .padding(horizontal = 20.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            LibraryIconView(LibraryIcon.PLAY, Color.White, Modifier.size(12.dp))
-                            Spacer(Modifier.width(6.dp))
-                            BasicText(
-                                "보러가기",
-                                style = bodyStyle(colors, 13).copy(color = Color.White, fontWeight = FontWeight.Bold),
-                            )
-                        }
-                    }
-                }
-            }
+            HeroCard(series, loader, colors, accept)
         }
         if (items.size > 1) {
             Spacer(Modifier.height(10.dp))
@@ -454,28 +400,7 @@ private fun RankedRow(
                     SeriesArtwork(series, loader, colors, Modifier.matchParentSize())
                     Box(Modifier.matchParentSize().background(RankedScrimBrush))
                     // Real rank medal badge (1, 2, 3 medals, 4..10 frosted number)
-                    Box(
-                        Modifier.padding(8.dp)
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when (rank) {
-                                    1 -> colors.goldGradient
-                                    2 -> Brush.linearGradient(listOf(colors.silver, Color(0xFF94A3B8)))
-                                    3 -> Brush.linearGradient(listOf(colors.bronze, Color(0xFFB45309)))
-                                    else -> RankedNeutralBrush
-                                }
-                            ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        BasicText(
-                            "$rank",
-                            style = bodyStyle(colors, 13).copy(
-                                color = if (rank == 1 || rank == 2) Color(0xFF0F172A) else Color.White,
-                                fontWeight = FontWeight.ExtraBold,
-                            ),
-                        )
-                    }
+                    RankMedal(rank, colors)
                 }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp)) {
                     BasicText(
@@ -587,5 +512,107 @@ private fun HomeFailure(message: String, colors: LibraryColors, accept: (Library
         }
         BasicText(message, Modifier.padding(vertical = 16.dp), hintStyle(colors, 14))
         LibraryAction("다시 시도", colors) { accept(LibraryIntent.RetryHome) }
+    }
+}
+
+@Composable
+private fun HeroCard(series: SourceSeries, loader: SeriesArtworkLoader, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    Box(
+        Modifier.fillMaxSize()
+            .shadow(8.dp, RoundedCornerShape(22.dp), spotColor = Color.Black.copy(alpha = 0.22f))
+            .clip(RoundedCornerShape(22.dp))
+            .border(1.dp, colors.cardBorder, RoundedCornerShape(22.dp))
+            .clickable { accept(LibraryIntent.SeriesSelected(series)) },
+    ) {
+        SeriesArtwork(series, loader, colors, Modifier.matchParentSize())
+        Box(Modifier.matchParentSize().background(colors.heroOverlayGradient))
+        HeroDescription(series, colors, Modifier.matchParentSize())
+    }
+}
+
+@Composable
+private fun HeroDescription(series: SourceSeries, colors: LibraryColors, modifier: Modifier) {
+    Column(
+        modifier.padding(20.dp),
+        verticalArrangement = Arrangement.Bottom,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.clip(RoundedCornerShape(8.dp))
+                    .background(colors.accentSurface)
+                    .border(0.5.dp, colors.cardBorder, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            ) {
+                BasicText(
+                    if (series.id.sourceId.value == "ntk") "만화" else "웹툰",
+                    style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.Bold),
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        BasicText(
+            series.title,
+            style = titleStyle(colors, 22).copy(color = Color.White, fontWeight = FontWeight.Black),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        series.subtitle?.takeIf(String::isNotBlank)?.let { subtitle ->
+            Spacer(Modifier.height(4.dp))
+            BasicText(
+                subtitle,
+                style = bodyStyle(colors, 13).copy(color = Color.White.copy(alpha = 0.85f)),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        HeroReadButton(colors)
+    }
+}
+
+@Composable
+private fun HeroReadButton(colors: LibraryColors) {
+    Box(
+        Modifier.height(40.dp)
+            .shadow(4.dp, RoundedCornerShape(20.dp), spotColor = colors.accent.copy(alpha = 0.35f))
+            .clip(RoundedCornerShape(20.dp))
+            .background(colors.accentGradient)
+            .padding(horizontal = 20.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            LibraryIconView(LibraryIcon.PLAY, Color.White, Modifier.size(12.dp))
+            Spacer(Modifier.width(6.dp))
+            BasicText(
+                "보러가기",
+                style = bodyStyle(colors, 13).copy(color = Color.White, fontWeight = FontWeight.Bold),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RankMedal(rank: Int, colors: LibraryColors) {
+    Box(
+        Modifier.padding(8.dp)
+            .size(30.dp)
+            .clip(CircleShape)
+            .background(
+                when (rank) {
+                    1 -> colors.goldGradient
+                    2 -> Brush.linearGradient(listOf(colors.silver, Color(0xFF94A3B8)))
+                    3 -> Brush.linearGradient(listOf(colors.bronze, Color(0xFFB45309)))
+                    else -> RankedNeutralBrush
+                }
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        BasicText(
+            "$rank",
+            style = bodyStyle(colors, 13).copy(
+                color = if (rank == 1 || rank == 2) Color(0xFF0F172A) else Color.White,
+                fontWeight = FontWeight.ExtraBold,
+            ),
+        )
     }
 }

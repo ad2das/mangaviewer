@@ -20,21 +20,7 @@ import androidx.compose.ui.unit.sp
 @Composable
 internal fun PreferencesOverlay(state: LibraryState, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Column(Modifier.fillMaxSize().background(colors.background)) {
-        Row(
-            Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier.size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .clickable { accept(LibraryIntent.TogglePreferences) },
-                contentAlignment = Alignment.Center,
-            ) {
-                LibraryIconView(LibraryIcon.BACK, colors.secondary, Modifier.size(24.dp))
-            }
-            Spacer(Modifier.width(6.dp))
-            BasicText("설정", style = titleStyle(colors, 20).copy(fontWeight = FontWeight.Bold))
-        }
+        PreferencesHeader(colors, accept)
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -132,5 +118,24 @@ private fun PreferenceSwitch(label: String, checked: Boolean, colors: LibraryCol
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun PreferencesHeader(colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(44.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .clickable { accept(LibraryIntent.TogglePreferences) },
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.BACK, colors.secondary, Modifier.size(24.dp))
+        }
+        Spacer(Modifier.width(6.dp))
+        BasicText("설정", style = titleStyle(colors, 20).copy(fontWeight = FontWeight.Bold))
     }
 }

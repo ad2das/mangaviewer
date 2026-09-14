@@ -67,6 +67,7 @@ internal class EngineViewerRuntime(
     private val main = Handler(Looper.getMainLooper())
     private val memory = ViewerMemoryEnvironment(context) { }
     private val budget = DeviceMemoryBudget.fromPhysicalRam(memory.totalPhysicalBytes)
+    private val frameProvenance = FrameWorkProvenanceLedger()
     private val saveMutex = Mutex()
     private val closeDone = CompletableDeferred<Unit>()
     private var closing = false
@@ -78,22 +79,26 @@ internal class EngineViewerRuntime(
     private var autosave: Job? = null
     private val renderer: EngineSurfaceOwner = (preparedRenderer ?: EngineSurfaceOwner(budget.glResidentBytes,
         {}, {}, {}, bufferedCompositor = android.os.Build.VERSION.SDK_INT >= 31)).also { it.bind(EngineSurfaceCallbacks(
-        { value -> onMain { reportPresented(value) } }, { error -> onMain { reportFailure(error) } },
-        { onMain { if (!closing) graphics.rendererChanged() } },
-        { onMain { if (!closing) { graphics.enabled(false); surface.rendererUnavailable() } } },
+        { value -> onMain { onPresented(value) } }, { error -> onMain { reportFailure(error) } },
+        { onMain { if (!closing) { frameProvenance.noteRecovery(System.nanoTime()); graphics.rendererChanged(); forceGraphicsFrame() } } },
+        { onMain { if (!closing) { disableGraphics(); surface.rendererUnavailable() } } },
         { value -> onMain { onSubmitted(value) } })) }
     private val reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime)
     private val content: EngineSessionRuntime = EngineSessionRuntime(scope, coordinator, reducer, source, episodeId,
         { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },
         { _, failure -> reportFailure(failure) }, awaitInitialPresentation = true)
+    private val refreshScheduler = HandlerRefreshScheduler(
+        HandlerRefreshMessageQueue(Handler.createAsync(Looper.getMainLooper()))) { onGraphicsRefreshFrame() }
     private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator,
         EngineTilePlanner(budget.glResidentBytes, preparationViewports = 12),
         EngineTileWork(NativeEngineImageDecoder(), decodeDispatcher, renderer), renderer, content::pageRequest,
-        renderer::offer, renderer::clearScene, { _, failure -> reportFailure(failure) },
-        waitForCompleteViewport = false, reportSceneFailure = reportFailure)
+        { scene -> renderer.offer(frameProvenance.attachTicket(scene)) }, renderer::clearScene, { _, failure -> reportFailure(failure) },
+        waitForCompleteViewport = false, reportSceneFailure = reportFailure,
+        frameWorkObserver = FrameWorkObserver { kind, atNanos -> frameProvenance.noteWorkTrigger(kind, atNanos) },
+        refreshScheduler = refreshScheduler)
     val surface = ViewerSurfaceHost(context, this)
 
-    init { graphics.enabled(false) }
+    init { disableGraphics() }
 
     fun open() { if (!closing) content.open() }
     fun snapshot(): EngineRuntimeSnapshot = content.snapshot
@@ -125,7 +130,7 @@ internal class EngineViewerRuntime(
     fun enterBackground() {
         if (closing) return
         surface.cancelMotion()
-        graphics.enabled(false)
+        disableGraphics()
         content.foreground(false)
         surface.enterBackground()
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -185,6 +190,7 @@ internal class EngineViewerRuntime(
                     if (attached) {
                         graphics.enabled(true)
                         graphics.update(content.snapshot)
+                        forceGraphicsFrame()
                     }
                     reportAttached(attached)
                 } else reportAttached(false)
@@ -202,7 +208,8 @@ internal class EngineViewerRuntime(
     override fun surfaceUnavailable() {
         surfaceGeneration++
         if (closing) return
-        graphics.enabled(false)
+        frameProvenance.clear()
+        disableGraphics()
         // SurfaceHolder may release the buffer queue as soon as its callback returns.
         // The GL owner must finish its current draw and detach before that return.
         // detach only uses the GL dispatcher; it never waits for a main-thread callback.
@@ -212,8 +219,33 @@ internal class EngineViewerRuntime(
     override fun userScroll(delta: FixedPx, velocityPixelsPerSecond: Float, frameTimeNanos: Long,
         frameTimelineVsyncId: Long, expectedPresentationTimeNanos: Long): Boolean {
         if (closing) return false
-        val update = content.input(InputSample(++inputSequence, gesture, frameTimeNanos, delta.units))
+        val sequence = ++inputSequence
+        if (frameProvenance.isTracking) {
+            val before = content.snapshot.session
+            frameProvenance.armInputFrame(frameTimelineVsyncId, expectedPresentationTimeNanos, frameTimeNanos,
+                sequence, before.sessionId, before.inputRevision, before.movementRevision)
+        }
+        val sample = InputSample(sequence, gesture, frameTimeNanos, delta.units)
+        val update = content.input(sample)
+        frameProvenance.finishInputFrame(update.receipts.any { it.outcome == InputOutcome.DEFERRED })
+        val after = update.snapshot
+        viewerInputTrace({
+            engineInputTraceName(inputSequence, gesture, frameTimeNanos,
+                after.inputRevision, after.movementRevision, after.sessionId)
+        }) { }
         return update.receipts.any { it.appliedScreenUnits != 0L || it.outcome == InputOutcome.DEFERRED }
+    }
+
+    /** Marks the native present fence that carries this frame identity, joined by inputRevision. */
+    private fun onPresented(value: EngineSurfacePresentation) {
+        viewerInputTrace({ enginePresentTraceName(value.identity, value.rendererId) }) {
+            viewerInputTrace({
+                enginePresentFenceTraceName(value.identity, value.timestampKind.ordinal,
+                    value.timestampNanos, value.eglFrameId)
+            }) {
+                reportPresented(value)
+            }
+        }
     }
 
     override fun interactionChanged(active: Boolean, atNanos: Long) {
@@ -224,9 +256,24 @@ internal class EngineViewerRuntime(
 
     private fun onContent(value: EngineRuntimeSnapshot) {
         if (closing) return
+        frameProvenance.bindInputFrame(value.session.sessionId, value.session.inputRevision,
+            value.session.movementRevision)
         traceEngineWork("engine_graphics_update") { graphics.update(value) }
         reportSnapshot(value)
     }
+
+    /** Queued engine drain for one main-looper refresh message, not a vsync callback; the
+     * coalesced scene work happens inside. */
+    private fun onGraphicsRefreshFrame() =
+        traceEngineWork("engine_graphics_frame") { graphics.refreshOnFrame() }
+
+    /** Inline drain that retires pixels before detach; a queued frame would arrive too late. */
+    private fun disableGraphics() =
+        traceEngineWork("engine_graphics_frame_force") { graphics.enabled(false) }
+
+    /** Inline drain for attach and renderer recovery, so the first scene never waits a frame. */
+    private fun forceGraphicsFrame() =
+        traceEngineWork("engine_graphics_frame_force") { graphics.refreshNow() }
 
     private fun onSubmitted(value: EngineSurfaceScene) {
         submittedSourcePosition(value)?.let { submittedPosition = it }

@@ -1,13 +1,14 @@
 package ml.melun.mangaview.viewer.runtime
 
 import android.graphics.Bitmap
-import android.graphics.SurfaceTexture
-import android.view.Surface
+import android.widget.FrameLayout
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.net.URI
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 import ml.melun.mangaview.core.*
 import ml.melun.mangaview.engine.api.*
@@ -21,60 +22,71 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class EngineViewerReadinessPositionTest {
     @Test fun closingWhileTheNextOriginalIsBlockedSavesTheSuccessfullySubmittedAnchor() = runBlocking {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
         val file = File.createTempFile("readiness-position-", ".png", context.cacheDir)
         val bitmap = Bitmap.createBitmap(100, 300, Bitmap.Config.ARGB_8888)
         try {
             bitmap.eraseColor(0xff82b447.toInt())
             file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         } finally { bitmap.recycle() }
-        val consumer = SurfaceTexture(false).apply { setDefaultBufferSize(100, 100) }
-        val surface = Surface(consumer)
         try {
-            withContext(Dispatchers.Main.immediate) {
-                val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-                val coordinator = WorkCoordinator(scope)
-                val source = Source(file)
-                val positions = Positions()
-                val failures = mutableListOf<Throwable>()
-                val runtime = EngineViewerRuntime(context, scope, coordinator, source, positions, source.episode,
-                    EngineViewport(100, 100), Dispatchers.IO, {}, {}, { failures += it })
-                try {
-                    runtime.open()
-                    runtime.surfaceAvailable(surface, 100, 100, 60F) { attached ->
-                        if (!attached) failures += IllegalStateException("surface attach failed")
-                    }
-                    withTimeout(10_000) {
-                        while (runtime.bookmarkSnapshot() == null) {
-                            assertTrue(failures.toString(), failures.isEmpty())
-                            delay(10)
-                        }
-                    }
-                    val displayed = SourceAnchor(PageId.at(source.episode, 0), 0)
-                    assertEquals(displayed, runtime.bookmarkSnapshot()!!.first)
-                    assertTrue(runtime.userScroll(FixedPx.fromPixels(400), 0f, System.nanoTime(), 0, 0))
-                    assertTrue(runtime.userScroll(FixedPx.fromPixels(-50), 0f, System.nanoTime(), 0, 0))
-                    assertEquals(SourceAnchor(PageId.at(source.episode, 1),
-                        50L * SourceAnchor.SOURCE_UNITS_PER_PIXEL), runtime.snapshot().session.anchor)
-                    assertEquals(0, runtime.snapshot().session.pendingInputCount)
-                    assertEquals(displayed, runtime.bookmarkSnapshot()!!.first)
-                    withTimeout(5_000) {
-                        while (positions.saved == null) delay(10)
-                    }
-                    assertEquals(displayed to 0L, positions.saved)
-                    runtime.close()
-                    assertEquals(displayed to 0L, positions.saved)
-                    assertTrue(failures.toString(), failures.isEmpty())
-                } finally {
-                    runtime.close()
-                    coordinator.close()
-                    scope.cancel()
+            ActivityScenario.launch(EngineBufferedProbeActivity::class.java).use { scenario ->
+                lateinit var probe: EngineBufferedProbeActivity
+                scenario.onActivity { probe = it }
+                val view = probe.ready.get(10, TimeUnit.SECONDS)
+                scenario.onActivity {
+                    view.layoutParams = FrameLayout.LayoutParams(100, 100)
+                    view.requestLayout()
                 }
-                assertEquals(0, coordinator.snapshot().subscribers)
+                withContext(Dispatchers.Main.immediate) {
+                    withTimeout(5_000) {
+                        while (view.width != 100 || view.height != 100 ||
+                            view.holder.surfaceFrame.width() != 100 || view.holder.surfaceFrame.height() != 100 ||
+                            !view.holder.surface.isValid) delay(10)
+                    }
+                    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+                    val coordinator = WorkCoordinator(scope)
+                    val source = Source(file)
+                    val positions = Positions()
+                    val failures = mutableListOf<Throwable>()
+                    val runtime = EngineViewerRuntime(context, scope, coordinator, source, positions, source.episode,
+                        EngineViewport(100, 100), Dispatchers.IO, {}, {}, { failures += it })
+                    try {
+                        runtime.open()
+                        runtime.surfaceAvailable(view.holder.surface, 100, 100, 60F) { attached ->
+                            if (!attached) failures += IllegalStateException("surface attach failed")
+                        }
+                        withTimeout(10_000) {
+                            while (runtime.bookmarkSnapshot() == null) {
+                                assertTrue(failures.toString(), failures.isEmpty())
+                                delay(10)
+                            }
+                        }
+                        val displayed = SourceAnchor(PageId.at(source.episode, 0), 0)
+                        assertEquals(displayed, runtime.bookmarkSnapshot()!!.first)
+                        assertTrue(runtime.userScroll(FixedPx.fromPixels(400), 0f, System.nanoTime(), 0, 0))
+                        assertTrue(runtime.userScroll(FixedPx.fromPixels(-50), 0f, System.nanoTime(), 0, 0))
+                        assertEquals(SourceAnchor(PageId.at(source.episode, 1),
+                            50L * SourceAnchor.SOURCE_UNITS_PER_PIXEL), runtime.snapshot().session.anchor)
+                        assertEquals(0, runtime.snapshot().session.pendingInputCount)
+                        assertEquals(displayed, runtime.bookmarkSnapshot()!!.first)
+                        withTimeout(5_000) {
+                            while (positions.saved == null) delay(10)
+                        }
+                        assertEquals(displayed to 0L, positions.saved)
+                        runtime.close()
+                        assertEquals(displayed to 0L, positions.saved)
+                        assertTrue(failures.toString(), failures.isEmpty())
+                    } finally {
+                        runtime.close()
+                        coordinator.close()
+                        scope.cancel()
+                    }
+                    assertEquals(0, coordinator.snapshot().subscribers)
+                }
             }
         } finally {
-            surface.release()
-            consumer.release()
             assertTrue(file.delete())
         }
     }

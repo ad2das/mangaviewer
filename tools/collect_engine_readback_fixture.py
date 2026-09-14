@@ -146,14 +146,49 @@ def _device_snapshot(adb: str) -> dict[str, str]:
     }
 
 
+PRIMER_REMOTE = "/data/misc/perfetto-traces/engine-qualification-primer.pftrace"
+PRIMER_SECONDS = 2.0
+
+
+def _drain_trace_tail(adb: str, config: bytes) -> bytes:
+    """Consume the ftrace tail left by the previous session with a throwaway primer session.
+
+    traced_probes reuses one kernel ftrace instance, so the per-CPU buffers still hold events
+    recorded before the next session starts. Read at the start of a recorded session they can
+    predate the trace origin; trace_processor drops those as
+    trace_sorter_negative_timestamp_dropped (severity error), which reads as trace data_loss and
+    withholds every late-present promotion in the analysis. The primer session drains that tail
+    before the qualification origin exists; anything it leaves behind was recorded inside its own
+    idle window, immediately before the real session. Best effort: a failing primer never blocks
+    the recorded session."""
+    primer_output = b""
+    try:
+        _run(_adb_command(adb, "shell", "rm", "-f", PRIMER_REMOTE))
+        primer = _run(
+            _adb_command(adb, "shell", "perfetto", "--txt", "--background-wait", "-c", "-", "-o", PRIMER_REMOTE),
+            input_bytes=config,
+            timeout=30,
+        )
+        primer_output = primer.stdout + primer.stderr
+        pids = re.findall(rb"(?m)^\s*([0-9]+)\s*$", primer_output)
+        if primer.returncode == 0 and len(pids) == 1 and int(pids[0]) > 0:
+            time.sleep(PRIMER_SECONDS)
+            _stop_trace(adb, pids[0].decode("ascii"))
+    finally:
+        _run(_adb_command(adb, "shell", "rm", "-f", PRIMER_REMOTE))
+    return primer_output
+
+
 def _start_trace(adb: str, trace_remote: str, config: bytes, output: Path) -> str:
+    primer_output = _drain_trace_tail(adb, config)
     result = _run(
         _adb_command(adb, "shell", "perfetto", "--txt", "--background-wait", "-c", "-", "-o", trace_remote),
         input_bytes=config,
         timeout=30,
     )
     trace_output = result.stdout + result.stderr
-    output.joinpath("trace-start.txt").write_bytes(trace_output)
+    output.joinpath("trace-start.txt").write_bytes(
+        b"[primer]\n" + primer_output + b"\n[session]\n" + trace_output)
     if result.returncode != 0:
         raise CollectionError(f"perfetto did not start: {_decode(trace_output)[-1200:]}")
     pids = re.findall(rb"(?m)^\s*([0-9]+)\s*$", trace_output)

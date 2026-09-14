@@ -329,6 +329,130 @@ class EngineTilePlannerTest {
         assertTrue(plan.placements.all { it.tile.cropLeftPx == 0 && it.tile.cropRightPx == 100 })
     }
 
+    @Test fun sameBandScrollReusesTheExactHorizonAndMatchesAFreshPlanner() {
+        val state = snapshot(100, 4000, 100, 200 * q, 2200 * q)
+        val bands = listOf(HorizonBand(pageId, 0, 1))
+        val planner = EngineTilePlanner(1_000_000, 202, preparationViewports = 4)
+        val horizon = planner.speculativeHorizon(state, bands)
+        val scrolled = state.copy(session = state.session.copy(anchor = SourceAnchor(pageId, 2100 * q)))
+        assertSame(horizon, planner.speculativeHorizon(scrolled, bands))
+        assertEquals(EngineTilePlanner(1_000_000, 202, preparationViewports = 4).plan(scrolled), planner.plan(scrolled))
+    }
+
+    @Test fun bandChangeRecomputesTheHorizon() {
+        val state = snapshot(100, 4000, 100, 200 * q, 2200 * q)
+        val moved = state.copy(session = state.session.copy(visibleRegions = listOf(
+            VisiblePageRegion(pageId, PageDimensions(100, 4000), 2000 * q, 4000 * q, 0, 2000 * 1024L))))
+        val planner = EngineTilePlanner(1_000_000, 202, preparationViewports = 4)
+        val first = planner.speculativeHorizon(state, listOf(HorizonBand(pageId, 0, 1)))
+        assertNotSame(first, planner.speculativeHorizon(state, listOf(HorizonBand(pageId, 1, 2))))
+        val fresh = EngineTilePlanner(1_000_000, 202, preparationViewports = 4)
+        assertEquals(fresh.plan(state), planner.plan(state))
+        assertEquals(fresh.plan(moved), planner.plan(moved))
+    }
+
+    @Test fun anchorPageChangeRecomputesTheHorizon() {
+        val ids = (0 until 12).map { PageId.at(pageId.episodeId, it) }
+        val dimensions = PageDimensions(100, 1000)
+        val plans = mapOf(pageId.episodeId to stripPlan(ids, dimensions))
+        val pages = ids.associateWith { PageContentIdentity(it, "1", "1".repeat(64), dimensions, 1) }
+        val current = ids[5]
+        fun state(anchorPage: PageId) = EngineRuntimeSnapshot(EngineSessionSnapshot(1, 1, EngineSessionPhase.ACTIVE,
+            EngineViewport(100, 2000), SourceAnchor(anchorPage, 0), 1, 1, 0,
+            listOf(VisiblePageRegion(current, dimensions, 0, 1000L * q, 0, 2000L * 1024L)),
+            emptySet(), emptySet(), true), plans, pages)
+        val bands = listOf(HorizonBand(current, 0, 4))
+        val planner = EngineTilePlanner(1_000_000, 202, preparationViewports = 2)
+        val nearEnd = planner.speculativeHorizon(state(ids[5]), bands)
+        val early = planner.speculativeHorizon(state(ids[0]), bands)
+        assertNotSame(nearEnd, early)
+        assertTrue(nearEnd.none { it.pageId == ids[11] })
+        assertTrue(early.any { it.pageId == ids[11] })
+        assertEquals(EngineTilePlanner(1_000_000, 202, preparationViewports = 2).plan(state(ids[0])), planner.plan(state(ids[0])))
+    }
+
+    @Test fun forwardAndReverseStripScrollMatchesAFreshPlannerAtEveryStep() {
+        val ids = (0 until 12).map { PageId.at(pageId.episodeId, it) }
+        val dimensions = PageDimensions(100, 8000)
+        val plans = mapOf(pageId.episodeId to stripPlan(ids, dimensions))
+        val pages = ids.associateWith { PageContentIdentity(it, "1", "1".repeat(64), dimensions, 1) }
+        fun state(index: Int, top: Long): EngineRuntimeSnapshot {
+            val bottom = minOf(top + 2000L * q, 8000L * q)
+            return EngineRuntimeSnapshot(EngineSessionSnapshot(1, 1, EngineSessionPhase.ACTIVE, EngineViewport(100, 2000),
+                SourceAnchor(ids[index], top), 1, 1, 0,
+                listOf(VisiblePageRegion(ids[index], dimensions, top, bottom, 0, 2000L * 1024L)),
+                emptySet(), emptySet(), true), plans, pages)
+        }
+        val steps = listOf(0 to 0L, 0 to 4000L * q, 1 to 0L, 2 to 2000L * q, 2 to 6000L * q,
+            1 to 4000L * q, 0 to 2000L * q, 5 to 0L, 11 to 6000L * q, 0 to 0L)
+        val cached = EngineTilePlanner(1_000_000, 202, preparationViewports = 4)
+        for ((index, top) in steps) {
+            val step = state(index, top)
+            assertEquals(EngineTilePlanner(1_000_000, 202, preparationViewports = 4).plan(step), cached.plan(step))
+        }
+    }
+
+    @Test fun missingThenReadyOriginalRecomputesTheHorizon() {
+        val state = snapshot(100, 4000, 100, 200 * q, 2200 * q)
+        val page = state.pages.getValue(pageId)
+        val missing = state.copy(session = state.session.copy(completeViewport = false, requiredDimensions = setOf(pageId)),
+            pages = state.pages - pageId)
+        val ready = missing.copy(pages = mapOf(pageId to page))
+        val bands = listOf(HorizonBand(pageId, 0, 1))
+        val planner = EngineTilePlanner(1_000_000, 202, preparationViewports = 4)
+        val absent = planner.speculativeHorizon(missing, bands)
+        assertSame(absent, planner.speculativeHorizon(missing, bands))
+        assertNotSame(absent, planner.speculativeHorizon(ready, bands))
+        assertEquals(EngineTilePlanner(1_000_000, 202, preparationViewports = 4).plan(missing), planner.plan(missing))
+        assertEquals(EngineTilePlanner(1_000_000, 202, preparationViewports = 4).plan(ready), planner.plan(ready))
+    }
+
+    @Test fun changedMetadataPlanResizeAndSplitMatchAFreshPlanner() {
+        val state = neighboringSnapshot(false)
+        val otherId = state.pages.keys.single { it != pageId }
+        val bands = listOf(HorizonBand(pageId, 0, 1))
+        val planner = EngineTilePlanner(1_000_000, 202, preparationViewports = 2)
+        val horizon = planner.speculativeHorizon(state, bands)
+        assertSame(horizon, planner.speculativeHorizon(state, bands))
+        val changed = listOf(
+            state.copy(pages = state.pages.mapValues { it.value.copy(contentRevision = "2") }),
+            state.copy(plans = neighboringSnapshot(true).plans),
+            state.copy(session = state.session.copy(viewport = EngineViewport(200, 2000))),
+            state.copy(session = state.session.copy(splitMode = true)),
+            state.copy(session = state.session.copy(completeViewport = false, requiredDimensions = setOf(otherId))),
+        )
+        for (step in changed) {
+            assertNotSame(horizon, planner.speculativeHorizon(step, bands))
+            assertEquals(EngineTilePlanner(1_000_000, 202, preparationViewports = 2).plan(step), planner.plan(step))
+        }
+    }
+
+    @Test fun tightBudgetSequencesMatchAFreshPlanner() {
+        val ids = (0 until 12).map { PageId.at(pageId.episodeId, it) }
+        val dimensions = PageDimensions(100, 1000)
+        val plans = mapOf(pageId.episodeId to stripPlan(ids, dimensions))
+        val pages = ids.associateWith { PageContentIdentity(it, "1", "1".repeat(64), dimensions, 1) }
+        fun state(index: Int, top: Long) = EngineRuntimeSnapshot(EngineSessionSnapshot(1, 1, EngineSessionPhase.ACTIVE,
+            EngineViewport(100, 200), SourceAnchor(ids[index], top), 1, 1, 0,
+            listOf(VisiblePageRegion(ids[index], dimensions, top, top + 200 * q, 0, 200 * 1024L)),
+            emptySet(), emptySet(), true), plans, pages)
+        val steps = listOf(0 to 0L, 0 to 400 * q, 1 to 200 * q, 3 to 800 * q, 2 to 600 * q, 0 to 0L)
+        val cached = EngineTilePlanner(80_000, 202, preparationViewports = 4)
+        for ((index, top) in steps) {
+            val step = state(index, top)
+            assertEquals(EngineTilePlanner(80_000, 202, preparationViewports = 4).plan(step), cached.plan(step))
+        }
+    }
+
+    private fun stripPlan(ids: List<PageId>, dimensions: PageDimensions): ml.melun.mangaview.engine.api.EpisodeAccessPlan {
+        val manifest = ml.melun.mangaview.core.EpisodeManifest(pageId.episodeId, "episode",
+            ids.mapIndexed { index, id -> ml.melun.mangaview.core.PageSpec(id, index, dimensions) })
+        return ml.melun.mangaview.engine.api.EpisodeAccessPlan(manifest, "1", "0".repeat(64),
+            java.net.URI("https://test.example/read"), 0, ids.map {
+                ml.melun.mangaview.engine.api.PageAccessPlan(it, it.remoteKey, listOf(java.net.URI("https://test.example/page")))
+            })
+    }
+
     private fun snapshotWithPreparationGap(reverse: Boolean, missingCount: Int = 1): EngineRuntimeSnapshot {
         val base = neighboringSnapshot(reverse)
         val ids = (listOf(pageId) + (1..missingCount + 1).map { PageId.at(pageId.episodeId, it) })

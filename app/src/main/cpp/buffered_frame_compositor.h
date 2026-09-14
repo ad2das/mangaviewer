@@ -15,7 +15,8 @@ public:
     bool ready() noexcept;
     bool bind(int width, int height) noexcept;
     unsigned int drawingFramebuffer() const noexcept;
-    bool present(std::int64_t token) noexcept;
+    /** Caller must have completed GPU work and checked GL errors; no GPU fence is exported. */
+    bool presentReady(std::int64_t token) noexcept;
     void hide() noexcept;
     void poll() noexcept;
 private:

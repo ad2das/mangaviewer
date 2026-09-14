@@ -388,8 +388,257 @@ class EngineRenderRuntimeTest {
         fixture.close()
     }
 
+    @Test fun frameWorkObserverReportsRefreshKindsWithoutChangingSceneBehaviour() = runTest {
+        val events = mutableListOf<Pair<Int, Long>>()
+        val fixture = Fixture(this, frameWorkObserver = FrameWorkObserver { kind, atNanos -> events += kind to atNanos })
+        fixture.runtime.update(snapshot())
+        runCurrent()
+        assertTrue(events.any { it.first == FrameWorkObserver.SNAPSHOT_UPDATE })
+
+        fixture.runtime.retryFailures()
+        assertTrue(events.any { it.first == FrameWorkObserver.WORK_RESULT })
+        assertTrue(events.all { it.second > 0L })
+        fixture.close()
+    }
+
+    @Test fun queuedFrameCoalescesUpdatesIntoOneNewestStateDrain() = runTest {
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, refreshScheduler = scheduler)
+        val initial = snapshot()
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        fixture.runtime.update(initial)
+        fixture.runtime.update(initial.copy(session = initial.session.copy(inputRevision = 2,
+            anchor = SourceAnchor(id, 350 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 350 * q, 450 * q, 0, 102400)))))
+        fixture.runtime.update(initial.copy(session = initial.session.copy(inputRevision = 3,
+            anchor = SourceAnchor(id, 450 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 450 * q, 550 * q, 0, 102400)))))
+        assertEquals("Coalesced updates must request a single frame", 1, scheduler.posts)
+        assertTrue("No scene may be submitted before the frame", fixture.scenes.isEmpty())
+        scheduler.deliver(fixture.runtime)
+        assertEquals(1, fixture.scenes.size)
+        assertEquals(3L, fixture.scenes.single().session.inputRevision)
+        assertEquals(SourceAnchor(id, 450 * q), fixture.scenes.single().session.anchor)
+        fixture.close()
+    }
+
+    @Test fun decodeCompletionJoinsThePendingFrameInsteadOfRequestingAnother() = runTest {
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, refreshScheduler = scheduler)
+        fixture.runtime.update(snapshot())
+        assertEquals(1, scheduler.posts)
+        assertTrue(fixture.scenes.isEmpty())
+        scheduler.deliver(fixture.runtime)
+        assertEquals(1, fixture.scenes.size)
+        assertFalse(fixture.scenes.single().completeCoverage)
+        runCurrent()
+        assertEquals("Upload completion must request exactly one next frame", 2, scheduler.posts)
+        assertEquals("No scene may be submitted without a delivery", 1, fixture.scenes.size)
+        scheduler.deliver(fixture.runtime)
+        assertTrue(fixture.scenes.last().completeCoverage)
+        assertEquals(2, scheduler.posts)
+        fixture.close()
+    }
+
+    @Test fun supersededSnapshotUsesThePendingFrameWithoutStaleCoordinates() = runTest {
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, refreshScheduler = scheduler)
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val first = snapshot()
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { gate.await() }
+        fixture.runtime.update(first)
+        scheduler.deliver(fixture.runtime)
+        assertEquals(SourceAnchor(id, 250 * q), fixture.scenes.last().session.anchor)
+        val second = first.copy(session = first.session.copy(inputRevision = 2,
+            anchor = SourceAnchor(id, 650 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 650 * q, 750 * q, 0, 102400))))
+        fixture.runtime.update(second)
+        assertEquals("A superseding snapshot must reuse the already requested frame", 2, scheduler.posts)
+        val submitted = fixture.scenes.size
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals("A decode completion must not submit outside a delivery", submitted, fixture.scenes.size)
+        assertTrue("No scene may carry the superseded coordinates",
+            fixture.scenes.none { it.session.inputRevision > 1L })
+        scheduler.deliver(fixture.runtime)
+        val drained = fixture.scenes.last()
+        assertEquals(second.session, drained.session)
+        assertTrue("The superseded tile must not be placed at the new coordinates", drained.quads.isEmpty())
+        runCurrent()
+        scheduler.deliver(fixture.runtime)
+        assertEquals(second.session, fixture.scenes.last().session)
+        assertTrue(fixture.scenes.last().completeCoverage)
+        assertEquals(600, fixture.scenes.last().quads.single().texture.tile.sourceTop)
+        fixture.close()
+    }
+
+    @Test fun workArrivingInsideAFramePassDefersToExactlyOneFollowupFrame() = runTest {
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, refreshScheduler = scheduler)
+        val initial = snapshot()
+        var reentered = false
+        var scenesBeforeReentrantUpdate = 0
+        var scenesAfterReentrantUpdate = 0
+        fixture.onViewportReady = { ready ->
+            if (!reentered) {
+                reentered = true
+                scenesBeforeReentrantUpdate = fixture.scenes.size
+                fixture.runtime.update(initial.copy(session = ready.copy(inputRevision = ready.inputRevision + 1)))
+                scenesAfterReentrantUpdate = fixture.scenes.size
+            }
+        }
+        fixture.runtime.update(initial)
+        assertEquals(1, scheduler.posts)
+        scheduler.deliver(fixture.runtime)
+        runCurrent()
+        scheduler.deliver(fixture.runtime)
+        assertTrue(reentered)
+        assertEquals("The reentrant request must not run a nested drain",
+            scenesBeforeReentrantUpdate, scenesAfterReentrantUpdate)
+        assertEquals("Reentrancy must not submit a second scene in the same pass", 2, fixture.scenes.size)
+        assertEquals("Exactly one followup frame must be requested", 3, scheduler.posts)
+        assertEquals(1L, fixture.scenes.last().session.inputRevision)
+        scheduler.deliver(fixture.runtime)
+        assertEquals(2L, fixture.scenes.last().session.inputRevision)
+        assertEquals(3, scheduler.posts)
+        fixture.close()
+    }
+
+    @Test fun scheduledFramesStillRecordEveryRequestForProvenance() = runTest {
+        val events = mutableListOf<Int>()
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, refreshScheduler = scheduler,
+            frameWorkObserver = FrameWorkObserver { kind, atNanos -> events += kind; assertTrue(atNanos > 0L) })
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        fixture.runtime.update(initial.copy(session = initial.session.copy(inputRevision = 2)))
+        scheduler.deliver(fixture.runtime)
+        runCurrent()
+        assertEquals("Every input must be recorded even when frames coalesce",
+            2, events.count { it == FrameWorkObserver.SNAPSHOT_UPDATE })
+        assertTrue(events.any { it == FrameWorkObserver.WORK_RESULT })
+        assertEquals(2, scheduler.posts)
+        fixture.runtime.enabled(false)
+        assertEquals("Disable records its own request and cancels the queued frame",
+            3, events.count { it == FrameWorkObserver.SNAPSHOT_UPDATE })
+        assertFalse(scheduler.pending)
+        fixture.runtime.retryFailures()
+        assertTrue(events.count { it == FrameWorkObserver.WORK_RESULT } >= 2)
+        fixture.close()
+    }
+
+    @Test fun disablingCancelsTheQueuedFrameAndRetiresPixelsInline() = runTest {
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, refreshScheduler = scheduler)
+        fixture.runtime.update(snapshot())
+        scheduler.deliver(fixture.runtime)
+        runCurrent()
+        assertEquals(2, scheduler.posts)
+        scheduler.deliver(fixture.runtime)
+        assertTrue(fixture.scenes.last().completeCoverage)
+        assertEquals(1, fixture.uploader.live.size)
+        fixture.runtime.update(snapshot().copy(session = snapshot().session.copy(inputRevision = 2)))
+        assertEquals(3, scheduler.posts)
+        assertTrue(scheduler.pending)
+        fixture.runtime.enabled(false)
+        assertEquals("Disable must cancel the queued frame", 1, scheduler.cancels)
+        assertFalse(scheduler.pending)
+        assertTrue("Disable must retire pixels before detach", fixture.scenes.last().quads.isEmpty())
+        val submitted = fixture.scenes.size
+        runCurrent()
+        assertTrue("Retirement must complete once in-flight work settles", fixture.uploader.live.isEmpty())
+        scheduler.deliver(fixture.runtime)
+        assertEquals("A canceled delivery must not run", submitted, fixture.scenes.size)
+        fixture.close()
+    }
+
+    @Test fun generationChangeRetiresTheOldSceneBeforeTheQueuedFrameRuns() = runTest {
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, refreshScheduler = scheduler)
+        fixture.runtime.update(snapshot())
+        scheduler.deliver(fixture.runtime)
+        runCurrent()
+        scheduler.deliver(fixture.runtime)
+        assertTrue(fixture.scenes.last().completeCoverage)
+        val scenes = fixture.scenes.size
+        fixture.runtime.update(snapshot().copy(session = snapshot().session.copy(generation = 2)))
+        assertEquals("Generation invalidation must retire pixels synchronously", scenes + 1, fixture.scenes.size)
+        assertTrue(fixture.scenes.last().quads.isEmpty())
+        assertEquals("Current invalidation must apply immediately", 2L, fixture.scenes.last().session.generation)
+        assertTrue(scheduler.pending)
+        runCurrent()
+        assertTrue("Old-generation resources must retire once work settles", fixture.uploader.live.isEmpty())
+        scheduler.deliver(fixture.runtime)
+        runCurrent()
+        scheduler.deliver(fixture.runtime)
+        assertEquals(2L, fixture.scenes.last().session.generation)
+        assertTrue(fixture.scenes.last().completeCoverage)
+        fixture.close()
+    }
+
+    @Test fun closeCancelsTheQueuedFrameAndIgnoresLateDelivery() = runTest {
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, refreshScheduler = scheduler)
+        fixture.runtime.update(snapshot())
+        assertTrue(scheduler.pending)
+        fixture.close()
+        assertEquals(1, scheduler.cancels)
+        assertFalse(scheduler.pending)
+        val submitted = fixture.scenes.size
+        scheduler.deliver(fixture.runtime)
+        assertEquals(submitted, fixture.scenes.size)
+    }
+
+    @Test fun failedClearLatchBlocksFurtherFramesUntilRetry() = runTest {
+        val scheduler = ManualRefreshScheduler()
+        val fixture = Fixture(this, 80_000, waitForComplete = true, refreshScheduler = scheduler)
+        val initial = snapshot()
+        fixture.runtime.update(initial)
+        scheduler.deliver(fixture.runtime)
+        runCurrent()
+        scheduler.deliver(fixture.runtime)
+        val displayed = fixture.scenes.last()
+        assertTrue(displayed.completeCoverage)
+        assertEquals(2, scheduler.posts)
+        val gate = CompletableDeferred<Unit>()
+        fixture.beforeDecode = { gate.await() }
+        fixture.failClear = true
+        val q = SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        val far = initial.copy(session = initial.session.copy(inputRevision = 2,
+            anchor = SourceAnchor(id, 650 * q),
+            visibleRegions = listOf(VisiblePageRegion(id, dimensions, 650 * q, 750 * q, 0, 102400))))
+        fixture.runtime.update(far)
+        assertEquals(3, scheduler.posts)
+        scheduler.deliver(fixture.runtime)
+        assertEquals("The failed clear must be reported once", 1, fixture.failures.size)
+        assertEquals("A failed clear must not re-arm a frame", 3, scheduler.posts)
+        assertEquals(displayed, fixture.scenes.last())
+        fixture.runtime.update(far.copy(session = far.session.copy(inputRevision = 3)))
+        assertEquals("A latched clear failure must not request frames", 3, scheduler.posts)
+        assertEquals(displayed, fixture.scenes.last())
+        fixture.failClear = false
+        fixture.runtime.retryFailures()
+        assertEquals(4, scheduler.posts)
+        scheduler.deliver(fixture.runtime)
+        assertEquals("Inline clear completion must request exactly the next frame", 5, scheduler.posts)
+        assertEquals(displayed, fixture.scenes.last())
+        scheduler.deliver(fixture.runtime)
+        assertEquals(5, scheduler.posts)
+        runCurrent()
+        assertTrue("Clear-released references must retire once work settles", fixture.uploader.live.isEmpty())
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(6, scheduler.posts)
+        scheduler.deliver(fixture.runtime)
+        assertEquals(far.session.anchor, fixture.scenes.last().session.anchor)
+        assertTrue(fixture.scenes.last().completeCoverage)
+        fixture.close()
+    }
+
     private inner class Fixture(scope: TestScope, textureBudget: Long = 80_000,
         tileHeight: Int = 202, preparationViewports: Int = 0, waitForComplete: Boolean = false,
+        frameWorkObserver: FrameWorkObserver? = null, refreshScheduler: ManualRefreshScheduler? = null,
     ) {
         val coordinator = WorkCoordinator(scope)
         val uploader = Uploader()
@@ -398,7 +647,9 @@ class EngineRenderRuntimeTest {
         var pixelCloses = 0
         var pageRequestBuilds = 0
         var failScene = false
+        var failClear = false
         var beforeDecode: suspend (EngineTileSpec) -> Unit = {}
+        var onViewportReady: (EngineSessionSnapshot) -> Unit = {}
         val failures = mutableListOf<Throwable>()
         private val tileWork = EngineTileWork(EngineImageDecoder { _, tile ->
             beforeDecode(tile)
@@ -419,7 +670,11 @@ class EngineRenderRuntimeTest {
                 if (failScene) error("frame callback failed")
                 scenes += scene
                 uploader.scene(scene.quads.map { it.texture.key }.toSet())
-            }, { uploader.scene(emptySet()) }, { _, failure -> failures += failure }, waitForComplete)
+            }, { if (failClear) error("clear failed") else uploader.scene(emptySet()) },
+            { _, failure -> failures += failure }, waitForComplete,
+            reportSceneFailure = { failures += it },
+            reportViewportReady = { snapshot -> onViewportReady(snapshot) },
+            frameWorkObserver = frameWorkObserver, refreshScheduler = refreshScheduler)
 
         suspend fun close() { runtime.close(); coordinator.close(); assertTrue(uploader.live.isEmpty()) }
     }
@@ -454,5 +709,30 @@ class EngineRenderRuntimeTest {
             SourceAnchor(id, 250 * q), 1, 1, 0,
             listOf(VisiblePageRegion(id, dimensions, 250 * q, 350 * q, 0, 102400)), emptySet(), emptySet(), true)
         return EngineRuntimeSnapshot(state, emptyMap(), mapOf(id to PageContentIdentity(id, "1", "1".repeat(64), dimensions, 1)))
+    }
+}
+
+/** Mirrors the platform frame port: one pending delivery, explicit cancel, manual delivery. */
+private class ManualRefreshScheduler : EngineRefreshScheduler {
+    var posts = 0
+        private set
+    var cancels = 0
+        private set
+    var pending = false
+        private set
+
+    override fun post() {
+        posts++
+        pending = true
+    }
+
+    override fun cancel() {
+        cancels++
+        pending = false
+    }
+
+    fun deliver(runtime: EngineRenderRuntime) {
+        pending = false
+        runtime.refreshOnFrame()
     }
 }

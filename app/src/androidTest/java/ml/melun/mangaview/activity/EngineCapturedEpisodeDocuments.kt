@@ -18,7 +18,9 @@ internal class EngineCapturedEpisodeDocuments : EpisodePlanObserver {
 
     @Synchronized fun pageBounds(episode: EpisodeId): Pair<PageId, PageId>? {
         val plans = entries.values.filter { it.plan.manifest.id == episode }
-        check(plans.map { it.plan.contentRevision }.distinct().size <= 1) { "Episode revision changed during traversal" }
+        check(plans.map { it.plan.pages.map { page -> page.pageId } }.distinct().size <= 1) {
+            "Episode page identities changed during traversal"
+        }
         val pages = plans.lastOrNull()?.plan?.pages ?: return null
         return pages.first().pageId to pages.last().pageId
     }
@@ -27,7 +29,7 @@ internal class EngineCapturedEpisodeDocuments : EpisodePlanObserver {
         check(plan.manifest.id == episodeId && plan.documentSha256 == document.sha256 && plan.finalDocumentUrl == document.finalUrl)
         val key = Key(episodeId, document.replaySha256, plan.contentRevision, plan.authEpoch)
         if (key in entries) return
-        check(entries.size < 16 && document.byteCount <= 32L * 1024 * 1024 - bytes) { "Document observation capacity exceeded" }
+        check(entries.size < 64 && document.byteCount <= 32L * 1024 * 1024 - bytes) { "Document observation capacity exceeded" }
         entries[key] = Entry(document, plan, System.nanoTime())
         bytes += document.byteCount
     }

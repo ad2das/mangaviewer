@@ -11,6 +11,12 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
+import kotlin.coroutines.resume
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import ml.melun.mangaview.viewer.FixedPx
 import ml.melun.mangaview.viewer.Viewport
 
@@ -42,10 +48,12 @@ internal class ViewerSurfaceHost(
 ) : SurfaceView(context), SurfaceHolder.Callback {
     private val maximumFlingVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
     private val pointerDeltas = PointerDeltaLedger()
+    private val dragQuantizer = PointerDeltaQuantizer()
+    private val inputTrace = ViewerInputTraceLedger()
     private val dragFrame = ViewerVsyncScheduler(android.view.Choreographer.getInstance(), ::drawDrag)
     private val fling = ViewerFlingDriver(
         android.view.Choreographer.getInstance(),
-        ::emitScroll,
+        ::emitFlingScroll,
         sink::motionFrame,
         ::finishInteraction,
     )
@@ -53,6 +61,7 @@ internal class ViewerSurfaceHost(
     private var pointerId = MotionEvent.INVALID_POINTER_ID
     private var previousFrameNanos = 0L
     private var lastMotionNanos = 0L
+    private var dispatchEntryNanos = 0L
     private var latestVelocity = 0.0
     private var dragScheduled = false
     private var interaction = false
@@ -62,12 +71,13 @@ internal class ViewerSurfaceHost(
     private var flingReleaseNanos = 0L
     private var motionSequence = 0L
     private var nextMotionSequence = 1L
+    private val traceGesture = ViewerInputTraceGesture()
     private var foreground = true
     private var surfaceReady = false
     private var rendererAttached = false
     private var attachPending = false
     private var attachEpoch = 0L
-    private var attachFailures = 0
+    private var attachJob: Job? = null
     private var attachedWidth = 0
     private var attachedHeight = 0
 
@@ -81,6 +91,7 @@ internal class ViewerSurfaceHost(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        dispatchEntryNanos = System.nanoTime()
         val tracing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && Trace.isEnabled()
         if (tracing) {
             // Preserve the event's millisecond precision. The trace interval separately records
@@ -89,7 +100,7 @@ internal class ViewerSurfaceHost(
         }
         try {
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> begin(event)
+                MotionEvent.ACTION_DOWN -> begin(event, tracing)
                 MotionEvent.ACTION_MOVE -> move(event)
                 MotionEvent.ACTION_POINTER_UP -> changePointer(event)
                 MotionEvent.ACTION_UP -> end(event, flingAfter = true)
@@ -178,9 +189,9 @@ internal class ViewerSurfaceHost(
         detachRenderer()
     }
 
-    private fun begin(event: MotionEvent) {
-        // This surface already queues every pointer delta for its own VSYNC drain.
-        // Let touchscreen samples reach that queue without a second frame-batching wait.
+    private fun begin(event: MotionEvent, tracing: Boolean) {
+        // Real drag deltas are drained on the dispatch pass itself (drainDragImmediately), so keep
+        // touchscreen samples unbuffered instead of letting a second frame-batching wait delay them.
         if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) requestUnbufferedDispatch(event)
         flushDrag()
         fling.stop()
@@ -188,6 +199,8 @@ internal class ViewerSurfaceHost(
         velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
         pointerId = event.getPointerId(0)
         pointerDeltas.begin(event.y)
+        inputTrace.begin(event.y, tracing)
+        traceGesture.beginTouch()
         val at = event.eventTime * NANOS_PER_MILLISECOND
         previousFrameNanos = at
         lastMotionNanos = at
@@ -200,12 +213,12 @@ internal class ViewerSurfaceHost(
         val index = event.findPointerIndex(pointerId)
         if (index < 0) return
         val at = event.eventTime * NANOS_PER_MILLISECOND
-        val delta = appendSamples(event, index)
+        val delta = appendPointerSamples(event, index, pointerDeltas, inputTrace, traceGesture.id, pointerId)
         val elapsed = (at - lastMotionNanos).coerceAtLeast(1L)
         latestVelocity = delta * NANOS_PER_SECOND / elapsed
         lastMotionNanos = at
         beginInteraction()
-        scheduleDrag()
+        drainDragImmediately()
     }
 
     private fun changePointer(event: MotionEvent) {
@@ -215,20 +228,22 @@ internal class ViewerSurfaceHost(
         if (replacement >= event.pointerCount) return
         pointerId = event.getPointerId(replacement)
         pointerDeltas.rebase(event.getY(replacement))
+        dragQuantizer.rebase()
+        inputTrace.rebase(event.getY(replacement))
     }
 
     private fun end(event: MotionEvent, flingAfter: Boolean) {
         val tracker = velocityTracker
         tracker?.addMovement(event)
         val index = event.findPointerIndex(pointerId)
-        if (index >= 0) appendSamples(event, index)
+        if (index >= 0) appendPointerSamples(event, index, pointerDeltas, inputTrace, traceGesture.id, pointerId)
         if (flingAfter && tracker != null) {
             tracker.computeCurrentVelocity(1_000, maximumFlingVelocity.toFloat())
             flingVelocity = (-tracker.getYVelocity(pointerId)).toDouble()
             flingReleaseNanos = event.eventTime * NANOS_PER_MILLISECOND
         }
         ending = true
-        scheduleDrag()
+        drainDragImmediately()
         tracker?.recycle()
         velocityTracker = null
         pointerId = MotionEvent.INVALID_POINTER_ID
@@ -244,27 +259,44 @@ internal class ViewerSurfaceHost(
 
     private fun drawDrag(frameTime: Long, vsyncId: Long, expectedPresentation: Long) {
         dragScheduled = false
+        drainPending(frameTime, vsyncId, expectedPresentation)
+        if (ending) finishDrag(frameTime, vsyncId, expectedPresentation)
+        if (pointerDeltas.hasPending || ending) scheduleDrag() else motionSequence = 0L
+    }
+
+    /**
+     * Applies every queued real pointer delta on the dispatch pass itself instead of waiting for a
+     * Choreographer drag frame. The trace origin is the actual MotionEvent dispatch entry time with
+     * no frame-timeline vsync id ([NO_VSYNC_ID]); the legacy frame-callback drain keeps its own
+     * Choreographer origin. Fling stays frame-driven: [finishDrag] still starts it from the actual
+     * release time.
+     */
+    private fun drainDragImmediately() {
+        if (dragScheduled) dragFrame.cancel()
+        dragScheduled = false
+        // Mirror the scheduled path: each drain carries a nonzero unique sequence, because the
+        // presentation recorder drops every motion frame whose sequence is <= 0.
+        if (motionSequence == 0L) motionSequence = issueMotionSequence()
+        drainPending(dispatchEntryNanos, NO_VSYNC_ID, 0L)
+        if (ending) finishDrag(dispatchEntryNanos, NO_VSYNC_ID, 0L)
+        if (pointerDeltas.hasPending || ending) scheduleDrag() else motionSequence = 0L
+    }
+
+    private fun drainPending(frameTime: Long, vsyncId: Long, expectedPresentation: Long) {
         var moved = false
+        val traceSegments = inputTrace.drain()
+        var traceIndex = 0
         pointerDeltas.drain().forEach { delta ->
             val elapsed = (frameTime - previousFrameNanos).coerceAtLeast(1L)
             val velocity = latestVelocity.takeIf { it != 0.0 }
                 ?: delta * NANOS_PER_SECOND / elapsed
-            if (emitScroll(delta, velocity, frameTime, expectedPresentation, vsyncId)) {
+            if (emitScroll(delta, dragQuantizer.apply(delta), velocity, frameTime, expectedPresentation,
+                    vsyncId, traceSegments.getOrNull(traceIndex++))) {
                 moved = true
             }
         }
         if (moved) sink.motionFrame(motionSequence, frameTime)
         previousFrameNanos = frameTime
-        if (ending) finishDrag(frameTime, vsyncId, expectedPresentation)
-        if (pointerDeltas.hasPending || ending) scheduleDrag() else motionSequence = 0L
-    }
-
-    private fun appendSamples(event: MotionEvent, index: Int): Double {
-        var delta = 0.0
-        for (sample in 0 until event.historySize) {
-            delta += pointerDeltas.append(event.getHistoricalY(index, sample))
-        }
-        return delta + pointerDeltas.append(event.getY(index))
     }
 
     private fun finishDrag(frameTime: Long, vsyncId: Long, expectedPresentation: Long) {
@@ -280,31 +312,46 @@ internal class ViewerSurfaceHost(
 
     private fun emitScroll(
         deltaPixels: Double,
+        fixedDelta: FixedPx,
         velocityPixelsPerSecond: Double,
         frameTimeNanos: Long,
         expectedPresentationTimeNanos: Long,
         frameTimelineVsyncId: Long,
+        segment: ViewerInputTraceLedger.Segment?,
     ): Boolean {
         if (deltaPixels == 0.0) return false
-        return sink.userScroll(
-            FixedPx.fromPixels(deltaPixels),
-            velocityPixelsPerSecond.toFloat(),
-            frameTimeNanos,
-            frameTimelineVsyncId,
-            expectedPresentationTimeNanos,
-        )
+        return viewerInputTrace({ viewerSegmentTraceName(segment) }) {
+            sink.userScroll(
+                fixedDelta,
+                velocityPixelsPerSecond.toFloat(),
+                frameTimeNanos,
+                frameTimelineVsyncId,
+                expectedPresentationTimeNanos,
+            )
+        }
     }
+
+    /** Fling steps are frame-synthetic and must never masquerade as original touch samples. */
+    private fun emitFlingScroll(deltaPixels: Double, velocityPixelsPerSecond: Double,
+        frameTimeNanos: Long, expectedPresentationTimeNanos: Long, frameTimelineVsyncId: Long): Boolean =
+        emitScroll(deltaPixels, FixedPx.fromPixels(deltaPixels), velocityPixelsPerSecond, frameTimeNanos,
+            expectedPresentationTimeNanos, frameTimelineVsyncId,
+            if (Trace.isEnabled()) inputTrace.synthetic(deltaPixels) else null)
 
     private fun flushDrag() {
         if (dragScheduled) dragFrame.cancel()
         dragScheduled = false
+        val traceSegments = inputTrace.drain()
+        var traceIndex = 0
         pointerDeltas.drain().forEach { delta ->
-            emitScroll(delta, 0.0, System.nanoTime(), 0L, -1L)
+            emitScroll(delta, dragQuantizer.apply(delta), 0.0, System.nanoTime(), 0L, -1L,
+                traceSegments.getOrNull(traceIndex++))
         }
         ending = false
         flingVelocity = null
         flingReleaseNanos = 0L
         motionSequence = 0L
+        dragQuantizer.begin()
     }
 
     private fun beginInteraction() {
@@ -321,40 +368,47 @@ internal class ViewerSurfaceHost(
     }
 
     private fun attachIfReady() {
-        if (!foreground || rendererAttached || attachPending || !surfaceReady || !isAttachedToWindow ||
-            width <= 0 || height <= 0) return
+        if (rendererAttached || attachPending || !canAttach()) return
         attachPending = true
+        val epoch = ++attachEpoch
+        attachJob = CoroutineScope(Dispatchers.Main.immediate).launch {
+            try {
+                retrySurfaceAttachment(
+                    MAXIMUM_ATTACH_RETRIES,
+                    ATTACH_RETRY_DELAY_MILLIS,
+                    canRetry = { epoch == attachEpoch && canAttach() },
+                    attach = { attachSurface(epoch) },
+                    exhausted = sink::surfaceAttachExhausted,
+                )
+            } finally {
+                if (epoch == attachEpoch) attachPending = false
+            }
+        }
+    }
+
+    private fun canAttach(): Boolean = foreground && surfaceReady && isAttachedToWindow && width > 0 && height > 0
+
+    private suspend fun attachSurface(epoch: Long): Boolean = suspendCancellableCoroutine { continuation ->
         rendererAttached = true
         attachedWidth = width
         attachedHeight = height
-        val epoch = ++attachEpoch
         sink.surfaceAvailable(holder.surface, width, height, display?.refreshRate ?: 60.0F) { attached ->
-            if (epoch != attachEpoch) return@surfaceAvailable
-            attachPending = false
-            if (attached) {
-                attachFailures = 0
-                return@surfaceAvailable
+            if (epoch != attachEpoch || !continuation.isActive) return@surfaceAvailable
+            if (!attached) {
+                // A window can die before SurfaceHolder delivers its lifecycle event.
+                rendererAttached = false
+                attachedWidth = 0
+                attachedHeight = 0
             }
-            // A window can die silently while backgrounded. Treat one failed attach as
-            // recoverable and wait for the next lifecycle event or a short retry instead of
-            // latching a permanent error the way the old single-shot attach did.
-            rendererAttached = false
-            attachedWidth = 0
-            attachedHeight = 0
-            attachFailures++
-            if (attachFailures <= MAXIMUM_ATTACH_RETRIES && foreground && surfaceReady && isAttachedToWindow) {
-                postDelayed({ if (epoch == attachEpoch) attachIfReady() }, ATTACH_RETRY_DELAY_MILLIS)
-            } else {
-                attachFailures = 0
-                sink.surfaceAttachExhausted()
-            }
+            continuation.resume(attached)
         }
     }
 
     private fun detachRenderer() {
         attachEpoch++
+        attachJob?.cancel()
+        attachJob = null
         attachPending = false
-        attachFailures = 0
         if (!rendererAttached) return
         rendererAttached = false
         attachedWidth = 0

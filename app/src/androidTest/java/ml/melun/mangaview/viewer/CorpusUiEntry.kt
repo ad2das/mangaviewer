@@ -63,29 +63,27 @@ internal class CorpusUiEntry(
         ml.melun.mangaview.ui.library.dismissAutomaticUpdateNotice(device)
         await { it.sources.isNotEmpty() }
         timing.mark("sources-ready")
-        // The library snapshot may restore the saved provider while we cycle; drive the cycle
-        // purely from the visible chip so a restore can never desynchronise state and UI.
         val targetLabel = state().sources.single { it.id == series.id.sourceId }.label
-        repeat(state().sources.size * 2 + 2) {
-            val shown = shownChipLabel()
-            if (shown == null) failSourceChip("no provider chip visible", targetLabel)
-            if (shown == targetLabel) return@repeat
+        val shown = shownChipLabel() ?: failSourceChip("no provider chip visible", targetLabel)
+        if (shown != targetLabel) {
             clearUiAutomationCache()
             val chip = requireNotNull(device.findObject(By.desc(shown)))
             (clickableAncestor(chip) ?: chip).click()
-            val deadline = android.os.SystemClock.elapsedRealtime() + 5_000
-            while (android.os.SystemClock.elapsedRealtime() < deadline && shownChipLabel() == shown) {
-                android.os.SystemClock.sleep(100)
-            }
+            check(device.wait(Until.hasObject(By.text("사이트 선택")), 5_000))
+            val choice = requireNotNull(device.wait(Until.findObject(By.text(targetLabel)), 5_000))
+            requireNotNull(clickableAncestor(choice)).click()
+            await { it.selectedSourceId == series.id.sourceId && !it.sourcePickerVisible }
         }
-        if (shownChipLabel() != targetLabel) failSourceChip("provider chip did not cycle to target", targetLabel)
+        if (shownChipLabel() != targetLabel) failSourceChip("provider selection did not reach target", targetLabel)
         check(state().selectedSourceId == series.id.sourceId) { "UI source selection failed" }
         timing.mark("source-selected")
         requireNotNull(device.wait(Until.findObject(By.desc("하단 검색")), 5_000)).click()
         val desiredKind = if (kind == SeriesKind.COMIC) "만화" else "웹툰"
-        repeat(3) {
-            val node = requireNotNull(device.wait(Until.findObject(By.descStartsWith("검색 범위:")), 5_000))
-            if (node.contentDescription != "검색 범위: $desiredKind") node.click()
+        if (state().sources.single { it.id == series.id.sourceId }.distinguishesKinds) {
+            repeat(3) {
+                val node = requireNotNull(device.wait(Until.findObject(By.descStartsWith("검색 범위:")), 5_000))
+                if (node.contentDescription != "검색 범위: $desiredKind") node.click()
+            }
         }
         val field = requireNotNull(device.wait(Until.findObject(By.descStartsWith("검색 항목:")), 5_000))
         if (field.contentDescription != "검색 항목: 제목") field.click()

@@ -16,6 +16,51 @@ internal class LibraryUiActions(
     private val update: (((LibraryState) -> LibraryState) -> Unit),
     private val emit: (LibraryEffect) -> Unit,
 ) {
+    fun toggleOverlay(intent: LibraryIntent) {
+        when (intent) {
+            LibraryIntent.ToggleSettings -> update { it.copy(settingsVisible = !it.settingsVisible) }
+            LibraryIntent.TogglePreferences -> update {
+                it.copy(preferencesVisible = !it.preferencesVisible, settingsVisible = false)
+            }
+            LibraryIntent.ToggleSourcePicker -> update {
+                it.copy(
+                    sourcePickerVisible = !it.sourcePickerVisible,
+                    settingsVisible = false,
+                    preferencesVisible = false,
+                )
+            }
+            else -> error("Not an overlay intent: $intent")
+        }
+    }
+
+    fun dismissOverlay(): Boolean {
+        if (current().pendingOfflineRemoval != null) {
+            update { it.copy(pendingOfflineRemoval = null) }
+            return true
+        }
+        if (current().downloadSelectionVisible) {
+            update { it.copy(downloadSelectionVisible = false) }
+            return true
+        }
+        if (current().sourcePickerVisible) {
+            update { it.copy(sourcePickerVisible = false) }
+            return true
+        }
+        if (current().preferencesVisible) {
+            update { it.copy(preferencesVisible = false, settingsVisible = true) }
+            return true
+        }
+        if (current().settingsVisible) {
+            update { it.copy(settingsVisible = false) }
+            return true
+        }
+        if (current().seriesMenuVisible) {
+            update { it.copy(seriesMenuVisible = false) }
+            return true
+        }
+        return false
+    }
+
     fun removeSaved(item: SavedItemRemoval) {
         scope.launch {
             try { actions.removeSaved(item); showMessage("${item.series.title} 삭제 완료") }

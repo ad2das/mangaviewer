@@ -57,10 +57,13 @@ class WfwfContentSource(
     private val transport: SourceTransport,
     preparationScope: CoroutineScope? = null,
     private val parser: WfwfHtmlParser = WfwfHtmlParser(),
-    private val originResolver: WfwfOriginResolver = WfwfOriginResolver(transport, config.userAgent),
+    originProbeObserver: (String) -> Unit = {},
+    private val originResolver: WfwfOriginResolver =
+        WfwfOriginResolver(transport, config.userAgent, onProbe = originProbeObserver),
+    onOriginResolved: (String) -> Unit = {},
 ) : ContentSource {
     override val id = SourceId("wfwf")
-    private val origin = WfwfOriginCoordinator(config.initialOrigin, originResolver, preparationScope)
+    private val origin = WfwfOriginCoordinator(config.initialOrigin, originResolver, preparationScope, onOriginResolved)
     private val catalogStore = WfwfCatalogStore(::fetchCatalog)
     private val manifestStore = WfwfManifestStore(config.manifestCacheEpisodes, ::fetchManifest)
     private val comicSearch = WfwfComicSearch(::fetchComicCatalogPage)
@@ -428,34 +431,9 @@ class WfwfContentSource(
         return document
     }
 
-    private fun adjacentFrom(catalog: List<SourceEpisode>, episodeId: EpisodeId): AdjacentEpisodes {
-        val index = catalog.indexOfFirst { it.id == episodeId }
-        if (index < 0) return AdjacentEpisodes(null, null)
-        return AdjacentEpisodes(
-            previous = catalog.getOrNull(index + 1)?.id,
-            next = catalog.getOrNull(index - 1)?.id,
-        )
-    }
+
 
     private fun seriesId(key: WfwfSeriesKey): SeriesId = SeriesId(id, key.encode())
-
-    private fun listPath(key: WfwfSeriesKey): String = when (key.kind) {
-        WfwfKind.COMIC -> "/cl?toon=${key.titleId}"
-        WfwfKind.WEBTOON -> "/list?toon=${key.titleId}"
-    }
-
-    private fun listPagePath(key: WfwfSeriesKey, page: Int): String {
-        require(page > 1) { "The first catalog page uses the canonical list URL" }
-        return "${listPath(key)}&s=n&pg=$page"
-    }
-
-    private fun viewPath(key: WfwfSeriesKey, episodeKey: String): String = when (key.kind) {
-        WfwfKind.COMIC -> "/cv?toon=${key.titleId}&num=$episodeKey"
-        WfwfKind.WEBTOON -> "/view?toon=${key.titleId}&num=$episodeKey"
-    }
-
-    private fun viewPathFor(episodeId: EpisodeId): String =
-        viewPath(WfwfSeriesKey.decode(episodeId.seriesId), episodeId.remoteKey)
 
     private fun requestHeaders(referer: String? = null): Map<String, String> = buildMap {
         put("User-Agent", config.userAgent)
@@ -504,3 +482,30 @@ private val EXPIRED_PAGE_STATUSES = setOf(401, 403, 404, 410)
 private fun WfwfKind?.matches(kind: SeriesKind): Boolean =
     (this == WfwfKind.COMIC && kind == SeriesKind.COMIC) ||
         (this == WfwfKind.WEBTOON && kind == SeriesKind.WEBTOON)
+
+private fun adjacentFrom(catalog: List<SourceEpisode>, episodeId: EpisodeId): AdjacentEpisodes {
+    val index = catalog.indexOfFirst { it.id == episodeId }
+    if (index < 0) return AdjacentEpisodes(null, null)
+    return AdjacentEpisodes(
+        previous = catalog.getOrNull(index + 1)?.id,
+        next = catalog.getOrNull(index - 1)?.id,
+    )
+}
+
+private fun listPath(key: WfwfSeriesKey): String = when (key.kind) {
+    WfwfKind.COMIC -> "/cl?toon=${key.titleId}"
+    WfwfKind.WEBTOON -> "/list?toon=${key.titleId}"
+}
+
+private fun listPagePath(key: WfwfSeriesKey, page: Int): String {
+    require(page > 1) { "The first catalog page uses the canonical list URL" }
+    return "${listPath(key)}&s=n&pg=$page"
+}
+
+private fun viewPath(key: WfwfSeriesKey, episodeKey: String): String = when (key.kind) {
+    WfwfKind.COMIC -> "/cv?toon=${key.titleId}&num=$episodeKey"
+    WfwfKind.WEBTOON -> "/view?toon=${key.titleId}&num=$episodeKey"
+}
+
+private fun viewPathFor(episodeId: EpisodeId): String =
+    viewPath(WfwfSeriesKey.decode(episodeId.seriesId), episodeId.remoteKey)

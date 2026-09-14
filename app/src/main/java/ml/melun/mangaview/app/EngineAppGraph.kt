@@ -38,6 +38,8 @@ internal class EngineAppGraph(
     private val ntkOrigin: URI,
     networkEvidenceObserver: () -> SourceExchangeObserver? = { null },
     private val origins: ProviderOriginDirectory = ProviderOriginDirectory(context, ioDispatcher, userAgent),
+    private val newxtoonClearance: NewxtoonClearance? = null,
+    private val newxtoonUserAgent: String = userAgent,
 ) {
     // One body beyond the twelve background transfers and two visible reserves is kept for the
     // document-end original so a fast reader cannot outrun a displayable episode end.
@@ -74,9 +76,20 @@ internal class EngineAppGraph(
     private val positionStore = EnginePositionStore(database::database, ioDispatcher)
     val positions: EnginePositionPort = positionStore
     private val transportFactory = OkHttpTransportFactory(ioDispatcher, parallelism = workLimits.network)
-    private fun resilient(transport: ml.melun.mangaview.source.SourceTransport) =
-        ProviderOriginTransport(transportFactory.protect(transport), origins)
+    private fun resilient(
+        transport: ml.melun.mangaview.source.SourceTransport,
+        cookieJar: okhttp3.CookieJar = okhttp3.CookieJar.NO_COOKIES,
+    ) = ProviderOriginTransport(transportFactory.protect(transport, cookieJar), origins)
     private val transport = ObservedSourceTransport(resilient(transportFactory.create()), "engine", networkEvidenceObserver)
+    private val newxtoonTransport = lazy {
+        val jar = newxtoonClearance?.cookieJar ?: okhttp3.CookieJar.NO_COOKIES
+        val base = resilient(transportFactory.create(jar), jar)
+        val guarded = if (newxtoonClearance == null) base
+        else NewxtoonClearanceTransport(base,
+            ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN, newxtoonClearance::solve,
+            newxtoonClearance::solveFresh)
+        ObservedSourceTransport(guarded, "engine", networkEvidenceObserver)
+    }
     private val ntkPageTransport = lazy {
         // Match NTK's existing Chromium TLS transport for its image CDN hosts.
         // Construction is lazy and does not preconnect or request page content.
@@ -89,8 +102,9 @@ internal class EngineAppGraph(
     private val completeEpisodes = ml.melun.mangaview.data.engine.EngineCompleteEpisodeStore(
         File(context.applicationInfo.dataDir, "app_engine_episode_plans_v1"), storage, ioDispatcher,
         reportFailure = { android.util.Log.w("EngineEpisodeCache", "Cached episode metadata unavailable", it) })
+    private val ntkIdentity = NtkBrowserIdentity.forDevice(context, "engine")
     private val ntkBrowser by lazy {
-        NtkEngineBrowserClient(context, userAgent, NtkBrowserIdentity.forDevice(context, "engine"),
+        NtkEngineBrowserClient(context, userAgent, ntkIdentity,
             captureEvidence = { ntkAuthorizationEvidenceObserver != null }) {
             ntkAuthorizationEvidenceObserver?.invoke(it)
         }
@@ -100,11 +114,11 @@ internal class EngineAppGraph(
         val live = when (spec.sourceId.value) {
             "wfwf" -> EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
-            "newxtoon" -> EngineNewxtoonSessionWork(userAgent, URI(
-                ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), transport, storage, positions,
+            "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent, URI(
+                ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
             "ntk" -> EngineNtkSessionWork(userAgent, ntkOrigin, transport, storage, positions,
-                parsingDispatcher, ntkBrowser, library::readingPosition, spec.initialPosition, observations, ntkPageTransport.value,
+                parsingDispatcher, ntkBrowser, ntkIdentity, library::readingPosition, spec.initialPosition, observations, ntkPageTransport.value,
                 spec.initialAnchor)
             else -> error("Unknown engine source")
         }
@@ -128,7 +142,8 @@ internal class EngineAppGraph(
         closeOwned { coordinator.close() }
         closeOwned { openingMemory.close() }
         closeOwned { openingDecode.closeAndAwait() }
-        val transports = listOfNotNull(transport, ntkPageTransport.takeIf { it.isInitialized() }?.value)
+        val transports = listOfNotNull(transport, ntkPageTransport.takeIf { it.isInitialized() }?.value,
+            newxtoonTransport.takeIf { it.isInitialized() }?.value)
         for (owned in transports) closeOwned { owned.close() }
         primary?.let { throw it }
     }

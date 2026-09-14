@@ -253,6 +253,16 @@ class WfwfAccessPlannerTest {
         }
     }
 
+    @Test
+    fun episodeWithoutImagesFailsAsRecoverableDocument() {
+        try {
+            plan("""<html><body><p>provider moved</p></body></html>""")
+        } catch (_: java.io.IOException) {
+            return
+        }
+        throw AssertionError("Expected IOException for an episode document without images")
+    }
+
     private fun plan(
         html: String,
         finalUrl: String = "https://wfwf.test/cv?toon=7&num=12",

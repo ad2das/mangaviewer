@@ -1,10 +1,13 @@
 package ml.melun.mangaview.engine.runtime
 
 import java.math.BigInteger
+import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageDimensions
+import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.toLongExact
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineTileSpec
+import ml.melun.mangaview.engine.api.EpisodeAccessPlan
 import ml.melun.mangaview.engine.api.PageContentIdentity
 import ml.melun.mangaview.engine.api.SourceAnchor
 import ml.melun.mangaview.engine.api.SpreadPages
@@ -28,8 +31,7 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
 
     fun plan(snapshot: EngineRuntimeSnapshot): EngineTilePlan {
         val visible = linkedMapOf<EngineTileSpec, WorkPriority>()
-        val speculative = linkedSetOf<EngineTileSpec>()
-        val distant = mutableListOf<Pair<Long, EngineTileSpec>>()
+        val bands = mutableListOf<HorizonBand>()
         val placements = mutableListOf<EngineTilePlacement>()
         var complete = snapshot.session.completeViewport
         var previousRegion: VisiblePageRegion? = null
@@ -56,28 +58,16 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
             val firstPlacement = placements.size
             for (band in first..last) {
                 val tile = documentTile(page, band, count, width, split)
-                val anchor = snapshot.session.anchor
-                val offsetRows = sourceOffsetRows(tile)
-                val focus = anchor?.pageId == tile.pageId &&
-                    anchor.sourceYQ32 >= (tile.sourceTop.toLong() + offsetRows) *
-                        SourceAnchor.SOURCE_UNITS_PER_PIXEL &&
-                    anchor.sourceYQ32 < (tile.sourceBottom.toLong() + offsetRows) *
-                        SourceAnchor.SOURCE_UNITS_PER_PIXEL
-                visible[tile] = if (focus) WorkPriority.FOCUS else WorkPriority.VISIBLE
+                visible[tile] = tilePriority(snapshot.session.anchor, tile)
                 placements += placement(tile, region)
             }
             stitchBoundary(placements, previousRegion, previousLastPlacement, previousComplete, region, firstPlacement)
             previousRegion = region
             previousComplete = region.sourceBottomQ32 == documentEndQ32(region.dimensions, split)
             previousLastPlacement = placements.lastIndex
-            if (first > 0) speculative += documentTile(page, first - 1, count, width, split)
-            if (last + 1 < count) speculative += documentTile(page, last + 1, count, width, split)
-            if (first == 0) adjacentTile(snapshot, region.pageId, -1)?.let(speculative::add)
-            if (last == count - 1) adjacentTile(snapshot, region.pageId, 1)?.let(speculative::add)
-            collectDistantBands(snapshot, page, first, last, distant)
+            bands += HorizonBand(region.pageId, first, last)
         }
-        addDocumentEndHorizon(snapshot, speculative)
-        addPreparedHorizon(snapshot, distant, speculative)
+        val speculative = speculativeHorizon(snapshot, bands)
         var bytes = visible.keys.fold(0L) { total, tile -> Math.addExact(total, tile.byteCount) }
         require(bytes <= textureBudgetBytes) { "Visible original-resolution tiles exceed the texture budget" }
         val demands = visible.map { EngineTileDemand(it.key, it.value) }.toMutableList()
@@ -88,6 +78,53 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
             }
         }
         return EngineTilePlan(demands, placements, complete, bytes)
+    }
+
+    private var horizonKey: HorizonKey? = null
+    private var horizonTiles: List<EngineTileSpec> = emptyList()
+
+    /**
+     * Preparation horizon of the visible bands. It changes only when the ordered bands, verified
+     * bytes, plans, or reading geometry change; a single-entry cache keeps the exact walk order.
+     */
+    internal fun speculativeHorizon(snapshot: EngineRuntimeSnapshot, bands: List<HorizonBand>): List<EngineTileSpec> {
+        val key = HorizonKey(bands, snapshot.pages, snapshot.plans,
+            snapshot.session.viewport.widthPx, snapshot.session.viewport.heightPx,
+            snapshot.session.splitMode, snapshot.session.anchor?.pageId,
+            snapshot.session.requiredDimensions, snapshot.session.completeViewport)
+        val cached = horizonKey
+        if (cached != null && cached.matches(key)) return horizonTiles
+        val tiles = buildHorizon(snapshot, bands)
+        horizonKey = key
+        horizonTiles = tiles
+        return tiles
+    }
+
+    private fun buildHorizon(snapshot: EngineRuntimeSnapshot, bands: List<HorizonBand>): List<EngineTileSpec> {
+        val speculative = linkedSetOf<EngineTileSpec>()
+        val distant = mutableListOf<Pair<Long, EngineTileSpec>>()
+        val width = snapshot.session.viewport.widthPx
+        for (band in bands) {
+            val page = snapshot.pages[band.pageId] ?: continue
+            val split = splitPage(snapshot, page)
+            val count = documentBandCount(page, width, split)
+            if (band.first > 0) speculative += documentTile(page, band.first - 1, count, width, split)
+            if (band.last + 1 < count) speculative += documentTile(page, band.last + 1, count, width, split)
+            if (band.first == 0) adjacentTile(snapshot, band.pageId, -1)?.let(speculative::add)
+            if (band.last == count - 1) adjacentTile(snapshot, band.pageId, 1)?.let(speculative::add)
+            collectDistantBands(snapshot, page, band.first, band.last, distant)
+        }
+        addDocumentEndHorizon(snapshot, speculative)
+        addPreparedHorizon(snapshot, distant, speculative)
+        return speculative.toList()
+    }
+
+    private fun tilePriority(anchor: SourceAnchor?, tile: EngineTileSpec): WorkPriority {
+        val offsetRows = sourceOffsetRows(tile)
+        val focus = anchor?.pageId == tile.pageId &&
+            anchor.sourceYQ32 >= (tile.sourceTop.toLong() + offsetRows) * SourceAnchor.SOURCE_UNITS_PER_PIXEL &&
+            anchor.sourceYQ32 < (tile.sourceBottom.toLong() + offsetRows) * SourceAnchor.SOURCE_UNITS_PER_PIXEL
+        return if (focus) WorkPriority.FOCUS else WorkPriority.VISIBLE
     }
 
     /** A held scene takes precedence over speculation; null requires releasing its native references. */
@@ -303,4 +340,29 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         val floor = if (divided[1].signum() < 0) divided[0].subtract(BigInteger.ONE) else divided[0]
         return Math.addExact(region.screenTopUnits, floor.toLongExact())
     }
+}
+
+/** One visible document band range in the order the planner walks visible regions. */
+internal data class HorizonBand(val pageId: PageId, val first: Int, val last: Int)
+
+/**
+ * The horizon walk depends only on the ordered bands, verified bytes, plans, and reading geometry.
+ * Maps are immutable and replaced as a whole, so reference identity proves their contents unchanged.
+ */
+private class HorizonKey(
+    private val bands: List<HorizonBand>,
+    private val pages: Map<PageId, PageContentIdentity>,
+    private val plans: Map<EpisodeId, EpisodeAccessPlan>,
+    private val viewportWidthPx: Int,
+    private val viewportHeightPx: Int,
+    private val splitMode: Boolean,
+    private val anchorPageId: PageId?,
+    private val requiredDimensions: Set<PageId>,
+    private val completeViewport: Boolean,
+) {
+    fun matches(other: HorizonKey): Boolean =
+        bands == other.bands && pages === other.pages && plans === other.plans &&
+            viewportWidthPx == other.viewportWidthPx && viewportHeightPx == other.viewportHeightPx &&
+            splitMode == other.splitMode && anchorPageId == other.anchorPageId &&
+            requiredDimensions == other.requiredDimensions && completeViewport == other.completeViewport
 }

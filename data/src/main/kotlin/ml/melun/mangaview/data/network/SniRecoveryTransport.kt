@@ -97,14 +97,34 @@ class SniRecoveryTransport(
      * The blocked origin answers the same request in anywhere between half a second and
      * several seconds; a delayed duplicate turns that lottery into the faster of two draws.
      */
-    private suspend fun hedgedRecover(request: SourceRequest): SourceResponse = coroutineScope {
+    private suspend fun hedgedRecover(request: SourceRequest): SourceResponse {
+        var acquired: SourceResponse? = null
+        return try {
+            withTimeout(request.totalTimeoutMillis) {
+                raceRecovery(request) { acquired = it }
+            }
+        } catch (failure: Throwable) {
+            try { acquired?.close() } catch (cleanup: Throwable) {
+                if (cleanup !== failure) failure.addSuppressed(cleanup)
+            }
+            throw failure
+        }
+    }
+
+    private suspend fun raceRecovery(
+        request: SourceRequest,
+        acquired: (SourceResponse) -> Unit,
+    ): SourceResponse = coroutineScope {
+        val started = nowNanos()
         val winner = CompletableDeferred<SourceResponse>()
         val pending = AtomicInteger(2)
         fun attempt(delayMillis: Long) = launch {
             try {
                 if (delayMillis > 0) delay(delayMillis)
-                val response = sendRecovery(request)
-                if (!winner.complete(response)) response.close()
+                val remaining = request.totalTimeoutMillis - (nowNanos() - started) / 1_000_000
+                if (remaining <= 0) throw SocketTimeoutException("Recovery deadline expired")
+                val response = sendRecovery(request.copy(totalTimeoutMillis = remaining))
+                if (winner.complete(response)) acquired(response) else response.close()
             } catch (failure: Throwable) {
                 if (pending.decrementAndGet() == 0) winner.completeExceptionally(failure)
             }

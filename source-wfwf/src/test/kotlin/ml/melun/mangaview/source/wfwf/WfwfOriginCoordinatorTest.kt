@@ -42,6 +42,42 @@ class WfwfOriginCoordinatorTest {
     }
 
     @Test
+    fun resolvedOriginIsReportedOnceToTheSharedDirectory() = runTest {
+        val reported = mutableListOf<String>()
+        val coordinator = WfwfOriginCoordinator(
+            initialOrigin = "https://wfwf489.com",
+            resolver = WfwfOriginResolver(CoordinatorProbeTransport("https://wfwf490.com"), "agent"),
+            scope = this,
+            onOriginResolved = { reported += it },
+        )
+
+        coordinator.start()
+
+        assertEquals("https://wfwf490.com", coordinator.awaitReady())
+        assertEquals(listOf("https://wfwf490.com"), reported)
+        coordinator.observe("https://wfwf491.com/view?toon=1", coordinator.beginDocument())
+        assertEquals("https://wfwf491.com", coordinator.current())
+        assertEquals(listOf("https://wfwf490.com"), reported)
+    }
+
+    @Test
+    fun completedStartupDoesNotOverrideANewerPublishedOrigin() = runTest {
+        val transport = CoordinatorProbeTransport("https://wfwf489.com")
+        val coordinator = WfwfOriginCoordinator(
+            initialOrigin = "https://wfwf489.com",
+            resolver = WfwfOriginResolver(transport, "agent"),
+            scope = this,
+        )
+        coordinator.start()
+        assertEquals("https://wfwf489.com", coordinator.awaitReady())
+        coordinator.observe("https://wfwf490.com/view?toon=1", coordinator.beginDocument())
+
+        val requested = coordinator.execute { requestOrigin -> requestOrigin }
+
+        assertEquals("https://wfwf490.com", requested)
+    }
+
+    @Test
     fun discoveredOriginCancelsAStalledRequestInsteadOfWaitingForItsTimeout() = runTest {
         val coordinator = WfwfOriginCoordinator(
             initialOrigin = "https://wfwf489.com",

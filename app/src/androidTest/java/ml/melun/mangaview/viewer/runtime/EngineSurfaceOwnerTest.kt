@@ -132,6 +132,35 @@ class EngineSurfaceOwnerTest {
         } finally { owner.close(); surface.release(); consumer.release(); pixels.close(); assertTrue(page.file.delete()) }
     }
 
+    @Test fun submittedTicketResolvesOnTheOwnerAndSurvivesLatestReplacement() = runBlocking {
+        val (page, pixels) = pixels()
+        val emitted = mutableListOf<String>()
+        val ledger = FrameWorkProvenanceLedger(enabled = { true }, emit = { emitted += it })
+        ledger.armInputFrame(41L, 0L, 100L, 1L, 7L, 4L, 8L)
+        ledger.bindInputFrame(7L, 5L, 9L)
+        val ticket = requireNotNull(ledger.ticketForOffer(7L, 5L, 9L))
+        val presented = CompletableDeferred<EngineSurfacePresentation>()
+        val submitted = CompletableDeferred<EngineSurfaceScene>()
+        val owner = EngineSurfaceOwner(pixels.byteCount, { presented.complete(it) }, { presented.completeExceptionally(it) }, {},
+            reportSubmitted = { submitted.complete(it) })
+        val consumer = SurfaceTexture(false).apply { setDefaultBufferSize(101, 100) }
+        val surface = Surface(consumer)
+        try {
+            assertTrue(owner.attach(surface, 101, 100, 60F))
+            val texture = owner.upload(pixels, owner.rendererEpoch)
+            val scene = EngineSurfaceScene(1, 1, 0, 1, EngineViewport(101, 100), null,
+                listOf(EngineTexturePlacement(texture, 0, 100)), diagnostics = ticket)
+            owner.offer(scene)
+            owner.offer(scene.copy(completeCoverage = true))
+            val frame = withTimeout(5000) { presented.await() }
+            assertSuccessfulSwap(frame)
+            assertSame(ticket, withTimeout(5000) { submitted.await() }.diagnostics)
+            assertTrue(emitted.any { it == "engine_frame_origin_at:1:64:29:5:9" })
+            owner.clearScene()
+            owner.release(texture)
+        } finally { owner.close(); surface.release(); consumer.release(); pixels.close(); assertTrue(page.file.delete()) }
+    }
+
     @Test fun sameSizeReplacementSurfaceGetsANewAttachmentIdentity() = runBlocking {
         val (page, pixels) = pixels()
         val first = CompletableDeferred<EngineSurfacePresentation>()

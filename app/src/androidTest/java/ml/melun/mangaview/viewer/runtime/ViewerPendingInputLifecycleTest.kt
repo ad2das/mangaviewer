@@ -50,13 +50,20 @@ class ViewerPendingInputLifecycleTest {
                 val runtime = fixture.runtime
                 val initialRevision = runtime.userInputRevisionSnapshot()
                 pendingDrag(runtime)
-                assertEquals(initialRevision, runtime.userInputRevisionSnapshot())
+                // The dispatch-pass drain applies the observed drag immediately; the lifecycle
+                // flush must not replay or duplicate it.
+                assertEquals(initialRevision + 1, runtime.userInputRevisionSnapshot())
                 if (close) fixture.close() else runtime.enterBackground()
                 assertEquals(initialRevision + 1, runtime.userInputRevisionSnapshot())
                 assertEquals(FixedPx.fromPixels(500).units, fixture.saved.last().offsetInPageUnits)
                 if (!close) {
                     runtime.enterForeground()
                     assertEquals(fixture.saved.last(), runtime.chromeSnapshot()?.position)
+                } else {
+                    val savedBefore = fixture.saved.size
+                    pendingDrag(runtime)
+                    assertEquals(initialRevision + 1, runtime.userInputRevisionSnapshot())
+                    assertEquals(savedBefore, fixture.saved.size)
                 }
             }
         } finally {

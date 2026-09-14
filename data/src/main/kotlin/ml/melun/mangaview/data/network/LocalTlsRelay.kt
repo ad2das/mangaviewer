@@ -101,7 +101,12 @@ internal class LocalTlsRelay(private val dns: Dns, private val basicAuthenticati
 
     private fun connect(host: String, port: Int): Socket {
         var last: IOException? = null
-        for (address in dns.lookup(host)) {
+        // Prefer IPv4: emulator and some carrier networks route the first AAAA of a CDN into a
+        // black hole, and a browser's own happy-eyeballs would pick the IPv4 path anyway.
+        val resolved = dns.lookup(host)
+        val candidates = (resolved.filterIsInstance<java.net.Inet4Address>() + embeddedIpv4(resolved) + resolved)
+            .distinct()
+        for (address in candidates) {
             val socket = Socket()
             sockets.add(socket)
             try {
@@ -112,6 +117,18 @@ internal class LocalTlsRelay(private val dns: Dns, private val basicAuthenticati
         }
         throw last ?: IOException("No address for $host")
     }
+
+    /**
+     * Cloudflare publishes a few challenge hosts as IPv6-only (NODATA for A) while encoding the
+     * reachable IPv4 endpoint in the last 32 bits, e.g. 2606:4700::6812:1192 -> 104.18.17.146.
+     * A client without an IPv6 route can still reach those endpoints over that IPv4 address.
+     */
+    private fun embeddedIpv4(addresses: List<InetAddress>): List<InetAddress> =
+        addresses.filterIsInstance<java.net.Inet6Address>()
+            .filter { address -> address.address.copyOfRange(4, 12).all { byte -> byte == 0.toByte() } }
+            .mapNotNull { address ->
+                runCatching { java.net.InetAddress.getByAddress(address.address.copyOfRange(12, 16)) }.getOrNull()
+            }
 
     private fun release(socket: Socket) {
         sockets.remove(socket)

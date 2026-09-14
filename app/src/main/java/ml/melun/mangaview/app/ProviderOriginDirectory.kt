@@ -39,7 +39,7 @@ internal class ProviderOriginDirectory(context: Context, private val io: Corouti
         return known[provider] ?: fallback
     }
 
-    private fun remember(provider: String, origin: String) {
+    override fun remember(provider: String, origin: String) {
         known[provider] = origin
         preferences.edit().putString(provider, origin).apply()
     }

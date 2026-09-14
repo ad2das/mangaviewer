@@ -16,6 +16,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
@@ -98,96 +100,107 @@ private fun MainTopBar(
     updateAvailable: Boolean,
 ) {
     Row(
-        Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 18.dp),
+        Modifier.fillMaxWidth().height(64.dp)
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .padding(horizontal = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        when (state.destination) {
-            MainDestination.HOME -> {
-                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+        MainDestinationTitle(state.destination, colors, Modifier.weight(1f))
+        val source = state.sources.firstOrNull { it.id == state.selectedSourceId }
+        MainSourceChip(source, colors, accept)
+        Spacer(Modifier.width(10.dp))
+        MainAccountButton(colors, accept, updateAvailable)
+    }
+}
+
+@Composable
+private fun MainDestinationTitle(destination: MainDestination, colors: LibraryColors, modifier: Modifier) {
+    when (destination) {
+        MainDestination.HOME -> {
+            Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+                BasicText(
+                    buildAnnotatedString {
+                        append("Manga")
+                        withStyle(SpanStyle(color = colors.accent)) {
+                            append("View")
+                        }
+                    },
+                    style = displayStyle(colors, 24).copy(fontWeight = FontWeight.Black),
+                )
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(8.dp))
+                        .background(colors.accentSurface)
+                        .padding(horizontal = 7.dp, vertical = 3.dp),
+                ) {
                     BasicText(
-                        buildAnnotatedString {
-                            append("Manga")
-                            withStyle(SpanStyle(color = colors.accent)) {
-                                append("View")
-                            }
-                        },
-                        style = displayStyle(colors, 24).copy(fontWeight = FontWeight.Black),
+                        "PLUS",
+                        style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.ExtraBold),
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Box(
-                        Modifier.clip(RoundedCornerShape(8.dp))
-                            .background(colors.accentSurface)
-                            .padding(horizontal = 7.dp, vertical = 3.dp),
-                    ) {
-                        BasicText(
-                            "PLUS",
-                            style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.ExtraBold),
-                        )
-                    }
                 }
             }
-            MainDestination.SEARCH -> {
-                BasicText(
-                    "검색",
-                    Modifier.weight(1f),
-                    titleStyle(colors, 22).copy(fontWeight = FontWeight.Bold),
-                )
-            }
-            MainDestination.LIBRARY -> {
-                BasicText(
-                    "내 보관함",
-                    Modifier.weight(1f),
-                    titleStyle(colors, 22).copy(fontWeight = FontWeight.Bold),
-                )
-            }
         }
-
-        val source = state.sources.firstOrNull { it.id == state.selectedSourceId }
-
-        // Provider Selector pill chip
-        Row(
-            Modifier.height(38.dp)
-                .shadow(2.dp, RoundedCornerShape(19.dp), spotColor = Color.Black.copy(alpha = 0.05f))
-                .clip(RoundedCornerShape(19.dp))
-                .background(colors.card)
-                .border(1.dp, colors.cardBorder, RoundedCornerShape(19.dp))
-                .semantics { contentDescription = source?.label ?: "" }
-                .clickable { accept(LibraryIntent.ToggleSourcePicker) }
-                .padding(start = 7.dp, end = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val art = LegacySiteArtwork.forSource(source?.id?.value)
-            Image(art, null, Modifier.size(22.dp), contentScale = ContentScale.Fit)
-            Spacer(Modifier.width(6.dp))
+        MainDestination.SEARCH -> {
             BasicText(
-                source?.label ?: "SOURCE",
-                style = labelStyle(colors, true).copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                "검색",
+                modifier,
+                titleStyle(colors, 22).copy(fontWeight = FontWeight.Bold),
             )
         }
+        MainDestination.LIBRARY -> {
+            BasicText(
+                "내 보관함",
+                modifier,
+                titleStyle(colors, 22).copy(fontWeight = FontWeight.Bold),
+            )
+        }
+    }
+}
 
-        Spacer(Modifier.width(10.dp))
+@Composable
+private fun MainSourceChip(source: SourceOption?, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    Row(
+        Modifier.height(38.dp)
+            .shadow(2.dp, RoundedCornerShape(19.dp), spotColor = Color.Black.copy(alpha = 0.05f))
+            .clip(RoundedCornerShape(19.dp))
+            .background(colors.card)
+            .border(1.dp, colors.cardBorder, RoundedCornerShape(19.dp))
+            .semantics { contentDescription = source?.label ?: "" }
+            .clickable { accept(LibraryIntent.ToggleSourcePicker) }
+            .padding(start = 7.dp, end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val art = LegacySiteArtwork.forSource(source?.id?.value)
+        Image(art, null, Modifier.size(22.dp), contentScale = ContentScale.Fit)
+        Spacer(Modifier.width(6.dp))
+        BasicText(
+            source?.label ?: "SOURCE",
+            style = labelStyle(colors, true).copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
+        )
+    }
+}
 
-        // Profile / Account icon
-        Box(
-            Modifier.size(40.dp)
-                .semantics { contentDescription = "계정" }
-                .shadow(2.dp, CircleShape, spotColor = Color.Black.copy(alpha = 0.05f))
-                .clip(CircleShape)
-                .background(colors.card)
-                .border(1.dp, colors.cardBorder, CircleShape)
-                .clickable { accept(LibraryIntent.ToggleSettings) },
-            contentAlignment = Alignment.Center,
-        ) {
-            LibraryIconView(LibraryIcon.PROFILE, colors.accent, Modifier.size(22.dp))
-            if (updateAvailable) {
-                Box(
-                    Modifier.size(9.dp)
-                        .align(Alignment.TopEnd)
-                        .padding(top = 2.dp, end = 2.dp)
-                        .clip(CircleShape)
-                        .background(colors.favoriteActive),
-                )
-            }
+@Composable
+private fun MainAccountButton(colors: LibraryColors, accept: (LibraryIntent) -> Unit, updateAvailable: Boolean) {
+    Box(
+        Modifier.size(40.dp)
+            .semantics { contentDescription = "계정" }
+            .shadow(2.dp, CircleShape, spotColor = Color.Black.copy(alpha = 0.05f))
+            .clip(CircleShape)
+            .background(colors.card)
+            .border(1.dp, colors.cardBorder, CircleShape)
+            .clickable { accept(LibraryIntent.ToggleSettings) },
+        contentAlignment = Alignment.Center,
+    ) {
+        LibraryIconView(LibraryIcon.PROFILE, colors.accent, Modifier.size(22.dp))
+        if (updateAvailable) {
+            Box(
+                Modifier.size(9.dp)
+                    .align(Alignment.TopEnd)
+                    .padding(top = 2.dp, end = 2.dp)
+                    .clip(CircleShape)
+                    .background(colors.favoriteActive),
+            )
         }
     }
 }
@@ -204,6 +217,7 @@ private fun MainBottomNavigation(
             .height(68.dp)
             .shadow(14.dp, RoundedCornerShape(28.dp), spotColor = Color.Black.copy(alpha = 0.20f))
             .clip(RoundedCornerShape(28.dp))
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
             .background(colors.card)
             .border(1.dp, colors.cardBorder, RoundedCornerShape(28.dp)),
         verticalAlignment = Alignment.CenterVertically,

@@ -24,6 +24,8 @@ internal data class EngineSurfaceScene(
     val movementRevision: Long = 0L,
     val anchorDimensions: PageDimensions? = null,
     val splitMode: Boolean = false,
+    /** Opaque trace-only provenance ticket; never read by rendering, scheduling, or pacing. */
+    val diagnostics: FrameWorkTicket? = null,
 ) {
     init {
         require(sessionId > 0 && generation > 0 && inputRevision >= 0 && geometryRevision >= 0)
@@ -52,7 +54,7 @@ internal data class EngineSurfaceScene(
             scene.session.geometryRevision, scene.session.viewport, scene.session.anchor,
             scene.quads.map { EngineTexturePlacement(it.texture, Math.toIntExact(it.topScreenUnits),
                 Math.toIntExact(it.bottomScreenUnits)) }, 1024, scene.completeCoverage, scene.session.movementRevision,
-            scene.session.anchorDimensions, scene.session.splitMode,
+            scene.session.anchorDimensions, scene.session.splitMode, scene.diagnostics as? FrameWorkTicket,
         )
     }
 }

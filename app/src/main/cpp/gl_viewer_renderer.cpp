@@ -465,10 +465,13 @@ int GlViewerRenderer::submitGl(const GlViewerFrame& frame) noexcept {
         setWindowFrameRate(window_, frame.frameRate);
         frameRate_ = frame.frameRate;
     }
-    if (!draw(frame)) {
-        failReadback(frame, contextLost_ ? GlReadbackStatus::kContextLost
-                                         : GlReadbackStatus::kGlError);
-        return contextLost_ ? -2 : -1;
+    {
+        ScopedTraceSection drawScope("engine_scene_draw");
+        if (!draw(frame)) {
+            failReadback(frame, contextLost_ ? GlReadbackStatus::kContextLost
+                                             : GlReadbackStatus::kGlError);
+            return contextLost_ ? -2 : -1;
+        }
     }
     if (buffered_) return presentBuffered(frame);
     EGLuint64KHR frameId = 0;
@@ -481,7 +484,14 @@ int GlViewerRenderer::submitGl(const GlViewerFrame& frame) noexcept {
 int GlViewerRenderer::bindSubmitSurface(const GlViewerFrame& frame) noexcept {
     if (buffered_) {
         if (!onOwnerThread() || frame.token <= 0) return -1;
-        return makeOffscreenCurrent() && buffered_->bind(frame.surfaceWidth, frame.surfaceHeight) ? 1 : -1;
+        if (offscreenContextIsCurrent()) {
+            ScopedTraceSection reuse("engine_egl_current_reuse");
+        } else {
+            ScopedTraceSection bind("engine_egl_current_bind");
+            if (!makeOffscreenCurrent()) return -1;
+        }
+        ScopedTraceSection bindScope("engine_buffer_bind");
+        return buffered_->bind(frame.surfaceWidth, frame.surfaceHeight) ? 1 : -1;
     }
     if (windowSurface_ == EGL_NO_SURFACE || frame.token <= 0 || frame.surfaceWidth <= 0 ||
         frame.surfaceHeight <= 0) return 0;

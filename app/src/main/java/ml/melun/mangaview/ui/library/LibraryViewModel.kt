@@ -6,10 +6,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,21 +55,17 @@ internal class LibraryViewModel(
     private val genrePager = GenreCatalogPager(viewModelScope, ioDispatcher) { catalog ->
         update { it.copy(genreCatalog = catalog,
             lastSeries = (catalog as? LibraryContent.Series)?.items ?: it.lastSeries) }
-        if (catalog is LibraryContent.Series) enrichSeriesStatuses(catalog.items)
+        if (catalog is LibraryContent.Series) statusEnrichment.enrich(catalog.items)
     }
+    private val statusEnrichment = LibraryStatusEnrichment(viewModelScope, ioDispatcher, sourceRegistry, ::update)
     private val episodeWarmer = LibraryEpisodeWarmer(openings)
+    private val catalogs = LibraryCatalogLoader(
+        viewModelScope, ioDispatcher, sourceRegistry, { mutableState.value }, ::update,
+        { episodeWarmer.continuation(state.value) },
+    )
     private var contentJob: Job? = null
-    private var homeJob: Job? = null
-    private var genreJob: Job? = null
     private var detailsJob: Job? = null
-    private var statusWorker: Job? = null
-    private val statusQueue = ArrayDeque<SeriesId>()
-    private val statusCache = mutableMapOf<SeriesId, SeriesStatus?>()
-    private val statusUnsupported = mutableSetOf<SourceId>()
-    private val pendingStatusUpdates = mutableMapOf<SeriesId, SeriesStatus>()
-    private var statusFlushJob: Job? = null
     private var contentVersion = 0L
-    private var homeVersion = 0L
     private val observers = LibraryStateObservers(sourceRegistry, userLibrary, offlineStore, offlineDownloads)
 
     val state: StateFlow<LibraryState> = mutableState.asStateFlow()
@@ -82,10 +75,10 @@ internal class LibraryViewModel(
         super.onCleared()
     }
     init {
-        observers.start(viewModelScope, ::update, ::loadHome) {
+        observers.start(viewModelScope, ::update, catalogs::loadHome) {
             episodeWarmer.continuation(state.value)
         }
-        loadHome()
+        catalogs.loadHome()
     }
     fun foreground(value: Boolean) = episodeWarmer.foreground(value, state.value)
     fun accept(intent: LibraryIntent) {
@@ -127,18 +120,9 @@ internal class LibraryViewModel(
         when (intent) {
             LibraryIntent.LoadMoreGenre -> genrePager.next()
             LibraryIntent.Search -> search()
-            LibraryIntent.RetryHome -> loadHome()
-            LibraryIntent.ToggleSettings -> update { it.copy(settingsVisible = !it.settingsVisible) }
-            LibraryIntent.TogglePreferences -> update {
-                it.copy(preferencesVisible = !it.preferencesVisible, settingsVisible = false)
-            }
-            LibraryIntent.ToggleSourcePicker -> update {
-                it.copy(
-                    sourcePickerVisible = !it.sourcePickerVisible,
-                    settingsVisible = false,
-                    preferencesVisible = false,
-                )
-            }
+            LibraryIntent.RetryHome -> catalogs.loadHome()
+            LibraryIntent.ToggleSettings, LibraryIntent.TogglePreferences, LibraryIntent.ToggleSourcePicker ->
+                uiActions.toggleOverlay(intent)
             LibraryIntent.AccountSignIn, LibraryIntent.AccountSignOut, LibraryIntent.AccountRetry -> {
                 effectChannel.trySend(intent.accountEffect())
             }
@@ -207,14 +191,14 @@ internal class LibraryViewModel(
         ) }
         episodeWarmer.continuation(state.value)
         actions.updateSettings { it.copy(startTab = destination.ordinal) }
-        if (destination == MainDestination.HOME && mutableState.value.home is HomeContent.Failure) loadHome()
+        if (destination == MainDestination.HOME && mutableState.value.home is HomeContent.Failure) catalogs.loadHome()
     }
 
     private fun selectSource(sourceId: ml.melun.mangaview.core.SourceId) {
         sourceRegistry.require(sourceId)
         cancelContent()
-        cancelGenres()
-        cancelStatusEnrichment()
+        catalogs.cancelGenres()
+        statusEnrichment.cancel()
         genrePager.reset()
         update { it.copy(
             selectedSourceId = sourceId,
@@ -227,13 +211,13 @@ internal class LibraryViewModel(
             sourcePickerVisible = false,
         ) }
         actions.updateSettings { it.copy(sourceKey = sourceId.value) }
-        loadHome()
+        catalogs.loadHome()
     }
 
     private fun selectHomeKind(kind: ml.melun.mangaview.source.SeriesKind) {
         if (mutableState.value.homeKind == kind) return
-        cancelGenres()
-        cancelStatusEnrichment()
+        catalogs.cancelGenres()
+        statusEnrichment.cancel()
         genrePager.reset()
         update { it.copy(
             homeKind = kind,
@@ -244,68 +228,21 @@ internal class LibraryViewModel(
             genreCatalog = LibraryContent.Empty,
         ) }
         actions.updateSettings { it.copy(seriesKind = kind.ordinal) }
-        loadHome()
+        catalogs.loadHome()
     }
 
     private fun selectHomeTab(tab: HomeTab) {
         update { it.copy(homeTab = tab) }
         if (tab == HomeTab.GENRES) {
-            cancelHome()
-            if (mutableState.value.genres !is GenreContent.Ready) loadGenres()
+            catalogs.cancelHome()
+            if (mutableState.value.genres !is GenreContent.Ready) catalogs.loadGenres()
         } else if (mutableState.value.home !is HomeContent.Ready) {
-            loadHome()
-        }
-    }
-
-    private fun loadHome() {
-        homeJob?.cancel()
-        val snapshot = mutableState.value
-        val version = ++homeVersion
-        update { it.copy(home = HomeContent.Loading) }
-        homeJob = viewModelScope.launch {
-            val source = sourceRegistry.require(snapshot.selectedSourceId)
-            try {
-                val result = withContext(ioDispatcher) { homeCatalogs(source, snapshot.homeKind) }
-                if (version == homeVersion) {
-                    update { it.copy(home = result) }
-                    episodeWarmer.continuation(state.value)
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Throwable) {
-                if (version == homeVersion) update {
-                    it.copy(home = HomeContent.Failure(failureDisplayMessage(failure, "목록을 불러오지 못했습니다")))
-                }
-            }
-        }
-    }
-
-    private fun loadGenres() {
-        cancelGenres()
-        val snapshot = mutableState.value
-        update { it.copy(genres = GenreContent.Loading) }
-        genreJob = viewModelScope.launch {
-            try {
-                val items = withContext(ioDispatcher) {
-                    sourceRegistry.require(snapshot.selectedSourceId).genres(snapshot.homeKind)
-                }
-                update {
-                    it.copy(genres = if (items.isEmpty()) {
-                        GenreContent.Failure("장르 목록을 불러오지 못했습니다")
-                    } else {
-                        GenreContent.Ready(items)
-                    })
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Throwable) {
-                update { it.copy(genres = GenreContent.Failure(failureDisplayMessage(failure, "장르 목록을 불러오지 못했습니다"))) }
-            }
+            catalogs.loadHome()
         }
     }
 
     private fun loadGenre(genre: ml.melun.mangaview.source.SourceGenre) {
-        cancelHome()
+        catalogs.cancelHome()
         cancelContent()
         val snapshot = state.value
         update { it.copy(homeTab = HomeTab.GENRES, selectedGenre = genre) }
@@ -341,7 +278,7 @@ internal class LibraryViewModel(
             },
             success = { result: List<SourceSeries> ->
                 update { it.copy(content = LibraryContent.Series(result), lastSeries = result) }
-                enrichSeriesStatuses(result)
+                statusEnrichment.enrich(result)
             },
             failureMessage = "검색에 실패했습니다",
         )
@@ -396,30 +333,7 @@ internal class LibraryViewModel(
     }
 
     private fun back() {
-        if (state.value.pendingOfflineRemoval != null) {
-            update { it.copy(pendingOfflineRemoval = null) }
-            return
-        }
-        if (state.value.downloadSelectionVisible) {
-            update { it.copy(downloadSelectionVisible = false) }
-            return
-        }
-        if (state.value.sourcePickerVisible) {
-            update { it.copy(sourcePickerVisible = false) }
-            return
-        }
-        if (state.value.preferencesVisible) {
-            update { it.copy(preferencesVisible = false, settingsVisible = true) }
-            return
-        }
-        if (state.value.settingsVisible) {
-            update { it.copy(settingsVisible = false) }
-            return
-        }
-        if (state.value.seriesMenuVisible) {
-            update { it.copy(seriesMenuVisible = false) }
-            return
-        }
+        if (uiActions.dismissOverlay()) return
         if (state.value.activeSeries != null) {
             cancelContent()
             episodeWarmer.cancel()
@@ -493,107 +407,17 @@ internal class LibraryViewModel(
         }
     }
 
-    private fun cancelHome() {
-        homeVersion += 1L
-        homeJob?.cancel()
-        homeJob = null
-    }
-
-    /**
-     * Providers that omit the series status from catalog markup (newxtoon) are filled in from
-     * series detail pages: one request at a time, paced, cached, and skipped when the provider
-     * does not expose details at all (ntk/wfwf).
-     */
-    private fun enrichSeriesStatuses(series: List<SourceSeries>) {
-        val cached = series.mapNotNull { item ->
-            statusCache[item.id]?.takeIf { item.status == null }?.let { status -> item.id to status }
-        }
-        if (cached.isNotEmpty()) {
-            update { state ->
-                cached.fold(state) { patched, (id, status) -> patched.withSeriesStatus(id, status) }
-            }
-        }
-        val added = series.asSequence()
-            .filter { it.status == null && it.id.sourceId !in statusUnsupported }
-            .map { it.id }
-            .filter { !statusCache.containsKey(it) && it !in statusQueue }
-            .toList()
-        if (added.isEmpty()) return
-        statusQueue.addAll(added)
-        if (statusWorker?.isActive == true) return
-        statusWorker = viewModelScope.launch {
-            while (true) {
-                val id = statusQueue.removeFirstOrNull()
-                if (id == null) {
-                    flushStatusUpdates()
-                    break
-                }
-                val source = runCatching { sourceRegistry.require(id.sourceId) }.getOrNull() ?: continue
-                val details = runCatching {
-                    withContext(ioDispatcher) { source.seriesDetails(id) }
-                }.getOrNull()
-                if (details == null) {
-                    statusUnsupported += id.sourceId
-                    statusQueue.removeAll { it.sourceId == id.sourceId }
-                    continue
-                }
-                statusCache[id] = details.status
-                details.status?.let { status -> queueStatusUpdate(id, status) }
-                delay(STATUS_ENRICH_DELAY_MILLIS)
-            }
-        }
-    }
-
-    private fun queueStatusUpdate(id: SeriesId, status: SeriesStatus) {
-        pendingStatusUpdates[id] = status
-        if (statusFlushJob?.isActive == true) return
-        statusFlushJob = viewModelScope.launch {
-            delay(STATUS_FLUSH_INTERVAL_MILLIS)
-            flushStatusUpdates()
-        }
-    }
-
-    private fun flushStatusUpdates() {
-        if (pendingStatusUpdates.isEmpty()) return
-        val batch = pendingStatusUpdates.toMap()
-        pendingStatusUpdates.clear()
-        update { state ->
-            batch.entries.fold(state) { patched, (id, status) -> patched.withSeriesStatus(id, status) }
-        }
-    }
-
-    private fun cancelStatusEnrichment() {
-        statusWorker?.cancel()
-        statusWorker = null
-        statusQueue.clear()
-        flushStatusUpdates()
-        statusFlushJob?.cancel()
-        statusFlushJob = null
-    }
-
-    private fun cancelGenres() = genreJob?.cancel().also { genreJob = null }
     private fun update(transform: (LibraryState) -> LibraryState) {
         mutableState.value = transform(mutableState.value)
     }
 }
 
-private suspend fun homeCatalogs(source: ContentSource, kind: SeriesKind): HomeContent.Ready =
-    coroutineScope {
-        val popular = async { source.catalog(CatalogQuery(kind, CatalogOrder.POPULAR)).items }
-        val latest = async { source.catalog(CatalogQuery(kind, CatalogOrder.LATEST)).items }
-        val new = async { source.catalog(CatalogQuery(kind, CatalogOrder.NEW)).items }
-        HomeContent.Ready(popular.await(), latest.await(), new.await())
-    }
-
 /** Turns provider-specific failures into reader-friendly Korean copy. */
-private fun failureDisplayMessage(failure: Throwable, fallback: String): String =
+internal fun failureDisplayMessage(failure: Throwable, fallback: String): String =
     when (failure) {
         is SourceThrottledException -> "요청이 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요"
         else -> failure.message ?: fallback
     }
-
-private const val STATUS_ENRICH_DELAY_MILLIS = 250L
-private const val STATUS_FLUSH_INTERVAL_MILLIS = 500L
 
 private fun currentSeries(state: LibraryState): SourceSeries =
     state.activeSeries ?: error("Episode selection requires an active series")

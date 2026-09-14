@@ -1,6 +1,7 @@
 package ml.melun.mangaview.viewer.runtime
 
 import android.graphics.Bitmap
+import android.system.Os
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -18,6 +19,8 @@ import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.engine.api.StoredPage
 import ml.melun.mangaview.engine.api.EngineTileSpec
 import ml.melun.mangaview.engine.api.EngineViewport
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,6 +34,8 @@ class EngineBufferedCompositorTest {
             scenario.onActivity { probe = it }
             val view = probe.ready.get(10, TimeUnit.SECONDS)
             instrumentation.waitForIdleSync()
+            val fenceBaseline = syncFenceFdCount()
+            var completed = false
             val width = view.width
             val height = view.height
             val origin = IntArray(2)
@@ -38,6 +43,9 @@ class EngineBufferedCompositorTest {
             val (page, pixels) = pixels(width, height)
             val frames = Channel<EngineSurfacePresentation>(Channel.UNLIMITED)
             val failures = mutableListOf<Throwable>()
+            var displayPresent = 0
+            var compositionLatch = 0
+            val kinds = mutableListOf<String>()
             val owner = EngineSurfaceOwner(pixels.byteCount, { frames.trySend(it) }, { failures += it }, {},
                 bufferedCompositor = true)
             try {
@@ -59,20 +67,41 @@ class EngineBufferedCompositorTest {
                     assertFalse(packet.physicalPresentationVerified)
                     val presentation = withTimeout(10000) { frames.receive() }
                     assertTrue(presentation.swapSucceeded)
-                    assertEquals(PresentationTimestampKind.COMPOSITION_LATCH, presentation.timestampKind)
-                    assertTrue(presentation.timestampNanos > 0)
+                    assertTrue(presentation.timestampKind == PresentationTimestampKind.DISPLAY_PRESENT ||
+                        presentation.timestampKind == PresentationTimestampKind.COMPOSITION_LATCH)
+                    if (presentation.timestampKind == PresentationTimestampKind.DISPLAY_PRESENT) displayPresent++
+                    else compositionLatch++
+                    kinds += presentation.timestampKind.name
+                    assertTrue(presentation.timestampNanos >= presentation.submittedAtNanos)
+                    assertTrue(presentation.timestampNanos <= System.nanoTime())
                     assertEquals(iteration.toLong(), presentation.identity.inputRevision)
                     if (iteration == 10) assertTrue(presentation.identity.surfaceEpoch > previousEpoch)
                     previousEpoch = presentation.identity.surfaceEpoch
                     assertScreenEquals(packet.rgbaBytes, width, height, origin, iteration)
                 }
+                val evidence = File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null),
+                    "engine-buffered-present-fence-${System.nanoTime()}.json")
+                evidence.writeText(JSONObject().put("iterations", kinds.size).put("displayPresent", displayPresent)
+                    .put("compositionLatch", compositionLatch).put("syncFenceFdsBaseline", fenceBaseline)
+                    .put("kinds", JSONArray(kinds)).toString(2))
+                println("engine-buffered-present-fence displayPresent=$displayPresent " +
+                    "compositionLatch=$compositionLatch artifact=$evidence")
+                assertTrue("expected at least one DISPLAY_PRESENT observation, got displayPresent=$displayPresent " +
+                    "compositionLatch=$compositionLatch", displayPresent >= 1)
                 owner.clearScene()
                 owner.release(texture)
                 assertEquals(0L, owner.ownership().bytes)
                 assertTrue(failures.toString(), failures.isEmpty())
                 assertFalse(pixels.isClosed)
+                completed = true
             } finally {
                 owner.close()
+                if (completed) {
+                    val fencesAfterClose = syncFenceFdCount()
+                    println("engine-buffered-present-fence syncFenceFds baseline=$fenceBaseline afterClose=$fencesAfterClose")
+                    assertTrue("retained sync fence fds leaked: baseline=$fenceBaseline afterClose=$fencesAfterClose",
+                        fencesAfterClose <= fenceBaseline)
+                }
                 pixels.close()
                 assertTrue(page.file.delete())
                 frames.close()
@@ -118,6 +147,10 @@ class EngineBufferedCompositorTest {
         } while (System.nanoTime() < deadline)
         fail("Final screen does not match fractional GL pixels: iteration=$iteration $errors sampled channel errors; ${locations.take(12)}")
     }
+
+    private fun syncFenceFdCount(): Int = File("/proc/self/fd").list()?.count { name ->
+        runCatching { Os.readlink("/proc/self/fd/$name") }.getOrNull()?.contains("sync_file") == true
+    } ?: 0
 
     private suspend fun pixels(width: Int, height: Int): Pair<StoredPage, NativeEnginePixels> {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

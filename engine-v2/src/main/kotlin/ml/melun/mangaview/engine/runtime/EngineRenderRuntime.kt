@@ -14,6 +14,7 @@ import ml.melun.mangaview.engine.api.EngineDrawScene
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineTexture
 import ml.melun.mangaview.engine.api.EngineTextureUploader
+import ml.melun.mangaview.engine.api.FrameWorkObserver
 import ml.melun.mangaview.engine.api.EngineTileSpec
 import ml.melun.mangaview.engine.api.SessionWorkOwnership
 import ml.melun.mangaview.engine.api.StoredPage
@@ -48,6 +49,10 @@ class EngineRenderRuntime(
     private val waitForCompleteViewport: Boolean = false,
     private val reportSceneFailure: (Throwable) -> Unit = { throw it },
     private val reportViewportReady: (ml.melun.mangaview.engine.api.EngineSessionSnapshot) -> Unit = {},
+    /** Trace-only scheduling provenance; never affects scene content, order, or timing. */
+    private val frameWorkObserver: FrameWorkObserver? = null,
+    /** Optional owner-thread refresh port; null keeps the legacy immediate drain. */
+    private val refreshScheduler: EngineRefreshScheduler? = null,
 ) {
     private val owner = Thread.currentThread()
     private val work = SessionWorkSet(scope, coordinator, reportFailure)
@@ -66,6 +71,7 @@ class EngineRenderRuntime(
     private var clearingScene = false
     private var sceneClearJob: Job? = null
     private var sceneClearFailed = false
+    private var scheduled = false
 
     fun update(snapshot: EngineRuntimeSnapshot) {
         checkOwner()
@@ -81,14 +87,17 @@ class EngineRenderRuntime(
             epoch = uploader.rendererEpoch
         }
         current = snapshot
-        refresh()
+        refresh(FrameWorkObserver.SNAPSHOT_UPDATE)
     }
 
     fun enabled(value: Boolean) {
         checkOwner()
         if (closed || enabled == value) return
         enabled = value
-        refresh()
+        // Disabling must retire visible pixels before the surface detaches: drain inline and
+                // cancel any queued delivery rather than waiting for a message that will not come.
+        if (value) refresh(FrameWorkObserver.SNAPSHOT_UPDATE)
+        else refreshImmediately(FrameWorkObserver.SNAPSHOT_UPDATE)
     }
 
     fun rendererChanged() {
@@ -102,7 +111,7 @@ class EngineRenderRuntime(
             sceneClearFailed = false
             failedReadAhead.clear()
             work.retryFailures()
-            refresh()
+            refresh(FrameWorkObserver.WORK_RESULT)
         }
     }
 
@@ -124,6 +133,7 @@ class EngineRenderRuntime(
         checkOwner()
         if (!closed) {
             closed = true
+            cancelScheduledRefresh()
             var failure: Throwable? = null
             sceneClearJob?.join()
             try { current?.let { submitScene(EngineDrawScene(it.session, emptyList(), false)) } }
@@ -147,9 +157,47 @@ class EngineRenderRuntime(
         closeDone.await()
     }
 
-    private fun refresh() {
+    /**
+     * Defers the drain to the scheduler's queued delivery when a scheduler is present; a null scheduler keeps
+     * the legacy immediate drain. The guard set preserves [dirty] for whichever drain runs next.
+     */
+    private fun refresh(kind: Int) {
+        if (kind != 0) frameWorkObserver?.workScheduled(kind, System.nanoTime())
         dirty = true
-        if (processing || clearingScene || sceneClearFailed) return
+        if (processing || clearingScene || sceneClearFailed || closed) return
+        if (refreshScheduler == null) drainImmediate() else scheduleRefresh()
+    }
+
+    /** Cancels any queued delivery and drains the newest state inline on the owner thread. */
+    fun refreshNow() {
+        checkOwner()
+        if (closed) return
+        refreshImmediately(0)
+    }
+
+    /** Called once per delivery; applies at most one pass and re-arms when work arrived. */
+    fun refreshOnFrame() {
+        checkOwner()
+        if (!scheduled) return
+        scheduled = false
+        if (closed || processing || clearingScene || sceneClearFailed) return
+        val snapshot = current ?: return
+        dirty = false
+        processing = true
+        try {
+            if (refreshSnapshot(snapshot) && dirty) scheduleRefresh()
+        } finally { processing = false }
+    }
+
+    private fun refreshImmediately(kind: Int) {
+        if (kind != 0) frameWorkObserver?.workScheduled(kind, System.nanoTime())
+        dirty = true
+        cancelScheduledRefresh()
+        if (processing || clearingScene || sceneClearFailed || closed) return
+        drainImmediate()
+    }
+
+    private fun drainImmediate() {
         processing = true
         try {
             while (dirty && !closed) {
@@ -158,6 +206,19 @@ class EngineRenderRuntime(
                 if (!refreshSnapshot(snapshot)) break
             }
         } finally { processing = false }
+    }
+
+    private fun scheduleRefresh() {
+        val scheduler = refreshScheduler ?: return
+        if (scheduled) return
+        scheduled = true
+        scheduler.post()
+    }
+
+    private fun cancelScheduledRefresh() {
+        if (!scheduled) return
+        scheduled = false
+        refreshScheduler?.cancel()
     }
 
     private fun refreshSnapshot(snapshot: EngineRuntimeSnapshot): Boolean {
@@ -222,7 +283,7 @@ class EngineRenderRuntime(
                 reportSceneFailure(failure)
                 return@launch
             } finally { clearingScene = false }
-            refresh()
+            refresh(FrameWorkObserver.WORK_RESULT)
         }
     }
 
@@ -235,14 +296,14 @@ class EngineRenderRuntime(
         val generation = snapshot.session.generation
         return SessionDemand(request, onFailure = if (demand.priority == WorkPriority.NEXT_IMAGE) ({ _: Throwable ->
             failedReadAhead += demand.tile
-            refresh()
+            refresh(FrameWorkObserver.WORK_RESULT)
         }) else null) { texture ->
             if (!closed && current?.session?.generation == generation &&
                 texture.rendererEpoch == uploader.rendererEpoch) {
                 require(texture.tile == demand.tile && texture.rendererId == uploader.rendererId)
                 failedReadAhead -= demand.tile
                 textures[demand.tile] = texture
-                refresh()
+                refresh(FrameWorkObserver.WORK_RESULT)
             }
         }.also { tileDemands[demand.tile] = CachedTileDemand(accessPlan, demand.priority, it) }
     }

@@ -96,49 +96,14 @@ private fun SearchControls(state: LibraryState, colors: LibraryColors, accept: (
             ) {
                 LibraryIconView(LibraryIcon.SEARCH, colors.secondary, Modifier.size(20.dp))
                 Spacer(Modifier.width(10.dp))
-                BasicTextField(
-                    value = query,
-                    onValueChange = { accept(LibraryIntent.QueryChanged(it)) },
-                    modifier = Modifier.weight(1f).focusRequester(focusRequester),
-                    singleLine = true,
-                    textStyle = bodyStyle(colors, 15),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { accept(LibraryIntent.Search) }),
-                    decorationBox = { field ->
-                        Box {
-                            if (query.isEmpty()) {
-                                BasicText("전체 검색", style = hintStyle(colors, 15))
-                            }
-                            field()
-                        }
-                    },
-                )
-                if (query.isNotEmpty()) {
-                    Box(
-                        Modifier.size(24.dp).clip(CircleShape).background(colors.mutedSurface)
-                            .clickable { accept(LibraryIntent.QueryChanged("")) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(10.dp))
-                    }
-                }
+                SearchQueryField(query, colors, focusRequester, Modifier.weight(1f), accept)
             }
             LibraryAction("검색", colors, Modifier.width(78.dp).fillMaxHeight()) {
                 accept(LibraryIntent.Search)
             }
         }
         Spacer(Modifier.height(10.dp))
-        val selectedSource = state.sources.firstOrNull { it.id == state.selectedSourceId }
-        val showKindFilter = selectedSource?.distinguishesKinds ?: true
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (showKindFilter) {
-                KindFilter(state.searchKind, colors, Modifier.weight(1f), accept)
-            }
-            FieldFilter(state.searchField, colors, Modifier.weight(1f), accept)
-        }
+        SearchFilters(state, colors, accept)
     }
 }
 
@@ -232,57 +197,7 @@ private fun SearchEmpty(colors: LibraryColors, accept: (LibraryIntent) -> Unit) 
             style = hintStyle(colors, 13),
         )
         Spacer(Modifier.height(32.dp))
-        Column(Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.width(3.dp).height(14.dp).clip(RoundedCornerShape(2.dp)).background(colors.accent))
-                Spacer(Modifier.width(6.dp))
-                BasicText(
-                    "인기 추천 검색어",
-                    style = labelStyle(colors, false).copy(fontWeight = FontWeight.Bold, fontSize = 13.sp),
-                )
-            }
-            Spacer(Modifier.height(14.dp))
-            val popularKeywords = listOf("나 혼자만 레벨업", "전지적 독자 시점", "화산귀환", "원피스", "귀멸의 칼날", "주술회전")
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                popularKeywords.take(3).forEach { kw ->
-                    Box(
-                        Modifier.clip(RoundedCornerShape(12.dp))
-                            .background(colors.card)
-                            .border(1.dp, colors.cardBorder, RoundedCornerShape(12.dp))
-                            .clickable {
-                                accept(LibraryIntent.QueryChanged(kw))
-                                accept(LibraryIntent.Search)
-                            }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                    ) {
-                        BasicText(kw, style = bodyStyle(colors, 12).copy(fontWeight = FontWeight.SemiBold))
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                popularKeywords.drop(3).forEach { kw ->
-                    Box(
-                        Modifier.clip(RoundedCornerShape(12.dp))
-                            .background(colors.card)
-                            .border(1.dp, colors.cardBorder, RoundedCornerShape(12.dp))
-                            .clickable {
-                                accept(LibraryIntent.QueryChanged(kw))
-                                accept(LibraryIntent.Search)
-                            }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                    ) {
-                        BasicText(kw, style = bodyStyle(colors, 12).copy(fontWeight = FontWeight.SemiBold))
-                    }
-                }
-            }
-        }
+        PopularSearchKeywords(colors, accept)
     }
 }
 
@@ -401,38 +316,7 @@ private fun SearchSeriesCard(
             SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
         }
         Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            BasicText(
-                series.title,
-                style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(4.dp))
-            BasicText(
-                series.subtitle.orEmpty().ifEmpty { "연재작" },
-                style = hintStyle(colors, 12),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.clip(SearchResultBadgeShape)
-                        .background(colors.accentSurface)
-                        .padding(horizontal = 7.dp, vertical = 2.dp),
-                ) {
-                    BasicText(
-                        if (series.id.sourceId.value == "ntk") "만화" else "웹툰",
-                        style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.Bold),
-                    )
-                }
-                series.status?.let { status ->
-                    Spacer(Modifier.width(6.dp))
-                    SeriesStatusBadge(status, colors)
-                }
-            }
-        }
+        SearchSeriesDescription(series, colors, Modifier.weight(1f))
         Box(
             Modifier.size(42.dp)
                 .clip(CircleShape)
@@ -444,6 +328,141 @@ private fun SearchSeriesCard(
                 if (favorite) colors.favoriteActive else colors.muted,
                 Modifier.size(20.dp),
             )
+        }
+    }
+}
+@Composable
+private fun SearchFilters(state: LibraryState, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    val selectedSource = state.sources.firstOrNull { it.id == state.selectedSourceId }
+    val showKindFilter = selectedSource?.distinguishesKinds ?: true
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (showKindFilter) {
+            KindFilter(state.searchKind, colors, Modifier.weight(1f), accept)
+        }
+        FieldFilter(state.searchField, colors, Modifier.weight(1f), accept)
+    }
+}
+
+@Composable
+private fun PopularSearchKeywords(colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(3.dp).height(14.dp).clip(RoundedCornerShape(2.dp)).background(colors.accent))
+            Spacer(Modifier.width(6.dp))
+            BasicText(
+                "인기 추천 검색어",
+                style = labelStyle(colors, false).copy(fontWeight = FontWeight.Bold, fontSize = 13.sp),
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        val popularKeywords = listOf("나 혼자만 레벨업", "전지적 독자 시점", "화산귀환", "원피스", "귀멸의 칼날", "주술회전")
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            popularKeywords.take(3).forEach { kw ->
+                Box(
+                    Modifier.clip(RoundedCornerShape(12.dp))
+                        .background(colors.card)
+                        .border(1.dp, colors.cardBorder, RoundedCornerShape(12.dp))
+                        .clickable {
+                            accept(LibraryIntent.QueryChanged(kw))
+                            accept(LibraryIntent.Search)
+                        }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                ) {
+                    BasicText(kw, style = bodyStyle(colors, 12).copy(fontWeight = FontWeight.SemiBold))
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            popularKeywords.drop(3).forEach { kw ->
+                Box(
+                    Modifier.clip(RoundedCornerShape(12.dp))
+                        .background(colors.card)
+                        .border(1.dp, colors.cardBorder, RoundedCornerShape(12.dp))
+                        .clickable {
+                            accept(LibraryIntent.QueryChanged(kw))
+                            accept(LibraryIntent.Search)
+                        }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                ) {
+                    BasicText(kw, style = bodyStyle(colors, 12).copy(fontWeight = FontWeight.SemiBold))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchSeriesDescription(series: SourceSeries, colors: LibraryColors, modifier: Modifier) {
+    Column(modifier) {
+        BasicText(
+            series.title,
+            style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(4.dp))
+        BasicText(
+            series.subtitle.orEmpty().ifEmpty { "연재작" },
+            style = hintStyle(colors, 12),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.clip(SearchResultBadgeShape)
+                    .background(colors.accentSurface)
+                    .padding(horizontal = 7.dp, vertical = 2.dp),
+            ) {
+                BasicText(
+                    if (series.id.sourceId.value == "ntk") "만화" else "웹툰",
+                    style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.Bold),
+                )
+            }
+            series.status?.let { status ->
+                Spacer(Modifier.width(6.dp))
+                SeriesStatusBadge(status, colors)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchQueryField(query: String, colors: LibraryColors, focusRequester: FocusRequester, modifier: Modifier, accept: (LibraryIntent) -> Unit) {
+    BasicTextField(
+        value = query,
+        onValueChange = { accept(LibraryIntent.QueryChanged(it)) },
+        modifier = modifier.focusRequester(focusRequester),
+        singleLine = true,
+        textStyle = bodyStyle(colors, 15),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { accept(LibraryIntent.Search) }),
+        decorationBox = { field ->
+            Box {
+                if (query.isEmpty()) {
+                    BasicText("전체 검색", style = hintStyle(colors, 15))
+                }
+                field()
+            }
+        },
+    )
+    if (query.isNotEmpty()) {
+        Box(
+            Modifier.size(24.dp).clip(CircleShape).background(colors.mutedSurface)
+                .clickable { accept(LibraryIntent.QueryChanged("")) },
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(10.dp))
         }
     }
 }

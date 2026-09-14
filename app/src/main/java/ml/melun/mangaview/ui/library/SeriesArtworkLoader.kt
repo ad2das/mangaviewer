@@ -2,12 +2,12 @@ package ml.melun.mangaview.ui.library
 
 import android.graphics.BitmapFactory
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import java.io.ByteArrayOutputStream
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CoroutineScope
 import ml.melun.mangaview.app.SourceRegistry
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.SourceSeries
@@ -19,37 +19,31 @@ import ml.melun.mangaview.source.SourceSeries
  */
 internal class SeriesArtworkLoader(
     private val sources: SourceRegistry,
-    private val ioDispatcher: CoroutineDispatcher,
+    ioDispatcher: CoroutineDispatcher,
+    scope: CoroutineScope,
 ) {
-    private val cache = object : android.util.LruCache<String, ImageBitmap>(MAX_CACHE_KB) {
-        override fun sizeOf(key: String, value: ImageBitmap): Int =
-            value.width * value.height * 4 / 1_024
+    private class CacheEntry(val image: ImageBitmap, val sizeKiB: Int)
+
+    private val cache = object : android.util.LruCache<String, CacheEntry>(MAX_CACHE_KB) {
+        override fun sizeOf(key: String, value: CacheEntry): Int = value.sizeKiB
     }
-    private val inFlight = HashMap<String, CompletableDeferred<ImageBitmap?>>()
+    private val requests = ArtworkRequests<CacheEntry?>(scope, ioDispatcher)
 
     suspend fun load(series: SourceSeries, targetEdgePx: Int): ImageBitmap? {
         val artwork = series.thumbnailKey?.takeIf(String::isNotBlank) ?: return null
         val edge = bucketEdge(targetEdgePx)
         val key = "${series.id.sourceId.value}:${series.id.remoteKey}:$artwork@$edge"
-        cache.get(key)?.let { return it }
-        val (deferred, owner) = synchronized(inFlight) {
-            val existing = inFlight[key]
-            if (existing != null) {
-                existing to false
-            } else {
-                CompletableDeferred<ImageBitmap?>().also { inFlight[key] = it } to true
-            }
-        }
-        if (!owner) return deferred.await()
-        try {
-            val decoded = runCatching {
-                withContext(NonCancellable + ioDispatcher) { fetchAndDecode(series, edge) }
-            }.getOrNull()
-            if (decoded != null) cache.put(key, decoded)
-            deferred.complete(decoded)
-            return decoded
-        } finally {
-            synchronized(inFlight) { inFlight.remove(key) }
+        cache.get(key)?.let { return it.image }
+        return try {
+            requests.load(key) {
+                cache.get(key) ?: fetchAndDecode(series, edge)?.let { image ->
+                    CacheEntry(image, imageSizeKiB(image)).also { cache.put(key, it) }
+                }
+            }?.image
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -93,6 +87,10 @@ internal class SeriesArtworkLoader(
         }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }
+
+    /** Real allocation of the BitmapFactory-backed image, rounded up to whole KiB. */
+    private fun imageSizeKiB(image: ImageBitmap): Int =
+        ((image.asAndroidBitmap().allocationByteCount + 1_023) / 1_024).coerceAtLeast(1)
 
     private fun bucketEdge(px: Int): Int = when {
         px <= 256 -> 256

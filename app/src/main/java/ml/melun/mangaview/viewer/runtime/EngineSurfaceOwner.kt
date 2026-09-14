@@ -443,6 +443,7 @@ private class Pending(val identity: FrameIdentity, val scene: EngineSurfaceScene
     }
 
     fun deliverFrom(pending: MutableMap<Long, Pending>, rendererId: Long, report: (EngineSurfacePresentation) -> Unit) {
+        if ((submissionResult ?: 0) > 0) scene.diagnostics?.resolve(identity, rendererId)
         val timestamp = timestamp ?: return
         val latency = latency ?: return
         val result = submissionResult ?: return

@@ -82,6 +82,16 @@ bool GlViewerRenderer::canSubmit() noexcept {
     return onOwnerThread() && (!buffered_ || buffered_->ready());
 }
 
+bool GlViewerRenderer::offscreenContextIsCurrent() const noexcept {
+    // Fast path for bindSubmitSurface: skip makeOffscreenCurrent only when this thread provably
+    // already holds the offscreen pbuffer current. The live EGL queries are the authority; nothing
+    // is cached and tracing cannot steer the decision. Any doubt keeps the original fallback.
+    return !contextLost_ && lastContextError_ == EGL_SUCCESS &&
+        display_ != EGL_NO_DISPLAY && context_ != EGL_NO_CONTEXT && pbuffer_ != EGL_NO_SURFACE &&
+        eglGetCurrentDisplay() == display_ && eglGetCurrentContext() == context_ &&
+        eglGetCurrentSurface(EGL_DRAW) == pbuffer_ && eglGetCurrentSurface(EGL_READ) == pbuffer_;
+}
+
 bool GlViewerRenderer::prepare() noexcept {
     // Reserve only object names, not image/buffer storage. The same context owns these names
     // when a reader claims it; close() already retires the remaining names and unpack buffer.
@@ -122,7 +132,9 @@ bool GlViewerRenderer::installScene(const GlViewerFrame& frame) noexcept {
 
 int GlViewerRenderer::presentBuffered(const GlViewerFrame& frame) noexcept {
     if (hasReadbackRequest(frame.token)) issueReadback(frame, 0);
-    const bool submitted = buffered_->present(frame.token);
+    glFinish();
+    const bool ready = glSucceeded("buffered frame completion");
+    const bool submitted = ready && buffered_->presentReady(frame.token);
     completeReadbackSwap(frame.token, submitted, contextLost_);
-    return submitted ? 1 : -1;
+    return submitted ? 1 : (contextLost_ ? -2 : -1);
 }

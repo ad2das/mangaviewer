@@ -72,5 +72,6 @@ class ProviderOriginTransportTest {
         override suspend fun recover(provider: String, failed: String, transport: SourceTransport): String? =
             recoverOrigin(provider, failed, transport)
         override suspend fun observeRedirect(provider: String, finalOrigin: String, transport: SourceTransport) = Unit
+        override fun remember(provider: String, origin: String) = Unit
     }
 }

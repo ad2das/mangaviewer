@@ -146,6 +146,13 @@ bool projectedGeometry(
     return *displayBottom > *displayTop;
 }
 
+bool configureDecoder(AImageDecoder* decoder, int width, int height) noexcept {
+    return AImageDecoder_setAndroidBitmapFormat(decoder, ANDROID_BITMAP_FORMAT_RGBA_8888) ==
+            ANDROID_IMAGE_DECODER_SUCCESS &&
+        AImageDecoder_setDataSpace(decoder, ADATASPACE_SRGB) == ANDROID_IMAGE_DECODER_SUCCESS &&
+        AImageDecoder_setTargetSize(decoder, width, height) == ANDROID_IMAGE_DECODER_SUCCESS;
+}
+
 std::unique_ptr<CpuTile> decode(
     const char* path,
     int sourceWidth,
@@ -166,11 +173,7 @@ std::unique_ptr<CpuTile> decode(
     if (!projectedGeometry(
             sourceWidth, sourceHeight, sourceTop, sourceBottom, rasterWidth, cropLeft, cropRight,
             &targetWidth, &scaledHeight, &displayTop, &displayBottom)) return nullptr;
-    if (AImageDecoder_setAndroidBitmapFormat(decoder, ANDROID_BITMAP_FORMAT_RGBA_8888) !=
-            ANDROID_IMAGE_DECODER_SUCCESS ||
-        AImageDecoder_setDataSpace(decoder, ADATASPACE_SRGB) != ANDROID_IMAGE_DECODER_SUCCESS ||
-        AImageDecoder_setTargetSize(decoder, targetWidth, scaledHeight) !=
-            ANDROID_IMAGE_DECODER_SUCCESS) return nullptr;
+    if (!configureDecoder(decoder, targetWidth, scaledHeight)) return nullptr;
     const int cropX = static_cast<int>(static_cast<std::int64_t>(cropLeft) * targetWidth / sourceWidth);
     if (static_cast<std::int64_t>(cropX) + rasterWidth > targetWidth) return nullptr;
     // An unnecessary full-image crop makes the platform allocate an intermediate

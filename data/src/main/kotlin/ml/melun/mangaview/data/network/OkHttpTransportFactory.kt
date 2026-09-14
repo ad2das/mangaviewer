@@ -17,10 +17,13 @@ class OkHttpTransportFactory(
     fun create(cookieJar: CookieJar = CookieJar.NO_COOKIES): OkHttpSourceTransport =
         create(cookieJar, listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
 
-    fun protect(primary: ml.melun.mangaview.source.SourceTransport): SniRecoveryTransport =
-        SniRecoveryTransport(primary, createRecovery = { createRecovery() }, sharedRecovery = true)
+    fun protect(
+        primary: ml.melun.mangaview.source.SourceTransport,
+        cookieJar: CookieJar = CookieJar.NO_COOKIES,
+    ): SniRecoveryTransport =
+        SniRecoveryTransport(primary, createRecovery = { createRecovery(cookieJar) }, sharedRecovery = true)
 
-    private fun createRecovery(): ml.melun.mangaview.source.SourceTransport {
+    private fun createRecovery(cookieJar: CookieJar): ml.melun.mangaview.source.SourceTransport {
         val dns = EncryptedSourceDns()
         val relay = LocalTlsRelay(dns)
         val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
@@ -31,6 +34,7 @@ class OkHttpTransportFactory(
                 if (response.request.header("Proxy-Authorization") != null) null
                 else response.request.newBuilder().header("Proxy-Authorization", relay.authorization).build()
             }
+            .cookieJar(cookieJar)
             .connectionPool(ConnectionPool(parallelism, 5L, TimeUnit.MINUTES))
             .connectTimeout(10L, TimeUnit.SECONDS)
             .readTimeout(30L, TimeUnit.SECONDS)

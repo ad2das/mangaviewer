@@ -24,6 +24,7 @@ internal class EngineSwapBaselineActivity : Activity(), SurfaceHolder.Callback {
     private val errors = mutableListOf<Throwable>()
     val ready = CompletableDeferred<Unit>()
     private lateinit var owner: EngineSurfaceOwner
+    private var bufferedCompositor = false
     private var viewport = EngineViewport(1, 1)
     private var attached = false
     private var running = false
@@ -40,6 +41,7 @@ internal class EngineSwapBaselineActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        bufferedCompositor = intent.getBooleanExtra("baselineBufferedCompositor", false)
         owner = EngineSurfaceOwner(1024L * 1024, { frame ->
             synchronized(records) {
                 check(records.size < 4096) { "Baseline observation capacity exceeded" }
@@ -47,6 +49,7 @@ internal class EngineSwapBaselineActivity : Activity(), SurfaceHolder.Callback {
                 delivered[frame.identity.token] = System.nanoTime()
             }
         }, { failure -> synchronized(errors) { errors += failure }; ready.completeExceptionally(failure) }, {},
+            bufferedCompositor = bufferedCompositor,
             maximumPendingForVerification = intent.getIntExtra("baselineMaximumPending", 0).takeIf { it > 0 },
             presentationPollMillisForVerification = intent.getLongExtra("baselinePollMillis", 0).takeIf { it > 0 })
         val width = intent.getIntExtra("baselineWidth", 1080)
@@ -66,7 +69,7 @@ internal class EngineSwapBaselineActivity : Activity(), SurfaceHolder.Callback {
         scope.launch {
             try {
                 check(owner.attach(holder.surface, width, height, 60F))
-                owner.setSwapIntervalForVerification(intent.getIntExtra("baselineSwapInterval", 1))
+                if (!bufferedCompositor) owner.setSwapIntervalForVerification(intent.getIntExtra("baselineSwapInterval", 1))
                 ready.complete(Unit)
             } catch (failure: Throwable) { ready.completeExceptionally(failure) }
         }

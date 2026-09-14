@@ -11,7 +11,6 @@ import android.view.Gravity
 import android.view.WindowInsets
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -23,7 +22,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.app.AndroidWorkDispatcher
@@ -76,7 +74,7 @@ internal class EngineViewerScreen(
     private var runtime: EngineViewerRuntime? = null
     private val presentationRecorder = ViewerPresentationRecorder()
     private val presentedRegionRecorder = PresentedRegionRecorder()
-    private lateinit var progress: ProgressBar
+    private lateinit var loading: ViewerLoadingOverlay
     private lateinit var failureText: TextView
     private var reportedFailure: Throwable? = null
     private lateinit var chrome: ViewerChromeController
@@ -90,7 +88,6 @@ internal class EngineViewerScreen(
     private val engineDiagnostics = EngineViewerDiagnostics()
     private val engineInputObservations = EngineInputObservations()
     internal fun reserveWholeTraversalInputEvidence() {
-        check(applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
         engineInputObservations.reserveCaptureCapacity(32_768)
     }
     private var episodeListJob: Job? = null
@@ -123,7 +120,7 @@ internal class EngineViewerScreen(
             reportPresented = { presented ->
                 engineDiagnostics.presented(presented)
                 if (presented.swapSucceeded && presented.scene.completeCoverage &&
-                    presented.scene.placements.isNotEmpty()) progress.visibility = android.view.View.GONE
+                    presented.scene.placements.isNotEmpty()) loading.complete()
             },
             reportRendererClosed = engineDiagnostics::rendererClosed,
             inputObservations = engineInputObservations,
@@ -137,12 +134,6 @@ internal class EngineViewerScreen(
     fun open() {
         val createdRuntime = requireNotNull(runtime)
         engineDiagnostics.opened(System.nanoTime())
-        sessionScope.launch {
-            delay(500)
-            if (!closing && reportedFailure == null &&
-                engineDiagnostics.startup()?.firstCompleteViewportSubmittedAtNanos == null)
-                progress.visibility = android.view.View.VISIBLE
-        }
         sessionScope.launch {
             openingHandoff?.awaitPredecessor()
             if (runtime === createdRuntime) createdRuntime.open()
@@ -291,15 +282,10 @@ internal class EngineViewerScreen(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        progress = ProgressBar(this@EngineViewerScreen).apply {
-            contentDescription = "viewer-loading"
-            visibility = android.view.View.GONE
-            isClickable = false
-            isFocusable = false
-            indeterminateTintList = android.content.res.ColorStateList.valueOf(0xFF6C5CE7.toInt())
-        }
-        val progressSize = (48 * resources.displayMetrics.density).toInt()
-        addView(progress, FrameLayout.LayoutParams(progressSize, progressSize, Gravity.CENTER))
+        loading = ViewerLoadingOverlay(this@EngineViewerScreen)
+        addView(loading, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
         failureText = TextView(this@EngineViewerScreen).apply {
             contentDescription = "viewer-failure"
             setTextColor(Color.WHITE)
@@ -344,7 +330,7 @@ internal class EngineViewerScreen(
                 split = ::toggleSplitMode,
             ),
         ).also { controller -> controller.install(root) }
-        root.excludesSurfaceTap = chrome::contains
+        root.excludesSurfaceTap = { x, y -> loading.active || chrome.contains(x, y) }
     }
 
     private fun onViewerOpened() {
@@ -450,7 +436,7 @@ internal class EngineViewerScreen(
 
     private fun showFailure(failure: Throwable) {
         reportedFailure = failure
-        progress.visibility = android.view.View.GONE
+        loading.failed()
         failureText.text = failure.message?.takeIf(String::isNotBlank) ?: "페이지를 불러오지 못했습니다"
         failureText.visibility = android.view.View.VISIBLE
     }

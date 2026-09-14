@@ -321,23 +321,8 @@ class EngineSession(
 
     private fun buildSnapshot(): EngineSessionSnapshot {
         if (phaseValue == EngineSessionPhase.CLOSED) {
-            return EngineSessionSnapshot(
-                sessionId = sessionId,
-                generation = generationValue,
-                phase = phaseValue,
-                viewport = geometry.viewport,
-                anchor = geometry.publicAnchor(),
-                geometryRevision = geometryRevisionValue,
-                inputRevision = inputRevisionValue,
-                pendingInputCount = 0,
-                visibleRegions = immutableList(emptyList()),
-                requiredDimensions = immutableSet(emptySet()),
-                requiredEpisodes = immutableSet(emptySet()),
-                requiredNavigation = immutableSet(emptySet()),
-                completeViewport = false,
-                anchorDimensions = geometry.anchor?.pageId?.let { geometry.actualDimensions[it] },
-                movementRevision = presentation.revision,
-                splitMode = geometry.splitMode,
+            return closedSessionSnapshot(
+                sessionId, generationValue, geometry, geometryRevisionValue, inputRevisionValue, presentation.revision,
             )
         }
         val visible = geometry.visible()
@@ -438,4 +423,28 @@ private fun acceptedAt(eventTimeNanos: Long, clockNanos: () -> Long): Long {
     val now = clockNanos()
     require(eventTimeNanos <= now) { "Input event time cannot be in the future" }
     return now
+}
+
+private fun closedSessionSnapshot(
+    sessionId: Long, generationValue: Long, geometry: DocumentGeometry, geometryRevisionValue: Long,
+    inputRevisionValue: Long, movementRevision: Long,
+): EngineSessionSnapshot {
+    return EngineSessionSnapshot(
+        sessionId = sessionId,
+        generation = generationValue,
+        phase = EngineSessionPhase.CLOSED,
+        viewport = geometry.viewport,
+        anchor = geometry.publicAnchor(),
+        geometryRevision = geometryRevisionValue,
+        inputRevision = inputRevisionValue,
+        pendingInputCount = 0,
+        visibleRegions = immutableList(emptyList()),
+        requiredDimensions = immutableSet(emptySet()),
+        requiredEpisodes = immutableSet(emptySet()),
+        requiredNavigation = immutableSet(emptySet()),
+        completeViewport = false,
+        anchorDimensions = geometry.anchor?.pageId?.let { geometry.actualDimensions[it] },
+        movementRevision = movementRevision,
+        splitMode = geometry.splitMode,
+    )
 }

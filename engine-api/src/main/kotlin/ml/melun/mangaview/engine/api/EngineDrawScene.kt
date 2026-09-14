@@ -9,4 +9,6 @@ data class EngineDrawScene(
     val session: EngineSessionSnapshot,
     val quads: List<EngineDrawQuad>,
     val completeCoverage: Boolean,
+    /** Opaque trace-only diagnostic sidecar; never read by rendering, scheduling, or pacing. */
+    val diagnostics: Any? = null,
 )

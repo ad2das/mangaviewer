@@ -130,10 +130,20 @@ internal class QualificationCorpus(private val sources: SourceRegistry, private 
                 check(series.id.sourceId == source.id && series.title.isNotBlank()) {
                     "Live catalog contains an invalid identity or title for ${source.id}/$kind"
                 }
-                check(!snapshot.items.containsKey(series.id)) {
-                    "Live catalog contains duplicate identity ${series.id}"
+                if (snapshot.items.containsKey(series.id)) {
+                    if (!snapshot.duplicates.containsKey(series.id)) {
+                        snapshot.duplicates[series.id] = snapshot.cursors.size
+                    }
+                    return@forEach
                 }
                 snapshot.items[series.id] = series
+            }
+            if (snapshot.duplicates.isNotEmpty()) {
+                directory.resolve("regression-catalog-duplicates-${source.id.value}-${kind.name}.json")
+                    .writeText(JSONArray(snapshot.duplicates.map { (id, page) ->
+                        JSONObject().put("source", id.sourceId.value).put("key", id.remoteKey)
+                            .put("atPage", page)
+                    }).toString(2))
             }
             snapshot.nextCursor = page.nextCursor
             snapshot.complete = page.nextCursor == null
@@ -143,6 +153,7 @@ internal class QualificationCorpus(private val sources: SourceRegistry, private 
     private class CatalogSnapshot {
         val items = linkedMapOf<SeriesId, SourceSeries>()
         val cursors = mutableSetOf<String?>()
+        val duplicates = linkedMapOf<SeriesId, Int>()
         var nextCursor: String? = null
         var complete = false
     }

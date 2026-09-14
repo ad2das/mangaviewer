@@ -199,7 +199,12 @@ internal suspend fun traverseCapturedEpisode(
     var lastPreparationCount = -1
     var finalPreparation: EngineLaunchPreparationSnapshot? = null
     suspend fun observePreparation(): EngineLaunchPreparationSnapshot? {
-        val value = preparationSnapshot()
+        // Once every first original is verified the cumulative launch set cannot grow. Skip the
+        // expensive full diagnostic pull (planner.plan + whole manifest/map copies on the app main
+        // thread) inside the measured motion window; the cached final snapshot keeps every
+        // summary/count field and all real growth records were written before completion.
+        val completed = finalPreparation?.takeIf { it.allFirstVerifiedPreparedAtNanos != null }
+        val value = completed ?: preparationSnapshot()
         if (value != null) {
             finalPreparation = value
             if (value.verifiedPages.size != lastPreparationCount) {

@@ -37,27 +37,7 @@ internal fun GenreCatalogScreen(
             contentDescription = "장르 목록: " + genre.label
         },
     ) {
-        Row(
-            Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier.size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .clickable { accept(LibraryIntent.Back) },
-                contentAlignment = Alignment.Center,
-            ) {
-                LibraryIconView(LibraryIcon.BACK, colors.secondary, Modifier.size(24.dp))
-            }
-            Spacer(Modifier.width(6.dp))
-            BasicText(
-                genre.label,
-                Modifier.weight(1f),
-                titleStyle(colors, 20).copy(fontWeight = FontWeight.Bold),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        GenreCatalogHeader(genre.label, colors, accept)
         Row(
             Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -163,5 +143,30 @@ private fun GenreSeriesList(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun GenreCatalogHeader(label: String, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(44.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .clickable { accept(LibraryIntent.Back) },
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.BACK, colors.secondary, Modifier.size(24.dp))
+        }
+        Spacer(Modifier.width(6.dp))
+        BasicText(
+            label,
+            Modifier.weight(1f),
+            titleStyle(colors, 20).copy(fontWeight = FontWeight.Bold),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
