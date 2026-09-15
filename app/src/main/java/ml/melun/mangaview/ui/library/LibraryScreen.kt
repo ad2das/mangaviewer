@@ -39,6 +39,7 @@ internal fun LibraryScreen(
     accept: (LibraryIntent) -> Unit,
     account: ml.melun.mangaview.account.AccountState = ml.melun.mangaview.account.AccountState(),
     updateAvailable: Boolean = false,
+    onOpenCrashReport: () -> Unit = {},
 ) {
     val colors = libraryColors(state.saved.settings.darkTheme)
     val focus = LocalFocusManager.current
@@ -67,7 +68,7 @@ internal fun LibraryScreen(
         if (state.seriesMenuVisible) SeriesActionsOverlay(state, colors, accept)
         if (state.downloadSelectionVisible) DownloadSelectionOverlay(state, colors, accept)
         if (state.pendingOfflineRemoval != null) OfflineRemovalConfirmation(state, colors, accept)
-        if (state.settingsVisible) SettingsOverlay(colors, accept, account, updateAvailable)
+        if (state.settingsVisible) SettingsOverlay(colors, accept, account, updateAvailable, onOpenCrashReport)
         if (state.preferencesVisible) PreferencesOverlay(state, colors, accept)
         if (state.sourcePickerVisible) SourcePickerOverlay(state, colors, accept)
     }

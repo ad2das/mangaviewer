@@ -1,8 +1,11 @@
 package ml.melun.mangaview.activity
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.KeyEvent
@@ -19,7 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.lifecycle.ViewModelProvider
@@ -32,6 +37,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
+import ml.melun.mangaview.CrashLog
+import ml.melun.mangaview.CrashReportDialog
+import ml.melun.mangaview.CrashReportText
 import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.ReadingPosition
@@ -40,6 +48,7 @@ import ml.melun.mangaview.ui.library.LibraryIntent
 import ml.melun.mangaview.ui.library.LibraryScreen
 import ml.melun.mangaview.ui.library.LibraryViewModel
 import ml.melun.mangaview.ui.library.LibraryViewModelFactory
+import ml.melun.mangaview.ui.library.LibraryColors
 import ml.melun.mangaview.ui.library.libraryColors
 import ml.melun.mangaview.ui.library.libraryPressIndication
 import ml.melun.mangaview.ui.library.providesSelectionFeedback
@@ -51,6 +60,7 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     private lateinit var updates: AppUpdateViewModel
     private lateinit var reader: MainReaderHost
+    private var pendingCrashReport: String? = null
     internal fun readerScreen(): EngineViewerScreen? = if (::reader.isInitialized) reader.current else null
     private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val file = updates.state.value.file ?: return@registerForActivityResult
@@ -73,6 +83,7 @@ class MainActivity : ComponentActivity() {
                 Dispatchers.IO,
             ),
         )[LibraryViewModel::class.java]
+        pendingCrashReport = CrashLog.pending(this)
         showLibrary(graph, viewModel)
         reader = MainReaderHost(this)
         reader.restore(savedInstanceState)
@@ -123,28 +134,12 @@ class MainActivity : ComponentActivity() {
             val account by graph.account.state.collectAsStateWithLifecycle()
             val updateState by updates.state.collectAsStateWithLifecycle()
             val reading by reader.visible.collectAsStateWithLifecycle()
+            var crashReport by remember { mutableStateOf(pendingCrashReport) }
             UpdateInstallEffect(updateState, reading, updates)
             LaunchedEffect(state.saved.settings.darkTheme) {
                 if (readerScreen() == null) applySystemBars(state.saved.settings.darkTheme)
             }
-            LaunchedEffect(viewModel) {
-                viewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        LibraryEffect.CheckForUpdate -> updates.check()
-                        LibraryEffect.AccountSignIn -> graph.account.signIn(this@MainActivity)
-                        LibraryEffect.AccountSignOut -> graph.account.signOut()
-                        LibraryEffect.AccountRetry -> graph.account.retry()
-                        is LibraryEffect.OpenEpisode -> openEpisode(effect.episodeId, effect.position)
-                        is LibraryEffect.OpenUri -> openExternalUri(effect.value)
-                        is LibraryEffect.ShareText -> share(effect.title, effect.value)
-                        is LibraryEffect.ShowMessage -> Toast.makeText(
-                            this@MainActivity,
-                            effect.value,
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    }
-                }
-            }
+            LibraryEffects(viewModel, graph)
             val haptics = LocalHapticFeedback.current
             val acceptWithFeedback: (LibraryIntent) -> Unit = remember(viewModel, haptics) {
                 { intent ->
@@ -159,7 +154,8 @@ class MainActivity : ComponentActivity() {
                 LocalIndication provides libraryPressIndication(),
             ) {
                 LibraryScreen(state, graph.artworkLoader, acceptWithFeedback, account,
-                    updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE)
+                    updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE,
+                    onOpenCrashReport = { latestCrashReport()?.let { crashReport = it } })
             }
             if (!reading) {
                 AppUpdateDialog(
@@ -170,8 +166,58 @@ class MainActivity : ComponentActivity() {
                     updates::download,
                     ::installUpdate,
                 )
+                CrashReportHost(crashReport, libraryColors(state.saved.settings.darkTheme)) {
+                    CrashLog.consumePending(this@MainActivity)
+                    crashReport = null
+                }
             }
         }
+    }
+
+    @Composable
+    private fun LibraryEffects(viewModel: LibraryViewModel, graph: ml.melun.mangaview.app.AppGraph) {
+        LaunchedEffect(viewModel) {
+            viewModel.effects.collectLatest { effect ->
+                when (effect) {
+                    LibraryEffect.CheckForUpdate -> updates.check()
+                    LibraryEffect.AccountSignIn -> graph.account.signIn(this@MainActivity)
+                    LibraryEffect.AccountSignOut -> graph.account.signOut()
+                    LibraryEffect.AccountRetry -> graph.account.retry()
+                    is LibraryEffect.OpenEpisode -> openEpisode(effect.episodeId, effect.position)
+                    is LibraryEffect.OpenUri -> openExternalUri(effect.value)
+                    is LibraryEffect.ShareText -> share(effect.title, effect.value)
+                    is LibraryEffect.ShowMessage -> Toast.makeText(
+                        this@MainActivity,
+                        effect.value,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+        }
+    }
+
+    /** Shows the newest crash with GitHub and clipboard actions; closing consumes the report. */
+    @Composable
+    private fun CrashReportHost(report: String?, colors: LibraryColors, onClose: () -> Unit) {
+        if (report == null) return
+        CrashReportDialog(
+            report = report,
+            colors = colors,
+            onCopy = { copyToClipboard("crash-report", report) },
+            onGitHub = {
+                copyToClipboard("crash-report", report)
+                openCrashIssue(report)
+                onClose()
+            },
+            onDismiss = onClose,
+        )
+    }
+
+    /** The newest report for the settings entry; toasts when nothing was ever recorded. */
+    private fun latestCrashReport(): String? {
+        val report = CrashLog.latestReport(this)
+        if (report == null) Toast.makeText(this, "저장된 오류 리포트가 없습니다", Toast.LENGTH_SHORT).show()
+        return report
     }
 
     /** Installs a finished background download, but never on top of an active reading session. */
@@ -233,5 +279,25 @@ class MainActivity : ComponentActivity() {
         }
         runCatching { startActivity(Intent.createChooser(intent, "공유")) }
             .onFailure { Toast.makeText(this, "공유할 앱이 없습니다", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun copyToClipboard(label: String, value: String) {
+        val clipboard = getSystemService(ClipboardManager::class.java) ?: return
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            Toast.makeText(this, "오류 내용을 클립보드에 복사했습니다", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Opens the prefilled new-issue form; the full report is already on the clipboard for pasting. */
+    private fun openCrashIssue(report: String) {
+        val url = CrashReportText.issueUrl(report)
+        val opened = runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }.isSuccess
+        Toast.makeText(
+            this,
+            if (opened) "GitHub 새 이슈 페이지를 엽니다 · 전체 오류 내용은 클립보드에 복사했습니다"
+            else "GitHub 페이지를 열지 못했습니다. 오류 내용은 클립보드에 복사해 두었습니다",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 }

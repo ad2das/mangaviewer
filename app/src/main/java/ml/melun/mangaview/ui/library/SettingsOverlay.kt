@@ -25,6 +25,7 @@ internal fun SettingsOverlay(
     accept: (LibraryIntent) -> Unit,
     account: ml.melun.mangaview.account.AccountState = ml.melun.mangaview.account.AccountState(),
     updateAvailable: Boolean = false,
+    onOpenCrashReport: () -> Unit = {},
 ) {
     Box(
         Modifier.fillMaxSize()
@@ -87,6 +88,8 @@ internal fun SettingsOverlay(
             AccountOutlineAction(if (updateAvailable) "새 업데이트 있음" else "업데이트 확인", colors) {
                 accept(LibraryIntent.CheckForUpdate)
             }
+            Spacer(Modifier.height(10.dp))
+            AccountOutlineAction("오류 리포트 보내기", colors, onOpenCrashReport)
         }
     }
 }
