@@ -123,7 +123,9 @@ class NtkDocumentParser {
             if (title.isBlank() || title in NON_SERIES_TITLES || NON_EPISODE_LABELS.any(title::contains)) {
                 return@forEach
             }
-            val thumbnail = link.selectFirst("img")?.let(::imageAttribute)
+            val thumbnail = link.select("img").firstNotNullOfOrNull { image ->
+                if (isPlatformIcon(image)) null else imageAttribute(image)
+            }
             found.putIfAbsent(path, SourceSeries(SeriesId(sourceId, key.path()), title, thumbnailKey = thumbnail))
         }
         return found.values.toList()
@@ -406,6 +408,13 @@ class NtkDocumentParser {
 
     private fun imageAttribute(image: Element): String? =
         IMAGE_ATTRIBUTES.firstNotNullOfOrNull { image.attr(it).trim().takeIf(String::isNotEmpty) }
+
+    /** Provider cards prepend a small platform badge image before the real cover. */
+    private fun isPlatformIcon(image: Element): Boolean {
+        if (image.hasClass("platform-icon")) return true
+        val source = image.attr("src")
+        return source.contains("/platforms/") || source.contains("/brand/")
+    }
 
     private fun String.clean(): String = replace('\u00a0', ' ').replace(Regex("<[^>]+>"), " ")
         .replace(Regex("\\s+"), " ").trim()

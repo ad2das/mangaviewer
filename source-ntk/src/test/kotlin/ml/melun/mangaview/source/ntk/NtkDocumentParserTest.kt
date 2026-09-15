@@ -88,6 +88,37 @@ class NtkDocumentParserTest {
     }
 
     @Test
+    fun htmlCardsPreferTheCoverOverThePlatformBadge() {
+        val html = """
+            <a class="card" href="/webtoon/747269"><div class="thumb">
+              <span class="kind-badge">웹툰</span>
+              <img class="platform-icon"
+                   src="https://apihost.store/platforms/naver.png?v=20260705a" alt=""/>
+              <img src="https://aws-cdn1.site/black/thumbs/4279.png?v2" alt="전지적 독자 시점"
+                   loading="lazy" class="search-thumb-img"/>
+            </div><div class="info"><p class="subject">전지적 독자 시점</p></div></a>
+        """.trimIndent()
+
+        val result = parser.searchHtml(html, sourceId)
+
+        assertEquals("https://aws-cdn1.site/black/thumbs/4279.png?v2", result.single().thumbnailKey)
+    }
+
+    @Test
+    fun htmlCardsWithoutACoverStayWithoutArtworkInsteadOfThePlatformBadge() {
+        val html = """
+            <a class="card" href="/webtoon/42"><div class="thumb">
+              <img class="platform-icon"
+                   src="https://apihost.store/platforms/kakao.png?v=20260705a" alt=""/>
+            </div><div class="info"><p class="subject">배지뿐인 작품</p></div></a>
+        """.trimIndent()
+
+        val result = parser.searchHtml(html, sourceId)
+
+        assertNull(result.single().thumbnailKey)
+    }
+
+    @Test
     fun currentUnicodeProviderSlugsRemainStableSeriesKeys() {
         val json = """{"works":[{"sourceWorkId":"복학생-네이버","title":"복학생"}],"total":1}"""
 
