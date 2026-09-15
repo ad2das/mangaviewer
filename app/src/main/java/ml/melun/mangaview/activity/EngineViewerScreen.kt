@@ -408,7 +408,14 @@ internal class EngineViewerScreen(
 
     private fun content(runtime: EngineViewerRuntime): FrameLayout =
         ViewerTouchRoot(this).apply {
-        onSurfaceTap = { if (::chrome.isInitialized) chrome.toggle() }
+        onSurfaceTap = {
+            // Immersive reading owns plain taps: the reader asked for the chrome to stay hidden
+            // until a deliberate long press requests it.
+            if (::chrome.isInitialized && appliedSettings?.immersiveMode != true) chrome.toggle()
+        }
+        onSurfaceLongPress = {
+            if (::chrome.isInitialized && appliedSettings?.immersiveMode == true) chrome.toggle()
+        }
         onSurfaceDoubleTap = { x, y ->
             // Tap coordinates arrive in root space; zoom transforms are surface-local.
             val surface = runtime.surface

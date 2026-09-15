@@ -15,13 +15,18 @@ internal class ViewerTouchRoot(
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val tapTracker = SurfaceTapTracker(touchSlop)
     private val doubleTapTimeoutMillis = ViewConfiguration.getDoubleTapTimeout().toLong()
+    private val longPressTimeoutMillis = ViewConfiguration.getLongPressTimeout().toLong()
     // A plain main handler commits the tap even before this view is attached to a window.
     private val tapHandler = Handler(Looper.getMainLooper())
     private var lastTapMillis = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
     private var pendingTap: Runnable? = null
+    private var pendingLongPress: Runnable? = null
     var onSurfaceTap: () -> Unit = {}
+    // The surface uses no long press, so a stationary hold is the reader's deliberate gesture
+    // for the chrome where a plain tap must stay silent.
+    var onSurfaceLongPress: () -> Unit = {}
     var onSurfaceDoubleTap: (Float, Float) -> Unit = { _, _ -> }
     var excludesSurfaceTap: (Float, Float) -> Boolean = { _, _ -> false }
 
@@ -33,6 +38,7 @@ internal class ViewerTouchRoot(
 
     override fun onDetachedFromWindow() {
         cancelPendingTap()
+        cancelPendingLongPress()
         super.onDetachedFromWindow()
     }
 
@@ -42,24 +48,31 @@ internal class ViewerTouchRoot(
                 // A new gesture retracts an uncommitted single tap so a following drag cannot
                 // reveal the chrome mid-scroll.
                 cancelPendingTap()
-                tapTracker.begin(
-                    event.x,
-                    event.y,
-                    eligible = !excludesSurfaceTap(event.x, event.y),
-                )
+                cancelPendingLongPress()
+                val eligible = !excludesSurfaceTap(event.x, event.y)
+                tapTracker.begin(event.x, event.y, eligible = eligible)
+                if (eligible) scheduleLongPress()
             }
             MotionEvent.ACTION_MOVE -> {
                 tapTracker.move(event.x, event.y)
-                if (!tapTracker.tapEligible) cancelPendingTap()
+                if (!tapTracker.tapEligible) {
+                    cancelPendingTap()
+                    cancelPendingLongPress()
+                }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 tapTracker.cancel()
                 cancelPendingTap()
+                cancelPendingLongPress()
             }
-            MotionEvent.ACTION_UP -> if (tapTracker.release(event.x, event.y)) tapped(event.x, event.y)
+            MotionEvent.ACTION_UP -> {
+                cancelPendingLongPress()
+                if (tapTracker.release(event.x, event.y)) tapped(event.x, event.y)
+            }
             MotionEvent.ACTION_CANCEL -> {
                 tapTracker.cancel()
                 cancelPendingTap()
+                cancelPendingLongPress()
             }
         }
     }
@@ -92,6 +105,20 @@ internal class ViewerTouchRoot(
     private fun cancelPendingTap() {
         pendingTap?.let(tapHandler::removeCallbacks)
         pendingTap = null
+    }
+
+    private fun scheduleLongPress() {
+        val fire = Runnable {
+            pendingLongPress = null
+            onSurfaceLongPress()
+        }
+        pendingLongPress = fire
+        tapHandler.postDelayed(fire, longPressTimeoutMillis)
+    }
+
+    private fun cancelPendingLongPress() {
+        pendingLongPress?.let(tapHandler::removeCallbacks)
+        pendingLongPress = null
     }
 }
 
