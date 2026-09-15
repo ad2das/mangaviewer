@@ -20,7 +20,6 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
     var onDimChanged: (Int) -> Unit = {}
     var onDimCommitted: (Int) -> Unit = {}
     var onKeepScreenOn: (Boolean) -> Unit = {}
-    var onImmersive: (Boolean) -> Unit = {}
     var onVolumeKeys: (Boolean) -> Unit = {}
     var onClose: () -> Unit = {}
 
@@ -29,7 +28,6 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
     private val dim = SeekBar(context).apply { max = MAX_DIM_PERCENT }
     private val dimValue = label(13f, Typeface.BOLD).apply { gravity = Gravity.CENTER_VERTICAL or Gravity.END }
     private val keepScreenOn = toggle()
-    private val immersive = toggle()
     private val volumeKeys = toggle()
     private var binding = false
 
@@ -49,7 +47,6 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         card.addView(divider())
         card.addView(dimRow())
         card.addView(toggleRow("화면 꺼짐 방지", keepScreenOn))
-        card.addView(toggleRow("몰입 모드 (전체 화면)", immersive))
         card.addView(toggleRow("볼륨 버튼으로 이동", volumeKeys))
         card.addView(closeRow())
         addView(card, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
@@ -59,7 +56,6 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         visibility = View.GONE
 
         keepScreenOn.setOnCheckedChangeListener { _, checked -> if (!binding) onKeepScreenOn(checked) }
-        immersive.setOnCheckedChangeListener { _, checked -> if (!binding) onImmersive(checked) }
         volumeKeys.setOnCheckedChangeListener { _, checked -> if (!binding) onVolumeKeys(checked) }
         dim.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
@@ -81,7 +77,6 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
     fun open(settings: ViewerSettings) {
         binding = true
         keepScreenOn.isChecked = settings.keepScreenOn
-        immersive.isChecked = settings.immersiveMode
         volumeKeys.isChecked = settings.volumeKeyNavigation
         dim.progress = settings.readerDimPercent
         dimValue.text = dimLabel(settings.readerDimPercent)

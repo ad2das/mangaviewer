@@ -30,6 +30,7 @@ internal class ViewerChromeController(
         val next: () -> Unit,
         val bookmark: () -> Unit,
         val split: () -> Unit,
+        val immersive: () -> Unit,
         val settings: () -> Unit,
     )
 
@@ -49,7 +50,9 @@ internal class ViewerChromeController(
     private val next = button("다음", actions.next, isAccent = true)
     private val bookmark = button("책갈피", actions.bookmark)
     private val settings = button("설정", actions.settings)
-    private val split = button("나눔", actions.split).apply { contentDescription = "양면 나눠보기" }
+    private val split = button("양면", actions.split)
+    private val immersive = button("몰입", actions.immersive)
+        .apply { contentDescription = "몰입 모드 (전체 화면)" }
     private val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
         max = PROGRESS_SCALE
         progressTintList = ColorStateList.valueOf(ACCENT_PROGRESS)
@@ -106,8 +109,9 @@ internal class ViewerChromeController(
         val back = button("‹", actions.back, isCircular = true).apply { contentDescription = "뒤로" }
         top.addView(back, LinearLayout.LayoutParams(dp(48), dp(48)))
         top.addView(title, LinearLayout.LayoutParams(0, dp(48), 1f))
-        top.addView(settings, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
         top.addView(split, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
+        top.addView(immersive, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
+        top.addView(settings, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
 
         bottom.addView(progress, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(2),
@@ -121,7 +125,9 @@ internal class ViewerChromeController(
         bottomRow.addView(episodes, itemParams(58))
         bottomRow.addView(next, itemParams(58))
 
-        installDragForwarding(top, bottom, back, title, page, bookmark, previous, episodes, next, split, settings)
+        installDragForwarding(
+            top, bottom, back, title, page, bookmark, previous, episodes, next, split, immersive, settings,
+        )
     }
 
     private fun update(state: ViewerChromeState?) {
@@ -133,7 +139,16 @@ internal class ViewerChromeController(
         next.enable(state?.nextEpisodeId != null)
         episodes.enable(state != null)
         split.enable(state != null)
-        accent(split, state?.splitMode == true)
+        val splitOn = state?.splitMode == true
+        split.text = if (splitOn) "단면" else "양면"
+        split.contentDescription = if (splitOn) "단면 보기, 누르면 양면" else "양면 보기, 누르면 단면"
+        accent(split, splitOn)
+    }
+
+    /** Mirrors the immersive setting on the quick toggle inside the chrome. */
+    fun setImmersiveActive(active: Boolean) {
+        immersive.contentDescription = if (active) "몰입 모드 켜짐" else "몰입 모드 (전체 화면)"
+        accent(immersive, active)
     }
 
     private fun setVisible(show: Boolean) {

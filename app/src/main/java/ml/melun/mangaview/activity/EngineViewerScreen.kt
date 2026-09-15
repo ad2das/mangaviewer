@@ -298,6 +298,7 @@ internal class EngineViewerScreen(
         appliedSettings = settings
         volumeKeysEnabled = settings.volumeKeyNavigation
         if (::dimOverlay.isInitialized) dimOverlay.alpha = settings.readerDimPercent / 100f
+        if (::chrome.isInitialized) chrome.setImmersiveActive(settings.immersiveMode)
         if (foreground) {
             applyKeepScreenOn(settings.keepScreenOn)
             applyImmersive(settings.immersiveMode)
@@ -447,7 +448,6 @@ internal class EngineViewerScreen(
             onDimChanged = { percent -> dimOverlay.alpha = percent / 100f }
             onDimCommitted = { percent -> persistSettings { it.copy(readerDimPercent = percent) } }
             onKeepScreenOn = { enabled -> persistSettings { it.copy(keepScreenOn = enabled) } }
-            onImmersive = { enabled -> persistSettings { it.copy(immersiveMode = enabled) } }
             onVolumeKeys = { enabled -> persistSettings { it.copy(volumeKeyNavigation = enabled) } }
             onClose = { dismiss() }
         }
@@ -519,9 +519,13 @@ internal class EngineViewerScreen(
                 next = { navigateAdjacent(next = true) },
                 bookmark = ::bookmarkCurrentPosition,
                 split = ::toggleSplitMode,
+                immersive = ::toggleImmersiveMode,
                 settings = ::toggleSettingsPanel,
             ),
-        ).also { controller -> controller.install(root) }
+        ).also { controller ->
+            controller.install(root)
+            controller.setImmersiveActive(appliedSettings?.immersiveMode == true)
+        }
         root.excludesSurfaceTap = { x, y ->
             loading.active || chrome.contains(x, y) || settingsPanel.visible ||
                 (failureCard.visibility == View.VISIBLE && failureCard.containsPoint(x, y))
@@ -545,6 +549,14 @@ internal class EngineViewerScreen(
     private fun toggleSplitMode() {
         val state = runtime?.chromeSnapshot() ?: return
         runtime?.setSplitMode(!state.splitMode)
+        if (::chrome.isInitialized) chrome.refresh()
+    }
+
+    private fun toggleImmersiveMode() {
+        val enabled = appliedSettings?.immersiveMode != true
+        persistSettings { it.copy(immersiveMode = enabled) }
+        applyImmersive(enabled)
+        if (::chrome.isInitialized) chrome.setImmersiveActive(enabled)
     }
 
     private fun launchEpisode(episodeId: EpisodeId) = openEpisode(episodeId)
