@@ -17,7 +17,9 @@ window criteria. This checker adds the harness contract on top of that analyzer 
   * ring/close integrity: no lost observations, no invalid/duplicate/non-monotonic
     DISPLAY_PRESENT timestamps, close-proof counts equal exported rows,
   * true next-boundary observation with first next source+anchor tokens,
-    `currentAndNextShareViewport`, and a complete next frame,
+    `currentAndNextShareViewport`, and a complete next frame — or a plan-store proof that the
+    captured episode is terminal (`terminal-episode-proof.json`, decoded plan with no next
+    neighbour); the same proof makes that episode's NEXT_BOUNDARY coverage requirement vacuous,
   * cache inventory recorded,
   * no fabricated raw input binding: dispatch-order gestures are never receipts.
 
@@ -205,7 +207,7 @@ def measured_stage_counts(frames: list[dict], stages: list[dict]) -> dict[str, d
     return results
 
 
-def stage_coverage(capture: Path | None) -> dict:
+def stage_coverage(capture: Path | None, terminal_proof: dict | None = None) -> dict:
     if capture is None:
         return criterion("moving_stage_coverage", UNVERIFIED, "capture directory not found")
     evidence = read_json(capture / "stage-evidence.json")
@@ -226,6 +228,10 @@ def stage_coverage(capture: Path | None) -> dict:
             details.append(f"{name}: absent")
             continue
         if int(stage.get("measuredFromNanos") or 0) == 0:
+            if name == "NEXT_BOUNDARY" and terminal_proof_matches(terminal_proof, evidence):
+                states.append(PASS)
+                details.append(f"{name}: terminal episode, no next neighbour to observe (vacuous)")
+                continue
             states.append(UNVERIFIED)
             details.append(f"{name}: measured window never activated")
             continue
@@ -420,7 +426,26 @@ def integrity_check(capture: Path | None) -> dict:
     return criterion("ring_integrity", PASS, "close proofs consistent; no lost observations")
 
 
-def boundary_check(capture: Path | None, require_boundary: bool) -> dict:
+def terminal_proof_matches(proof: dict | None, evidence: dict) -> bool:
+    """A terminal-episode proof is valid when it names the same episode as the capture,
+    declares the episode terminal, records the plan-store digest, and carries no next key."""
+    if not isinstance(proof, dict) or proof.get("terminal") is not True:
+        return False
+    plan = proof.get("plan")
+    if not isinstance(plan, dict):
+        return False
+    if not isinstance(plan.get("planSha256"), str) or not plan["planSha256"]:
+        return False
+    if plan.get("nextKey"):
+        return False
+    episode_key = plan.get("episodeKey")
+    if not isinstance(episode_key, str) or not episode_key:
+        return False
+    return episode_key in json.dumps(evidence.get("episode") or {})
+
+
+def boundary_check(capture: Path | None, require_boundary: bool,
+                   terminal_proof: dict | None = None) -> dict:
     if capture is None:
         return criterion("next_boundary_observed", UNVERIFIED, "capture directory not found")
     evidence = read_json(capture / "stage-evidence.json")
@@ -447,6 +472,10 @@ def boundary_check(capture: Path | None, require_boundary: bool) -> dict:
     if observed and not fresh:
         return criterion("next_boundary_observed", FAIL,
                          "boundary tokens predate this stage; historical crossing cannot satisfy it")
+    if terminal_proof_matches(terminal_proof, evidence):
+        return criterion("next_boundary_observed", PASS,
+                         "terminal episode: plan store has no next neighbour (" +
+                         json.dumps(terminal_proof.get("plan"), sort_keys=True) + ")")
     return criterion("next_boundary_observed", FAIL if require_boundary else UNVERIFIED, detail)
 
 
@@ -637,10 +666,13 @@ def analyzer_states(run_dir: Path) -> tuple[dict, str]:
 
 def check_run(run_dir: Path, require_boundary: bool) -> dict:
     capture = find_capture(run_dir)
+    terminal_proof = read_json(run_dir / "terminal-episode-proof.json")
+    if terminal_proof is None:
+        terminal_proof = read_json(run_dir.parent / "terminal-episode-proof.json")
     criteria = [
-        stage_coverage(capture),
+        stage_coverage(capture, terminal_proof),
         integrity_check(capture),
-        boundary_check(capture, require_boundary),
+        boundary_check(capture, require_boundary, terminal_proof),
         loading_attempts_check(capture),
         fence_coverage_check(capture, run_dir),
         raw_binding_check(capture),

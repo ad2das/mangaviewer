@@ -10,7 +10,7 @@ hot paths with device-side scripts:
   scan(root)          -> one `run-as sh` per root: name, type, sha256, stat
   delete_many(root)   -> one `run-as sh` per root reading a pushed name list
   pull_tar(root)      -> one `exec-out run-as tar` stream per root
-  push_tar(root)      -> one `run-as tar -xf -` stream per root
+  push_tar(root)      -> one `adb push` + one device-side `run-as tar -xf <file>` per root
   set_metadata_many   -> one `run-as sh` per root for chmod/touch fix-ups
 
 Every scan validates names against the same patterns and rejects symlinks and
@@ -202,12 +202,20 @@ class BulkCacheHost:
                 info.gid = int(member.get("gid") or 0)
                 info.mtime = int(member.get("mtimeEpoch") or 0)
                 archive.addfile(info, io.BytesIO(member["data"]))
-        result = subprocess.run(
-            [self.device.adb, "shell", "run-as", self.package, "tar", "-xf", "-", "-C", root],
-            input=buffer.getvalue(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if result.returncode:
-            raise ColdScopeError(f"bulk restore failed for {root}: "
-                                 f"{result.stderr.decode(errors='replace')[-300:]}")
+        handle = tempfile.NamedTemporaryFile(delete=False, dir=str(self.spool_dir), suffix=".tar")
+        handle.write(buffer.getvalue())
+        handle.close()
+        remote = f"{REMOTE_SCRIPT_DIR}/mv-tar-{uuid.uuid4().hex[:10]}.tar"
+        try:
+            self.device.run("push", handle.name, remote, check=True)
+            result = self.device.run("shell", "run-as", self.package, "tar", "-xf", remote,
+                                     "-C", root, check=False)
+            if result.returncode:
+                raise ColdScopeError(f"bulk restore failed for {root}: "
+                                     f"{result.stderr.decode(errors='replace')[-300:]}")
+        finally:
+            Path(handle.name).unlink(missing_ok=True)
+            self._remove_remote(remote)
 
     def set_metadata_many(self, root: str, entries: list[tuple[str, str, int]]) -> None:
         if not entries:
