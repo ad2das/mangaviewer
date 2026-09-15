@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ml.melun.mangaview.core.ReadingPosition
+import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.data.library.RecentReading
 import ml.melun.mangaview.data.library.SavedBookmark
 import ml.melun.mangaview.data.library.SavedSeries
@@ -63,12 +64,13 @@ internal fun SavedLibraryScreen(
             }
             BasicText("최근 업데이트순", style = hintStyle(colors, 12))
         }
+        val sourceLabels = state.sources.associate { it.id to it.label }
         when (state.libraryTab) {
             SavedTab.ALL -> AllSaved(state, query, artworkLoader, colors, accept)
-            SavedTab.RECENT -> RecentSaved(state.saved.recent, query, artworkLoader, colors, accept)
-            SavedTab.FAVORITES -> FavoriteSaved(state.saved.favorites, query, artworkLoader, colors, accept)
-            SavedTab.BOOKMARKS -> BookmarkSaved(state.saved.bookmarks, query, colors, accept)
-            SavedTab.OFFLINE -> OfflineSaved(state, query, artworkLoader, colors, accept)
+            SavedTab.RECENT -> RecentSaved(state.saved.recent, query, artworkLoader, colors, accept, sourceLabels)
+            SavedTab.FAVORITES -> FavoriteSaved(state.saved.favorites, query, artworkLoader, colors, accept, sourceLabels)
+            SavedTab.BOOKMARKS -> BookmarkSaved(state.saved.bookmarks, query, colors, accept, sourceLabels)
+            SavedTab.OFFLINE -> OfflineSaved(state, query, artworkLoader, colors, accept, sourceLabels)
         }
     }
 }
@@ -197,6 +199,7 @@ private fun AllSaved(
         loader,
         colors,
         accept,
+        state.sources.associate { it.id to it.label },
         "최근 읽거나 보관하거나 저장한 작품이 없습니다",
         SavedTab.ALL,
         removalTabFor = { series -> removalTabs[series.id] ?: SavedTab.ALL },
@@ -210,6 +213,7 @@ private fun RecentSaved(
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
+    sourceLabels: Map<SourceId, String>,
 ) {
     val filtered = items.filter { query.isEmpty() || it.series.title.contains(query, true) }
     if (filtered.isEmpty()) {
@@ -240,6 +244,7 @@ private fun RecentSaved(
                 colors = colors,
                 removalTab = SavedTab.RECENT,
                 accept = accept,
+                sourceLabels = sourceLabels,
                 click = {
                     accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits)))
                 },
@@ -255,6 +260,7 @@ private fun FavoriteSaved(
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
+    sourceLabels: Map<SourceId, String>,
     empty: String = "좋아요한 작품이 없습니다",
     removalTab: SavedTab = SavedTab.FAVORITES,
     removalTabFor: (SavedSeries) -> SavedTab = { removalTab },
@@ -288,6 +294,7 @@ private fun FavoriteSaved(
                 colors = colors,
                 removalTab = removalTabFor(item),
                 accept = accept,
+                sourceLabels = sourceLabels,
                 click = { accept(LibraryIntent.SavedSeriesSelected(item)) },
             )
         }
@@ -301,6 +308,7 @@ private fun OfflineSaved(
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
+    sourceLabels: Map<SourceId, String>,
 ) {
     val series = state.offlineEpisodes.map { it.series }.distinctBy { it.id }
         .filter { query.isEmpty() || it.title.contains(query, true) }
@@ -332,6 +340,7 @@ private fun OfflineSaved(
                 colors = colors,
                 removalTab = SavedTab.OFFLINE,
                 accept = accept,
+                sourceLabels = sourceLabels,
                 click = { accept(LibraryIntent.OfflineSeriesSelected(item)) },
             )
         }
@@ -348,6 +357,7 @@ private fun SavedSourceSeriesCard(
     colors: LibraryColors,
     removalTab: SavedTab,
     accept: (LibraryIntent) -> Unit,
+    sourceLabels: Map<SourceId, String>,
     click: () -> Unit,
 ) {
     var removing by remember(series.id) { mutableStateOf(false) }
@@ -384,7 +394,14 @@ private fun SavedSourceSeriesCard(
             SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
         }
         Spacer(Modifier.width(14.dp))
-        SavedSeriesDescription(series, subtitle, badge, colors, Modifier.weight(1f))
+        SavedSeriesDescription(
+            series,
+            subtitle,
+            badge,
+            colors,
+            Modifier.weight(1f),
+            sourceLabels[series.id.sourceId] ?: series.id.sourceId.value.uppercase(),
+        )
         BasicText("›", style = hintStyle(colors, 18).copy(fontWeight = FontWeight.Light))
     }
 }
@@ -395,6 +412,7 @@ private fun BookmarkSaved(
     query: String,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
+    sourceLabels: Map<SourceId, String>,
 ) {
     var removing by remember { mutableStateOf<SavedBookmark?>(null) }
     removing?.let { target ->
@@ -434,6 +452,8 @@ private fun BookmarkSaved(
             BookmarkCard(
                 bookmark = item,
                 colors = colors,
+                sourceLabel = sourceLabels[item.pageId.episodeId.seriesId.sourceId]
+                    ?: item.pageId.episodeId.seriesId.sourceId.value.uppercase(),
                 click = {
                     accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits)))
                 },
@@ -448,6 +468,7 @@ private fun BookmarkSaved(
 private fun BookmarkCard(
     bookmark: SavedBookmark,
     colors: LibraryColors,
+    sourceLabel: String,
     click: () -> Unit,
     longClick: () -> Unit,
 ) {
@@ -475,12 +496,17 @@ private fun BookmarkCard(
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            BasicText(
-                bookmark.seriesTitle,
-                style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BasicText(
+                    bookmark.seriesTitle,
+                    modifier = Modifier.weight(1f, fill = false),
+                    style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(6.dp))
+                SourceLabelChip(sourceLabel, colors)
+            }
             Spacer(Modifier.height(4.dp))
             BasicText(
                 "${libraryDate(bookmark.createdAtEpochMillis)} 저장",
@@ -571,14 +597,26 @@ private fun savedCount(state: LibraryState): Int = when (state.libraryTab) {
     SavedTab.OFFLINE -> state.offlineEpisodes.map { it.series.id }.distinct().size
 }
 @Composable
-private fun SavedSeriesDescription(series: SourceSeries, subtitle: String, badge: String?, colors: LibraryColors, modifier: Modifier) {
+private fun SavedSeriesDescription(
+    series: SourceSeries,
+    subtitle: String,
+    badge: String?,
+    colors: LibraryColors,
+    modifier: Modifier,
+    sourceLabel: String,
+) {
     Column(modifier) {
-        BasicText(
-            series.title,
-            style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            BasicText(
+                series.title,
+                modifier = Modifier.weight(1f, fill = false),
+                style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(6.dp))
+            SourceLabelChip(sourceLabel, colors)
+        }
         Spacer(Modifier.height(4.dp))
         BasicText(subtitle, style = hintStyle(colors, 12), maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (badge != null) {
@@ -591,5 +629,16 @@ private fun SavedSeriesDescription(series: SourceSeries, subtitle: String, badge
                 BasicText(badge, style = labelStyle(colors, true).copy(fontSize = 11.sp, fontWeight = FontWeight.Bold))
             }
         }
+    }
+}
+
+@Composable
+private fun SourceLabelChip(label: String, colors: LibraryColors) {
+    Box(
+        Modifier.clip(SavedBadgeShape)
+            .background(colors.mutedSurface)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        BasicText(label, style = hintStyle(colors, 10).copy(fontWeight = FontWeight.Bold))
     }
 }
