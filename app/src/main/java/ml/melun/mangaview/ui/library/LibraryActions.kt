@@ -3,6 +3,7 @@ package ml.melun.mangaview.ui.library
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
@@ -39,8 +40,10 @@ internal class LibraryActions(
             SavedTab.ALL -> library.removeHistory(item.series.id, removeFavorite = true)
             SavedTab.RECENT -> library.removeHistory(item.series.id)
             SavedTab.FAVORITES -> library.setFavorite(item.series.id, item.series.title, item.series.thumbnailKey, false)
-            // Bookmarks are removed individually so one series can keep the rest of its marks.
-            SavedTab.BOOKMARKS -> Unit
+            // The row stands for every mark in the series, so one deletion removes them together.
+            SavedTab.BOOKMARKS -> library.snapshot.first().bookmarks
+                .filter { it.pageId.episodeId.seriesId == item.series.id }
+                .forEach { library.removeBookmark(it) }
             SavedTab.OFFLINE -> Unit
         }
     }

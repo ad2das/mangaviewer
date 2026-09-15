@@ -151,7 +151,7 @@ private fun MainDestinationTitle(destination: MainDestination, colors: LibraryCo
         }
         MainDestination.LIBRARY -> {
             BasicText(
-                "내 보관함",
+                "보관함",
                 modifier,
                 titleStyle(colors, 22).copy(fontWeight = FontWeight.Bold),
             )
@@ -162,12 +162,13 @@ private fun MainDestinationTitle(destination: MainDestination, colors: LibraryCo
 @Composable
 private fun MainSourceChip(source: SourceOption?, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Row(
-        Modifier.height(38.dp)
+        Modifier.height(48.dp)
+            .semantics { contentDescription = source?.let { "사이트: ${it.label}" } ?: "사이트 선택" }
+            .padding(vertical = 5.dp)
             .shadow(2.dp, RoundedCornerShape(19.dp), spotColor = Color.Black.copy(alpha = 0.05f))
             .clip(RoundedCornerShape(19.dp))
             .background(colors.card)
             .border(1.dp, colors.cardBorder, RoundedCornerShape(19.dp))
-            .semantics { contentDescription = source?.label ?: "" }
             .clickable { accept(LibraryIntent.ToggleSourcePicker) }
             .padding(start = 7.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -185,7 +186,7 @@ private fun MainSourceChip(source: SourceOption?, colors: LibraryColors, accept:
 @Composable
 private fun MainAccountButton(colors: LibraryColors, accept: (LibraryIntent) -> Unit, updateAvailable: Boolean) {
     Box(
-        Modifier.size(40.dp)
+        Modifier.size(48.dp)
             .semantics { contentDescription = "계정" }
             .shadow(2.dp, CircleShape, spotColor = Color.Black.copy(alpha = 0.05f))
             .clip(CircleShape)
@@ -322,6 +323,7 @@ private fun SourcePickerOverlay(
     Box(
         Modifier.fillMaxSize()
             .background(Color.Black.copy(alpha = 0.55f))
+            .semantics { contentDescription = "사이트 선택 닫기" }
             .clickable { accept(LibraryIntent.ToggleSourcePicker) },
         contentAlignment = Alignment.Center,
     ) {

@@ -261,15 +261,27 @@ internal class EngineViewerScreen(
     /** Consumes a volume key when the reader has hardware-key navigation enabled. */
     fun handleVolumeKey(forward: Boolean): Boolean {
         if (!volumeKeysEnabled) return false
-        stepViewport(forward)
-        return true
+        return stepViewport(forward)
     }
 
-    private fun stepViewport(forward: Boolean) {
-        val surface = runtime?.surface ?: return
+    /** Lets reader-local overlays consume back before the host closes the whole session. */
+    fun handleBack(): Boolean {
+        if (::settingsPanel.isInitialized && settingsPanel.visible) {
+            settingsPanel.dismiss()
+            return true
+        }
+        if (::chrome.isInitialized && chrome.visible) {
+            chrome.hide()
+            return true
+        }
+        return false
+    }
+
+    private fun stepViewport(forward: Boolean): Boolean {
+        val surface = runtime?.surface ?: return false
         val height = surface.height
-        if (height <= 0) return
-        surface.stepViewport(if (forward) height.toDouble() else -height.toDouble())
+        if (height <= 0) return false
+        return surface.stepViewport(if (forward) height.toDouble() else -height.toDouble())
     }
 
     private fun observeReaderSettings() {
@@ -396,7 +408,11 @@ internal class EngineViewerScreen(
     private fun content(runtime: EngineViewerRuntime): FrameLayout =
         ViewerTouchRoot(this).apply {
         onSurfaceTap = { if (::chrome.isInitialized) chrome.toggle() }
-        onSurfaceDoubleTap = { x, y -> runtime.surface.toggleZoom(x, y) }
+        onSurfaceDoubleTap = { x, y ->
+            // Tap coordinates arrive in root space; zoom transforms are surface-local.
+            val surface = runtime.surface
+            surface.toggleZoom(x - surface.left, y - surface.top)
+        }
         setBackgroundColor(Color.BLACK)
         installSystemBarInsets()
         addView(runtime.surface, FrameLayout.LayoutParams(
@@ -404,7 +420,6 @@ internal class EngineViewerScreen(
             ViewGroup.LayoutParams.MATCH_PARENT,
         ))
         dimOverlay = View(this@EngineViewerScreen).apply {
-            contentDescription = "viewer-dim"
             setBackgroundColor(Color.BLACK)
             isClickable = false
             isFocusable = false
@@ -426,6 +441,8 @@ internal class EngineViewerScreen(
             val margin = dp(24)
             setMargins(margin, margin, margin, margin + dp(48))
         })
+        // Chrome installs before the panel so the panel and its scrim stay above the bars.
+        installChrome(this, runtime)
         settingsPanel = ViewerReaderSettingsPanel(this@EngineViewerScreen).apply {
             onDimChanged = { percent -> dimOverlay.alpha = percent / 100f }
             onDimCommitted = { percent -> persistSettings { it.copy(readerDimPercent = percent) } }
@@ -437,7 +454,6 @@ internal class EngineViewerScreen(
         addView(settingsPanel, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        installChrome(this, runtime)
         }
 
     private fun buildFailureCard(): LinearLayout = LinearLayout(this).apply {
@@ -466,9 +482,9 @@ internal class EngineViewerScreen(
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL or Gravity.END
         }
-        row.addView(actionButton("닫기", accent = false) { finish() }, LinearLayout.LayoutParams(dp(72), dp(42)))
+        row.addView(actionButton("닫기", accent = false) { finish() }, LinearLayout.LayoutParams(dp(72), dp(48)))
         row.addView(actionButton("다시 시도", accent = true) { retryFromFailure() },
-            LinearLayout.LayoutParams(dp(96), dp(42)).apply { marginStart = dp(8) })
+            LinearLayout.LayoutParams(dp(96), dp(48)).apply { marginStart = dp(8) })
         addView(row, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { topMargin = dp(12) })
@@ -567,21 +583,29 @@ internal class EngineViewerScreen(
             } catch (failure: Throwable) {
                 episodePickerFailure = failure
                 android.util.Log.e("ViewerActivity", "episode picker failed", failure)
-                Toast.makeText(
-                    this@EngineViewerScreen,
-                    failure.message ?: "회차 목록을 불러오지 못했습니다",
-                    Toast.LENGTH_SHORT,
-                ).show()
+                showEpisodePickerFailure()
             } finally {
                 episodeListJob = null
             }
         }
     }
 
+    private fun showEpisodePickerFailure() {
+        if (isFinishing || isDestroyed) return
+        runCatching {
+            AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("회차 목록")
+                .setMessage("회차 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")
+                .setPositiveButton("다시 시도") { _, _ -> loadEpisodePicker() }
+                .setNegativeButton("닫기", null)
+                .show()
+        }.onFailure { android.util.Log.e("ViewerActivity", "episode picker failure dialog failed", it) }
+    }
+
     private fun showEpisodePicker(current: ViewerChromeState, episodes: List<SourceEpisode>) {
         if (episodes.isEmpty() || isFinishing || isDestroyed) return
         val currentIndex = episodes.indexOfFirst { it.id == current.episodeId }
-        val dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        val dialog = AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
             .setTitle("회차 선택")
             .setSingleChoiceItems(episodes.map(SourceEpisode::title).toTypedArray(), currentIndex) {
                     dialog, index ->

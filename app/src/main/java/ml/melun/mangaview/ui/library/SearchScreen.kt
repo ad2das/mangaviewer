@@ -6,12 +6,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -74,9 +76,13 @@ private fun SearchControls(state: LibraryState, colors: LibraryColors, accept: (
     val query = state.query
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    // Re-entering a query-less search tab should open the keyboard; returning to an existing
+    // result set must not cover it with the IME again.
     LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-        keyboard?.show()
+        if (query.isEmpty()) {
+            focusRequester.requestFocus()
+            keyboard?.show()
+        }
     }
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(8.dp))
@@ -152,7 +158,7 @@ private fun SearchFilterChip(
     click: () -> Unit,
 ) {
     Box(
-        modifier.height(42.dp)
+        modifier.height(48.dp)
             .shadow(2.dp, RoundedCornerShape(14.dp), spotColor = Color.Black.copy(alpha = 0.05f))
             .clip(RoundedCornerShape(14.dp))
             .background(colors.card)
@@ -173,7 +179,9 @@ private fun SearchFilterChip(
 @Composable
 private fun SearchEmpty(state: LibraryState, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+        Modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.height(28.dp))
@@ -217,9 +225,12 @@ private fun RecentSearchKeywords(queries: List<String>, colors: LibraryColors, a
                 style = labelStyle(colors, false).copy(fontWeight = FontWeight.Bold, fontSize = 13.sp),
             )
             Box(
-                Modifier.clip(RoundedCornerShape(10.dp))
+                Modifier.heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .semantics { contentDescription = "최근 검색어 전체 삭제" }
                     .clickable { accept(LibraryIntent.ClearSearchHistory) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center,
             ) {
                 BasicText("전체 삭제", style = hintStyle(colors, 12))
             }
@@ -245,14 +256,18 @@ private fun RecentSearchKeywords(queries: List<String>, colors: LibraryColors, a
                 }
                 Spacer(Modifier.width(8.dp))
                 Box(
-                    Modifier.size(38.dp)
+                    Modifier.size(48.dp)
                         .clip(CircleShape)
-                        .background(colors.mutedSurface)
                         .semantics { contentDescription = "$keyword 삭제" }
                         .clickable { accept(LibraryIntent.RemoveSearchHistory(keyword)) },
                     contentAlignment = Alignment.Center,
                 ) {
-                    LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(12.dp))
+                    Box(
+                        Modifier.size(38.dp).clip(CircleShape).background(colors.mutedSurface),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(12.dp))
+                    }
                 }
             }
         }
@@ -376,7 +391,8 @@ private fun SearchSeriesCard(
         Spacer(Modifier.width(14.dp))
         SearchSeriesDescription(series, colors, Modifier.weight(1f))
         Box(
-            Modifier.size(42.dp)
+            Modifier.size(48.dp)
+                .semantics { contentDescription = if (favorite) "좋아요 해제" else "좋아요" }
                 .clip(CircleShape)
                 .clickable { accept(LibraryIntent.FavoriteToggled(series)) },
             contentAlignment = Alignment.Center,
@@ -516,11 +532,17 @@ private fun SearchQueryField(query: String, colors: LibraryColors, focusRequeste
     )
     if (query.isNotEmpty()) {
         Box(
-            Modifier.size(24.dp).clip(CircleShape).background(colors.mutedSurface)
-                .clickable { accept(LibraryIntent.QueryChanged("")) },
+            Modifier.size(48.dp)
+                .semantics { contentDescription = "검색어 지우기" },
             contentAlignment = Alignment.Center,
         ) {
-            LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(10.dp))
+            Box(
+                Modifier.size(24.dp).clip(CircleShape).background(colors.mutedSurface)
+                    .clickable { accept(LibraryIntent.QueryChanged("")) },
+                contentAlignment = Alignment.Center,
+            ) {
+                LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(10.dp))
+            }
         }
     }
 }

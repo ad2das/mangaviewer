@@ -21,9 +21,14 @@ internal fun SeriesStatusBadge(
     fontSize: Int = 10,
 ) {
     val (label, background, textColor) = when (status) {
-        SeriesStatus.ONGOING -> Triple("연재중", Modifier.background(colors.newGradient), Color.White)
+        // The new-release gradient is bright in both themes, so its label stays dark.
+        SeriesStatus.ONGOING -> Triple("연재중", Modifier.background(colors.newGradient), Color(0xFF052E2B))
         SeriesStatus.COMPLETED -> Triple("완결", Modifier.background(colors.mutedSurface), colors.secondary)
-        SeriesStatus.HIATUS -> Triple("휴재", Modifier.background(colors.mutedSurface), colors.gold)
+        SeriesStatus.HIATUS -> Triple(
+            "휴재",
+            Modifier.background(colors.mutedSurface),
+            if (colors.dark) colors.gold else Color(0xFFB45309),
+        )
     }
     Box(
         modifier.clip(RoundedCornerShape(7.dp))

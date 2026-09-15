@@ -82,6 +82,10 @@ internal class ViewerChromeController(
         }
     }
 
+    fun hide() {
+        if (visible) setVisible(false)
+    }
+
     fun refresh() {
         if (visible) update(snapshot())
     }
@@ -99,11 +103,11 @@ internal class ViewerChromeController(
         top.orientation = LinearLayout.HORIZONTAL
         bottomRow.orientation = LinearLayout.HORIZONTAL
         bottomRow.gravity = Gravity.CENTER_VERTICAL
-        val back = button("‹", actions.back, isCircular = true)
-        top.addView(back, LinearLayout.LayoutParams(dp(44), dp(44)))
-        top.addView(title, LinearLayout.LayoutParams(0, dp(44), 1f))
-        top.addView(settings, LinearLayout.LayoutParams(dp(58), dp(44)).apply { marginStart = dp(6) })
-        top.addView(split, LinearLayout.LayoutParams(dp(58), dp(44)).apply { marginStart = dp(6) })
+        val back = button("‹", actions.back, isCircular = true).apply { contentDescription = "뒤로" }
+        top.addView(back, LinearLayout.LayoutParams(dp(48), dp(48)))
+        top.addView(title, LinearLayout.LayoutParams(0, dp(48), 1f))
+        top.addView(settings, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
+        top.addView(split, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
 
         bottom.addView(progress, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(2),
@@ -111,7 +115,7 @@ internal class ViewerChromeController(
         bottom.addView(bottomRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
         ))
-        bottomRow.addView(page, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) })
+        bottomRow.addView(page, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(8) })
         bottomRow.addView(bookmark, itemParams(68))
         bottomRow.addView(previous, itemParams(58))
         bottomRow.addView(episodes, itemParams(58))
@@ -210,7 +214,7 @@ internal class ViewerChromeController(
         gravity,
     )
 
-    private fun itemParams(widthDp: Int) = LinearLayout.LayoutParams(dp(widthDp), dp(42)).apply {
+    private fun itemParams(widthDp: Int) = LinearLayout.LayoutParams(dp(widthDp), dp(48)).apply {
         marginStart = dp(5)
     }
 

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- System-dark devices launch with the app's dark palette before the runtime bars apply. -->
+    <style name="Theme.MangaViewer" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#7C5CFF</item>
+        <item name="android:windowBackground">#090A10</item>
+        <item name="android:navigationBarColor">#090A10</item>
+        <item name="android:statusBarColor">#090A10</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

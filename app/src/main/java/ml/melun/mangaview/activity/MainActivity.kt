@@ -15,6 +15,7 @@ import androidx.core.content.FileProvider
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.LocalOverscrollFactory
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +40,7 @@ import ml.melun.mangaview.ui.library.LibraryIntent
 import ml.melun.mangaview.ui.library.LibraryScreen
 import ml.melun.mangaview.ui.library.LibraryViewModel
 import ml.melun.mangaview.ui.library.LibraryViewModelFactory
+import ml.melun.mangaview.ui.library.libraryColors
 import ml.melun.mangaview.ui.library.libraryPressIndication
 import ml.melun.mangaview.ui.library.providesSelectionFeedback
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
@@ -120,12 +122,8 @@ class MainActivity : ComponentActivity() {
             val state by viewModel.state.collectAsStateWithLifecycle()
             val account by graph.account.state.collectAsStateWithLifecycle()
             val updateState by updates.state.collectAsStateWithLifecycle()
-            LaunchedEffect(updateState.file) {
-                val file = updateState.file ?: return@LaunchedEffect
-                lifecycle.withResumed {
-                    if (updates.consumePendingInstall(file)) installUpdate(file)
-                }
-            }
+            val reading by reader.visible.collectAsStateWithLifecycle()
+            UpdateInstallEffect(updateState, reading, updates)
             LaunchedEffect(state.saved.settings.darkTheme) {
                 if (readerScreen() == null) applySystemBars(state.saved.settings.darkTheme)
             }
@@ -163,7 +161,32 @@ class MainActivity : ComponentActivity() {
                 LibraryScreen(state, graph.artworkLoader, acceptWithFeedback, account,
                     updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE)
             }
-            AppUpdateDialog(updateState, updates::dismiss, updates::check, updates::download, ::installUpdate)
+            if (!reading) {
+                AppUpdateDialog(
+                    updateState,
+                    libraryColors(state.saved.settings.darkTheme),
+                    updates::dismiss,
+                    updates::check,
+                    updates::download,
+                    ::installUpdate,
+                )
+            }
+        }
+    }
+
+    /** Installs a finished background download, but never on top of an active reading session. */
+    @Composable
+    private fun UpdateInstallEffect(
+        updateState: ml.melun.mangaview.update.AppUpdateState,
+        reading: Boolean,
+        updates: AppUpdateViewModel,
+    ) {
+        LaunchedEffect(updateState.file, reading) {
+            val file = updateState.file ?: return@LaunchedEffect
+            if (reading) return@LaunchedEffect
+            lifecycle.withResumed {
+                if (updates.consumePendingInstall(file)) installUpdate(file)
+            }
         }
     }
 
@@ -184,7 +207,8 @@ class MainActivity : ComponentActivity() {
 
     @Suppress("DEPRECATION")
     private fun applySystemBars(dark: Boolean) {
-        val background = Color.parseColor(if (dark) "#0F172A" else "#F8FAFC")
+        // Keep the window chrome on the same palette the Compose surfaces use.
+        val background = Color.parseColor(if (dark) "#090A10" else "#F5F7FA")
         window.statusBarColor = background
         window.navigationBarColor = background
         window.decorView.systemUiVisibility = if (dark) 0 else {

@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 
@@ -29,6 +30,12 @@ class ViewerActivity : ComponentActivity() {
             setResult(RESULT_CANCELED)
             finish()
         }
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (::screen.isInitialized && screen.handleBack()) return
+                finish()
+            }
+        })
     }
 
     @Suppress("DEPRECATION")

@@ -84,6 +84,7 @@ internal class LibraryViewModel(
     fun accept(intent: LibraryIntent) {
         when (intent) {
             is LibraryIntent.QueryChanged,
+            is LibraryIntent.SavedQueryChanged,
             is LibraryIntent.DestinationSelected,
             is LibraryIntent.SourceSelected,
             is LibraryIntent.HomeKindSelected,
@@ -102,6 +103,7 @@ internal class LibraryViewModel(
     private fun acceptSelection(intent: LibraryIntent) {
         when (intent) {
             is LibraryIntent.QueryChanged -> update { it.copy(query = intent.value) }
+            is LibraryIntent.SavedQueryChanged -> update { it.copy(savedQuery = intent.value) }
             is LibraryIntent.DestinationSelected -> selectDestination(intent.value)
             is LibraryIntent.SourceSelected -> selectSource(intent.sourceId)
             is LibraryIntent.HomeKindSelected -> selectHomeKind(intent.value)
@@ -121,6 +123,7 @@ internal class LibraryViewModel(
             LibraryIntent.LoadMoreGenre -> genrePager.next()
             LibraryIntent.Search -> search()
             LibraryIntent.RetryHome -> catalogs.loadHome()
+            LibraryIntent.RetryDetail -> retryDetail()
             LibraryIntent.ToggleSettings, LibraryIntent.TogglePreferences, LibraryIntent.ToggleSourcePicker ->
                 uiActions.toggleOverlay(intent)
             LibraryIntent.AccountSignIn, LibraryIntent.AccountSignOut, LibraryIntent.AccountRetry -> {
@@ -296,6 +299,7 @@ internal class LibraryViewModel(
         val source = sourceRegistry.require(series.id.sourceId)
         update { it.copy(activeSeries = series, detailTab = DetailTab.INTRO,
             activeSeriesDetails = null,
+            detailOffline = offlineOnly,
             selectedSourceId = if (offlineOnly) series.id.sourceId else it.selectedSourceId,
             lastSeries = if (offlineOnly) listOf(series) else it.lastSeries,
         ) }
@@ -316,6 +320,12 @@ internal class LibraryViewModel(
             },
             failureMessage = "회차를 불러오지 못했습니다",
         )
+    }
+
+    private fun retryDetail() {
+        val snapshot = state.value
+        val series = snapshot.activeSeries ?: return
+        episodes(series, offlineOnly = snapshot.detailOffline)
     }
 
     private fun <T> launchContent(

@@ -40,7 +40,12 @@ internal class MainReaderHost(private val activity: ComponentActivity) {
     private var destroyed = false
     private val libraryLifecycle = LibraryReaderLifecycle(activity)
     private val back = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() = closeReader()
+        override fun handleOnBackPressed() {
+            // Reader-local overlays consume back first; only an unobstructed reader closes.
+            val reader = current
+            if (reader != null && reader.handleBack()) return
+            closeReader()
+        }
     }
 
     init {

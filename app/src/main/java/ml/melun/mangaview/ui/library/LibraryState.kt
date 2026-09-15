@@ -47,6 +47,8 @@ internal data class LibraryState(
     val seriesMenuVisible: Boolean = false,
     val downloadSelectionVisible: Boolean = false,
     val pendingOfflineRemoval: EpisodeId? = null,
+    val savedQuery: String = "",
+    val detailOffline: Boolean = false,
 )
 
 internal enum class MainDestination(val label: String) {
@@ -113,6 +115,7 @@ internal sealed interface LibraryContent {
 
 internal sealed interface LibraryIntent {
     data class QueryChanged(val value: String) : LibraryIntent
+    data class SavedQueryChanged(val value: String) : LibraryIntent
     data class DestinationSelected(val value: MainDestination) : LibraryIntent
     data class SourceSelected(val sourceId: SourceId) : LibraryIntent
     data class HomeKindSelected(val value: SeriesKind) : LibraryIntent
@@ -125,6 +128,7 @@ internal sealed interface LibraryIntent {
     data class SearchFieldSelected(val value: SearchField) : LibraryIntent
     data object Search : LibraryIntent
     data object RetryHome : LibraryIntent
+    data object RetryDetail : LibraryIntent
     data object LoadMoreGenre : LibraryIntent
     data object ToggleSettings : LibraryIntent
     data object TogglePreferences : LibraryIntent

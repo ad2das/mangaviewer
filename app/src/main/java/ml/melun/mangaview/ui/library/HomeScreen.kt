@@ -177,7 +177,7 @@ private fun GenreRow(
     ) {
         row.forEach { genre ->
             Box(
-                Modifier.weight(1f).height(46.dp)
+                Modifier.weight(1f).height(48.dp)
                     .clip(GenreButtonShape)
                     .background(colors.card)
                     .border(1.dp, colors.cardBorder, GenreButtonShape)
@@ -364,8 +364,9 @@ private fun SectionHeader(title: String, action: String, colors: LibraryColors, 
         val actionModifier = Modifier.clip(RoundedCornerShape(12.dp))
             .background(colors.accentSurface)
             .then(if (click == null) Modifier else Modifier.clickable(onClick = click))
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-        Box(actionModifier) {
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 12.dp)
+        Box(actionModifier, contentAlignment = Alignment.Center) {
             BasicText(action, style = labelStyle(colors, true).copy(fontSize = 12.sp, fontWeight = FontWeight.Bold))
         }
     }

@@ -34,7 +34,6 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
     private var binding = false
 
     init {
-        contentDescription = "viewer-settings"
         isClickable = true
         setBackgroundColor(0xB0000000.toInt())
         setOnClickListener { onClose() }
@@ -96,7 +95,7 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(0, dp(14), 0, 0)
-        addView(label(14f).apply { text = "화면 밝기" }, LinearLayout.LayoutParams(0, dp(36), 1f))
+        addView(label(14f).apply { text = "화면 어둡게" }, LinearLayout.LayoutParams(0, dp(36), 1f))
         addView(dimValue, LinearLayout.LayoutParams(dp(44), dp(36)))
         addView(dim, LinearLayout.LayoutParams(0, dp(36), 1.2f))
     }
@@ -105,8 +104,9 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(0, dp(10), 0, 0)
-        addView(label(14f).apply { this.text = text }, LinearLayout.LayoutParams(0, dp(40), 1f))
-        addView(control, LinearLayout.LayoutParams(dp(52), dp(40)))
+        control.contentDescription = text
+        addView(label(14f).apply { this.text = text }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        addView(control, LinearLayout.LayoutParams(dp(52), dp(48)))
     }
 
     private fun closeRow(): View = LinearLayout(context).apply {

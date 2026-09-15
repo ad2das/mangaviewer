@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -13,6 +14,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,7 +105,9 @@ private fun PreferenceRow(label: String, value: String, colors: LibraryColors, c
 @Composable
 private fun PreferenceSwitch(label: String, checked: Boolean, colors: LibraryColors, click: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().height(60.dp).clickable(onClick = click).padding(horizontal = 16.dp),
+        Modifier.fillMaxWidth().height(60.dp)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = { click() })
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
@@ -128,7 +134,8 @@ private fun PreferencesHeader(colors: LibraryColors, accept: (LibraryIntent) -> 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(44.dp)
+            Modifier.size(48.dp)
+                .semantics { contentDescription = "뒤로" }
                 .clip(RoundedCornerShape(14.dp))
                 .clickable { accept(LibraryIntent.TogglePreferences) },
             contentAlignment = Alignment.Center,

@@ -19,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -77,7 +79,8 @@ private fun DownloadToolbar(colors: LibraryColors, back: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(44.dp)
+            Modifier.size(48.dp)
+                .semantics { contentDescription = "뒤로" }
                 .clip(RoundedCornerShape(14.dp))
                 .clickable(onClick = back),
             contentAlignment = Alignment.Center,
@@ -146,15 +149,23 @@ private fun DownloadControls(
             contentAlignment = Alignment.Center,
         ) {
             BasicText(
-                "선택 다운로드",
+                "선택 저장",
                 style = bodyStyle(colors, 14).copy(
                     color = if (selectedCount > 0) Color.White else colors.muted,
                     fontWeight = FontWeight.Bold,
                 ),
             )
         }
-        OutlinedDownloadButton(selectedCount.toString() + "개 선택", colors, Modifier.weight(1f), null)
-        OutlinedDownloadButton("모두 다운", colors, Modifier.weight(1f), onAll)
+        Box(
+            Modifier.weight(1f).height(48.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            BasicText(
+                "${selectedCount}개 선택",
+                style = bodyStyle(colors, 13).copy(color = colors.secondary, fontWeight = FontWeight.SemiBold),
+            )
+        }
+        OutlinedDownloadButton("전체 저장", colors, Modifier.weight(1f), onAll)
     }
 }
 
@@ -192,12 +203,12 @@ private fun DownloadConfirmation(
                 .border(1.dp, colors.outline, RoundedCornerShape(22.dp))
                 .padding(24.dp),
         ) {
-            BasicText(title + " 을(를) 다운로드 하시겠습니까?\n[ 총 " + count + "화 ]", style = bodyStyle(colors, 16).copy(fontWeight = FontWeight.Bold))
+            BasicText(title + " 을(를) 오프라인 저장하시겠습니까?\n[ 총 " + count + "화 ]", style = bodyStyle(colors, 16).copy(fontWeight = FontWeight.Bold))
             Spacer(Modifier.height(24.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                OutlinedDownloadButton("아니오", colors, Modifier.width(90.dp), dismiss)
+                OutlinedDownloadButton("취소", colors, Modifier.width(90.dp), dismiss)
                 Spacer(Modifier.width(10.dp))
-                LibraryAction("네", colors, Modifier.width(90.dp).height(48.dp), confirm)
+                LibraryAction("저장", colors, Modifier.width(90.dp).height(48.dp), confirm)
             }
         }
     }

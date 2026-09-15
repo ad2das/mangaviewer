@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -88,7 +89,7 @@ private fun DetailToolbar(
 @Composable
 private fun IconButton(icon: LibraryIcon, label: String, color: Color, click: () -> Unit) {
     Box(
-        Modifier.size(44.dp)
+        Modifier.size(48.dp)
             .semantics { contentDescription = label }
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = click),
@@ -124,6 +125,11 @@ private fun DetailFailure(
     Column(Modifier.fillMaxSize()) {
         DetailHeader(series, null, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept)
         LibraryMessage(message, colors, Modifier.weight(1f))
+        LibraryAction(
+            "다시 시도",
+            colors,
+            Modifier.align(Alignment.CenterHorizontally).padding(bottom = 28.dp),
+        ) { accept(LibraryIntent.RetryDetail) }
     }
 }
 
@@ -244,7 +250,7 @@ private fun TagChip(label: String, colors: LibraryColors) {
 @Composable
 private fun DetailTabs(selected: DetailTab, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(46.dp)
+        Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(48.dp)
             .shadow(3.dp, RoundedCornerShape(15.dp), spotColor = Color.Black.copy(alpha = 0.05f))
             .clip(RoundedCornerShape(15.dp))
             .background(colors.mutedSurface)
@@ -411,7 +417,7 @@ private fun EpisodeReadBadge(state: EpisodeReadState, colors: LibraryColors) {
         }
         EpisodeReadState.READ -> BasicText(
             "읽음",
-            style = hintStyle(colors, 10).copy(color = colors.muted, fontWeight = FontWeight.Medium),
+            style = hintStyle(colors, 10).copy(color = colors.secondary, fontWeight = FontWeight.Medium),
         )
     }
 }
@@ -446,12 +452,14 @@ private fun DetailReadingActions(series: SourceSeries, firstEpisode: SourceEpiso
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val readEnabled = firstEpisode != null
         Box(
             Modifier.weight(1f).fillMaxHeight()
+                .alpha(if (readEnabled) 1f else 0.45f)
                 .shadow(6.dp, RoundedCornerShape(16.dp), spotColor = colors.accent.copy(alpha = 0.40f))
                 .clip(RoundedCornerShape(16.dp))
                 .background(colors.accentGradient)
-                .clickable { firstEpisode?.let { accept(LibraryIntent.EpisodeSelected(it.id)) } },
+                .clickable(enabled = readEnabled) { firstEpisode?.let { accept(LibraryIntent.EpisodeSelected(it.id)) } },
             contentAlignment = Alignment.Center,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -530,7 +538,7 @@ private fun DetailDescription(series: SourceSeries, details: SourceSeriesDetails
 @Composable
 private fun EpisodeStorageAction(episode: SourceEpisode, saved: Boolean, downloadState: EpisodeDownloadState?, colors: LibraryColors, storageAction: () -> Unit) {
     Box(
-        Modifier.size(42.dp)
+        Modifier.size(48.dp)
             .semantics {
                 contentDescription = if (saved) "${episode.title} 오프라인 저장 삭제" else "${episode.title} 다운로드"
             }

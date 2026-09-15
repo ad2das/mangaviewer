@@ -22,8 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -45,9 +45,9 @@ internal fun SavedLibraryScreen(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
-    val query = state.query.trim()
+    val query = state.savedQuery.trim()
     Column(Modifier.fillMaxSize()) {
-        SavedSearch(state.query, colors, accept)
+        SavedSearch(state.savedQuery, colors, accept)
         Spacer(Modifier.height(10.dp))
         SavedTabs(state.libraryTab, colors, accept)
         val count = savedCount(state)
@@ -75,15 +75,13 @@ internal fun SavedLibraryScreen(
 
 @Composable
 private fun SavedSearch(query: String, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    val focusManager = LocalFocusManager.current
-    val keyboard = LocalSoftwareKeyboardController.current
     Row(
         Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, end = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
-            Modifier.weight(1f).height(50.dp)
+            Modifier.fillMaxWidth().height(50.dp)
                 .shadow(3.dp, RoundedCornerShape(16.dp), spotColor = Color.Black.copy(alpha = 0.05f))
                 .clip(RoundedCornerShape(16.dp))
                 .background(colors.card)
@@ -95,7 +93,7 @@ private fun SavedSearch(query: String, colors: LibraryColors, accept: (LibraryIn
             Spacer(Modifier.width(10.dp))
             BasicTextField(
                 value = query,
-                onValueChange = { accept(LibraryIntent.QueryChanged(it)) },
+                onValueChange = { accept(LibraryIntent.SavedQueryChanged(it)) },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 textStyle = bodyStyle(colors, 15),
@@ -108,17 +106,19 @@ private fun SavedSearch(query: String, colors: LibraryColors, accept: (LibraryIn
             )
             if (query.isNotEmpty()) {
                 Box(
-                    Modifier.size(22.dp).clip(CircleShape).background(colors.mutedSurface)
-                        .clickable { accept(LibraryIntent.QueryChanged("")) },
-                    contentAlignment = Alignment.Center,
+                    Modifier.size(48.dp)
+                        .semantics { contentDescription = "보관함 검색어 지우기" },
+                    contentAlignment = Alignment.CenterEnd,
                 ) {
-                    LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(10.dp))
+                    Box(
+                        Modifier.size(22.dp).clip(CircleShape).background(colors.mutedSurface)
+                            .clickable { accept(LibraryIntent.SavedQueryChanged("")) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(10.dp))
+                    }
                 }
             }
-        }
-        LibraryAction("검색", colors, Modifier.width(76.dp).height(50.dp)) {
-            focusManager.clearFocus()
-            keyboard?.hide()
         }
     }
 }
@@ -126,7 +126,7 @@ private fun SavedSearch(query: String, colors: LibraryColors, accept: (LibraryIn
 @Composable
 private fun SavedTabs(selected: SavedTab, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(44.dp)
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp)
             .shadow(2.dp, RoundedCornerShape(15.dp), spotColor = Color.Black.copy(alpha = 0.04f))
             .clip(RoundedCornerShape(15.dp))
             .background(colors.mutedSurface)
@@ -173,15 +173,34 @@ private fun AllSaved(
     val recentIds = state.saved.recent.map { it.series.id }.toSet()
     val favoriteIds = state.saved.favorites.map { it.id }.toSet()
     val offlineIds = state.offlineEpisodes.map { it.series.id }.toSet()
+    val bookmarksBySeries = state.saved.bookmarks.groupBy { it.pageId.episodeId.seriesId }
+    val bookmarkOnlyIds = bookmarksBySeries.keys
+        .filterNot { it in recentIds || it in favoriteIds || it in offlineIds }
     val combined = state.saved.favorites +
         state.saved.recent.filterNot { it.series.id in favoriteIds }.map { it.series } +
         state.offlineEpisodes.map { it.series }.distinctBy { it.id }
             .filterNot { it.id in recentIds || it.id in favoriteIds }
             .map { item -> SavedSeries(item.id, item.title, item.thumbnailKey, false, 0L) } +
-        state.saved.bookmarks.map { it.pageId.episodeId.seriesId to it.seriesTitle }.distinctBy { it.first }
-            .filterNot { it.first in recentIds || it.first in favoriteIds || it.first in offlineIds }
-            .map { (id, title) -> SavedSeries(id, title, null, false, 0L) }
-    FavoriteSaved(combined, query, loader, colors, accept, "최근 읽거나 보관하거나 저장한 작품이 없습니다", SavedTab.ALL)
+        bookmarkOnlyIds.map { id ->
+            val marks = bookmarksBySeries.getValue(id)
+            SavedSeries(id, marks.first().seriesTitle, null, false, marks.maxOf { it.createdAtEpochMillis })
+        }
+    val removalTabs = buildMap {
+        state.saved.favorites.forEach { put(it.id, SavedTab.FAVORITES) }
+        state.saved.recent.forEach { if (it.series.id !in favoriteIds) put(it.series.id, SavedTab.RECENT) }
+        state.offlineEpisodes.forEach { if (it.series.id !in recentIds && it.series.id !in favoriteIds) put(it.series.id, SavedTab.OFFLINE) }
+        bookmarkOnlyIds.forEach { put(it, SavedTab.BOOKMARKS) }
+    }
+    FavoriteSaved(
+        combined,
+        query,
+        loader,
+        colors,
+        accept,
+        "최근 읽거나 보관하거나 저장한 작품이 없습니다",
+        SavedTab.ALL,
+        removalTabFor = { series -> removalTabs[series.id] ?: SavedTab.ALL },
+    )
 }
 
 @Composable
@@ -194,7 +213,16 @@ private fun RecentSaved(
 ) {
     val filtered = items.filter { query.isEmpty() || it.series.title.contains(query, true) }
     if (filtered.isEmpty()) {
-        EmptySaved("최근 읽은 작품이 없습니다", colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        if (query.isNotEmpty()) {
+            EmptySaved(
+                "검색 결과가 없습니다",
+                colors,
+                subtitle = "다른 검색어로 다시 찾아보세요",
+                action = "검색어 지우기",
+            ) { accept(LibraryIntent.SavedQueryChanged("")) }
+        } else {
+            EmptySaved("최근 읽은 작품이 없습니다", colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        }
         return
     }
     LazyColumn(
@@ -229,10 +257,20 @@ private fun FavoriteSaved(
     accept: (LibraryIntent) -> Unit,
     empty: String = "좋아요한 작품이 없습니다",
     removalTab: SavedTab = SavedTab.FAVORITES,
+    removalTabFor: (SavedSeries) -> SavedTab = { removalTab },
 ) {
     val filtered = items.filter { query.isEmpty() || it.title.contains(query, true) }
     if (filtered.isEmpty()) {
-        EmptySaved(empty, colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        if (query.isNotEmpty()) {
+            EmptySaved(
+                "검색 결과가 없습니다",
+                colors,
+                subtitle = "다른 검색어로 다시 찾아보세요",
+                action = "검색어 지우기",
+            ) { accept(LibraryIntent.SavedQueryChanged("")) }
+        } else {
+            EmptySaved(empty, colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        }
         return
     }
     LazyColumn(
@@ -248,7 +286,7 @@ private fun FavoriteSaved(
                 badge = null,
                 loader = loader,
                 colors = colors,
-                removalTab = removalTab,
+                removalTab = removalTabFor(item),
                 accept = accept,
                 click = { accept(LibraryIntent.SavedSeriesSelected(item)) },
             )
@@ -267,7 +305,16 @@ private fun OfflineSaved(
     val series = state.offlineEpisodes.map { it.series }.distinctBy { it.id }
         .filter { query.isEmpty() || it.title.contains(query, true) }
     if (series.isEmpty()) {
-        EmptySaved("오프라인 저장된 작품이 없습니다", colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        if (query.isNotEmpty()) {
+            EmptySaved(
+                "검색 결과가 없습니다",
+                colors,
+                subtitle = "다른 검색어로 다시 찾아보세요",
+                action = "검색어 지우기",
+            ) { accept(LibraryIntent.SavedQueryChanged("")) }
+        } else {
+            EmptySaved("오프라인 저장된 작품이 없습니다", colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        }
         return
     }
     LazyColumn(
@@ -363,7 +410,16 @@ private fun BookmarkSaved(
     }
     val filtered = items.filter { query.isEmpty() || it.seriesTitle.contains(query, true) }
     if (filtered.isEmpty()) {
-        EmptySaved("저장한 책갈피가 없습니다", colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        if (query.isNotEmpty()) {
+            EmptySaved(
+                "검색 결과가 없습니다",
+                colors,
+                subtitle = "다른 검색어로 다시 찾아보세요",
+                action = "검색어 지우기",
+            ) { accept(LibraryIntent.SavedQueryChanged("")) }
+        } else {
+            EmptySaved("저장한 책갈피가 없습니다", colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        }
         return
     }
     LazyColumn(
@@ -472,7 +528,13 @@ private fun BookmarkRemovalDialog(
 }
 
 @Composable
-private fun EmptySaved(message: String, colors: LibraryColors, onExplore: () -> Unit) {
+private fun EmptySaved(
+    message: String,
+    colors: LibraryColors,
+    subtitle: String = "홈에서 마음에 드는 작품을 찾아 보관해 보세요",
+    action: String = "작품 둘러보기",
+    onAction: () -> Unit,
+) {
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -490,9 +552,9 @@ private fun EmptySaved(message: String, colors: LibraryColors, onExplore: () -> 
         Spacer(Modifier.height(20.dp))
         BasicText(message, style = titleStyle(colors, 17).copy(fontWeight = FontWeight.Bold))
         Spacer(Modifier.height(8.dp))
-        BasicText("홈에서 마음에 드는 작품을 찾아 보관해 보세요", style = hintStyle(colors, 13))
+        BasicText(subtitle, style = hintStyle(colors, 13))
         Spacer(Modifier.height(24.dp))
-        LibraryAction("작품 둘러보기", colors) { onExplore() }
+        LibraryAction(action, colors) { onAction() }
     }
 }
 

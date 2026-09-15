@@ -13,6 +13,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -27,6 +29,7 @@ internal fun SettingsOverlay(
     Box(
         Modifier.fillMaxSize()
             .background(Color.Black.copy(alpha = 0.55f))
+            .semantics { contentDescription = "설정 닫기" }
             .clickable { accept(LibraryIntent.ToggleSettings) },
         contentAlignment = Alignment.BottomCenter,
     ) {

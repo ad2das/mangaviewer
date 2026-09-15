@@ -153,7 +153,8 @@ private fun GenreCatalogHeader(label: String, colors: LibraryColors, accept: (Li
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(44.dp)
+            Modifier.size(48.dp)
+                .semantics { contentDescription = "뒤로" }
                 .clip(RoundedCornerShape(14.dp))
                 .clickable { accept(LibraryIntent.Back) },
             contentAlignment = Alignment.Center,

@@ -38,12 +38,20 @@ internal class ViewerTouchRoot(
 
     private fun observe(event: MotionEvent) {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> tapTracker.begin(
-                event.x,
-                event.y,
-                eligible = !excludesSurfaceTap(event.x, event.y),
-            )
-            MotionEvent.ACTION_MOVE -> tapTracker.move(event.x, event.y)
+            MotionEvent.ACTION_DOWN -> {
+                // A new gesture retracts an uncommitted single tap so a following drag cannot
+                // reveal the chrome mid-scroll.
+                cancelPendingTap()
+                tapTracker.begin(
+                    event.x,
+                    event.y,
+                    eligible = !excludesSurfaceTap(event.x, event.y),
+                )
+            }
+            MotionEvent.ACTION_MOVE -> {
+                tapTracker.move(event.x, event.y)
+                if (!tapTracker.tapEligible) cancelPendingTap()
+            }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 tapTracker.cancel()
                 cancelPendingTap()
@@ -93,6 +101,8 @@ internal class SurfaceTapTracker(
     private var downX = 0f
     private var downY = 0f
     private var eligible = false
+
+    val tapEligible: Boolean get() = eligible
 
     fun begin(x: Float, y: Float, eligible: Boolean) {
         downX = x

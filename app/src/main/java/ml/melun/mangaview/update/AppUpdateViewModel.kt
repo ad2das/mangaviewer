@@ -72,7 +72,8 @@ internal class AppUpdateViewModel(application: Application, private val reposito
                 mutable.update { it.copy(phase = UpdatePhase.READY, file = file, message = "업데이트 파일을 확인했습니다. 설치를 계속해 주세요.") }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
-                mutable.update { it.copy(phase = UpdatePhase.FAILED, message = failure.message ?: "다운로드에 실패했습니다") }
+                // A failure after the user dismissed the progress dialog must still surface.
+                mutable.update { it.copy(phase = UpdatePhase.FAILED, visible = true, message = failure.message ?: "다운로드에 실패했습니다") }
             }
         }
     }

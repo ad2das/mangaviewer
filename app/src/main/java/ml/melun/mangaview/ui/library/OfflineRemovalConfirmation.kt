@@ -19,6 +19,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -32,6 +34,7 @@ internal fun OfflineRemovalConfirmation(
         ?: episodeId.remoteKey
     Box(
         Modifier.fillMaxSize().background(Color(0x88000000))
+            .semantics { contentDescription = "삭제 확인 닫기" }
             .clickable { accept(LibraryIntent.CancelOfflineRemoval) },
         contentAlignment = Alignment.Center,
     ) {
@@ -41,7 +44,7 @@ internal fun OfflineRemovalConfirmation(
             BasicText("$title 오프라인 저장을 삭제하시겠습니까?", style = bodyStyle(colors, 16))
             Spacer(Modifier.height(20.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                ConfirmButton("아니오", false, colors) { accept(LibraryIntent.CancelOfflineRemoval) }
+                ConfirmButton("취소", false, colors) { accept(LibraryIntent.CancelOfflineRemoval) }
                 Spacer(Modifier.width(10.dp))
                 ConfirmButton("삭제", true, colors) { accept(LibraryIntent.ConfirmOfflineRemoval) }
             }
