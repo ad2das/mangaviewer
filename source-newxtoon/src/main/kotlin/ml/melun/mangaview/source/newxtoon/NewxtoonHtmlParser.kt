@@ -25,7 +25,8 @@ data class NewxtoonSeriesDetails(
 /** Pure HTML parsing for the Newxtoon server-rendered pages. */
 class NewxtoonHtmlParser(private val origin: String) {
     private val seriesLink = Regex("""(?:https?://[^/]+)?/comics/(\d+)(?:[?#].*)?$""")
-    private val pageLink = Regex("""[?&]page=(\d+)""")
+    // Search pages render follow-up links as `&amp;page=` inside href attributes.
+    private val pageLink = Regex("""[?&](?:amp;)?page=(\d+)""")
     private val genreLink = Regex("""[?&]genre=(\d+)""")
 
     fun genres(html: String): List<SourceGenre> {

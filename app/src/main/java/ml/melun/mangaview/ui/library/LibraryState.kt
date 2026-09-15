@@ -130,6 +130,7 @@ internal sealed interface LibraryIntent {
     data object RetryHome : LibraryIntent
     data object RetryDetail : LibraryIntent
     data object LoadMoreGenre : LibraryIntent
+    data object LoadMoreSearch : LibraryIntent
     data object ToggleSettings : LibraryIntent
     data object TogglePreferences : LibraryIntent
     data object ToggleSourcePicker : LibraryIntent

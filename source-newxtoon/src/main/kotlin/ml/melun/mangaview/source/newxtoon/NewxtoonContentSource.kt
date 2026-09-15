@@ -65,8 +65,9 @@ class NewxtoonContentSource(
     }
 
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> {
-        val html = fetch("/search?q=" + URLEncoder.encode(query, "UTF-8"))
-        return SourcePage(parser.seriesCards(html).map(::series), null)
+        val page = cursor?.toIntOrNull() ?: 1
+        val html = fetch("/search?q=" + URLEncoder.encode(query, "UTF-8") + "&page=$page")
+        return SourcePage(parser.seriesCards(html).map(::series), parser.nextPage(html, page)?.toString())
     }
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {

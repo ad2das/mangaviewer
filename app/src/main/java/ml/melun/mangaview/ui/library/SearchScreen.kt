@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,6 +38,7 @@ import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceSeries
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 private val SearchResultCardShape = RoundedCornerShape(18.dp)
 private val SearchResultThumbShape = RoundedCornerShape(12.dp)
@@ -59,7 +62,7 @@ internal fun SearchScreen(
                 SearchNoResults(state.query, colors)
             } else {
                 SearchSeriesList(
-                    content.items,
+                    content,
                     state.saved.favorites.mapTo(hashSetOf()) { it.id },
                     artworkLoader,
                     colors,
@@ -333,14 +336,25 @@ private fun SearchFailure(message: String, colors: LibraryColors, retry: () -> U
 
 @Composable
 private fun SearchSeriesList(
-    items: List<SourceSeries>,
+    content: LibraryContent.Series,
     favorites: Set<SeriesId>,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
+    val list = rememberLazyListState()
+    LaunchedEffect(list, content.items.size, content.nextCursor, content.loadingNext, content.nextFailure) {
+        if (content.loadingNext || content.nextFailure != null || content.nextCursor == null) return@LaunchedEffect
+        snapshotFlow {
+            val layout = list.layoutInfo
+            (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) >= layout.totalItemsCount - 4
+        }.distinctUntilChanged().collect { nearEnd ->
+            if (nearEnd) accept(LibraryIntent.LoadMoreSearch)
+        }
+    }
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = list,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -354,11 +368,31 @@ private fun SearchSeriesList(
                     style = titleStyle(colors, 14).copy(fontWeight = FontWeight.ExtraBold),
                 )
                 Spacer(Modifier.width(6.dp))
-                BasicText("${items.size}개", style = hintStyle(colors, 12))
+                BasicText("${content.items.size}개", style = hintStyle(colors, 12))
             }
         }
-        items(items, key = { it.id.remoteKey }) { series ->
+        items(content.items, key = { it.id.remoteKey }) { series ->
             SearchSeriesCard(series, series.id in favorites, loader, colors, accept)
+        }
+        item(key = "search-status") {
+            Column(
+                Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                val message = when {
+                    content.loadingNext -> "다음 결과를 불러오는 중…"
+                    content.nextFailure != null -> content.nextFailure
+                    content.nextCursor != null -> "${content.items.size}개 불러옴"
+                    else -> "결과 끝 · ${content.items.size}개"
+                }
+                BasicText(message, style = hintStyle(colors, 13).copy(fontWeight = FontWeight.Medium))
+                if (content.nextFailure != null || (!content.loadingNext && content.nextCursor != null)) {
+                    Spacer(Modifier.height(10.dp))
+                    LibraryAction(if (content.nextFailure != null) "다시 시도" else "더 보기", colors) {
+                        accept(LibraryIntent.LoadMoreSearch)
+                    }
+                }
+            }
         }
     }
 }

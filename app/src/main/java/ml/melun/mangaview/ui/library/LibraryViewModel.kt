@@ -57,6 +57,11 @@ internal class LibraryViewModel(
             lastSeries = (catalog as? LibraryContent.Series)?.items ?: it.lastSeries) }
         if (catalog is LibraryContent.Series) statusEnrichment.enrich(catalog.items)
     }
+    private val searchPager = SearchResultsPager(viewModelScope, ioDispatcher, "검색에 실패했습니다") { content ->
+        update { it.copy(content = content,
+            lastSeries = (content as? LibraryContent.Series)?.items ?: it.lastSeries) }
+        if (content is LibraryContent.Series) statusEnrichment.enrich(content.items)
+    }
     private val statusEnrichment = LibraryStatusEnrichment(viewModelScope, ioDispatcher, sourceRegistry, ::update)
     private val episodeWarmer = LibraryEpisodeWarmer(openings)
     private val catalogs = LibraryCatalogLoader(
@@ -121,6 +126,7 @@ internal class LibraryViewModel(
     private fun acceptAction(intent: LibraryIntent) {
         when (intent) {
             LibraryIntent.LoadMoreGenre -> genrePager.next()
+            LibraryIntent.LoadMoreSearch -> searchPager.next()
             LibraryIntent.Search -> search()
             LibraryIntent.RetryHome -> catalogs.loadHome()
             LibraryIntent.RetryDetail -> retryDetail()
@@ -188,6 +194,7 @@ internal class LibraryViewModel(
 
     private fun selectDestination(destination: MainDestination) {
         observers.destinationSelected()
+        searchPager.reset()
         update { it.copy(
             destination = destination,
             content = LibraryContent.Empty,
@@ -208,6 +215,7 @@ internal class LibraryViewModel(
         catalogs.cancelGenres()
         statusEnrichment.cancel()
         genrePager.reset()
+        searchPager.reset()
         update { it.copy(
             selectedSourceId = sourceId,
             content = LibraryContent.Empty,
@@ -283,16 +291,10 @@ internal class LibraryViewModel(
         actions.updateSettings { settings ->
             settings.copy(recentQueries = (listOf(query) + settings.recentQueries.filterNot { it == query }).take(10))
         }
-        launchContent(
-            load = {
-                source.search(SourceSearchQuery(query, snapshot.searchKind, snapshot.searchField)).items
-            },
-            success = { result: List<SourceSeries> ->
-                update { it.copy(content = LibraryContent.Series(result), lastSeries = result) }
-                statusEnrichment.enrich(result)
-            },
-            failureMessage = "검색에 실패했습니다",
-        )
+        cancelContent()
+        searchPager.start { cursor ->
+            source.search(SourceSearchQuery(query, snapshot.searchKind, snapshot.searchField, cursor))
+        }
     }
 
     private fun episodes(series: SourceSeries, offlineOnly: Boolean = false) {
