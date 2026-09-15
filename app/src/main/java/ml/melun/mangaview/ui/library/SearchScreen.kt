@@ -50,7 +50,7 @@ internal fun SearchScreen(
         SearchControls(state, colors, accept)
         Spacer(Modifier.height(8.dp))
         when (val content = state.content) {
-            LibraryContent.Empty -> SearchEmpty(colors, accept)
+            LibraryContent.Empty -> SearchEmpty(state, colors, accept)
             LibraryContent.Loading -> LibraryMessage("작품을 찾는 중…", colors)
             is LibraryContent.Failure -> SearchFailure(content.message, colors) { accept(LibraryIntent.Search) }
             is LibraryContent.Series -> if (content.items.isEmpty()) {
@@ -171,7 +171,7 @@ private fun SearchFilterChip(
 }
 
 @Composable
-private fun SearchEmpty(colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+private fun SearchEmpty(state: LibraryState, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -197,7 +197,65 @@ private fun SearchEmpty(colors: LibraryColors, accept: (LibraryIntent) -> Unit) 
             style = hintStyle(colors, 13),
         )
         Spacer(Modifier.height(32.dp))
+        if (state.saved.settings.recentQueries.isNotEmpty()) {
+            RecentSearchKeywords(state.saved.settings.recentQueries, colors, accept)
+            Spacer(Modifier.height(26.dp))
+        }
         PopularSearchKeywords(colors, accept)
+    }
+}
+
+@Composable
+private fun RecentSearchKeywords(queries: List<String>, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(3.dp).height(14.dp).clip(RoundedCornerShape(2.dp)).background(colors.accent))
+            Spacer(Modifier.width(6.dp))
+            BasicText(
+                "최근 검색어",
+                Modifier.weight(1f),
+                style = labelStyle(colors, false).copy(fontWeight = FontWeight.Bold, fontSize = 13.sp),
+            )
+            Box(
+                Modifier.clip(RoundedCornerShape(10.dp))
+                    .clickable { accept(LibraryIntent.ClearSearchHistory) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                BasicText("전체 삭제", style = hintStyle(colors, 12))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        queries.take(6).forEach { keyword ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.card)
+                        .border(1.dp, colors.cardBorder, RoundedCornerShape(12.dp))
+                        .clickable {
+                            accept(LibraryIntent.QueryChanged(keyword))
+                            accept(LibraryIntent.Search)
+                        }
+                        .padding(horizontal = 13.dp, vertical = 10.dp),
+                ) {
+                    BasicText(keyword, style = bodyStyle(colors, 13).copy(fontWeight = FontWeight.Medium))
+                }
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.size(38.dp)
+                        .clip(CircleShape)
+                        .background(colors.mutedSurface)
+                        .semantics { contentDescription = "$keyword 삭제" }
+                        .clickable { accept(LibraryIntent.RemoveSearchHistory(keyword)) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(12.dp))
+                }
+            }
+        }
     }
 }
 

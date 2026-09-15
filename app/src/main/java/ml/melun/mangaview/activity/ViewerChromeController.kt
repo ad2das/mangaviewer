@@ -1,5 +1,6 @@
 package ml.melun.mangaview.activity
 
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -10,6 +11,7 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import java.util.ArrayDeque
 import kotlin.math.abs
@@ -28,6 +30,7 @@ internal class ViewerChromeController(
         val next: () -> Unit,
         val bookmark: () -> Unit,
         val split: () -> Unit,
+        val settings: () -> Unit,
     )
 
     private val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop
@@ -45,7 +48,14 @@ internal class ViewerChromeController(
     private val episodes = button("회차", actions.episodes)
     private val next = button("다음", actions.next, isAccent = true)
     private val bookmark = button("책갈피", actions.bookmark)
+    private val settings = button("설정", actions.settings)
     private val split = button("나눔", actions.split).apply { contentDescription = "양면 나눠보기" }
+    private val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
+        max = PROGRESS_SCALE
+        progressTintList = ColorStateList.valueOf(ACCENT_PROGRESS)
+        progressBackgroundTintList = ColorStateList.valueOf(0x33FFFFFF.toInt())
+    }
+    private val bottomRow = LinearLayout(activity)
     private val gestureRelay = ChromeGestureRelay(
         surface = surface,
         touchSlop = touchSlop.toFloat(),
@@ -81,28 +91,40 @@ internal class ViewerChromeController(
 
     private fun configureBars() {
         listOf(top, bottom).forEach { bar ->
-            bar.orientation = LinearLayout.HORIZONTAL
+            bar.orientation = LinearLayout.VERTICAL
             bar.gravity = Gravity.CENTER_VERTICAL
             bar.setPadding(dp(14), dp(8), dp(14), dp(8))
             bar.setBackgroundColor(CHROME_BACKGROUND)
         }
+        top.orientation = LinearLayout.HORIZONTAL
+        bottomRow.orientation = LinearLayout.HORIZONTAL
+        bottomRow.gravity = Gravity.CENTER_VERTICAL
         val back = button("‹", actions.back, isCircular = true)
         top.addView(back, LinearLayout.LayoutParams(dp(44), dp(44)))
         top.addView(title, LinearLayout.LayoutParams(0, dp(44), 1f))
+        top.addView(settings, LinearLayout.LayoutParams(dp(58), dp(44)).apply { marginStart = dp(6) })
         top.addView(split, LinearLayout.LayoutParams(dp(58), dp(44)).apply { marginStart = dp(6) })
 
-        bottom.addView(page, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) })
-        bottom.addView(bookmark, itemParams(68))
-        bottom.addView(previous, itemParams(58))
-        bottom.addView(episodes, itemParams(58))
-        bottom.addView(next, itemParams(58))
+        bottom.addView(progress, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(2),
+        ))
+        bottom.addView(bottomRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        bottomRow.addView(page, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) })
+        bottomRow.addView(bookmark, itemParams(68))
+        bottomRow.addView(previous, itemParams(58))
+        bottomRow.addView(episodes, itemParams(58))
+        bottomRow.addView(next, itemParams(58))
 
-        installDragForwarding(top, bottom, back, title, page, bookmark, previous, episodes, next, split)
+        installDragForwarding(top, bottom, back, title, page, bookmark, previous, episodes, next, split, settings)
     }
 
     private fun update(state: ViewerChromeState?) {
         title.text = state?.title ?: "회차 불러오는 중"
         page.text = state?.let { "${it.pageNumber} / ${it.pageCount}" } ?: "– / –"
+        progress.progress = state?.takeIf { it.pageCount > 0 }
+            ?.let { it.pageNumber * PROGRESS_SCALE / it.pageCount } ?: 0
         previous.enable(state?.previousEpisodeId != null)
         next.enable(state?.nextEpisodeId != null)
         episodes.enable(state != null)
@@ -184,7 +206,7 @@ internal class ViewerChromeController(
 
     private fun barParams(gravity: Int) = FrameLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
-        dp(64),
+        if (gravity == Gravity.BOTTOM) ViewGroup.LayoutParams.WRAP_CONTENT else dp(64),
         gravity,
     )
 
@@ -200,6 +222,8 @@ internal class ViewerChromeController(
         const val BUTTON_BORDER = 0x33FFFFFF.toInt()
         const val ACCENT_BUTTON_BACKGROUND = 0xFF7C5CFF.toInt()
         const val ACCENT_BORDER = 0x669080FF.toInt()
+        const val ACCENT_PROGRESS = 0xFF7C5CFF.toInt()
+        const val PROGRESS_SCALE = 1000
     }
 }
 

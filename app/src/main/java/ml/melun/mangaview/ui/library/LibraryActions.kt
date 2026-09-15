@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
+import ml.melun.mangaview.data.library.SavedBookmark
 import ml.melun.mangaview.data.library.UserLibraryRepository
 import ml.melun.mangaview.data.offline.DownloadedEpisode
 import ml.melun.mangaview.data.offline.OfflineDownloadManager
@@ -24,6 +25,10 @@ internal class LibraryActions(
         library.setFavorite(series.id, series.title, series.thumbnailKey, !favorite)
     }
 
+    fun removeBookmark(bookmark: SavedBookmark) = persist {
+        library.removeBookmark(bookmark)
+    }
+
     fun updateSettings(transform: (ViewerSettings) -> ViewerSettings) = persist {
         library.updateSettings(transform)
     }
@@ -34,6 +39,8 @@ internal class LibraryActions(
             SavedTab.ALL -> library.removeHistory(item.series.id, removeFavorite = true)
             SavedTab.RECENT -> library.removeHistory(item.series.id)
             SavedTab.FAVORITES -> library.setFavorite(item.series.id, item.series.title, item.series.thumbnailKey, false)
+            // Bookmarks are removed individually so one series can keep the rest of its marks.
+            SavedTab.BOOKMARKS -> Unit
             SavedTab.OFFLINE -> Unit
         }
     }

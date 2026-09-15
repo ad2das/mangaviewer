@@ -190,7 +190,10 @@ private class ReaderWindowState(private val activity: ComponentActivity) {
         window.statusBarColor = statusColor
         window.navigationBarColor = navigationColor
         window.setSoftInputMode(softInput)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) window.setDecorFitsSystemWindows(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.show(WindowInsets.Type.systemBars())
+            window.setDecorFitsSystemWindows(true)
+        }
         window.decorView.systemUiVisibility = systemUi
         window.decorView.requestApplyInsets()
     }

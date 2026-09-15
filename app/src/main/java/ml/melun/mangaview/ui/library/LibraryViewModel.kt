@@ -151,6 +151,7 @@ internal class LibraryViewModel(
                 episodes(intent.series, offlineOnly = true)
             }
             is LibraryIntent.SavedEpisodeSelected -> openSavedPosition(intent.position)
+            is LibraryIntent.RemoveBookmark -> actions.removeBookmark(intent.bookmark)
             is LibraryIntent.ResumeEpisode -> {
                 episodeWarmer.warm(intent.episodeId)
                 // Load the current exact source anchor, with legacy history as its existing fallback.
@@ -174,6 +175,10 @@ internal class LibraryViewModel(
             is LibraryIntent.RemoveSavedItem -> { episodeWarmer.cancel(); uiActions.removeSaved(intent.item) }
             is LibraryIntent.StartTabChanged -> actions.updateSettings { it.copy(startTab = intent.value) }
             is LibraryIntent.DarkThemeChanged -> actions.updateSettings { it.copy(darkTheme = intent.enabled) }
+            LibraryIntent.ClearSearchHistory -> actions.updateSettings { it.copy(recentQueries = emptyList()) }
+            is LibraryIntent.RemoveSearchHistory -> actions.updateSettings { settings ->
+                settings.copy(recentQueries = settings.recentQueries.filterNot { it == intent.value })
+            }
             else -> error("Not an action intent: $intent")
         }
     }
@@ -272,6 +277,9 @@ internal class LibraryViewModel(
         if (query.isEmpty()) return
         val source = sourceRegistry.require(snapshot.selectedSourceId)
         episodeWarmer.cancel()
+        actions.updateSettings { settings ->
+            settings.copy(recentQueries = (listOf(query) + settings.recentQueries.filterNot { it == query }).take(10))
+        }
         launchContent(
             load = {
                 source.search(SourceSearchQuery(query, snapshot.searchKind, snapshot.searchField)).items

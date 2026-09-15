@@ -1,6 +1,7 @@
 package ml.melun.mangaview.ui.library
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -11,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -237,6 +239,14 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
     accept: (LibraryIntent) -> Unit,
 ) {
     val active = item == selected
+    val pill by animateColorAsState(
+        targetValue = if (active) colors.accentSurface else Color.Transparent,
+        label = "navPill",
+    )
+    val iconColor by animateColorAsState(
+        targetValue = if (active) colors.accent else colors.secondary,
+        label = "navIcon",
+    )
     Column(
         Modifier.weight(1f).fillMaxHeight()
             .semantics { contentDescription = "하단 ${item.label}" }
@@ -247,10 +257,10 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
         Box(
             Modifier.size(width = 58.dp, height = 32.dp)
                 .clip(RoundedCornerShape(16.dp))
-                .background(if (active) colors.accentSurface else Color.Transparent),
+                .background(pill),
             contentAlignment = Alignment.Center,
         ) {
-            LibraryIconView(icon, if (active) colors.accent else colors.secondary, Modifier.size(22.dp))
+            LibraryIconView(icon, iconColor, Modifier.size(22.dp))
         }
         Spacer(Modifier.height(3.dp))
         BasicText(

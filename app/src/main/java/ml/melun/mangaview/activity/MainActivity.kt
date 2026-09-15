@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.view.KeyEvent
 import android.view.View
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -12,10 +13,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -30,9 +35,12 @@ import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.ui.library.LibraryEffect
+import ml.melun.mangaview.ui.library.LibraryIntent
 import ml.melun.mangaview.ui.library.LibraryScreen
 import ml.melun.mangaview.ui.library.LibraryViewModel
 import ml.melun.mangaview.ui.library.LibraryViewModelFactory
+import ml.melun.mangaview.ui.library.libraryPressIndication
+import ml.melun.mangaview.ui.library.providesSelectionFeedback
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.update.AppUpdateDialog
 import ml.melun.mangaview.update.AppUpdateViewModel
@@ -90,9 +98,20 @@ class MainActivity : ComponentActivity() {
     override fun onStart() { super.onStart(); if (::reader.isInitialized) reader.enterForeground() }
     override fun onStop() { if (::reader.isInitialized) reader.enterBackground(); super.onStop() }
     override fun onDestroy() { if (::reader.isInitialized) reader.destroy(); super.onDestroy() }
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean =
+        if (handleReaderVolumeKey(keyCode)) true else super.onKeyDown(keyCode, event)
     override fun onSaveInstanceState(outState: Bundle) {
         if (::reader.isInitialized) reader.saveState(outState)
         super.onSaveInstanceState(outState)
+    }
+
+    private fun handleReaderVolumeKey(keyCode: Int): Boolean {
+        val forward = when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_DOWN -> true
+            KeyEvent.KEYCODE_VOLUME_UP -> false
+            else -> return false
+        }
+        return readerScreen()?.handleVolumeKey(forward) == true
     }
 
     @OptIn(ExperimentalFoundationApi::class)
@@ -128,8 +147,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            CompositionLocalProvider(LocalOverscrollFactory provides null) {
-                LibraryScreen(state, graph.artworkLoader, viewModel::accept, account,
+            val haptics = LocalHapticFeedback.current
+            val acceptWithFeedback: (LibraryIntent) -> Unit = remember(viewModel, haptics) {
+                { intent ->
+                    if (intent.providesSelectionFeedback()) {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
+                    viewModel.accept(intent)
+                }
+            }
+            CompositionLocalProvider(
+                LocalOverscrollFactory provides null,
+                LocalIndication provides libraryPressIndication(),
+            ) {
+                LibraryScreen(state, graph.artworkLoader, acceptWithFeedback, account,
                     updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE)
             }
             AppUpdateDialog(updateState, updates::dismiss, updates::check, updates::download, ::installUpdate)

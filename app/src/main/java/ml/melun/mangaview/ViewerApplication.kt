@@ -24,6 +24,7 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner,
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         if (NtkBrowserProcess.isCurrent(this)) {
             NtkBrowserProcess.configureWebViewStorage(this)
             val network = ml.melun.mangaview.app.NtkBrowserNetwork().also { browserNetwork = it }

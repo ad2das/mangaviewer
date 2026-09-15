@@ -5,6 +5,7 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.data.library.SavedBookmark
 import ml.melun.mangaview.data.library.SavedSeries
 import ml.melun.mangaview.data.library.UserLibrarySnapshot
 import ml.melun.mangaview.data.offline.DownloadedEpisode
@@ -70,6 +71,7 @@ internal enum class SavedTab(val label: String) {
     ALL("전체"),
     RECENT("최근"),
     FAVORITES("좋아요"),
+    BOOKMARKS("책갈피"),
     OFFLINE("저장됨"),
 }
 
@@ -143,6 +145,9 @@ internal sealed interface LibraryIntent {
     data class RemoveSavedItem(val item: SavedItemRemoval) : LibraryIntent
     data class OfflineSeriesSelected(val series: SourceSeries) : LibraryIntent
     data class SavedEpisodeSelected(val position: ReadingPosition) : LibraryIntent
+    data class RemoveBookmark(val bookmark: SavedBookmark) : LibraryIntent
+    data object ClearSearchHistory : LibraryIntent
+    data class RemoveSearchHistory(val value: String) : LibraryIntent
     data class ResumeEpisode(val episodeId: EpisodeId) : LibraryIntent
     data class FavoriteToggled(val series: SourceSeries) : LibraryIntent
     data class DownloadEpisode(val series: SourceSeries, val episode: SourceEpisode) : LibraryIntent

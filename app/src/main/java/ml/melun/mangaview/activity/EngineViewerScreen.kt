@@ -3,14 +3,18 @@ package ml.melun.mangaview.activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.View
 import android.view.WindowInsets
+import android.view.WindowManager
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -21,12 +25,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.app.AndroidWorkDispatcher
 import ml.melun.mangaview.app.EngineAppGraph
 import ml.melun.mangaview.app.EngineViewerWork
+import ml.melun.mangaview.data.settings.ViewerSettings
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.WorkPriority
@@ -75,7 +81,13 @@ internal class EngineViewerScreen(
     private val presentationRecorder = ViewerPresentationRecorder()
     private val presentedRegionRecorder = PresentedRegionRecorder()
     private lateinit var loading: ViewerLoadingOverlay
+    private lateinit var failureCard: LinearLayout
     private lateinit var failureText: TextView
+    private lateinit var dimOverlay: View
+    private lateinit var settingsPanel: ViewerReaderSettingsPanel
+    private var appliedSettings: ViewerSettings? = null
+    private var volumeKeysEnabled = false
+    private var foreground = false
     private var reportedFailure: Throwable? = null
     private lateinit var chrome: ViewerChromeController
     private var contentSource: EngineViewerWork? = null
@@ -86,6 +98,7 @@ internal class EngineViewerScreen(
     private var openingReleased = false
     private val engineClosed = CompletableDeferred<Unit>()
     private val engineDiagnostics = EngineViewerDiagnostics()
+    @Volatile private var surfaceRoot: ViewerTouchRoot? = null
     private val engineInputObservations = EngineInputObservations()
     internal fun reserveWholeTraversalInputEvidence() {
         engineInputObservations.reserveCaptureCapacity(32_768)
@@ -120,7 +133,10 @@ internal class EngineViewerScreen(
             reportPresented = { presented ->
                 engineDiagnostics.presented(presented)
                 if (presented.swapSucceeded && presented.scene.completeCoverage &&
-                    presented.scene.placements.isNotEmpty()) loading.complete()
+                    presented.scene.placements.isNotEmpty()) {
+                    loading.complete()
+                    if (failureCard.visibility == View.VISIBLE) failureCard.visibility = View.GONE
+                }
             },
             reportRendererClosed = engineDiagnostics::rendererClosed,
             inputObservations = engineInputObservations,
@@ -128,7 +144,10 @@ internal class EngineViewerScreen(
             preparedRenderer = rendererLease?.value,
         )
         runtime = createdRuntime
-        return content(createdRuntime)
+        val root = content(createdRuntime)
+        surfaceRoot = root as? ViewerTouchRoot
+        observeReaderSettings()
+        return root
     }
 
     fun open() {
@@ -211,6 +230,11 @@ internal class EngineViewerScreen(
         surface.isAttachedToWindow && surface.isShown && surface.width > 0 && surface.height > 0
     } == true
 
+    internal fun viewerSurfaceZoomScale(): Float = runtime?.surface?.scaleX ?: 1f
+
+    internal fun viewerSurfaceTapEligible(x: Float, y: Float): Boolean =
+        surfaceRoot?.let { root -> !root.excludesSurfaceTap(x, y) } ?: false
+
     private fun recordPresentation(
         evidence: ml.melun.mangaview.viewer.runtime.NativePresentationEvidence,
     ): Boolean = presentationRecorder.recordPresentation(evidence)
@@ -221,11 +245,107 @@ internal class EngineViewerScreen(
 
     fun enterForeground() {
         presentationRecorder.beginUiEpoch()
+        foreground = true
+        applyKeepScreenOn(appliedSettings?.keepScreenOn == true)
+        applyImmersive(appliedSettings?.immersiveMode == true)
         runtime?.enterForeground()
     }
 
     fun enterBackground() {
+        foreground = false
+        applyImmersive(false)
+        applyKeepScreenOn(false)
         runtime?.enterBackground()
+    }
+
+    /** Consumes a volume key when the reader has hardware-key navigation enabled. */
+    fun handleVolumeKey(forward: Boolean): Boolean {
+        if (!volumeKeysEnabled) return false
+        stepViewport(forward)
+        return true
+    }
+
+    private fun stepViewport(forward: Boolean) {
+        val surface = runtime?.surface ?: return
+        val height = surface.height
+        if (height <= 0) return
+        surface.stepViewport(if (forward) height.toDouble() else -height.toDouble())
+    }
+
+    private fun observeReaderSettings() {
+        val library = (activity.application as ViewerApplication).graph.userLibrary
+        sessionScope.launch {
+            library.snapshot
+                .catch { failure -> android.util.Log.w("ViewerSettings", "reader settings unavailable", failure) }
+                .collect { snapshot -> applyReaderPreferences(snapshot.settings) }
+        }
+    }
+
+    private fun applyReaderPreferences(settings: ViewerSettings) {
+        if (appliedSettings == settings) return
+        appliedSettings = settings
+        volumeKeysEnabled = settings.volumeKeyNavigation
+        if (::dimOverlay.isInitialized) dimOverlay.alpha = settings.readerDimPercent / 100f
+        if (foreground) {
+            applyKeepScreenOn(settings.keepScreenOn)
+            applyImmersive(settings.immersiveMode)
+        }
+    }
+
+    private fun persistSettings(transform: (ViewerSettings) -> ViewerSettings) {
+        val library = (activity.application as ViewerApplication).graph.userLibrary
+        sessionScope.launch {
+            try {
+                library.updateSettings(transform)
+            } catch (failure: Throwable) {
+                android.util.Log.e("ViewerSettings", "reader setting not saved", failure)
+            }
+        }
+    }
+
+    private fun toggleSettingsPanel() {
+        if (settingsPanel.visible) {
+            settingsPanel.dismiss()
+        } else {
+            settingsPanel.open(appliedSettings ?: ViewerSettings())
+        }
+    }
+
+    private fun retryFromFailure() {
+        failureCard.visibility = View.GONE
+        loading.restart()
+        runtime?.retryFailures()
+    }
+
+    private fun applyKeepScreenOn(enabled: Boolean) {
+        if (enabled) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyImmersive(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val controller = window.insetsController ?: return
+            if (enabled) {
+                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                controller.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                controller.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+            }
+        } else {
+            window.decorView.systemUiVisibility = if (enabled) {
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            } else {
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            }
+        }
     }
 
     fun close() {
@@ -276,45 +396,100 @@ internal class EngineViewerScreen(
     private fun content(runtime: EngineViewerRuntime): FrameLayout =
         ViewerTouchRoot(this).apply {
         onSurfaceTap = { if (::chrome.isInitialized) chrome.toggle() }
+        onSurfaceDoubleTap = { x, y -> runtime.surface.toggleZoom(x, y) }
         setBackgroundColor(Color.BLACK)
         installSystemBarInsets()
         addView(runtime.surface, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT,
         ))
+        dimOverlay = View(this@EngineViewerScreen).apply {
+            contentDescription = "viewer-dim"
+            setBackgroundColor(Color.BLACK)
+            isClickable = false
+            isFocusable = false
+            alpha = 0f
+        }
+        addView(dimOverlay, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
         loading = ViewerLoadingOverlay(this@EngineViewerScreen)
         addView(loading, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        failureText = TextView(this@EngineViewerScreen).apply {
-            contentDescription = "viewer-failure"
-            setTextColor(Color.WHITE)
-            val padH = (20 * resources.displayMetrics.density).toInt()
-            val padV = (14 * resources.displayMetrics.density).toInt()
-            setPadding(padH, padV, padH, padV)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                cornerRadius = 16 * resources.displayMetrics.density
-                setColor(0xF0181A22.toInt())
-                setStroke((1 * resources.displayMetrics.density).toInt(), 0x33FFFFFF.toInt())
-            }
-            gravity = Gravity.CENTER
-            textSize = 14f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-            visibility = android.view.View.GONE
-            isClickable = false
-            isFocusable = false
-        }
-        val margin = (24 * resources.displayMetrics.density).toInt()
-        addView(failureText, FrameLayout.LayoutParams(
+        failureCard = buildFailureCard()
+        addView(failureCard, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM,
         ).apply {
-            setMargins(margin, margin, margin, margin + (48 * resources.displayMetrics.density).toInt())
+            val margin = dp(24)
+            setMargins(margin, margin, margin, margin + dp(48))
         })
+        settingsPanel = ViewerReaderSettingsPanel(this@EngineViewerScreen).apply {
+            onDimChanged = { percent -> dimOverlay.alpha = percent / 100f }
+            onDimCommitted = { percent -> persistSettings { it.copy(readerDimPercent = percent) } }
+            onKeepScreenOn = { enabled -> persistSettings { it.copy(keepScreenOn = enabled) } }
+            onImmersive = { enabled -> persistSettings { it.copy(immersiveMode = enabled) } }
+            onVolumeKeys = { enabled -> persistSettings { it.copy(volumeKeyNavigation = enabled) } }
+            onClose = { dismiss() }
+        }
+        addView(settingsPanel, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
         installChrome(this, runtime)
         }
+
+    private fun buildFailureCard(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        contentDescription = "viewer-failure"
+        val padH = dp(20)
+        setPadding(padH, dp(14), padH, dp(14))
+        background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = dp(16).toFloat()
+            setColor(0xF0181A22.toInt())
+            setStroke(dp(1), 0x33FFFFFF.toInt())
+        }
+        visibility = View.GONE
+        isClickable = true
+        failureText = TextView(this@EngineViewerScreen).apply {
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER
+        }
+        addView(failureText, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        }
+        row.addView(actionButton("닫기", accent = false) { finish() }, LinearLayout.LayoutParams(dp(72), dp(42)))
+        row.addView(actionButton("다시 시도", accent = true) { retryFromFailure() },
+            LinearLayout.LayoutParams(dp(96), dp(42)).apply { marginStart = dp(8) })
+        addView(row, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(12) })
+    }
+
+    private fun actionButton(text: String, accent: Boolean, click: () -> Unit) = TextView(this).apply {
+        this.text = text
+        setTextColor(Color.WHITE)
+        textSize = 14f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        gravity = Gravity.CENTER
+        isClickable = true
+        isFocusable = true
+        background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = dp(12).toFloat()
+            setColor(if (accent) 0xFF7C5CFF.toInt() else 0xFF181C26.toInt())
+            setStroke(dp(1), if (accent) 0x669080FF.toInt() else 0x33FFFFFF.toInt())
+        }
+        setOnClickListener { click() }
+    }
 
     private fun installChrome(root: ViewerTouchRoot, runtime: EngineViewerRuntime) {
         chrome = ViewerChromeController(
@@ -328,9 +503,13 @@ internal class EngineViewerScreen(
                 next = { navigateAdjacent(next = true) },
                 bookmark = ::bookmarkCurrentPosition,
                 split = ::toggleSplitMode,
+                settings = ::toggleSettingsPanel,
             ),
         ).also { controller -> controller.install(root) }
-        root.excludesSurfaceTap = { x, y -> loading.active || chrome.contains(x, y) }
+        root.excludesSurfaceTap = { x, y ->
+            loading.active || chrome.contains(x, y) || settingsPanel.visible ||
+                (failureCard.visibility == View.VISIBLE && failureCard.containsPoint(x, y))
+        }
     }
 
     private fun onViewerOpened() {
@@ -402,7 +581,7 @@ internal class EngineViewerScreen(
     private fun showEpisodePicker(current: ViewerChromeState, episodes: List<SourceEpisode>) {
         if (episodes.isEmpty() || isFinishing || isDestroyed) return
         val currentIndex = episodes.indexOfFirst { it.id == current.episodeId }
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        val dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("회차 선택")
             .setSingleChoiceItems(episodes.map(SourceEpisode::title).toTypedArray(), currentIndex) {
                     dialog, index ->
@@ -411,7 +590,11 @@ internal class EngineViewerScreen(
                 if (target != current.episodeId) launchEpisode(target)
             }
             .setNegativeButton("취소", null)
-            .show()
+            .create()
+        if (currentIndex > 0) {
+            dialog.setOnShowListener { dialog.listView?.setSelection(currentIndex) }
+        }
+        dialog.show()
     }
 
     private fun FrameLayout.installSystemBarInsets() {
@@ -438,7 +621,12 @@ internal class EngineViewerScreen(
         reportedFailure = failure
         loading.failed()
         failureText.text = failure.message?.takeIf(String::isNotBlank) ?: "페이지를 불러오지 못했습니다"
-        failureText.visibility = android.view.View.VISIBLE
+        failureCard.visibility = View.VISIBLE
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun View.containsPoint(x: Float, y: Float): Boolean =
+        x >= left && x < right && y >= top && y < bottom
 
 }

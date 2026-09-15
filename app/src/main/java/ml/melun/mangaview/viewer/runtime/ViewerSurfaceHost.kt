@@ -12,6 +12,7 @@ import android.view.SurfaceView
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import kotlin.coroutines.resume
+import kotlin.math.hypot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,10 +58,14 @@ internal class ViewerSurfaceHost(
         sink::motionFrame,
         ::finishInteraction,
     )
+    private val zoom = ViewerZoomState()
+    private var pinchActive = false
+    private var pinchBaselineSpan = 0f
     private var velocityTracker: VelocityTracker? = null
     private var pointerId = MotionEvent.INVALID_POINTER_ID
     private var previousFrameNanos = 0L
     private var lastMotionNanos = 0L
+    private var lastPointerX = 0f
     private var dispatchEntryNanos = 0L
     private var latestVelocity = 0.0
     private var dragScheduled = false
@@ -88,6 +93,9 @@ internal class ViewerSurfaceHost(
         isFocusable = true
         isClickable = true
         contentDescription = "viewer-surface"
+        // Scale around the top-left corner so a local pixel is a document pixel plus translation.
+        pivotX = 0f
+        pivotY = 0f
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -102,6 +110,7 @@ internal class ViewerSurfaceHost(
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> begin(event, tracing)
                 MotionEvent.ACTION_MOVE -> move(event)
+                MotionEvent.ACTION_POINTER_DOWN -> beginPinch(event)
                 MotionEvent.ACTION_POINTER_UP -> changePointer(event)
                 MotionEvent.ACTION_UP -> end(event, flingAfter = true)
                 MotionEvent.ACTION_CANCEL -> end(event, flingAfter = false)
@@ -132,12 +141,38 @@ internal class ViewerSurfaceHost(
     fun cancelMotion() {
         flushDrag()
         fling.stop()
+        endPinch()
         velocityTracker?.recycle()
         velocityTracker = null
         pointerId = MotionEvent.INVALID_POINTER_ID
         previousFrameNanos = 0L
         latestVelocity = 0.0
         finishInteraction()
+    }
+
+    /**
+     * One synthetic viewport step from a hardware key. Positive pixels advance toward the next
+     * screen, matching the finger-up direction a real drag reports. Not an original touch sample.
+     */
+    fun stepViewport(pixels: Double): Boolean {
+        if (pixels == 0.0) return false
+        return emitSyntheticScroll(pixels)
+    }
+
+    /**
+     * Double-tap magnification around a tap delivered in the parent's coordinates. The engine
+     * receives one synthetic scroll that keeps the tapped document row on screen; the rest is a
+     * compositor transform.
+     */
+    fun toggleZoom(parentX: Float, parentY: Float): Boolean {
+        flushDrag()
+        fling.stop()
+        val focusX = (parentX - zoom.translationX) / zoom.scale
+        val focusY = parentY / zoom.scale
+        val scroll = zoom.toggle(focusX, focusY)
+        applyZoom()
+        if (scroll != 0.0) emitSyntheticScroll(scroll)
+        return true
     }
 
     /** EGL can observe window loss before SurfaceHolder delivers its lifecycle callback. */
@@ -152,6 +187,8 @@ internal class ViewerSurfaceHost(
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         if (width <= 0 || height <= 0) return
+        zoom.viewportChanged(width.toFloat())
+        applyZoom()
         sink.viewportChanged(Viewport(FixedPx.fromPixels(width), FixedPx.fromPixels(height)))
         if (rendererAttached && (width != attachedWidth || height != attachedHeight)) {
             detachRenderer()
@@ -198,6 +235,7 @@ internal class ViewerSurfaceHost(
         velocityTracker?.recycle()
         velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
         pointerId = event.getPointerId(0)
+        lastPointerX = event.x
         pointerDeltas.begin(event.y)
         inputTrace.begin(event.y, tracing)
         traceGesture.beginTouch()
@@ -206,12 +244,80 @@ internal class ViewerSurfaceHost(
         lastMotionNanos = at
         latestVelocity = 0.0
         gestureMoved = false
+        pinchActive = false
+        pinchBaselineSpan = 0f
+        if (event.pointerCount >= 2) beginPinch(event)
+    }
+
+    private fun beginPinch(event: MotionEvent) {
+        flushDrag()
+        fling.stop()
+        velocityTracker?.recycle()
+        velocityTracker = null
+        pointerId = MotionEvent.INVALID_POINTER_ID
+        pinchActive = true
+        pinchBaselineSpan = pinchSpan(event)
+        beginInteraction()
+    }
+
+    /** Two pointers own the gesture: their span changes the scale and their midpoint anchors it. */
+    private fun updatePinch(event: MotionEvent) {
+        if (event.pointerCount < 2) {
+            endPinch()
+            return
+        }
+        val span = pinchSpan(event)
+        if (span <= 0f) return
+        if (pinchBaselineSpan > 0f) {
+            val focusX = (event.getX(0) + event.getX(1)) / 2f
+            val focusY = (event.getY(0) + event.getY(1)) / 2f
+            val scroll = zoom.pinch(span / pinchBaselineSpan, focusX, focusY)
+            applyZoom()
+            if (scroll != 0.0) emitSyntheticScroll(scroll)
+        }
+        pinchBaselineSpan = span
+    }
+
+    private fun endPinch() {
+        if (!pinchActive) return
+        pinchActive = false
+        pinchBaselineSpan = 0f
+    }
+
+    private fun pinchSpan(event: MotionEvent): Float = pinchSpanExcluding(event, -1)
+
+    private fun pinchSpanExcluding(event: MotionEvent, excluded: Int): Float {
+        var first = -1
+        var second = -1
+        for (index in 0 until event.pointerCount) {
+            if (index == excluded) continue
+            if (first < 0) first = index else { second = index; break }
+        }
+        if (first < 0 || second < 0) return 0f
+        return hypot(event.getX(second) - event.getX(first), event.getY(second) - event.getY(first))
+    }
+
+    private fun applyZoom() {
+        scaleX = zoom.scale
+        scaleY = zoom.scale
+        translationX = zoom.translationX
     }
 
     private fun move(event: MotionEvent) {
+        if (pinchActive) {
+            updatePinch(event)
+            return
+        }
+        if (event.pointerCount >= 2) {
+            beginPinch(event)
+            return
+        }
         velocityTracker?.addMovement(event)
         val index = event.findPointerIndex(pointerId)
         if (index < 0) return
+        val pointerX = event.getX(index)
+        if (zoom.zoomed && zoom.pan((pointerX - lastPointerX) * zoom.scale)) applyZoom()
+        lastPointerX = pointerX
         val at = event.eventTime * NANOS_PER_MILLISECOND
         val delta = appendPointerSamples(event, index, pointerDeltas, inputTrace, traceGesture.id, pointerId)
         val elapsed = (at - lastMotionNanos).coerceAtLeast(1L)
@@ -222,17 +328,46 @@ internal class ViewerSurfaceHost(
     }
 
     private fun changePointer(event: MotionEvent) {
+        if (pinchActive) {
+            if (event.pointerCount - 1 >= 2) {
+                pinchBaselineSpan = pinchSpanExcluding(event, event.actionIndex)
+                return
+            }
+            endPinch()
+            val remaining = (0 until event.pointerCount).first { it != event.actionIndex }
+            pointerId = event.getPointerId(remaining)
+            velocityTracker?.recycle()
+            velocityTracker = null
+            lastPointerX = event.getX(remaining)
+            pointerDeltas.rebase(event.getY(remaining))
+            dragQuantizer.rebase()
+            inputTrace.rebase(event.getY(remaining))
+            val at = event.eventTime * NANOS_PER_MILLISECOND
+            previousFrameNanos = at
+            lastMotionNanos = at
+            latestVelocity = 0.0
+            return
+        }
         val lifted = event.actionIndex
         if (event.getPointerId(lifted) != pointerId) return
         val replacement = if (lifted == 0) 1 else 0
         if (replacement >= event.pointerCount) return
         pointerId = event.getPointerId(replacement)
+        lastPointerX = event.getX(replacement)
         pointerDeltas.rebase(event.getY(replacement))
         dragQuantizer.rebase()
         inputTrace.rebase(event.getY(replacement))
     }
 
     private fun end(event: MotionEvent, flingAfter: Boolean) {
+        if (pinchActive) {
+            // A pinch never launches a fling and never counts as a tap.
+            endPinch()
+            velocityTracker?.recycle()
+            velocityTracker = null
+            pointerId = MotionEvent.INVALID_POINTER_ID
+            return
+        }
         val tracker = velocityTracker
         tracker?.addMovement(event)
         val index = event.findPointerIndex(pointerId)
@@ -329,6 +464,14 @@ internal class ViewerSurfaceHost(
                 expectedPresentationTimeNanos,
             )
         }
+    }
+
+    /** Input the app derives itself, such as a key step or zoom anchoring, is never a touch sample. */
+    private fun emitSyntheticScroll(pixels: Double): Boolean {
+        val moved = emitScroll(pixels, FixedPx.fromPixels(pixels), 0.0, System.nanoTime(), 0L, NO_VSYNC_ID,
+            if (Trace.isEnabled()) inputTrace.synthetic(pixels) else null)
+        if (moved) sink.motionFrame(issueMotionSequence(), System.nanoTime())
+        return moved
     }
 
     /** Fling steps are frame-synthetic and must never masquerade as original touch samples. */

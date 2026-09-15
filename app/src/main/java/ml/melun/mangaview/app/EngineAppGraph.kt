@@ -13,6 +13,7 @@ import ml.melun.mangaview.data.engine.RoomEnginePublicationIndex
 import ml.melun.mangaview.data.library.UserLibraryRepository
 import ml.melun.mangaview.data.network.OkHttpTransportFactory
 import ml.melun.mangaview.data.network.HttpEngineSourceTransport
+import ml.melun.mangaview.data.offline.OfflineEpisodeStore
 import ml.melun.mangaview.engine.api.EnginePositionPort
 import ml.melun.mangaview.engine.api.EpisodePlanObserver
 import ml.melun.mangaview.engine.api.EngineSessionWork
@@ -37,6 +38,7 @@ internal class EngineAppGraph(
     private val library: UserLibraryRepository,
     private val userAgent: String,
     private val ntkOrigin: URI,
+    private val offlineEpisodes: OfflineEpisodeStore,
     networkEvidenceObserver: () -> SourceExchangeObserver? = { null },
     private val origins: ProviderOriginDirectory = ProviderOriginDirectory(context, ioDispatcher, userAgent),
     private val newxtoonClearance: NewxtoonClearance? = null,
@@ -126,10 +128,11 @@ internal class EngineAppGraph(
             else -> error("Unknown engine source")
         }
         val cached = ml.melun.mangaview.engine.content.EngineCachedSessionWork(live, completeEpisodes)
-        return object : EngineViewerWork, EngineSessionWork by cached {
+        val composed = object : EngineViewerWork, EngineSessionWork by cached {
             override fun episodes(seriesId: ml.melun.mangaview.core.SeriesId,
                 priority: ml.melun.mangaview.engine.api.WorkPriority) = live.episodes(seriesId, priority)
         }
+        return EngineOfflineSessionWork(composed, offlineEpisodes)
     }
 
     suspend fun close() {

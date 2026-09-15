@@ -1,5 +1,6 @@
 package ml.melun.mangaview.ui.library
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,6 +11,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -163,9 +165,12 @@ private fun DetailBody(
         if (episodes.isEmpty()) {
             item { LibraryMessage("등록된 회차가 없습니다", colors, Modifier.height(220.dp)) }
         } else {
+            val resume = state.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
+                ?.let { id -> episodes.firstOrNull { it.id == id } }
             items(episodes, key = { it.id.remoteKey }) { episode ->
                 EpisodeCard(
                     episode = episode,
+                    readState = episodeReadState(episode, resume),
                     saved = state.offlineEpisodes.any { it.episode.id == episode.id },
                     downloadState = state.downloadStates[episode.id],
                     colors = colors,
@@ -247,10 +252,18 @@ private fun DetailTabs(selected: DetailTab, colors: LibraryColors, accept: (Libr
     ) {
         DetailTab.entries.forEach { tab ->
             val active = tab == selected
+            val surface by animateColorAsState(
+                targetValue = if (active) colors.card else Color.Transparent,
+                label = "detailTabSurface",
+            )
+            val labelColor by animateColorAsState(
+                targetValue = if (active) colors.text else colors.secondary,
+                label = "detailTabLabel",
+            )
             Box(
                 Modifier.weight(1f).fillMaxHeight()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(if (active) colors.card else Color.Transparent)
+                    .background(surface)
                     .then(if (active) Modifier.shadow(3.dp, RoundedCornerShape(12.dp), spotColor = Color.Black.copy(alpha = 0.10f)) else Modifier)
                     .clickable { accept(LibraryIntent.DetailTabSelected(tab)) },
                 contentAlignment = Alignment.Center,
@@ -258,7 +271,7 @@ private fun DetailTabs(selected: DetailTab, colors: LibraryColors, accept: (Libr
                 BasicText(
                     tab.label,
                     style = bodyStyle(colors, 13).copy(
-                        color = if (active) colors.text else colors.secondary,
+                        color = labelColor,
                         fontWeight = if (active) FontWeight.ExtraBold else FontWeight.Medium,
                     ),
                 )
@@ -303,6 +316,7 @@ private fun DetailInformation(
 @Composable
 private fun EpisodeCard(
     episode: SourceEpisode,
+    readState: EpisodeReadState?,
     saved: Boolean,
     downloadState: EpisodeDownloadState?,
     colors: LibraryColors,
@@ -334,12 +348,71 @@ private fun EpisodeCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            episode.publishedAtEpochMillis?.let {
-                Spacer(Modifier.height(4.dp))
-                BasicText(formatDate(it), style = hintStyle(colors, 11))
+            Spacer(Modifier.height(4.dp))
+            if (downloadState is EpisodeDownloadState.Failed) {
+                BasicText(
+                    "다운로드 실패 · 다시 시도",
+                    style = hintStyle(colors, 11).copy(color = colors.error, fontWeight = FontWeight.Bold),
+                )
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    episode.publishedAtEpochMillis?.let {
+                        BasicText(formatDate(it), style = hintStyle(colors, 11))
+                    }
+                    readState?.let { state ->
+                        if (episode.publishedAtEpochMillis != null) Spacer(Modifier.width(6.dp))
+                        EpisodeReadBadge(state, colors)
+                    }
+                }
             }
         }
         EpisodeStorageAction(episode, saved, downloadState, colors, storageAction)
+    }
+}
+
+internal enum class EpisodeReadState { RESUME, READ }
+
+/**
+ * Storage keeps one resume row per series, so "read" means older than the remembered episode and
+ * "resume" marks the remembered episode itself. Unknown ordering stays unmarked.
+ */
+internal fun episodeReadState(episode: SourceEpisode, resume: SourceEpisode?): EpisodeReadState? {
+    if (resume == null) return null
+    if (episode.id == resume.id) return EpisodeReadState.RESUME
+    return when (episodeNewerThan(episode, resume)) {
+        true -> null
+        false -> EpisodeReadState.READ
+        null -> null
+    }
+}
+
+private fun episodeNewerThan(episode: SourceEpisode, other: SourceEpisode): Boolean? {
+    val sequence = episode.sequenceNumber
+    val otherSequence = other.sequenceNumber
+    if (sequence != null && otherSequence != null) return sequence > otherSequence
+    val published = episode.publishedAtEpochMillis
+    val otherPublished = other.publishedAtEpochMillis
+    if (published != null && otherPublished != null) return published > otherPublished
+    return null
+}
+
+@Composable
+private fun EpisodeReadBadge(state: EpisodeReadState, colors: LibraryColors) {
+    when (state) {
+        EpisodeReadState.RESUME -> Box(
+            Modifier.clip(RoundedCornerShape(6.dp))
+                .background(colors.accentSurface)
+                .padding(horizontal = 7.dp, vertical = 2.dp),
+        ) {
+            BasicText(
+                "이어보기",
+                style = labelStyle(colors, true).copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+            )
+        }
+        EpisodeReadState.READ -> BasicText(
+            "읽음",
+            style = hintStyle(colors, 10).copy(color = colors.muted, fontWeight = FontWeight.Medium),
+        )
     }
 }
 

@@ -133,7 +133,7 @@ internal class AppGraph(
         }
     val engine: EngineAppGraph by lazy {
         EngineAppGraph(appContext, applicationScope, sourceDispatcher, ioDispatcher, database, userLibrary, userAgent(),
-            java.net.URI(DEFAULT_NTK_ORIGIN), { networkEvidenceObserver }, origins, newxtoonClearance,
+            java.net.URI(DEFAULT_NTK_ORIGIN), offlineStore, { networkEvidenceObserver }, origins, newxtoonClearance,
             newxtoonClearance.sourceUserAgent)
     }
 

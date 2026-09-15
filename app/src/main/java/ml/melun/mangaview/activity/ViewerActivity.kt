@@ -3,6 +3,7 @@ package ml.melun.mangaview.activity
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
@@ -49,6 +50,18 @@ class ViewerActivity : ComponentActivity() {
     override fun onStart() { super.onStart(); if (::screen.isInitialized) screen.enterForeground() }
     override fun onStop() { if (::screen.isInitialized) screen.enterBackground(); super.onStop() }
     override fun onDestroy() { if (::screen.isInitialized) screen.close(); super.onDestroy() }
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean =
+        if (handleReaderVolumeKey(keyCode)) true else super.onKeyDown(keyCode, event)
+
+    private fun handleReaderVolumeKey(keyCode: Int): Boolean {
+        val forward = when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_DOWN -> true
+            KeyEvent.KEYCODE_VOLUME_UP -> false
+            else -> return false
+        }
+        return if (::screen.isInitialized) screen.handleVolumeKey(forward) else false
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         if (::screen.isInitialized) outState.putBundle("reader.session", ViewerScreenState.write(screen.restorationSpec()))
         super.onSaveInstanceState(outState)

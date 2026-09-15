@@ -22,6 +22,7 @@ internal fun SavedItemRemovalDialog(item: SavedItemRemoval, colors: LibraryColor
                 SavedTab.ALL -> "최근 읽기 기록과 이어보기 위치, 좋아요, 다운로드를 삭제합니다. 책갈피는 유지됩니다."
                 SavedTab.RECENT -> "최근 읽기 기록과 이어보기 위치를 삭제합니다. 좋아요와 책갈피는 유지됩니다."
                 SavedTab.FAVORITES -> "좋아요 목록에서 삭제합니다. 읽던 위치는 유지됩니다."
+                SavedTab.BOOKMARKS -> "이 작품의 책갈피를 삭제합니다. 읽던 위치는 유지됩니다."
                 SavedTab.OFFLINE -> "이 작품의 모든 다운로드를 삭제하고 진행 중인 다운로드를 취소합니다. 읽던 위치는 유지됩니다."
             }, style = bodyStyle(colors, 14))
             Spacer(Modifier.height(20.dp))

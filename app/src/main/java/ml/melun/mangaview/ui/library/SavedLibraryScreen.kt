@@ -1,5 +1,6 @@
 package ml.melun.mangaview.ui.library
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.data.library.RecentReading
+import ml.melun.mangaview.data.library.SavedBookmark
 import ml.melun.mangaview.data.library.SavedSeries
 import ml.melun.mangaview.source.SourceSeries
 
@@ -65,6 +67,7 @@ internal fun SavedLibraryScreen(
             SavedTab.ALL -> AllSaved(state, query, artworkLoader, colors, accept)
             SavedTab.RECENT -> RecentSaved(state.saved.recent, query, artworkLoader, colors, accept)
             SavedTab.FAVORITES -> FavoriteSaved(state.saved.favorites, query, artworkLoader, colors, accept)
+            SavedTab.BOOKMARKS -> BookmarkSaved(state.saved.bookmarks, query, colors, accept)
             SavedTab.OFFLINE -> OfflineSaved(state, query, artworkLoader, colors, accept)
         }
     }
@@ -131,10 +134,18 @@ private fun SavedTabs(selected: SavedTab, colors: LibraryColors, accept: (Librar
     ) {
         SavedTab.entries.forEach { tab ->
             val active = tab == selected
+            val surface by animateColorAsState(
+                targetValue = if (active) colors.card else Color.Transparent,
+                label = "savedTabSurface",
+            )
+            val labelColor by animateColorAsState(
+                targetValue = if (active) colors.text else colors.secondary,
+                label = "savedTabLabel",
+            )
             Box(
                 Modifier.weight(1f).fillMaxHeight()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(if (active) colors.card else Color.Transparent)
+                    .background(surface)
                     .then(if (active) Modifier.shadow(3.dp, RoundedCornerShape(12.dp), spotColor = Color.Black.copy(alpha = 0.10f)) else Modifier)
                     .clickable { accept(LibraryIntent.SavedTabSelected(tab)) },
                 contentAlignment = Alignment.Center,
@@ -142,7 +153,7 @@ private fun SavedTabs(selected: SavedTab, colors: LibraryColors, accept: (Librar
                 BasicText(
                     tab.label,
                     style = bodyStyle(colors, 13).copy(
-                        color = if (active) colors.text else colors.secondary,
+                        color = labelColor,
                         fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
                     ),
                 )
@@ -161,11 +172,15 @@ private fun AllSaved(
 ) {
     val recentIds = state.saved.recent.map { it.series.id }.toSet()
     val favoriteIds = state.saved.favorites.map { it.id }.toSet()
+    val offlineIds = state.offlineEpisodes.map { it.series.id }.toSet()
     val combined = state.saved.favorites +
         state.saved.recent.filterNot { it.series.id in favoriteIds }.map { it.series } +
         state.offlineEpisodes.map { it.series }.distinctBy { it.id }
             .filterNot { it.id in recentIds || it.id in favoriteIds }
-            .map { item -> SavedSeries(item.id, item.title, item.thumbnailKey, false, 0L) }
+            .map { item -> SavedSeries(item.id, item.title, item.thumbnailKey, false, 0L) } +
+        state.saved.bookmarks.map { it.pageId.episodeId.seriesId to it.seriesTitle }.distinctBy { it.first }
+            .filterNot { it.first in recentIds || it.first in favoriteIds || it.first in offlineIds }
+            .map { (id, title) -> SavedSeries(id, title, null, false, 0L) }
     FavoriteSaved(combined, query, loader, colors, accept, "최근 읽거나 보관하거나 저장한 작품이 없습니다", SavedTab.ALL)
 }
 
@@ -328,6 +343,135 @@ private fun SavedSourceSeriesCard(
 }
 
 @Composable
+private fun BookmarkSaved(
+    items: List<SavedBookmark>,
+    query: String,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    var removing by remember { mutableStateOf<SavedBookmark?>(null) }
+    removing?.let { target ->
+        BookmarkRemovalDialog(
+            bookmark = target,
+            colors = colors,
+            dismiss = { removing = null },
+            confirm = {
+                removing = null
+                accept(LibraryIntent.RemoveBookmark(target))
+            },
+        )
+    }
+    val filtered = items.filter { query.isEmpty() || it.seriesTitle.contains(query, true) }
+    if (filtered.isEmpty()) {
+        EmptySaved("저장한 책갈피가 없습니다", colors) { accept(LibraryIntent.DestinationSelected(MainDestination.HOME)) }
+        return
+    }
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        items(
+            filtered,
+            key = { "${it.pageId}@${it.offsetInPageUnits}@${it.createdAtEpochMillis}" },
+        ) { item ->
+            BookmarkCard(
+                bookmark = item,
+                colors = colors,
+                click = {
+                    accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits)))
+                },
+                longClick = { removing = item },
+            )
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun BookmarkCard(
+    bookmark: SavedBookmark,
+    colors: LibraryColors,
+    click: () -> Unit,
+    longClick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth()
+            .height(96.dp)
+            .clip(SavedCardShape)
+            .background(colors.card)
+            .border(1.dp, colors.cardBorder, SavedCardShape)
+            .combinedClickable(
+                onClick = click,
+                onLongClickLabel = "책갈피 삭제",
+                onLongClick = longClick,
+            )
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.width(64.dp).fillMaxHeight()
+                .clip(SavedThumbShape)
+                .background(colors.accentSurface),
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.BOOKMARK, colors.accent, Modifier.size(26.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            BasicText(
+                bookmark.seriesTitle,
+                style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(4.dp))
+            BasicText(
+                "${libraryDate(bookmark.createdAtEpochMillis)} 저장",
+                style = hintStyle(colors, 12),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(6.dp))
+            Box(
+                Modifier.clip(SavedBadgeShape)
+                    .background(colors.accentSurface)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            ) {
+                BasicText(
+                    "책갈피 위치로 이동",
+                    style = labelStyle(colors, true).copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookmarkRemovalDialog(
+    bookmark: SavedBookmark,
+    colors: LibraryColors,
+    dismiss: () -> Unit,
+    confirm: () -> Unit,
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = dismiss) {
+        Column(Modifier.fillMaxWidth().background(colors.card, RoundedCornerShape(16.dp)).padding(22.dp)) {
+            BasicText("책갈피 삭제", style = titleStyle(colors, 18))
+            Spacer(Modifier.height(10.dp))
+            BasicText(
+                "${bookmark.seriesTitle}\n${libraryDate(bookmark.createdAtEpochMillis)}에 저장한 위치를 삭제합니다.",
+                style = bodyStyle(colors, 14),
+            )
+            Spacer(Modifier.height(20.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                LibraryAction("취소", colors, Modifier.weight(1f).height(48.dp), dismiss)
+                LibraryAction("삭제", colors, Modifier.weight(1f).height(48.dp), confirm)
+            }
+        }
+    }
+}
+
+@Composable
 private fun EmptySaved(message: String, colors: LibraryColors, onExplore: () -> Unit) {
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 40.dp),
@@ -353,9 +497,15 @@ private fun EmptySaved(message: String, colors: LibraryColors, onExplore: () -> 
 }
 
 private fun savedCount(state: LibraryState): Int = when (state.libraryTab) {
-    SavedTab.ALL -> state.saved.recent.size + state.saved.favorites.size + state.offlineEpisodes.map { it.series.id }.distinct().size
+    SavedTab.ALL -> (
+        state.saved.recent.map { it.series.id } +
+            state.saved.favorites.map { it.id } +
+            state.offlineEpisodes.map { it.series.id } +
+            state.saved.bookmarks.map { it.pageId.episodeId.seriesId }
+        ).distinct().size
     SavedTab.RECENT -> state.saved.recent.size
     SavedTab.FAVORITES -> state.saved.favorites.size
+    SavedTab.BOOKMARKS -> state.saved.bookmarks.size
     SavedTab.OFFLINE -> state.offlineEpisodes.map { it.series.id }.distinct().size
 }
 @Composable

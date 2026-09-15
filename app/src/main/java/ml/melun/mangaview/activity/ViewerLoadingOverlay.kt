@@ -11,7 +11,8 @@ import android.widget.TextView
 
 /** Owns touches on the loading UI until a complete original viewport has been submitted. */
 internal class ViewerLoadingOverlay(context: Context) : FrameLayout(context) {
-    val active: Boolean get() = visibility == VISIBLE
+    private var failing = false
+    val active: Boolean get() = visibility == VISIBLE && !failing
 
     init {
         contentDescription = "viewer-loading"
@@ -43,5 +44,15 @@ internal class ViewerLoadingOverlay(context: Context) : FrameLayout(context) {
 
     fun complete() { visibility = GONE }
 
-    fun failed() { getChildAt(0).visibility = GONE }
+    /** Failure UI lives outside this overlay, so release touches instead of blanking the spinner. */
+    fun failed() {
+        failing = true
+        visibility = GONE
+    }
+
+    fun restart() {
+        failing = false
+        getChildAt(0).visibility = VISIBLE
+        visibility = VISIBLE
+    }
 }

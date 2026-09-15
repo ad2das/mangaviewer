@@ -142,17 +142,10 @@ private fun ContinuationDescription(item: RecentReading, colors: LibraryColors, 
                     style = labelStyle(colors, true).copy(fontSize = 11.sp, fontWeight = FontWeight.ExtraBold),
                 )
             }
-            Box(
-                Modifier.width(60.dp).height(5.dp)
-                    .clip(CircleShape)
-                    .background(colors.mutedSurface),
-            ) {
-                Box(
-                    Modifier.width(42.dp).height(5.dp)
-                        .clip(CircleShape)
-                        .background(colors.accentGradient),
-                )
-            }
+            BasicText(
+                libraryRelativeTime(item.updatedAtEpochMillis),
+                style = hintStyle(colors, 11),
+            )
         }
     }
 }
