@@ -15,8 +15,10 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
 import android.view.MotionEvent
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -172,8 +174,8 @@ internal class NewxtoonClearance(
 
     private suspend fun runChallengeLocked(): Boolean {
         Log.i(TAG, "solve: starting webview challenge")
-        clearWebViewCookies()
         val solved = try {
+            clearWebViewCookies()
             withTimeoutOrNull(SOLVE_TIMEOUT_MILLIS) { runChallenge() } == true
         } catch (failure: Throwable) {
             Log.w(TAG, "solve: challenge failed", failure)
@@ -331,8 +333,9 @@ internal class NewxtoonClearance(
                 if (!settled) {
                     settled = true
                     Log.i(TAG, "challenge finished cleared=$cleared reason=$reason")
-                    runCatching { webView.stopLoading() }
-                    runCatching { webView.destroy() }
+                    // Chromium aborts the process when a WebView is stopped or destroyed from
+                    // inside its own callback, so teardown always defers one main-loop turn.
+                    main.post { teardownWebView(webView) }
                     if (continuation.isActive) continuation.resume(cleared)
                 }
             }
@@ -360,6 +363,14 @@ internal class NewxtoonClearance(
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                     Log.w(TAG, "page error ${error.errorCode} ${error.description} ${request.url}")
+                }
+
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    // Returning true is mandatory: an unhandled renderer death takes the app
+                    // process with it, silently and with no Java stack.
+                    Log.w(TAG, "webview renderer gone didCrash=${detail.didCrash()}")
+                    finish(false, "renderer-gone")
+                    return true
                 }
 
                 override fun shouldInterceptRequest(view: WebView,
@@ -420,6 +431,13 @@ internal class NewxtoonClearance(
             webView.loadUrl(ORIGIN)
             main.postDelayed(poll, POLL_INTERVAL_MILLIS)
         }
+
+    /** Detach before destroy; a renderer gone view must never be used again. */
+    private fun teardownWebView(webView: WebView) {
+        runCatching { webView.stopLoading() }
+        runCatching { (webView.parent as? ViewGroup)?.removeView(webView) }
+        runCatching { webView.destroy() }
+    }
 
     /** Managed challenges render a Turnstile checkbox; a trusted tap can clear it. */
     private fun clickChallengeFrames(webView: WebView, raw: String, attempt: Int) {

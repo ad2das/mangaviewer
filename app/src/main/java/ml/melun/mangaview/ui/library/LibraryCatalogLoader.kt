@@ -33,8 +33,8 @@ internal class LibraryCatalogLoader(
         val version = ++homeVersion
         update { it.copy(home = HomeContent.Loading) }
         homeJob = scope.launch {
-            val source = sourceRegistry.require(snapshot.selectedSourceId)
             try {
+                val source = sourceRegistry.require(snapshot.selectedSourceId)
                 val result = withContext(ioDispatcher) { homeCatalogs(source, snapshot.homeKind) }
                 if (version == homeVersion) {
                     update { it.copy(home = result) }
