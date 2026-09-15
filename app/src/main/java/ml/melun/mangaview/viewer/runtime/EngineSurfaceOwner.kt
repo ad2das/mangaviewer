@@ -33,6 +33,7 @@ internal class EngineSurfaceOwner(
     private val presentationPollMillisForVerification: Long? = null,
     reportSubmitted: (EngineSurfaceScene) -> Unit = {},
     private val bufferedCompositor: Boolean = false,
+    private val uploadPacer: TileUploadPacer = TileUploadPacer(),
 ) : EngineTextureUploader {
     @Volatile private var callbacks = EngineSurfaceCallbacks(reportPresented, reportFailure,
         reportInvalidated, reportSurfaceLost, reportSubmitted)
@@ -236,6 +237,7 @@ internal class EngineSurfaceOwner(
         val caller = currentCoroutineContext()[Job]
         var acquired = 0L
         try {
+            uploadPacer.acquire(pixels.byteCount)
             while (acquired == 0L) {
                 val wait = onOwner("engine_owner_upload") {
                     caller?.ensureActive()
