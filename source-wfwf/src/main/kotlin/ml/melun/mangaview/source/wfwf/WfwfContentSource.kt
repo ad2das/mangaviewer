@@ -358,16 +358,28 @@ class WfwfContentSource(
     private suspend fun fetchCatalog(seriesId: SeriesId): List<SourceEpisode> {
         val key = WfwfSeriesKey.decode(seriesId)
         val first = document(listPath(key))
-        val pageNumbers = parser.catalogPageNumbers(first, key).filter { it != 1 }
-        if (pageNumbers.isEmpty()) return parser.episodes(first, seriesId, key)
-        return coroutineScope {
-            val remaining = pageNumbers.map { page ->
-                async { parser.episodes(document(listPagePath(key, page)), seriesId, key) }
+        val pages = mutableListOf(parser.episodes(first, seriesId, key))
+        val fetchedPages = mutableSetOf(1)
+        var pending = parser.catalogPageNumbers(first, key).filterNot(fetchedPages::contains).distinct()
+        while (pending.isNotEmpty()) {
+            val batch = pending
+            val loaded = coroutineScope {
+                batch.map { page ->
+                    async {
+                        val pageDocument = document(listPagePath(key, page))
+                        page to pageDocument
+                    }
+                }.map { it.await() }
             }
-            parser.mergeEpisodePages(
-                listOf(parser.episodes(first, seriesId, key)) + remaining.map { it.await() },
-            )
+            val discovered = mutableListOf<Int>()
+            loaded.forEach { (page, pageDocument) ->
+                fetchedPages += page
+                pages += parser.episodes(pageDocument, seriesId, key)
+                discovered += parser.catalogPageNumbers(pageDocument, key)
+            }
+            pending = discovered.filterNot(fetchedPages::contains).distinct()
         }
+        return parser.mergeEpisodePages(pages)
     }
 
     private suspend fun fetchComicCatalogPage(page: Int): WfwfComicCatalogPage {

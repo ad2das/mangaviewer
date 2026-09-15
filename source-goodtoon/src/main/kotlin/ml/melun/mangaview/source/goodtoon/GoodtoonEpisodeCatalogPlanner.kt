@@ -13,6 +13,36 @@ class GoodtoonEpisodeCatalogPage(episodes: List<SourceEpisode>) {
     val episodes: List<SourceEpisode> = Collections.unmodifiableList(episodes.toList())
 }
 
+/**
+ * Provider-order chapter pagination accumulator.
+ *
+ * The provider lists chapters newest first and pages the AJAX fragment with `?t=N`. A page that
+ * contributes no unseen episode is the walk's terminal signal: today the deployment serves the
+ * whole list for any page, so the probe repeats and stops, while a paginated deployment is walked
+ * to its last page. Absorption never reorders and never consults [SourceEpisode.sequenceNumber].
+ */
+class GoodtoonEpisodeCatalogAccumulator {
+    private val seen = LinkedHashMap<String, SourceEpisode>()
+    private var pages = 0
+
+    /** Returns true while the page contributes at least one unseen episode. */
+    fun absorb(episodes: List<SourceEpisode>): Boolean {
+        check(pages < MAX_CHAPTER_PAGES) { "GoodToon chapter catalog exceeded $MAX_CHAPTER_PAGES pages" }
+        pages += 1
+        var added = false
+        for (episode in episodes) {
+            if (seen.putIfAbsent(episode.id.remoteKey, episode) == null) added = true
+        }
+        return added
+    }
+
+    fun episodes(): List<SourceEpisode> = Collections.unmodifiableList(seen.values.toList())
+
+    private companion object {
+        const val MAX_CHAPTER_PAGES = 512
+    }
+}
+
 /** Pure episode-catalog construction/parsing; no transport, cache, retry or execution ownership. */
 class GoodtoonEpisodeCatalogPlanner(private val userAgent: String) {
     private val parser = GoodtoonHtmlParser()
@@ -37,5 +67,8 @@ class GoodtoonEpisodeCatalogPlanner(private val userAgent: String) {
     }
 
     fun merge(pages: List<GoodtoonEpisodeCatalogPage>): List<SourceEpisode> =
-        Collections.unmodifiableList(parser.mergeChapters(pages.map { it.episodes }))
+        GoodtoonEpisodeCatalogAccumulator().let { accumulator ->
+            pages.forEach { accumulator.absorb(it.episodes) }
+            accumulator.episodes()
+        }
 }

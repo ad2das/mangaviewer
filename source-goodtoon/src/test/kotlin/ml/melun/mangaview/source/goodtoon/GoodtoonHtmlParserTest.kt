@@ -77,6 +77,21 @@ class GoodtoonHtmlParserTest {
     }
 
     @Test
+    fun `side story titles never reorder the delivered chapter list`() {
+        val key = GoodtoonSeriesKey("gt-21840")
+        val seriesId = goodtoonSeriesId(key.slug)
+        val episodes = parser.chapters(GoodtoonFixtures.document("chapters-special.html"), seriesId, key)
+
+        // Provider order: "외전 1화"/"특별편 1" sit above the real first chapter and stay there.
+        assertEquals(listOf("side-1", "special-1", "34", "3", "2", "1"), episodes.map { it.id.remoteKey })
+        assertEquals(listOf(1.0, null, 34.0, 3.0, 2.0, 1.0), episodes.map { it.sequenceNumber })
+        assertEquals(1.0, episodes.first().sequenceNumber!!, 0.0)
+        assertEquals("1", episodes.last().id.remoteKey)
+        assertEquals("마왕의 빛나는 별 1화", episodes.last().title)
+        assertEquals(1.0, episodes.last().sequenceNumber!!, 0.0)
+    }
+
+    @Test
     fun `chapter merge keeps first occurrence order`() {
         val key = GoodtoonSeriesKey("gt-21840")
         val seriesId = goodtoonSeriesId(key.slug)

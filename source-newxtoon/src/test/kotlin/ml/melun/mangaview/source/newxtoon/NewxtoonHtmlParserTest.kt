@@ -2,6 +2,7 @@ package ml.melun.mangaview.source.newxtoon
 
 import ml.melun.mangaview.source.SeriesStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -25,6 +26,36 @@ class NewxtoonHtmlParserTest {
         assertTrue(chapters.isNotEmpty())
         assertTrue("chapter 1062717 must be parsed", chapters.any { it.id == "1062717" })
         assertTrue(chapters.all { it.title.isNotBlank() })
+    }
+
+    @Test fun parsesChapterPaginationFromTheSeriesPage() {
+        val paged = parser.chapterPagination(fixture("series-paged.html"))
+        assertEquals("https://newxtoon1.com/comics/41/chapters", paged?.url)
+        assertEquals(2, paged?.nextPage)
+
+        val single = parser.chapterPagination(fixture("series.html"))
+        assertEquals("https://newxtoon1.com/comics/17974/chapters", single?.url)
+        assertNull("a blank next page marks the embedded list as complete", single?.nextPage)
+    }
+
+    @Test fun parsesChapterFeedPagesAndTheirNextPage() {
+        val first = parser.chapterPage(fixture("chapters-page-1.json"))
+        assertEquals(20, first.chapters.size)
+        assertEquals("1063130", first.chapters.first().id)
+        assertEquals("제643화", first.chapters.first().title)
+        assertEquals("1061991", first.chapters.last().id)
+        assertEquals("제624화", first.chapters.last().title)
+        assertEquals(2, first.nextPage)
+
+        val second = parser.chapterPage(fixture("chapters-page-2.json"))
+        assertEquals(20, second.chapters.size)
+        assertEquals("1061996", second.chapters.first().id)
+        assertEquals("제623화", second.chapters.first().title)
+        assertEquals(3, second.nextPage)
+        assertTrue(
+            "adjacent feed pages must not overlap",
+            second.chapters.none { chapter -> first.chapters.any { it.id == chapter.id } },
+        )
     }
 
     @Test fun parsesCatalogTitlesWithoutViewCounts() {

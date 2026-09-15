@@ -456,17 +456,12 @@ private fun initialLibraryState(sourceRegistry: SourceRegistry): LibraryState {
 
 private fun SavedSeries.asSourceSeries() = SourceSeries(id, title, thumbnailKey = thumbnailKey)
 
-internal fun firstEpisode(episodes: List<SourceEpisode>): SourceEpisode? {
-    episodes.filter { it.sequenceNumber != null }
-        .minByOrNull { requireNotNull(it.sequenceNumber) }
-        ?.let { return it }
-    episodes.filter { it.publishedAtEpochMillis != null }
-        .minByOrNull { requireNotNull(it.publishedAtEpochMillis) }
-        ?.let { return it }
-    // Provider contracts expose episode lists newest-first when no explicit ordering metadata
-    // exists, so the final entry is the oldest safe fallback.
-    return episodes.lastOrNull()
-}
+/**
+ * The delivered list order is the display order: providers list episodes newest-first, so the
+ * bottom-most entry is always the earliest chapter. Numbers parsed out of titles must never win
+ * this choice (a special such as "외전-1화" parses to 1 but is not the first chapter).
+ */
+internal fun firstEpisode(episodes: List<SourceEpisode>): SourceEpisode? = episodes.lastOrNull()
 
 internal class LibraryViewModelFactory(
     private val sourceRegistry: SourceRegistry,

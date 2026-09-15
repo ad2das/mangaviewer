@@ -100,7 +100,9 @@ class WfwfHtmlParser {
 
     private fun orderEpisodes(episodes: List<SourceEpisode>): List<SourceEpisode> =
         episodes.sortedWith(compareByDescending<SourceEpisode> {
-            it.sequenceNumber ?: visibleNumber(it.title)
+            it.sequenceNumber
+                ?: it.id.remoteKey.toLongOrNull()?.toDouble()
+                ?: visibleNumber(it.title)
         }.thenByDescending {
             it.id.remoteKey.toLongOrNull() ?: 0L
         })

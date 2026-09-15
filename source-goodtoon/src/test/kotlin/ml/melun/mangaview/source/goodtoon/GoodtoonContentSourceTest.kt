@@ -86,7 +86,60 @@ class GoodtoonContentSourceTest {
         val page = source.episodes(seriesId)
         assertEquals(51, page.items.size)
         assertEquals("51", page.items.first().id.remoteKey)
+        assertEquals("1", page.items.last().id.remoteKey)
+        assertEquals(1.0, page.items.last().sequenceNumber!!, 0.0)
         assertTrue(source.episodes(seriesId, cursor = "2").items.isEmpty())
+    }
+
+    @Test
+    fun `episodes walk every chapter page in provider order until a page adds nothing new`() = runTest {
+        val requested = mutableListOf<String?>()
+        val source = source { request ->
+            val uri = URI(request.url)
+            if (uri.path != "/manga/gt-21840/ajax/chapters/") throw IOException("unexpected ${request.url}")
+            requested += uri.query
+            val body = if (uri.query == "t=1") {
+                GoodtoonFixtures.text("chapters-page1.html")
+            } else {
+                GoodtoonFixtures.text("chapters-page2.html")
+            }
+            htmlResponse(request.url, body)
+        }
+        val page = source.episodes(seriesId)
+        assertEquals(listOf("51", "50", "49", "48", "47", "46", "1"), page.items.map { it.id.remoteKey })
+        assertEquals("1", page.items.last().id.remoteKey)
+        assertEquals(listOf("t=1", "t=2", "t=3"), requested)
+    }
+
+    @Test
+    fun `a provider that serves the whole list for any page terminates the walk`() = runTest {
+        var requests = 0
+        val source = source { request ->
+            val uri = URI(request.url)
+            if (uri.path != "/manga/gt-21840/ajax/chapters/") throw IOException("unexpected ${request.url}")
+            requests += 1
+            htmlResponse(request.url, chapters)
+        }
+        val page = source.episodes(seriesId)
+        assertEquals(51, page.items.size)
+        assertEquals("1", page.items.last().id.remoteKey)
+        assertEquals(2, requests)
+    }
+
+    @Test
+    fun `adjacent maps previous to the earlier chapter and next to the later chapter`() = runTest {
+        val source = defaultSource()
+        val middle = source.adjacent(goodtoonEpisodeId("gt-21840", "10"))
+        assertEquals("9", middle.previous?.remoteKey)
+        assertEquals("11", middle.next?.remoteKey)
+
+        val oldest = source.adjacent(goodtoonEpisodeId("gt-21840", "1"))
+        assertNull(oldest.previous)
+        assertEquals("2", oldest.next?.remoteKey)
+
+        val newest = source.adjacent(goodtoonEpisodeId("gt-21840", "51"))
+        assertEquals("50", newest.previous?.remoteKey)
+        assertNull(newest.next)
     }
 
     @Test

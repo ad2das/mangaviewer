@@ -15,12 +15,14 @@ import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
+import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourcePageUnavailableException
 import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceSearchQuery
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -336,6 +338,38 @@ class WfwfContentSourceTest {
     }
 
     @Test
+    fun episodeCatalogKeepsFollowingPageLinksDeclaredOnLaterPages() = runTest {
+        val firstCatalog = """
+            <a href="/cv?toon=10007&num=300"><span class="subject">300화</span></a>
+            <a href="/cv?toon=10007&num=299"><span class="subject">299화</span></a>
+            <a href="/cl?toon=10007&s=n&pg=2">2</a>
+        """.trimIndent()
+        val secondCatalog = """
+            <a href="/cv?toon=10007&num=200"><span class="subject">200화</span></a>
+            <a href="/cl?toon=10007&s=n&pg=3">3</a>
+        """.trimIndent()
+        val thirdCatalog = """
+            <a href="/cv?toon=10007&num=1"><span class="subject">1화</span></a>
+        """.trimIndent()
+        val transport = RoutingTransport(mapOf(
+            "/cl?toon=10007" to firstCatalog,
+            "/cl?toon=10007&s=n&pg=2" to secondCatalog,
+            "/cl?toon=10007&s=n&pg=3" to thirdCatalog,
+        ))
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10007).encode())
+
+        val episodes = source.episodes(series).items
+
+        assertEquals(listOf("300", "299", "200", "1"), episodes.map { it.id.remoteKey })
+        assertEquals("1", episodes.last().id.remoteKey)
+        assertEquals(
+            listOf("/cl?toon=10007", "/cl?toon=10007&s=n&pg=2", "/cl?toon=10007&s=n&pg=3"),
+            transport.requestPaths(),
+        )
+    }
+
+    @Test
     fun comicAndWebtoonDocumentsBecomeTheSameManifestShape() = runTest {
         val catalog = """
             <a href="/cl?toon=10007&num=12"><span class="subject">12화</span></a>
@@ -378,6 +412,71 @@ class WfwfContentSourceTest {
 
         assertEquals("901", episode.id.remoteKey)
         assertEquals("외전 10.5화", episode.title)
+    }
+
+    @Test
+    fun aSpecialRegisteredLaterNeverLeapfrogsTheRegistrationOrder() {
+        val catalog = """
+            <a href="/view?toon=88&num=980"><span class="subject">외전 10.5화</span></a>
+            <a href="/view?toon=88&num=300"><span class="subject">300화</span></a>
+            <a href="/view?toon=88&num=299"><span class="subject">299화</span></a>
+            <a href="/view?toon=88&num=1"><span class="subject">1화</span></a>
+        """.trimIndent()
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.WEBTOON, 88).encode())
+
+        val episodes = WfwfHtmlParser().episodes(
+            org.jsoup.Jsoup.parse(catalog),
+            series,
+            WfwfSeriesKey(WfwfKind.WEBTOON, 88),
+        )
+
+        assertEquals(listOf("980", "300", "299", "1"), episodes.map { it.id.remoteKey })
+        assertEquals("외전 10.5화", episodes.first().title)
+        assertEquals("1", episodes.last().id.remoteKey)
+        assertEquals("1화", episodes.last().title)
+    }
+
+    @Test
+    fun titleNumberFallbackNeverMovesAnEntryThatCarriesItsRegistrationNumber() {
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.WEBTOON, 88).encode())
+        val specialWithoutSequence = SourceEpisode(
+            id = EpisodeId(series, "50"),
+            title = "외전 999화",
+            sequenceNumber = null,
+        )
+        val latest = SourceEpisode(EpisodeId(series, "100"), "100화", sequenceNumber = 100.0)
+        val earliest = SourceEpisode(EpisodeId(series, "1"), "1화", sequenceNumber = 1.0)
+        val unnumberedNotice = SourceEpisode(EpisodeId(series, "notice"), "공지", sequenceNumber = null)
+
+        val ordered = WfwfHtmlParser().mergeEpisodePages(
+            listOf(listOf(unnumberedNotice, specialWithoutSequence, latest, earliest)),
+        )
+
+        assertEquals(listOf("100", "50", "1", "notice"), ordered.map { it.id.remoteKey })
+    }
+
+    @Test
+    fun adjacentKeepsPreviousAtSmallerNumsAndNextAtLargerNumsAcrossASpecial() = runTest {
+        val catalog = """
+            <a href="/view?toon=88&num=980"><span class="subject">외전 10.5화</span></a>
+            <a href="/view?toon=88&num=300"><span class="subject">300화</span></a>
+            <a href="/view?toon=88&num=299"><span class="subject">299화</span></a>
+            <a href="/view?toon=88&num=1"><span class="subject">1화</span></a>
+        """.trimIndent()
+        val transport = QueueTransport(catalog)
+        val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.WEBTOON, 88).encode())
+
+        val middle = source.adjacent(EpisodeId(series, "299"))
+        val earliest = source.adjacent(EpisodeId(series, "1"))
+        val special = source.adjacent(EpisodeId(series, "980"))
+
+        assertEquals("1", middle.previous?.remoteKey)
+        assertEquals("300", middle.next?.remoteKey)
+        assertNull(earliest.previous)
+        assertEquals("299", earliest.next?.remoteKey)
+        assertEquals("300", special.previous?.remoteKey)
+        assertNull(special.next)
     }
 
     @Test

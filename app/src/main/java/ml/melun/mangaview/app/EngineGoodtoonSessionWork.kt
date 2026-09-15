@@ -14,6 +14,7 @@ import ml.melun.mangaview.engine.content.PageHttpException
 import ml.melun.mangaview.source.AdjacentEpisodes
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.goodtoon.GoodtoonAccessPlanner
+import ml.melun.mangaview.source.goodtoon.GoodtoonEpisodeCatalogAccumulator
 import ml.melun.mangaview.source.goodtoon.GoodtoonEpisodeCatalogPlanner
 import ml.melun.mangaview.source.readBytes
 
@@ -67,18 +68,25 @@ internal class EngineGoodtoonSessionWork(
     override fun episodes(seriesId: SeriesId, priority: WorkPriority) = WorkRequest(
         WorkKey(principal, seriesId.toString(), "catalog.episodes", origin.toString(), EngineEpisodeCatalog::class.java),
         WorkDomain.CONTROL, priority, execute = { parent ->
-            val document = WorkRequest(WorkKey(principal, seriesId.toString(), "catalog.document",
-                origin.toString(), SourceDocument::class.java), WorkDomain.BODY, parent.priority.value,
-                execute = { fetchCatalog(seriesId) })
-            val chapters = parent.useDependency(document) { value ->
-                withContext(parsingDispatcher) { catalogPlanner.parse(seriesId, value).episodes }
+            val accumulator = GoodtoonEpisodeCatalogAccumulator()
+            var page = 1
+            while (true) {
+                val number = page
+                val document = WorkRequest(WorkKey(principal, seriesId.toString(), "catalog.document.$number",
+                    origin.toString(), SourceDocument::class.java), WorkDomain.BODY, parent.priority.value,
+                    execute = { fetchCatalog(seriesId, number) })
+                val parsed = parent.useDependency(document) { value ->
+                    withContext(parsingDispatcher) { catalogPlanner.parse(seriesId, value) }
+                }
+                if (!accumulator.absorb(parsed.episodes)) break
+                page += 1
             }
-            EngineEpisodeCatalog(seriesId, chapters)
+            EngineEpisodeCatalog(seriesId, accumulator.episodes())
         },
     )
 
-    private suspend fun fetchCatalog(seriesId: SeriesId): SourceDocument {
-        val response = transport.execute(catalogPlanner.request(seriesId, origin, 1))
+    private suspend fun fetchCatalog(seriesId: SeriesId, page: Int): SourceDocument {
+        val response = transport.execute(catalogPlanner.request(seriesId, origin, page))
         val length = response.contentLength
         try {
             if (response.statusCode != 200) throw PageHttpException(response.statusCode)

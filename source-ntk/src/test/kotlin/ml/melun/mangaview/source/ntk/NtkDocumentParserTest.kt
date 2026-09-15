@@ -230,6 +230,64 @@ class NtkDocumentParserTest {
     }
 
     @Test
+    fun providerDocumentOrderSurvivesARowWithoutProviderSequence() {
+        val series = SeriesId(sourceId, "/webtoon/42")
+        val html = """
+            <a href="/webtoon/42/special"><strong>외유특별외전-1화</strong></a>
+            <a href="/webtoon/42/ep-3"><strong>3화</strong></a>
+            <a href="/webtoon/42/ep-2"><strong>2화</strong></a>
+            <a href="/webtoon/42/ep-1"><strong>1화</strong></a>
+            <script>{"episodes":[
+              {"sourceEpisodeId":"ep-3","epNo":3,"imageCount":1},
+              {"sourceEpisodeId":"ep-2","epNo":2,"imageCount":1},
+              {"sourceEpisodeId":"ep-1","epNo":1,"imageCount":1}
+            ]}</script>
+        """.trimIndent()
+
+        val delivered = parser.episodes(html, series).episodes
+
+        assertEquals(
+            listOf("외유특별외전-1화", "3화", "2화", "1화"),
+            delivered.map { it.episode.title },
+        )
+        assertEquals("1화", delivered.last().episode.title)
+    }
+
+    @Test
+    fun completeProviderSequencesOrderTheCatalogByProviderNumber() {
+        val series = SeriesId(sourceId, "/webtoon/42")
+        val json = """
+            {"total":3,"episodes":[
+              {"sourceEpisodeId":"older","epNo":223,"title":"외전 5000","imageCount":1},
+              {"sourceEpisodeId":"newer","epNo":225,"title":"특별편 1","imageCount":1},
+              {"sourceEpisodeId":"current","epNo":224,"title":"시즌 999","imageCount":1}
+            ]}
+        """.trimIndent()
+
+        assertEquals(
+            listOf("특별편 1", "시즌 999", "외전 5000"),
+            parser.episodesApi(json, series).episodes.map { it.episode.title },
+        )
+    }
+
+    @Test
+    fun apiArrayOrderIsKeptWhenAnyRowLacksAProviderNumber() {
+        val series = SeriesId(sourceId, "/webtoon/42")
+        val json = """
+            {"total":3,"episodes":[
+              {"sourceEpisodeId":"special","title":"외유특별외전-1화","imageCount":1},
+              {"sourceEpisodeId":"current","epNo":224,"title":"224화","imageCount":1},
+              {"sourceEpisodeId":"older","epNo":223,"title":"223화","imageCount":1}
+            ]}
+        """.trimIndent()
+
+        assertEquals(
+            listOf("외유특별외전-1화", "224화", "223화"),
+            parser.episodesApi(json, series).episodes.map { it.episode.title },
+        )
+    }
+
+    @Test
     fun hyphenatedChapterTitlesSortNearTheirMainEpisodeWithoutCollidingWithTheFirst() {
         val series = SeriesId(sourceId, "/webtoon/42")
         val html = """

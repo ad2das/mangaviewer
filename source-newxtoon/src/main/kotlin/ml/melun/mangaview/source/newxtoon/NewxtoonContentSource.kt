@@ -176,8 +176,23 @@ class NewxtoonContentSource(
             description = details.description,
             authors = details.authors,
         )
-        return parser.chapters(html)
+        val embedded = parser.chapters(html)
+        val pagination = parser.chapterPagination(html) ?: return embedded
+        // The series page already renders the first chapter page; the feed serves the rest.
+        var page = if (embedded.isEmpty()) 1 else pagination.nextPage
+        val visited = mutableSetOf<Int>()
+        val merged = LinkedHashMap<String, NewxtoonChapter>()
+        embedded.forEach { merged.putIfAbsent(it.id, it) }
+        while (page != null && visited.size < MAX_CHAPTER_PAGES && visited.add(page)) {
+            val payload = parser.chapterPage(fetch(chapterPageUrl(pagination.url, page)))
+            payload.chapters.forEach { merged.putIfAbsent(it.id, it) }
+            page = payload.nextPage
+        }
+        return merged.values.toList()
     }
+
+    private fun chapterPageUrl(feedUrl: String, page: Int): String =
+        feedUrl + (if (feedUrl.contains('?')) "&" else "?") + "page=$page"
 
     /** The series page fetched for the chapter list already carries status/synopsis/authors. */
     override suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? {
@@ -195,8 +210,9 @@ class NewxtoonContentSource(
         val chapters = runCatching { chapters(episodeId.seriesId) }.getOrElse { return null to null }
         val index = chapters.indexOfFirst { it.id == episodeId.remoteKey }
         if (index < 0) return null to null
-        val previous = chapters.getOrNull(index - 1)?.let { EpisodeId(episodeId.seriesId, it.id) }
-        val next = chapters.getOrNull(index + 1)?.let { EpisodeId(episodeId.seriesId, it.id) }
+        // The list is newest-first, so the earlier chapter sits at the higher index.
+        val previous = chapters.getOrNull(index + 1)?.let { EpisodeId(episodeId.seriesId, it.id) }
+        val next = chapters.getOrNull(index - 1)?.let { EpisodeId(episodeId.seriesId, it.id) }
         return previous to next
     }
 
@@ -208,7 +224,7 @@ class NewxtoonContentSource(
         var attempt = 0
         while (true) {
             val response = transport.execute(SourceRequest(
-                url = origin + path,
+                url = if (path.startsWith("http://") || path.startsWith("https://")) path else origin + path,
                 headers = baseHeaders() + extra,
                 priority = priority,
             ))
@@ -267,6 +283,7 @@ class NewxtoonContentSource(
 
     private companion object {
         const val MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+        const val MAX_CHAPTER_PAGES = 400
         const val MAX_FETCH_ATTEMPTS = 3
         const val MIN_RETRY_DELAY_MILLIS = 250L
         const val MAX_RETRY_DELAY_MILLIS = 3_000L

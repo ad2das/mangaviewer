@@ -228,6 +228,44 @@ class NtkContentSourceTest {
     }
 
     @Test
+    fun manifestFallbackAdjacencyFollowsProviderOrderAtTheFirstChapter() = runTest {
+        val catalog = """
+            <a href="/webtoon/work-slug/special"><strong>외유특별외전-1화</strong></a>
+            <a href="/webtoon/work-slug/ep-2"><strong>2화</strong></a>
+            <a href="/webtoon/work-slug/ep-1"><strong>1화</strong></a>
+            <script>{"episodes":[{"sourceEpisodeId":"ep-2","epNo":2},
+              {"sourceEpisodeId":"ep-1","epNo":1}]}</script>
+        """.trimIndent()
+        val firstViewer = """
+            <script>{"sourceWorkId":"work-slug","episodeId":"ep-1","imagesToken":"token",
+              "imageApiPath":"/api/webtoon-images","imageCount":1}</script>
+        """.trimIndent()
+        val secondViewer = """
+            <script>{"sourceWorkId":"work-slug","episodeId":"ep-2","imagesToken":"token",
+              "imageApiPath":"/api/webtoon-images","imageCount":1}</script>
+        """.trimIndent()
+        val source = NtkContentSource(
+            NtkConfig("https://ntk.test", "agent"),
+            NtkQueueTransport("<html>api unavailable</html>", catalog, firstViewer, secondViewer),
+            RecordingGateway(listOf(NtkPageRequest("https://cdn.example/001.jpg"))),
+        )
+        val series = SeriesId(SourceId("ntk"), "/webtoon/work-slug")
+
+        assertEquals(
+            listOf("외유특별외전-1화", "2화", "1화"),
+            source.episodes(series).items.map { it.title },
+        )
+
+        val firstChapter = source.manifest(EpisodeId(series, "/webtoon/work-slug/ep-1"))
+        assertNull(firstChapter.previousEpisodeId)
+        assertEquals("/webtoon/work-slug/ep-2", firstChapter.nextEpisodeId?.remoteKey)
+
+        val middle = source.manifest(EpisodeId(series, "/webtoon/work-slug/ep-2"))
+        assertEquals("/webtoon/work-slug/ep-1", middle.previousEpisodeId?.remoteKey)
+        assertEquals("/webtoon/work-slug/special", middle.nextEpisodeId?.remoteKey)
+    }
+
+    @Test
     fun prepareStartsAdjacentAckBeforeSerializedManifestResolution() = runTest {
         val gateway = RecordingGateway(listOf(
             NtkPageRequest("https://images.test/manhwa/2/1181/p0001.jpg"),

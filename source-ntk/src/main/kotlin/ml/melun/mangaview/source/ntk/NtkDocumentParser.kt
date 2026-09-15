@@ -17,6 +17,7 @@ data class NtkEpisodeRecord(
     val episode: SourceEpisode,
     val imageCount: Int?,
     val imageEpisodeId: String?,
+    /** Provider-issued epNo only. Title-parsed numbers stay display metadata on [episode]. */
     val sequenceNumber: Long? = null,
 )
 
@@ -234,7 +235,9 @@ class NtkDocumentParser {
                 title,
                 sequenceNumber = episodeNumber(title),
             )
-            records.putIfAbsent(episodePath, NtkEpisodeRecord(episode, null, null))
+            // The provider's row order is authoritative: the title-parsed number is display
+            // metadata only and must never enter the provider-sequence ordering contract.
+            records.putIfAbsent(episodePath, NtkEpisodeRecord(episode, null, null, sequenceNumber = null))
         }
     }
 
@@ -501,11 +504,16 @@ private val NtkKind.apiPath: String
         NtkKind.MANHWA -> "/api/manhwa-images"
     }
 
-/** NTK's epNo is the provider's sequence contract; display titles are not ordering metadata. */
+/**
+ * NTK delivers catalogs newest-first. Re-derive the order only when every delivered record carries
+ * the provider's epNo; if any record lacks one, the provider's original order is the contract.
+ * Missing provider sequences are never pushed to the bottom and title-parsed numbers never move
+ * entries.
+ */
 internal fun authoritativeEpisodeOrder(
     records: Collection<NtkEpisodeRecord>,
 ): List<NtkEpisodeRecord> {
-    if (records.none { it.sequenceNumber != null }) return records.toList()
+    if (records.any { it.sequenceNumber == null }) return records.toList()
     return records.sortedWith(
         compareByDescending<NtkEpisodeRecord> { it.sequenceNumber ?: Long.MIN_VALUE },
     )

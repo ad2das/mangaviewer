@@ -48,7 +48,11 @@ class GoodtoonHtmlParser {
         return seen.values.toList()
     }
 
-    /** Chapter fragment returned by `/manga/<slug>/ajax/chapters/?t=N`; newest first. */
+    /**
+     * Chapter fragment returned by `/manga/<slug>/ajax/chapters/?t=N`; newest first.
+     * Delivery preserves provider document order, deduplicated by chapter slug on first occurrence.
+     * The parsed sequence number is metadata only and never reorders this list.
+     */
     fun chapters(document: Document, seriesId: SeriesId, seriesKey: GoodtoonSeriesKey): List<SourceEpisode> {
         val seen = LinkedHashMap<String, SourceEpisode>()
         for (link in chapterLinks(document)) {

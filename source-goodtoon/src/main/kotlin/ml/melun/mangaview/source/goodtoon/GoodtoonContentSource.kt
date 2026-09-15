@@ -257,8 +257,14 @@ class GoodtoonContentSource(
 
     private suspend fun fetchCatalog(seriesId: SeriesId): List<SourceEpisode> {
         val key = GoodtoonSeriesKey.decode(seriesId)
-        val document = document(GoodtoonDocumentKind.CHAPTER_LIST, key.chaptersPath())
-        return parser.chapters(document, seriesId, key)
+        val accumulator = GoodtoonEpisodeCatalogAccumulator()
+        var page = 1
+        while (true) {
+            val document = document(GoodtoonDocumentKind.CHAPTER_LIST, key.chaptersPath(page))
+            val parsed = parser.chapters(document, seriesId, key)
+            if (!accumulator.absorb(parsed)) return accumulator.episodes()
+            page += 1
+        }
     }
 
     private suspend fun fetchManifest(episodeId: EpisodeId): GoodtoonManifestPayload {

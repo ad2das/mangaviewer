@@ -18,6 +18,8 @@ import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN
 import ml.melun.mangaview.source.newxtoon.NewxtoonAccessPlanner
+import ml.melun.mangaview.source.newxtoon.NewxtoonChapter
+import ml.melun.mangaview.source.newxtoon.NewxtoonChapterPagination
 import ml.melun.mangaview.source.newxtoon.NewxtoonHtmlParser
 import ml.melun.mangaview.source.readBytes
 
@@ -75,9 +77,10 @@ internal class EngineNewxtoonSessionWork(
                 origin.toString(), SourceDocument::class.java), WorkDomain.BODY, parent.priority.value,
                 execute = { fetchSeries(seriesId) })
             val chapters = parent.useDependency(document) { value ->
-                withContext(parsingDispatcher) {
-                    parser.chapters(value.openBody().use { it.readBytes().toString(Charsets.UTF_8) })
-                }
+                val html = value.openBody().use { it.readBytes().toString(Charsets.UTF_8) }
+                val embedded = withContext(parsingDispatcher) { parser.chapters(html) }
+                val pagination = withContext(parsingDispatcher) { parser.chapterPagination(html) }
+                if (pagination == null) embedded else mergeChapterPages(pagination, embedded)
             }
             // Chapters arrive newest-first, so positional sequence numbers count down and the
             // first chapter ends up with the smallest number.
@@ -87,6 +90,38 @@ internal class EngineNewxtoonSessionWork(
             })
         },
     )
+
+    /** The series document renders the first chapter page; the feed serves every later page. */
+    private suspend fun mergeChapterPages(
+        pagination: NewxtoonChapterPagination,
+        embedded: List<NewxtoonChapter>,
+    ): List<NewxtoonChapter> {
+        val merged = LinkedHashMap<String, NewxtoonChapter>()
+        embedded.forEach { merged.putIfAbsent(it.id, it) }
+        var page = if (embedded.isEmpty()) 1 else pagination.nextPage
+        val visited = mutableSetOf<Int>()
+        while (page != null && visited.size < MAX_CHAPTER_PAGES && visited.add(page)) {
+            val json = fetchChapterPage(pagination.url, page)
+            val payload = withContext(parsingDispatcher) { parser.chapterPage(json) }
+            payload.chapters.forEach { merged.putIfAbsent(it.id, it) }
+            page = payload.nextPage
+        }
+        return merged.values.toList()
+    }
+
+    private suspend fun fetchChapterPage(feedUrl: String, page: Int): String {
+        val separator = if (feedUrl.contains('?')) "&" else "?"
+        val response = transport.execute(SourceRequest(
+            url = origin.resolve(feedUrl + separator + "page=" + page).toString(),
+            headers = planner.documentHeaders() + mapOf("Accept" to "application/json"),
+            priority = PageFetchPriority.NORMAL,
+        ))
+        if (response.statusCode != 200) {
+            response.close()
+            throw PageHttpException(response.statusCode)
+        }
+        return response.readBytes(CHAPTER_FEED_MAX_BYTES).toString(Charsets.UTF_8)
+    }
 
     private suspend fun fetchSeries(seriesId: SeriesId): SourceDocument {
         val response = transport.execute(SourceRequest(
@@ -105,5 +140,10 @@ internal class EngineNewxtoonSessionWork(
         val bytes = response.readBytes(16 * 1024 * 1024)
         require(length == null || length == bytes.size.toLong())
         return SourceDocument(URI(response.finalUrl), bytes)
+    }
+
+    private companion object {
+        const val CHAPTER_FEED_MAX_BYTES = 8 * 1024 * 1024
+        const val MAX_CHAPTER_PAGES = 400
     }
 }

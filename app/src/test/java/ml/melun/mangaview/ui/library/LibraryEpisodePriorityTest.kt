@@ -88,6 +88,24 @@ class LibraryEpisodePriorityTest {
     }
 
     @Test
+    fun firstTimeReaderIgnoresATitleParsedSpecialAboveTheListBottom() {
+        val series = SourceSeries(
+            id = SeriesId(SourceId("test"), "series"),
+            title = "series",
+        )
+        // Newest-first provider list: the special's title parses to 1.0, but the bottom-most row
+        // belongs to the real first chapter and must win without reading any title.
+        val episodes = listOf(
+            episode("special-1", 1.0, "외전-1화"),
+            episode("12", 12.0),
+            episode("2", 2.0),
+            episode("1", 1.0),
+        )
+
+        assertEquals("1", firstEpisode(episodes)?.id?.remoteKey)
+    }
+
+    @Test
     fun quickReadUsesTheSameFirstEpisodeAsTheWarmerForANewSeries() {
         val series = SourceSeries(
             id = SeriesId(SourceId("test"), "series"),
@@ -141,9 +159,9 @@ class LibraryEpisodePriorityTest {
         assertEquals("12", picked?.id?.remoteKey)
     }
 
-    private fun episode(key: String, sequence: Double?): SourceEpisode = SourceEpisode(
+    private fun episode(key: String, sequence: Double?, title: String = key): SourceEpisode = SourceEpisode(
         id = EpisodeId(SeriesId(SourceId("test"), "series"), key),
-        title = key,
+        title = title,
         sequenceNumber = sequence,
     )
 }
