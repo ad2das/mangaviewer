@@ -462,7 +462,7 @@ BufferedFrameCompositor::BufferedFrameCompositor(std::shared_ptr<GlPresentationC
 BufferedFrameCompositor::~BufferedFrameCompositor() { detach(); }
 bool BufferedFrameCompositor::supported() const noexcept { return state_->functions.valid(); }
 
-bool BufferedFrameCompositor::attach(ANativeWindow* window) noexcept {
+bool BufferedFrameCompositor::attach(ANativeWindow* window, int width, int height) noexcept {
     detach();
     if (!window || !supported()) return false;
     auto& state = *state_;
@@ -471,9 +471,14 @@ bool BufferedFrameCompositor::attach(ANativeWindow* window) noexcept {
     ++state.generation;
     state.retained.generation = state.generation;
     state.gpuRetained.generation = state.generation;
-    state.width = ANativeWindow_getWidth(window); state.height = ANativeWindow_getHeight(window);
-    // Infrastructure replaces the window BufferQueue: at most 3 * 16 MiB, independent of originals.
-    if (state.width <= 0 || state.height <= 0 || static_cast<std::int64_t>(state.width) * state.height > 4 * 1024 * 1024) return false;
+    state.width = width; state.height = height;
+    // Three RGBA8888 infrastructure frames replace the window BufferQueue. The caller's layout
+    // viewport is the allocation authority: in the frame a resize lands, the window still
+    // reports the previous geometry. Cover every panel up to 8 MP (32 MiB per frame, 3 * 32 MiB
+    // total) while refusing an absurd window.
+    constexpr std::int64_t kMaximumFramePixels = 8 * 1024 * 1024;
+    if (state.width <= 0 || state.height <= 0 ||
+        static_cast<std::int64_t>(state.width) * state.height > kMaximumFramePixels) return false;
     state.layer = ASurfaceControl_createFromWindow(window, "EngineBufferedViewport");
     if (!state.layer) return false;
     for (auto& frame : state.frames) {

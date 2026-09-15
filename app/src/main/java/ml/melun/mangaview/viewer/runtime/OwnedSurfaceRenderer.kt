@@ -66,7 +66,7 @@ internal class OwnedSurfaceRenderer(
         require(width > 0 && height > 0)
         handler.post {
             if (closed.get()) return@post
-            attached = OwnedRendererBridge.nativeAttach(nativeHandle, surface)
+            attached = OwnedRendererBridge.nativeAttach(nativeHandle, surface, width, height)
             if (!attached) {
                 reportFailure(IllegalStateException("Owned renderer surface attach failed"))
                 onComplete(OwnedRendererAttachment(false, rendererEpoch, false))

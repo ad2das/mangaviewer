@@ -274,23 +274,26 @@ bool GlViewerRenderer::makeOffscreenCurrent() noexcept {
 
 bool GlViewerRenderer::recreateContext() noexcept {
     ANativeWindow* retainedWindow = window_;
+    const int retainedWidth = windowWidth_, retainedHeight = windowHeight_;
     if (retainedWindow != nullptr) ANativeWindow_acquire(retainedWindow);
     for (const auto& frame : pendingFrames_) callback_->presented(frame.token, 0, -4, frame.frameId);
     pendingFrames_.clear();
     close();
     if (bufferedEnabled_) buffered_ = std::make_unique<BufferedFrameCompositor>(callback_);
-    const bool restored = retainedWindow != nullptr && initialize() && attach(retainedWindow);
+    const bool restored = retainedWindow != nullptr && initialize() &&
+        attach(retainedWindow, retainedWidth, retainedHeight);
     if (retainedWindow != nullptr) ANativeWindow_release(retainedWindow);
     return restored;
 }
 
-bool GlViewerRenderer::attach(ANativeWindow* window) noexcept {
+bool GlViewerRenderer::attach(ANativeWindow* window, int width, int height) noexcept {
     if (buffered_) {
         if (!window || !initialize()) return false;
         detach();
-        if (!buffered_->attach(window)) return false;
+        if (!buffered_->attach(window, width, height)) return false;
         ANativeWindow_acquire(window);
         window_ = window;
+        windowWidth_ = width; windowHeight_ = height;
         return true;
     }
     if (window == nullptr) return eglFailure("attach window missing");
@@ -377,6 +380,7 @@ void GlViewerRenderer::detach() noexcept {
     windowSurface_ = EGL_NO_SURFACE;
     if (window_ != nullptr) ANativeWindow_release(window_);
     window_ = nullptr;
+    windowWidth_ = 0; windowHeight_ = 0;
     frameRate_ = 0.0F;
     presentationTimestamp_ = EGL_NONE;
 }

@@ -229,7 +229,7 @@ internal class EngineReadbackProbeActivity : Activity(), SurfaceHolder.Callback 
             ?: error("Cancelled duplicate ticket was not retained")
         check(EngineReadbackPacket.parse(cancelled).status == EngineReadbackPacket.Status.CANCELLED)
         val surface = requireNotNull(currentSurface) { "Fixture surface disappeared during ticket cleanup" }
-        check(OwnedRendererBridge.nativeAttach(handle, surface)) { "Fixture surface reattach failed" }
+        check(OwnedRendererBridge.nativeAttach(handle, surface, WIDTH, HEIGHT)) { "Fixture surface reattach failed" }
         nativeAttached = true
     }
 
@@ -300,7 +300,7 @@ internal class EngineReadbackProbeActivity : Activity(), SurfaceHolder.Callback 
         ownerHandler.post {
             try {
                 val handle = requireRenderer()
-                check(OwnedRendererBridge.nativeAttach(handle, holder.surface)) {
+                check(OwnedRendererBridge.nativeAttach(handle, holder.surface, WIDTH, HEIGHT)) {
                     "Native readback fixture surface attach failed"
                 }
                 nativeAttached = true

@@ -57,7 +57,7 @@ public:
     bool setDirectTextureUploadForVerification(bool enabled) noexcept;
     bool setSwapIntervalForVerification(int interval) noexcept;
     bool rasterizationInfoForVerification(int* values) noexcept;
-    bool attach(ANativeWindow* window) noexcept;
+    bool attach(ANativeWindow* window, int width, int height) noexcept;
     bool prepare() noexcept;
     void detach() noexcept;
     std::uint64_t upload(
@@ -164,6 +164,8 @@ private:
     EGLSurface pbuffer_ = EGL_NO_SURFACE;
     EGLSurface windowSurface_ = EGL_NO_SURFACE;
     ANativeWindow* window_ = nullptr;
+    int windowWidth_ = 0;
+    int windowHeight_ = 0;
 #ifndef NDEBUG
     GLuint program_ = 0;
     GLuint vertexBuffer_ = 0;

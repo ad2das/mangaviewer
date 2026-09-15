@@ -16,7 +16,7 @@ internal object OwnedRendererBridge {
     external fun nativeEnableBufferedCompositor(renderer: Long): Boolean
     external fun nativeCanSubmit(renderer: Long): Boolean
     external fun nativePrepare(renderer: Long): Boolean
-    external fun nativeAttach(renderer: Long, surface: Surface): Boolean
+    external fun nativeAttach(renderer: Long, surface: Surface, width: Int, height: Int): Boolean
     external fun nativeDetach(renderer: Long)
     external fun nativeContextLost(renderer: Long): Boolean
     external fun nativeRecreateContext(renderer: Long): Boolean

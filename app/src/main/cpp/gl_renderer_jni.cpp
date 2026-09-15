@@ -82,12 +82,14 @@ Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativeAttach(
     JNIEnv* env,
     jobject,
     jlong handle,
-    jobject surface) {
+    jobject surface,
+    jint width,
+    jint height) {
     GlViewerRenderer* value = renderer(handle);
     if (value == nullptr || env == nullptr || surface == nullptr) return JNI_FALSE;
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
     if (window == nullptr) return JNI_FALSE;
-    const bool attached = value->attach(window);
+    const bool attached = value->attach(window, width, height);
     ANativeWindow_release(window);
     return attached ? JNI_TRUE : JNI_FALSE;
 }

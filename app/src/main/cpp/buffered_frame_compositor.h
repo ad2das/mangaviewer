@@ -10,7 +10,8 @@ public:
     explicit BufferedFrameCompositor(std::shared_ptr<GlPresentationCallback> callback);
     ~BufferedFrameCompositor();
     bool supported() const noexcept;
-    bool attach(ANativeWindow* window) noexcept;
+    /** Allocates three frames at the caller's layout viewport; the window can lag a resize. */
+    bool attach(ANativeWindow* window, int width, int height) noexcept;
     void detach() noexcept;
     bool ready() noexcept;
     bool bind(int width, int height) noexcept;

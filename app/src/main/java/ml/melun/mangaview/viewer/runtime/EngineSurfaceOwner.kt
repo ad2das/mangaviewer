@@ -117,7 +117,7 @@ internal class EngineSurfaceOwner(
         if (closing.get()) return@onOwner false
         require(width > 0 && height > 0)
         check(configured)
-        attached = OwnedRendererBridge.nativeAttach(native, surface)
+        attached = OwnedRendererBridge.nativeAttach(native, surface, width, height)
         if (attached) {
             surfaceEpoch = Math.incrementExact(surfaceEpoch)
             this.width = width
