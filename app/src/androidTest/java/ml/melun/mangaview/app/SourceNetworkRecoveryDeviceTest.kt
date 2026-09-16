@@ -23,13 +23,36 @@ class SourceNetworkRecoveryDeviceTest {
         val transport = factory.protect(SourceTransport { throw IOException("Simulated blocked primary handshake") })
         try {
             for (url in listOf("https://sbxh9.com/api/works?page=1&pageSize=1&withTotal=1",
-                "https://newtoki1.org/api/works?page=1&pageSize=1&withTotal=1", "https://wfwf494.com/ing")) {
+                "https://newtoki1.org/api/works?page=1&pageSize=1&withTotal=1")) {
                 val response = transport.execute(SourceRequest(url, totalTimeoutMillis = 20_000))
-                assertEquals(200, response.statusCode)
+                assertEquals("Unexpected status for $url", 200, response.statusCode)
                 val text = response.readBytes(2 * 1024 * 1024).toString(Charsets.UTF_8)
                 assertTrue("Provider catalog missing at $url", text.contains("sourceWorkId") || text.contains("/list?toon="))
                 Log.i("SourceRecovery", "fragmentedTls=true url=$url final=${response.finalUrl} bytes=${text.length}")
             }
+            // The mirror completes the same relay round trip even when the provider itself
+            // answers with a site-level block (Cloudflare 1026 -> 451 from a flagged egress),
+            // so only a well-formed HTTP response is asserted here.
+            val mirror = transport.execute(SourceRequest("https://wfwf494.com/ing", totalTimeoutMillis = 20_000))
+            val mirrorBody = mirror.readBytes(2 * 1024 * 1024).toString(Charsets.UTF_8)
+            Log.i("SourceRecovery", "fragmentedTls=true url=wfwf494.com/ing status=${mirror.statusCode} " +
+                "final=${mirror.finalUrl} bytes=${mirrorBody.length}")
+            assertTrue("No HTTP status for the wfwf mirror", mirror.statusCode in 100..599)
+            // The NTK native manifest flight is POST-only; a host already proven blocked by the
+            // catalog GET must carry that body through the same recovered route.
+            val post = transport.execute(SourceRequest(
+                "https://sbxh9.com/api/ad/challenge",
+                method = SourceHttpMethod.POST,
+                headers = mapOf("Content-Type" to "application/json",
+                    "Accept" to "application/json, text/plain, */*"),
+                body = "{\"path\":\"/\",\"force\":false}".toByteArray(Charsets.UTF_8),
+                bodyMediaType = "application/json",
+                totalTimeoutMillis = 20_000,
+            ))
+            val postBody = post.readBytes(256 * 1024).toString(Charsets.UTF_8)
+            Log.i("SourceRecovery", "fragmentedTls=true url=sbxh9.com/api/ad/challenge " +
+                "status=${post.statusCode} bytes=${postBody.length}")
+            assertTrue("No HTTP status for the recovered POST", post.statusCode in 100..599)
         } finally { transport.close() }
     }
 

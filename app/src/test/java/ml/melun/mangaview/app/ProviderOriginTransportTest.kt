@@ -3,9 +3,11 @@ package ml.melun.mangaview.app
 import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.engine.content.PageHttpException
 import ml.melun.mangaview.source.PageByteStream
+import ml.melun.mangaview.source.SourceHttpMethod
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceTransport
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
@@ -49,6 +51,28 @@ class ProviderOriginTransportTest {
         val result = transport.execute(request())
         assertEquals(200, result.statusCode)
         assertEquals(listOf("https://old.test/manhwa/20182", "https://new.test/manhwa/20182"), seen)
+        result.close()
+    }
+
+    @Test fun postBodiesFollowTheVerifiedOriginWithoutReplaying() = runTest {
+        val seen = mutableListOf<SourceRequest>()
+        val directory = StaticDirectory(current = "https://old.test", recoverOrigin = { _, _, _ -> "https://new.test" })
+        val transport = ProviderOriginTransport(SourceTransport { request ->
+            seen += request
+            response(200, request.url, FakeBody())
+        }, directory)
+        val post = request().copy(
+            method = SourceHttpMethod.POST,
+            body = byteArrayOf(1, 2),
+            bodyMediaType = "application/json",
+            headers = mapOf("Referer" to "https://newtoki1.org/ing"),
+        )
+        val result = transport.execute(post)
+        assertEquals(200, result.statusCode)
+        assertEquals(1, seen.size)
+        assertEquals("https://old.test/manhwa/20182", seen.single().url)
+        assertEquals("https://old.test/ing", seen.single().headers["Referer"])
+        assertArrayEquals(byteArrayOf(1, 2), seen.single().body)
         result.close()
     }
 

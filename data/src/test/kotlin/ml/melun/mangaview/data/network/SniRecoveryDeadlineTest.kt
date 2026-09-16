@@ -132,6 +132,26 @@ class SniRecoveryDeadlineTest {
         } finally { protected.close() }
     }
 
+    @Test fun aPostBodyRidesTheRemembranceOfAProvenBlockedHost() = runTest {
+        val post = request().copy(method = SourceHttpMethod.POST, body = byteArrayOf(1, 2),
+            bodyMediaType = "application/json")
+        var directCalls = 0
+        val recovered = mutableListOf<SourceRequest>()
+        val protected = SniRecoveryTransport(SourceTransport {
+            directCalls++
+            if (it.method == SourceHttpMethod.POST) error("A POST must not reach a recovered host directly")
+            throw IOException("blocked")
+        }, { SourceTransport { recovered += it; response(Body(byteArrayOf(9))) } },
+            { testScheduler.currentTime * 1_000_000L })
+        try {
+            protected.execute(request()).close()
+            protected.execute(post).close()
+            assertEquals(1, directCalls)
+            assertEquals(2, recovered.size)
+            assertArrayEquals(byteArrayOf(1, 2), recovered.last().body)
+        } finally { protected.close() }
+    }
+
     @Test fun aPromptRecoveryIsNotDuplicated() = runTest {
         var recoveryCalls = 0
         val body = Body(byteArrayOf(5))

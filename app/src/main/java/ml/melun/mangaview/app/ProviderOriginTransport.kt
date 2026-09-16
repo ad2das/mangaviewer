@@ -25,8 +25,10 @@ internal class ProviderOriginTransport(
 
     private suspend fun execute(request: SourceRequest, send: suspend (SourceRequest) -> SourceResponse): SourceResponse {
         val provider = directory.provider(request.url) ?: return send(request)
-        if (request.method == SourceHttpMethod.POST) return send(request)
         val origin = directory.current(provider, origin(request.url))
+        // A POST body follows the verified origin but is delivered once; it is never replayed
+        // against a replacement origin after a failure.
+        if (request.method == SourceHttpMethod.POST) return send(atOrigin(request, origin))
         var acquired: SourceResponse? = null
         return try { withTimeout(request.totalTimeoutMillis) {
             val started = System.nanoTime()

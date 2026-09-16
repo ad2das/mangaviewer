@@ -32,12 +32,16 @@ class SniRecoveryTransport(
     override suspend fun executeOnAlternateRoute(request: SourceRequest) = execute(request, primary::executeOnAlternateRoute)
 
     private suspend fun execute(request: SourceRequest, direct: suspend (SourceRequest) -> SourceResponse): SourceResponse {
-        if (!request.url.startsWith("https://") || request.method == SourceHttpMethod.POST) return direct(request)
+        if (!request.url.startsWith("https://")) return direct(request)
         val host = URI(request.url).host
         val started = nowNanos()
         if (recoveredHosts[host]?.let { started - it < RECOVERY_LIFETIME_NANOS } == true) {
+            // A host that already proved the direct route blocked carries even a POST body
+            // through recovery. POSTs never race a second attempt, so the body ships once.
+            if (request.method == SourceHttpMethod.POST) return recover(request)
             return remembered(request, host, started) { attempt -> boundedDirect(attempt, direct) }
         }
+        if (request.method == SourceHttpMethod.POST) return direct(request)
         return try {
             boundedDirect(request, direct)
         } catch (failure: IOException) {
