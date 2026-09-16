@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -505,7 +506,7 @@ private fun BookmarkCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.width(6.dp))
-                SourceLabelChip(sourceLabel, colors)
+                SourceLabelChip(bookmark.pageId.episodeId.seriesId.sourceId, sourceLabel, colors)
             }
             Spacer(Modifier.height(4.dp))
             BasicText(
@@ -615,7 +616,7 @@ private fun SavedSeriesDescription(
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.width(6.dp))
-            SourceLabelChip(sourceLabel, colors)
+            SourceLabelChip(series.id.sourceId, sourceLabel, colors)
         }
         Spacer(Modifier.height(4.dp))
         BasicText(subtitle, style = hintStyle(colors, 12), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -633,12 +634,26 @@ private fun SavedSeriesDescription(
 }
 
 @Composable
-private fun SourceLabelChip(label: String, colors: LibraryColors) {
+private fun SourceLabelChip(sourceId: SourceId, label: String, colors: LibraryColors) {
+    val tint = sourceTagTint(sourceId)
+    val background = tint?.copy(alpha = if (colors.dark) 0.28f else 0.16f) ?: colors.mutedSurface
+    val content = tint?.let {
+        lerp(it, if (colors.dark) Color.White else Color.Black, if (colors.dark) 0.30f else 0.50f)
+    } ?: colors.secondary
     Box(
         Modifier.clip(SavedBadgeShape)
-            .background(colors.mutedSurface)
+            .background(background)
             .padding(horizontal = 6.dp, vertical = 2.dp),
     ) {
-        BasicText(label, style = hintStyle(colors, 10).copy(fontWeight = FontWeight.Bold))
+        BasicText(label, style = hintStyle(colors, 10).copy(color = content, fontWeight = FontWeight.Bold))
     }
+}
+
+/** Each provider keeps its site logo color so saved items read apart at a glance. */
+private fun sourceTagTint(sourceId: SourceId): Color? = when (sourceId.value) {
+    "ntk" -> Color(0xFFD77D1F)
+    "wfwf" -> Color(0xFF5974FF)
+    "newxtoon" -> Color(0xFFFB1976)
+    "goodtoon" -> Color(0xFFE63946)
+    else -> null
 }
