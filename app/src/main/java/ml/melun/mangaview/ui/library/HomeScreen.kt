@@ -9,7 +9,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -62,8 +61,7 @@ internal fun HomeScreen(
     val readyHome = state.home as? HomeContent.Ready
     val popularRows = remember(readyHome?.popular) { readyHome?.popular.orEmpty().chunked(2) }
     val newRows = remember(readyHome?.new) { readyHome?.new.orEmpty().chunked(2) }
-    val cacheWindow = remember { LazyLayoutCacheWindow(aheadFraction = 0.5f, behindFraction = 1f) }
-    val scroll = rememberLazyListState(cacheWindow = cacheWindow)
+    val scroll = rememberLazyListState()
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),
         state = scroll,
