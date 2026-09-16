@@ -27,6 +27,9 @@ internal data class LibraryState(
     val homeTab: HomeTab = HomeTab.HOME,
     val libraryTab: SavedTab = SavedTab.ALL,
     val content: LibraryContent = LibraryContent.Empty,
+    val searchContent: LibraryContent = LibraryContent.Empty,
+    val submittedQuery: String = "",
+    val searchRevision: Long = 0L,
     val home: HomeContent = HomeContent.Loading,
     val genres: GenreContent = GenreContent.Empty,
     val selectedGenre: SourceGenre? = null,
@@ -186,6 +189,7 @@ internal fun LibraryState.withSeriesStatus(id: SeriesId, status: SeriesStatus): 
 
     val catalog = genreCatalog
     val list = content
+    val search = searchContent
     return copy(
         genreCatalog = if (catalog is LibraryContent.Series) {
             catalog.copy(items = catalog.items.patched())
@@ -193,6 +197,7 @@ internal fun LibraryState.withSeriesStatus(id: SeriesId, status: SeriesStatus): 
             catalog
         },
         content = if (list is LibraryContent.Series) list.copy(items = list.items.patched()) else list,
+        searchContent = if (search is LibraryContent.Series) search.copy(items = search.items.patched()) else search,
         lastSeries = lastSeries.patched(),
     )
 }

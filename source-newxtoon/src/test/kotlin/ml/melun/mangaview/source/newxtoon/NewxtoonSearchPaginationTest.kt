@@ -13,6 +13,36 @@ import org.junit.Test
 class NewxtoonSearchPaginationTest {
     private val parser = NewxtoonHtmlParser("https://newxtoon1.com")
 
+    @Test fun maintenanceResponseCannotBeReportedAsNoSearchResults() = runTest {
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"),
+            SearchPageTransport(1 to "<html><title>Maintenance</title><body>Try later</body></html>"))
+        val failure = runCatching { source.search("생존") }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertTrue(failure!!.message!!.contains("검색 응답"))
+        assertTrue(parser.searchCards("<input id='page-search' name='q' value='없는작품'>").isEmpty())
+    }
+
+    @Test fun searchPaginationIgnoresOtherQueriesAndScriptStringsWithoutSkippingSparsePages() {
+        val html = """
+            <script>var unrelated = '?page=999';</script>
+            <a href='/comics?page=90'>catalog</a>
+            <a href='/search?q=other&amp;page=70'>other query</a>
+            <a href='https://other.example/search?q=생존&amp;page=60'>external</a>
+            <a href='/search?q=생존&amp;page=5'>last</a>
+        """
+        assertEquals(2, parser.nextSearchPage(html, "생존", 1))
+        assertNull(parser.nextSearchPage(html, "생존", 5))
+    }
+
+    @Test fun oneCharacterQueryHasAnActionableFailureInsteadOfFalseNoResults() = runTest {
+        val transport = SearchPageTransport()
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport)
+        val failure = runCatching { source.search("나") }.exceptionOrNull()
+        assertTrue(failure is IllegalArgumentException)
+        assertTrue(failure!!.message!!.contains("2~100자"))
+        assertTrue(transport.requests.isEmpty())
+    }
+
     @Test fun escapedPaginationLinksAdvanceToTheNextSearchPage() {
         val html = """
             <a href="https://newxtoon1.com/comics/1"><h3>첫 작품</h3></a>

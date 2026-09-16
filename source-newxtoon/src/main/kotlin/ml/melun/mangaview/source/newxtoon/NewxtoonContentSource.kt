@@ -3,7 +3,7 @@ package ml.melun.mangaview.source.newxtoon
 import java.io.Closeable
 import java.io.IOException
 import java.net.URLEncoder
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -26,9 +26,7 @@ import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SourceSeriesDetails
-import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourceTransport
-import ml.melun.mangaview.source.readBytes
 
 const val DEFAULT_NEWXTOON_ORIGIN = "https://newxtoon1.com"
 
@@ -49,25 +47,35 @@ data class NewxtoonConfig(
 class NewxtoonContentSource(
     private val config: NewxtoonConfig,
     private val transport: SourceTransport,
+    clock: () -> Long = System::currentTimeMillis,
 ) : ContentSource, Closeable {
     override val id = SourceId("newxtoon")
     private val parser = NewxtoonHtmlParser(config.origin)
     private val origin = config.origin
+    private val documents = NewxtoonDocumentClient(transport, clock)
     private var cachedGenres: List<SourceGenre>? = null
     private var lastSeriesDetails: Pair<SeriesId, SourceSeriesDetails>? = null
 
     override suspend fun genres(kind: SeriesKind): List<SourceGenre> {
         cachedGenres?.let { return it }
-        val parsed = runCatching { parser.genres(fetch("/comics")) }.getOrNull()
+        val parsed = try { parser.genres(fetch("/comics")) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { null }
         val result = parsed?.takeIf { it.isNotEmpty() } ?: FALLBACK_NEWXTOON_GENRES
         cachedGenres = result
         return result
     }
 
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> {
-        val page = cursor?.toIntOrNull() ?: 1
-        val html = fetch("/search?q=" + URLEncoder.encode(query, "UTF-8") + "&page=$page")
-        return SourcePage(parser.seriesCards(html).map(::series), parser.nextPage(html, page)?.toString())
+        val text = query.trim()
+        require(text.length in 2..100) { "뉴엑스툰 검색어는 2~100자로 입력해 주세요" }
+        val page = cursor?.let { value ->
+            requireNotNull(value.toIntOrNull()).also {
+                require(it > 0 && it.toString() == value) { "검색 페이지를 확인할 수 없습니다" }
+            }
+        } ?: 1
+        val html = fetch("/search?q=" + URLEncoder.encode(text, "UTF-8") + "&page=$page") { parser.searchCards(it) }
+        return SourcePage(parser.searchCards(html).map(::series), parser.nextSearchPage(html, text, page)?.toString())
     }
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
@@ -208,7 +216,9 @@ class NewxtoonContentSource(
     }
 
     private suspend fun neighbors(episodeId: EpisodeId): Pair<EpisodeId?, EpisodeId?> {
-        val chapters = runCatching { chapters(episodeId.seriesId) }.getOrElse { return null to null }
+        val chapters = try { chapters(episodeId.seriesId) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { return null to null }
         val index = chapters.indexOfFirst { it.id == episodeId.remoteKey }
         if (index < 0) return null to null
         // The list is newest-first, so the earlier chapter sits at the higher index.
@@ -221,41 +231,12 @@ class NewxtoonContentSource(
         path: String,
         extra: Map<String, String> = emptyMap(),
         priority: PageFetchPriority = PageFetchPriority.NORMAL,
-    ): String {
-        var attempt = 0
-        while (true) {
-            val response = transport.execute(SourceRequest(
-                url = if (path.startsWith("http://") || path.startsWith("https://")) path else origin + path,
-                headers = baseHeaders() + extra,
-                priority = priority,
-            ))
-            val status = response.statusCode
-            if (status in 200..299) {
-                try {
-                    return response.readBytes(MAX_DOCUMENT_BYTES).toString(Charsets.UTF_8)
-                } finally {
-                    response.close()
-                }
-            }
-            val retryable = status in RETRYABLE_STATUS_CODES && attempt < MAX_FETCH_ATTEMPTS - 1
-            val retryAfterMillis = if (retryable) {
-                response.header("Retry-After")?.trim()?.toLongOrNull()
-                    ?.times(1_000L)
-                    ?.coerceIn(MIN_RETRY_DELAY_MILLIS, MAX_RETRY_DELAY_MILLIS)
-            } else {
-                null
-            }
-            response.close()
-            if (!retryable) {
-                if (status == 429) {
-                    throw SourceThrottledException("NEWXTOON request throttled with 429: $path")
-                }
-                throw IOException("NEWXTOON request failed with $status: $path")
-            }
-            delay(retryAfterMillis ?: RETRY_DELAYS_MILLIS[minOf(attempt, RETRY_DELAYS_MILLIS.lastIndex)])
-            attempt += 1
-        }
-    }
+        validate: (String) -> Unit = {},
+    ): String = documents.fetch(SourceRequest(
+        url = if (path.startsWith("http://") || path.startsWith("https://")) path else origin + path,
+        headers = baseHeaders() + extra,
+        priority = priority,
+    ), validate)
 
     private fun baseHeaders(): Map<String, String> = mapOf(
         "User-Agent" to config.userAgent,
@@ -283,12 +264,6 @@ class NewxtoonContentSource(
     }
 
     private companion object {
-        const val MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
         const val MAX_CHAPTER_PAGES = 400
-        const val MAX_FETCH_ATTEMPTS = 3
-        const val MIN_RETRY_DELAY_MILLIS = 250L
-        const val MAX_RETRY_DELAY_MILLIS = 3_000L
-        val RETRYABLE_STATUS_CODES = setOf(429, 502, 503, 504)
-        val RETRY_DELAYS_MILLIS = longArrayOf(600L, 1_400L)
     }
 }

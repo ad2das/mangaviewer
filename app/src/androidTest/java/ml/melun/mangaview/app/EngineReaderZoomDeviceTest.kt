@@ -10,11 +10,14 @@ import android.view.InputDevice
 import android.view.MotionEvent
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.Until
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import kotlin.math.abs
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import ml.melun.mangaview.activity.EngineViewerScreen
@@ -40,6 +43,43 @@ import org.junit.Test
 class EngineReaderZoomDeviceTest {
     private val series = SeriesId(SourceId("wfwf"), "reader-zoom-device")
     private val episode = SourceEpisode(EpisodeId(series, "reader-zoom-ep"), "reader zoom episode")
+
+    @Test fun settingsSurviveBackgroundAndBackDismissesReaderOverlays() = runBlocking {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val library = (instrumentation.targetContext.applicationContext as ViewerApplication).graph.userLibrary
+        val before = library.snapshot.first().settings
+        library.updateSettings { it.copy(immersiveMode = false, volumeKeyNavigation = false, keepScreenOn = false) }
+        try {
+            withReader { _, device, screen ->
+                val x = device.displayWidth / 2
+                val y = device.displayHeight / 2
+                await("reader ready", { screen.viewerSurfaceTapEligible(x.toFloat(), y.toFloat()) }, { it })
+                device.click(x, y)
+                requireNotNull(device.wait(Until.findObject(By.text("설정")), 5_000)).click()
+                assertTrue(device.wait(Until.hasObject(By.text("뷰어 설정")), 5_000))
+                requireNotNull(device.findObject(By.desc("볼륨 버튼으로 이동"))).click()
+                withTimeout(5_000) { library.snapshot.first { it.settings.volumeKeyNavigation } }
+                requireNotNull(device.findObject(By.desc("화면 꺼짐 방지"))).click()
+                withTimeout(5_000) { library.snapshot.first { it.settings.keepScreenOn } }
+                instrumentation.runOnMainSync { assertTrue(screen.handleBack()) }
+                assertTrue(device.wait(Until.gone(By.text("뷰어 설정")), 5_000))
+                instrumentation.runOnMainSync {
+                    screen.enterBackground()
+                    assertEquals(0, screen.window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    screen.enterForeground()
+                }
+                await("restored keep-screen-on preference", {
+                    screen.window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                }, { it != 0 })
+                instrumentation.runOnMainSync {
+                    assertTrue(screen.handleBack()) // Chrome dismisses before the reader closes.
+                    assertTrue(screen.handleVolumeKey(true))
+                }
+                await("resumed renderer", { screen.viewerEngineFrameSnapshot()?.swapSucceeded == true }, { it })
+                assertEquals(null, screen.viewerFailureSnapshot())
+            }
+        } finally { library.updateSettings { before } }
+    }
 
     @Test fun doubleTapMagnifiesAndAnchorsTheRealReader() = runBlocking {
         withReader { instrumentation, device, screen ->

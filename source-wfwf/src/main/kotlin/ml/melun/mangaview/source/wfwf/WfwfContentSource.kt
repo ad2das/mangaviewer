@@ -66,7 +66,6 @@ class WfwfContentSource(
     private val origin = WfwfOriginCoordinator(config.initialOrigin, originResolver, preparationScope, onOriginResolved)
     private val catalogStore = WfwfCatalogStore(::fetchCatalog)
     private val manifestStore = WfwfManifestStore(config.manifestCacheEpisodes, ::fetchManifest)
-    private val comicSearch = WfwfComicSearch(::fetchComicCatalogPage)
 
     /** Resolves and warms only the reusable provider origin; it never fetches user content. */
     fun warm() {
@@ -78,19 +77,17 @@ class WfwfContentSource(
     }
 
     override suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> {
-        if (query.kind == SeriesKind.COMIC) return comicSearch.search(query)
-        if (query.cursor != null) return SourcePage(emptyList())
+        require(query.field == SearchField.TITLE) { "WFWF는 작품 제목 검색을 지원합니다" }
+        val page = WfwfCatalogPagination.page(query.cursor)
         val encoded = URLEncoder.encode(query.text.trim(), Charset.forName("EUC-KR").name())
-        val document = document("/search.html?q=$encoded")
+        val first = "/sh?t2=&t3=&o=n&pg=1&q=$encoded"
+        val document = document("/sh?t2=&t3=&o=n&pg=$page&q=$encoded")
         val parsed = parser.search(document, ::seriesId)
         val requestedKind = query.kind
         val kindFiltered = parsed.filter { item ->
             requestedKind == null || runCatching { WfwfSeriesKey.decode(item.id).kind }.getOrNull().matches(requestedKind)
         }
-        val filtered = if (query.field == SearchField.TITLE) kindFiltered else {
-            kindFiltered.filter { it.subtitle?.contains(query.text, ignoreCase = true) == true }
-        }
-        return SourcePage(filtered)
+        return SourcePage(kindFiltered, WfwfCatalogPagination.nextPageCursor(document, first, page))
     }
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
@@ -105,7 +102,6 @@ class WfwfContentSource(
         val page = cursor.page
         if (query.kind == SeriesKind.COMIC && query.order == CatalogOrder.LATEST && query.genre == null) {
             val live = fetchComicCatalogPage(page)
-            comicSearch.record(live)
             return SourcePage(live.items, live.nextCursor)
         }
         val firstPagePath = WfwfCatalogPagination.path(query, page = 1, completed = cursor.completed)

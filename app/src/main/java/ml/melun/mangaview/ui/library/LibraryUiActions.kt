@@ -16,6 +16,42 @@ internal class LibraryUiActions(
     private val update: (((LibraryState) -> LibraryState) -> Unit),
     private val emit: (LibraryEffect) -> Unit,
 ) {
+    fun persistSettings(intent: LibraryIntent) {
+        when (intent) {
+            is LibraryIntent.StartTabChanged -> actions.updateSettings { it.copy(startTab = intent.value) }
+            is LibraryIntent.DarkThemeChanged -> actions.updateSettings { it.copy(darkTheme = intent.enabled) }
+            LibraryIntent.ClearSearchHistory -> actions.updateSettings { it.copy(recentQueries = emptyList()) }
+            is LibraryIntent.RemoveSearchHistory -> actions.updateSettings { settings ->
+                settings.copy(recentQueries = settings.recentQueries.filterNot { it == intent.value })
+            }
+            else -> error("Not a setting intent: $intent")
+        }
+    }
+
+    fun selectSaved(intent: LibraryIntent) {
+        when (intent) {
+            is LibraryIntent.SavedQueryChanged -> update { it.copy(savedQuery = intent.value) }
+            is LibraryIntent.SavedTabSelected -> update { it.copy(libraryTab = intent.value, savedSelection = emptySet()) }
+            is LibraryIntent.SavedSelectionToggled -> update {
+                it.copy(savedSelection = if (intent.key in it.savedSelection) it.savedSelection - intent.key
+                    else it.savedSelection + intent.key)
+            }
+            is LibraryIntent.SavedSelectionReplaced -> update { it.copy(savedSelection = intent.keys.toSet()) }
+            LibraryIntent.SavedSelectionCleared -> update { it.copy(savedSelection = emptySet()) }
+            else -> error("Not a saved selection intent: $intent")
+        }
+    }
+
+    fun openSeriesLink(intent: LibraryIntent) {
+        when (intent) {
+            is LibraryIntent.OpenSeriesInBrowser -> resolveSeriesUrl(intent.series, LibraryEffect::OpenUri)
+            is LibraryIntent.ShareSeries -> resolveSeriesUrl(intent.series) { url ->
+                LibraryEffect.ShareText(intent.series.title, "${intent.series.title}\n$url")
+            }
+            else -> error("Not a series link intent: $intent")
+        }
+    }
+
     fun toggleOverlay(intent: LibraryIntent) {
         when (intent) {
             LibraryIntent.ToggleSettings -> update { it.copy(settingsVisible = !it.settingsVisible) }

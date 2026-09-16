@@ -110,12 +110,14 @@ class WfwfComicSearchTest {
     }
 
     @Test
-    fun ordinaryLatestComicCatalogRefreshesCacheButSearchReusesIt() = runTest {
+    fun comicSearchUsesTheLiveSearchRouteRatherThanAnIncompleteCatalogCache() = runTest {
         val path = "/cm?o=n&pg=1&t3="
+        val searchPath = "/sh?t2=&t3=&o=n&pg=1&q=target"
         val transport = ComicCatalogTransport(mapOf(
             path to """
                 <a href="/cl?toon=10001"><h3>Target comic</h3></a>
             """.trimIndent(),
+            searchPath to """<a href="/cl?toon=10002"><h3>Target comic</h3></a>""",
         ))
         val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
         val catalogQuery = CatalogQuery(SeriesKind.COMIC, CatalogOrder.LATEST)
@@ -124,8 +126,8 @@ class WfwfComicSearchTest {
         val found = source.search(SourceSearchQuery("target", SeriesKind.COMIC))
         source.catalog(catalogQuery)
 
-        assertEquals(listOf("comic:10001"), found.items.map { it.id.remoteKey })
-        assertEquals(listOf(path, path), transport.requestPaths)
+        assertEquals(listOf("comic:10002"), found.items.map { it.id.remoteKey })
+        assertEquals(listOf(path, searchPath, path), transport.requestPaths)
     }
 
     @Test

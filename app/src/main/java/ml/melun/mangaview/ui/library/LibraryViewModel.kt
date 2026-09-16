@@ -30,7 +30,6 @@ import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SeriesStatus
-import ml.melun.mangaview.source.SourceSearchQuery
 import ml.melun.mangaview.source.SourceThrottledException
 
 internal class LibraryViewModel(
@@ -58,11 +57,14 @@ internal class LibraryViewModel(
             lastSeries = (catalog as? LibraryContent.Series)?.items ?: it.lastSeries) }
         if (catalog is LibraryContent.Series) statusEnrichment.enrich(catalog.items)
     }
-    private val searchPager = SearchResultsPager(viewModelScope, ioDispatcher, "검색에 실패했습니다") { content ->
-        update { it.copy(content = content,
-            lastSeries = (content as? LibraryContent.Series)?.items ?: it.lastSeries) }
-        if (content is LibraryContent.Series) statusEnrichment.enrich(content.items)
-    }
+    private val searches = LibrarySearchController(
+        viewModelScope, ioDispatcher, sourceRegistry, { mutableState.value }, ::update,
+        rememberQuery = { query -> actions.updateSettings { settings ->
+            settings.copy(recentQueries = (listOf(query) + settings.recentQueries.filterNot { it == query }).take(10))
+        } },
+        started = { cancelContent(); episodeWarmer.cancel(); statusEnrichment.cancel() },
+        loaded = { statusEnrichment.enrich(it) },
+    )
     private val statusEnrichment = LibraryStatusEnrichment(viewModelScope, ioDispatcher, sourceRegistry, ::update)
     private val episodeWarmer = LibraryEpisodeWarmer(openings)
     private val catalogs = LibraryCatalogLoader(
@@ -111,36 +113,25 @@ internal class LibraryViewModel(
 
     private fun acceptSelection(intent: LibraryIntent) {
         when (intent) {
-            is LibraryIntent.QueryChanged -> update { it.copy(query = intent.value) }
-            is LibraryIntent.SavedQueryChanged -> update { it.copy(savedQuery = intent.value) }
+            is LibraryIntent.QueryChanged -> searches.queryChanged(intent.value)
             is LibraryIntent.DestinationSelected -> selectDestination(intent.value)
             is LibraryIntent.SourceSelected -> selectSource(intent.sourceId)
             is LibraryIntent.HomeKindSelected -> selectHomeKind(intent.value)
             is LibraryIntent.HomeTabSelected -> selectHomeTab(intent.value)
-            is LibraryIntent.SavedTabSelected -> update { it.copy(libraryTab = intent.value, savedSelection = emptySet()) }
             is LibraryIntent.GenreSelected -> loadGenre(intent.value)
             is LibraryIntent.GenreFilterSelected -> selectGenreFilter(intent.value)
             is LibraryIntent.DetailTabSelected -> update { it.copy(detailTab = intent.value) }
-            is LibraryIntent.SearchKindSelected -> update { it.copy(searchKind = intent.value) }
-            is LibraryIntent.SearchFieldSelected -> update { it.copy(searchField = intent.value) }
-            is LibraryIntent.SavedSelectionToggled -> update {
-                it.copy(savedSelection = if (intent.key in it.savedSelection) {
-                    it.savedSelection - intent.key
-                } else {
-                    it.savedSelection + intent.key
-                })
-            }
-            is LibraryIntent.SavedSelectionReplaced -> update { it.copy(savedSelection = intent.keys.toSet()) }
-            LibraryIntent.SavedSelectionCleared -> update { it.copy(savedSelection = emptySet()) }
-            else -> error("Not a selection intent: $intent")
+            is LibraryIntent.SearchKindSelected -> searches.selectKind(intent.value)
+            is LibraryIntent.SearchFieldSelected -> searches.selectField(intent.value)
+            else -> uiActions.selectSaved(intent)
         }
     }
 
     private fun acceptAction(intent: LibraryIntent) {
         when (intent) {
             LibraryIntent.LoadMoreGenre -> genrePager.next()
-            LibraryIntent.LoadMoreSearch -> searchPager.next()
-            LibraryIntent.Search -> search()
+            LibraryIntent.LoadMoreSearch -> searches.next()
+            LibraryIntent.Search -> searches.submit()
             LibraryIntent.RetryHome -> catalogs.loadHome()
             LibraryIntent.RetryDetail -> retryDetail()
             LibraryIntent.ToggleSettings, LibraryIntent.TogglePreferences, LibraryIntent.ToggleSourcePicker ->
@@ -152,12 +143,7 @@ internal class LibraryViewModel(
             LibraryIntent.OpenLicenses -> uiActions.openProjectPage("https://github.com/ad2das/mangaviewer/blob/main/LICENSE")
             LibraryIntent.ToggleSeriesMenu -> update { it.copy(seriesMenuVisible = !it.seriesMenuVisible) }
             LibraryIntent.ToggleDownloadSelection -> uiActions.toggleDownloadSelection()
-            is LibraryIntent.OpenSeriesInBrowser -> uiActions.resolveSeriesUrl(intent.series) { url ->
-                LibraryEffect.OpenUri(url)
-            }
-            is LibraryIntent.ShareSeries -> uiActions.resolveSeriesUrl(intent.series) { url ->
-                LibraryEffect.ShareText(intent.series.title, "${intent.series.title}\n$url")
-            }
+            is LibraryIntent.OpenSeriesInBrowser, is LibraryIntent.ShareSeries -> uiActions.openSeriesLink(intent)
             LibraryIntent.Back -> back()
             else -> acceptContentAction(intent)
         }
@@ -196,22 +182,19 @@ internal class LibraryViewModel(
         when (intent) {
             is LibraryIntent.RemoveSavedItem -> { episodeWarmer.cancel(); uiActions.removeSaved(intent.item) }
             is LibraryIntent.RemoveSelected -> { episodeWarmer.cancel(); uiActions.removeSelected(intent) }
-            is LibraryIntent.StartTabChanged -> actions.updateSettings { it.copy(startTab = intent.value) }
-            is LibraryIntent.DarkThemeChanged -> actions.updateSettings { it.copy(darkTheme = intent.enabled) }
-            LibraryIntent.ClearSearchHistory -> actions.updateSettings { it.copy(recentQueries = emptyList()) }
-            is LibraryIntent.RemoveSearchHistory -> actions.updateSettings { settings ->
-                settings.copy(recentQueries = settings.recentQueries.filterNot { it == intent.value })
-            }
-            else -> error("Not an action intent: $intent")
+            else -> uiActions.persistSettings(intent)
         }
     }
 
     private fun selectDestination(destination: MainDestination) {
         observers.destinationSelected()
-        searchPager.reset()
+        if (state.value.destination == destination) return
+        cancelContent()
         update { it.copy(
             destination = destination,
-            content = LibraryContent.Empty,
+            content = if (destination == MainDestination.SEARCH) it.searchContent else LibraryContent.Empty,
+            activeSeries = null,
+            activeSeriesDetails = null,
             settingsVisible = false,
             preferencesVisible = false,
             sourcePickerVisible = false,
@@ -225,15 +208,22 @@ internal class LibraryViewModel(
     }
 
     private fun selectSource(sourceId: ml.melun.mangaview.core.SourceId) {
+        if (state.value.selectedSourceId == sourceId) {
+            update { it.copy(sourcePickerVisible = false) }
+            return
+        }
         sourceRegistry.require(sourceId)
         cancelContent()
         catalogs.cancelGenres()
         statusEnrichment.cancel()
         genrePager.reset()
-        searchPager.reset()
+        searches.reset()
         update { it.copy(
             selectedSourceId = sourceId,
             content = LibraryContent.Empty,
+            activeSeries = null,
+            activeSeriesDetails = null,
+            lastSeries = emptyList(),
             homeTab = HomeTab.HOME,
             genres = GenreContent.Empty,
             selectedGenre = null,
@@ -244,6 +234,7 @@ internal class LibraryViewModel(
         ) }
         actions.updateSettings { it.copy(sourceKey = sourceId.value) }
         catalogs.loadHome()
+        if (state.value.destination == MainDestination.SEARCH && state.value.query.isNotBlank()) searches.submit()
     }
 
     private fun selectHomeKind(kind: ml.melun.mangaview.source.SeriesKind) {
@@ -296,21 +287,6 @@ internal class LibraryViewModel(
         val genre = state.value.selectedGenre ?: return
         update { it.copy(genreStatusFilter = status) }
         loadGenre(genre)
-    }
-
-    private fun search() {
-        val snapshot = state.value
-        val query = snapshot.query.trim()
-        if (query.isEmpty()) return
-        val source = sourceRegistry.require(snapshot.selectedSourceId)
-        episodeWarmer.cancel()
-        actions.updateSettings { settings ->
-            settings.copy(recentQueries = (listOf(query) + settings.recentQueries.filterNot { it == query }).take(10))
-        }
-        cancelContent()
-        searchPager.start { cursor ->
-            source.search(SourceSearchQuery(query, snapshot.searchKind, snapshot.searchField, cursor))
-        }
     }
 
     private fun episodes(series: SourceSeries, offlineOnly: Boolean = false) {
@@ -377,12 +353,12 @@ internal class LibraryViewModel(
         if (state.value.activeSeries != null) {
             cancelContent()
             episodeWarmer.cancel()
-            val series = state.value.lastSeries
             update { it.copy(
                 activeSeries = null,
+                activeSeriesDetails = null,
                 seriesMenuVisible = false,
                 downloadSelectionVisible = false,
-                content = if (series.isEmpty()) LibraryContent.Empty else LibraryContent.Series(series),
+                content = if (it.destination == MainDestination.SEARCH) it.searchContent else LibraryContent.Empty,
             ) }
             return
         }
@@ -390,7 +366,9 @@ internal class LibraryViewModel(
             cancelContent()
             genrePager.reset()
             update { it.copy(selectedGenre = null, genreCatalog = LibraryContent.Empty) }
+            return
         }
+        if (state.value.destination != MainDestination.HOME) selectDestination(MainDestination.HOME)
     }
 
     private fun confirmOfflineRemoval() {
@@ -455,7 +433,14 @@ internal class LibraryViewModel(
 /** Turns provider-specific failures into reader-friendly Korean copy. */
 internal fun failureDisplayMessage(failure: Throwable, fallback: String): String =
     when (failure) {
-        is SourceThrottledException -> "요청이 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요"
+        is SourceThrottledException -> if (failure.retryAfterMillis > 0L) {
+            "사이트 요청이 제한되었습니다. ${(failure.retryAfterMillis / 1_000L) + 1L}초 후 다시 시도해 주세요"
+        } else "요청이 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요"
+        is java.net.UnknownHostException, is java.net.ConnectException ->
+            "사이트에 연결하지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요"
+        is java.net.SocketTimeoutException -> "응답이 늦어지고 있습니다. 잠시 후 다시 시도해 주세요"
+        is java.io.IOException -> failure.message?.takeIf { it.any { char -> char in '가'..'힣' } }
+            ?: "사이트에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요"
         else -> failure.message ?: fallback
     }
 

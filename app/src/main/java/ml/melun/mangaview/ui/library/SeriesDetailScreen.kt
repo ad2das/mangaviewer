@@ -156,22 +156,7 @@ private fun DetailBody(
         if (state.detailTab != DetailTab.EPISODES) {
             item { DetailInformation(state.detailTab, series, episodes.size, state.activeSeriesDetails, colors) }
         }
-        item {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 18.dp, top = 22.dp, end = 18.dp, bottom = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    Modifier.clip(RoundedCornerShape(8.dp))
-                        .background(colors.accentSurface)
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                ) {
-                    BasicText("회차", style = sectionStyle(colors, 16))
-                }
-                Spacer(Modifier.width(8.dp))
-                BasicText("${episodes.size}개", style = hintStyle(colors, 13))
-            }
-        }
+        item { EpisodeCountHeader(episodes.size, colors) }
         if (episodes.isEmpty()) {
             item { LibraryMessage("등록된 회차가 없습니다", colors, Modifier.height(220.dp)) }
         } else {
@@ -552,5 +537,23 @@ private fun EpisodeStorageAction(episode: SourceEpisode, saved: Boolean, downloa
             )
             else -> LibraryIconView(LibraryIcon.DOWNLOAD, colors.secondary, Modifier.size(20.dp))
         }
+    }
+}
+
+@Composable
+private fun EpisodeCountHeader(count: Int, colors: LibraryColors) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 18.dp, top = 22.dp, end = 18.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.clip(RoundedCornerShape(8.dp))
+                .background(colors.accentSurface)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            BasicText("회차", style = sectionStyle(colors, 16))
+        }
+        Spacer(Modifier.width(8.dp))
+        BasicText("${count}개", style = hintStyle(colors, 13))
     }
 }

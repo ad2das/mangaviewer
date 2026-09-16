@@ -208,7 +208,7 @@ private fun DownloadConfirmation(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 OutlinedDownloadButton("취소", colors, Modifier.width(90.dp), dismiss)
                 Spacer(Modifier.width(10.dp))
-                LibraryAction("저장", colors, Modifier.width(90.dp).height(48.dp), confirm)
+                LibraryAction("저장", colors, Modifier.width(90.dp).height(48.dp), click = confirm)
             }
         }
     }

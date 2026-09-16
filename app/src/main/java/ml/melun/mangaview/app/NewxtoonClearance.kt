@@ -32,10 +32,14 @@ import androidx.webkit.WebViewFeature
 import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -47,10 +51,8 @@ import ml.melun.mangaview.data.network.BrowserTlsRelay
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceTransport
-import okhttp3.Cookie
+import ml.melun.mangaview.source.ntk.AndroidBrowserViews
 import okhttp3.CookieJar
-import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 import org.json.JSONTokener
 
@@ -105,8 +107,8 @@ internal class NewxtoonClearance(
     context: Context,
 ) {
     private val appContext = context.applicationContext
-    private val originUrl: HttpUrl = ORIGIN.toHttpUrl()
-    private val host = requireNotNull(originUrl.host)
+    private val cookies = NewxtoonCookieStore(ORIGIN)
+    val cookieJar: CookieJar get() = cookies.cookieJar
     private val mutex = Mutex()
     private val main = Handler(Looper.getMainLooper())
 
@@ -129,27 +131,6 @@ internal class NewxtoonClearance(
             "Chrome/$version Mobile Safari/537.36"
     }
 
-    private val jarStore = ConcurrentHashMap<String, List<Cookie>>()
-
-    val cookieJar: CookieJar = object : CookieJar {
-        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-            if (cookies.isEmpty()) return
-            synchronized(jarStore) {
-                val existing = jarStore[url.host].orEmpty().filterNot { stored ->
-                    cookies.any { it.name == stored.name && it.path == stored.path }
-                }
-                jarStore[url.host] = existing + cookies
-            }
-        }
-
-        override fun loadForRequest(url: HttpUrl): List<Cookie> {
-            val now = System.currentTimeMillis()
-            synchronized(jarStore) {
-                return jarStore[url.host].orEmpty().filter { it.expiresAt > now && it.matches(url) }
-            }
-        }
-    }
-
     /** A cached cookie that still draws a challenge is stale; run the challenge again. */
     suspend fun solveFresh(): Boolean = mutex.withLock {
         Log.i(TAG, "solveFresh: starting webview challenge despite cached clearance")
@@ -158,14 +139,14 @@ internal class NewxtoonClearance(
 
     /** Returns true only when a clearance cookie is present for the origin. */
     suspend fun solve(): Boolean {
-        if (hasClearance()) {
+        if (cookies.hasClearance()) {
             Log.i(TAG, "solve: clearance cookie already present")
-            harvest()
+            cookies.harvest()
             return true
         }
         return mutex.withLock {
-            if (hasClearance()) {
-                harvest()
+            if (cookies.hasClearance()) {
+                cookies.harvest()
                 return@withLock true
             }
             runChallengeLocked()
@@ -177,22 +158,15 @@ internal class NewxtoonClearance(
         val solved = try {
             clearWebViewCookies()
             withTimeoutOrNull(SOLVE_TIMEOUT_MILLIS) { runChallenge() } == true
-        } catch (failure: Throwable) {
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
             Log.w(TAG, "solve: challenge failed", failure)
             false
         }
-        Log.i(TAG, "solve: completed=$solved cookieHeader=${cookieHeader()}")
-        if (solved) harvest()
+        Log.i(TAG, "solve: completed=$solved clearancePresent=${cookies.hasClearance()}")
+        if (solved) cookies.harvest()
         return solved
-    }
-
-    private fun clearanceValue(): String? {
-        val header = runCatching { CookieManager.getInstance().getCookie(ORIGIN) }.getOrNull()
-            ?: return null
-        return header.split(';').firstNotNullOfOrNull { pair ->
-            if (pair.substringBefore('=').trim() != CLEARANCE_COOKIE) null
-            else pair.substringAfter('=', "").trim().ifEmpty { null }
-        }
     }
 
     /** Cloudflare's interstitial title; anything else means the real site has loaded. */
@@ -207,14 +181,15 @@ internal class NewxtoonClearance(
      */
     private suspend fun clearWebViewCookies() {
         withContext(Dispatchers.Main.immediate) {
-            runCatching {
-                suspendCancellableCoroutine { continuation ->
+            try {
+                suspendCancellableCoroutine<Unit> { continuation ->
                     CookieManager.getInstance().removeAllCookies { removed ->
                         Log.i(TAG, "webview cookies cleared removed=$removed")
                         if (continuation.isActive) continuation.resume(Unit)
                     }
                 }
-            }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { Log.w(TAG, "cookie reset failed", failure) }
             CookieManager.getInstance().flush()
         }
     }
@@ -231,37 +206,6 @@ internal class NewxtoonClearance(
             Log.i(TAG, "captured $name")
         }.onFailure { Log.w(TAG, "capture failed", it) }
     }
-
-    private fun hasClearance(): Boolean {
-        val header = runCatching { CookieManager.getInstance().getCookie(ORIGIN) }.getOrNull()
-            ?: return false
-        return header.split(';').any { pair ->
-            val name = pair.substringBefore('=').trim()
-            name == CLEARANCE_COOKIE && pair.substringAfter('=', "").trim().isNotEmpty()
-        }
-    }
-
-    private fun harvest() {
-        val header = runCatching { CookieManager.getInstance().getCookie(ORIGIN) }.getOrNull()
-            ?: return
-        val now = System.currentTimeMillis()
-        val harvested = header.split(';').mapNotNull { pair ->
-            val name = pair.substringBefore('=').trim()
-            val value = pair.substringAfter('=', "").trim()
-            if (name.isEmpty() || value.isEmpty()) null
-            else Cookie.Builder()
-                .name(name)
-                .value(value)
-                .hostOnlyDomain(host)
-                .path("/")
-                .expiresAt(now + CLEARANCE_TTL_MILLIS)
-                .build()
-        }
-        if (harvested.isNotEmpty()) cookieJar.saveFromResponse(originUrl, harvested)
-    }
-
-    private fun cookieHeader(): String =
-        runCatching { CookieManager.getInstance().getCookie(ORIGIN) }.getOrNull().orEmpty()
 
     /**
      * Chromium owns TLS, so the network path that resets plain ClientHellos must be relayed:
@@ -324,14 +268,19 @@ internal class NewxtoonClearance(
     private suspend fun awaitClearance(
         relay: BrowserTlsRelay,
         window: ChallengeWindow,
-    ): Boolean =
+    ): Boolean = coroutineScope {
+        val workScope = this
         suspendCancellableCoroutine { continuation ->
             var settled = false
+            var pollJob: Job? = null
+            val captures = mutableListOf<Job>()
             var consoleLines = 0
-            val webView = WebView(window.context)
+            val webView = AndroidBrowserViews.create(window.context)
             val finish: (Boolean, String) -> Unit = { cleared, reason ->
                 if (!settled) {
                     settled = true
+                    pollJob?.cancel()
+                    captures.forEach(Job::cancel)
                     Log.i(TAG, "challenge finished cleared=$cleared reason=$reason")
                     // Chromium aborts the process when a WebView is stopped or destroyed from
                     // inside its own callback, so teardown always defers one main-loop turn.
@@ -357,8 +306,8 @@ internal class NewxtoonClearance(
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
-                    Log.i(TAG, "page finished $url title=${view.title} cookie=${cookieHeader()}")
-                    if (clearanceValue() != null && !isChallengeTitle(view.title)) finish(true, "page-cleared")
+                    Log.i(TAG, "page finished $url title=${view.title} clearancePresent=${cookies.hasClearance()}")
+                    if (cookies.clearanceValue() != null && !isChallengeTitle(view.title)) finish(true, "page-cleared")
                 }
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -392,45 +341,52 @@ internal class NewxtoonClearance(
             val startedAt = System.currentTimeMillis()
             var lastProbe = 0L
             var clicksSent = 0
-            val poll = object : Runnable {
-                override fun run() {
-                    if (settled) return
-                    // cf_clearance rotates while the challenge is still pending, so the cookie
-                    // alone proves nothing; the real site loading is the only reliable signal.
-                    if (clearanceValue() != null && !isChallengeTitle(webView.title)) {
-                        runCatching { CookieManager.getInstance().flush() }
-                        finish(true, "page-cleared")
-                        return
-                    }
-                    val elapsed = System.currentTimeMillis() - startedAt
-                    if (elapsed - lastProbe > 4_000 && elapsed > 5_000) {
-                        lastProbe = elapsed
-                        webView.evaluateJavascript(PROBE_SCRIPT) { value ->
-                            Log.i(TAG, "probe $value")
-                            if (value != null && value != "null" && clicksSent < 3) {
-                                clicksSent++
-                                if (clicksSent == 1) {
-                                    captureFrame(webView, "challenge-pre.png")
-                                    webView.evaluateJavascript(TAP_PROBE_SCRIPT, null)
+            fun startPolling() {
+                pollJob = workScope.launch {
+                    delay(POLL_INTERVAL_MILLIS)
+                    while (isActive && !settled) {
+                        // cf_clearance rotates while the challenge is still pending, so the cookie
+                        // alone proves nothing; the real site loading is the only reliable signal.
+                        if (cookies.clearanceValue() != null && !isChallengeTitle(webView.title)) {
+                            runCatching { CookieManager.getInstance().flush() }
+                            finish(true, "page-cleared")
+                            return@launch
+                        }
+                        val elapsed = System.currentTimeMillis() - startedAt
+                        if (elapsed - lastProbe > 4_000 && elapsed > 5_000) {
+                            lastProbe = elapsed
+                            webView.evaluateJavascript(PROBE_SCRIPT) { value ->
+                                if (settled) return@evaluateJavascript
+                                Log.i(TAG, "probe $value")
+                                if (value != null && value != "null" && clicksSent < 3) {
+                                    clicksSent++
+                                    if (clicksSent == 1) {
+                                        captureFrame(webView, "challenge-pre.png")
+                                        webView.evaluateJavascript(TAP_PROBE_SCRIPT, null)
+                                    }
+                                    clickChallengeFrames(webView, value, clicksSent)
+                                    val attempt = clicksSent
+                                    captures += workScope.launch {
+                                        delay(1_500L)
+                                        if (!settled) captureFrame(webView, "challenge-tap$attempt.png")
+                                    }
                                 }
-                                clickChallengeFrames(webView, value, clicksSent)
-                                val attempt = clicksSent
-                                main.postDelayed({ captureFrame(webView, "challenge-tap$attempt.png") }, 1_500L)
                             }
                         }
+                        if (elapsed % 4_000 < POLL_INTERVAL_MILLIS) {
+                            Log.i(TAG, "poll ${elapsed}ms url=${webView.url} clearancePresent=${cookies.hasClearance()}")
+                        }
+                        delay(POLL_INTERVAL_MILLIS)
                     }
-                    if (elapsed % 4_000 < POLL_INTERVAL_MILLIS) {
-                        Log.i(TAG, "poll ${elapsed}ms url=${webView.url} cookie=${cookieHeader()}")
-                    }
-                    main.postDelayed(this, POLL_INTERVAL_MILLIS)
                 }
             }
             webView.resumeTimers()
             window.attach(webView)
             Log.i(TAG, "webview created ua=${webView.settings.userAgentString} relay=${relay.proxyUrl} loading $ORIGIN")
             webView.loadUrl(ORIGIN)
-            main.postDelayed(poll, POLL_INTERVAL_MILLIS)
+            startPolling()
         }
+    }
 
     /** Detach before destroy; a renderer gone view must never be used again. */
     private fun teardownWebView(webView: WebView) {
@@ -514,10 +470,8 @@ internal class NewxtoonClearance(
 
     private companion object {
         const val ORIGIN = "https://newxtoon1.com"
-        const val CLEARANCE_COOKIE = "cf_clearance"
         const val SOLVE_TIMEOUT_MILLIS = 25_000L
         const val POLL_INTERVAL_MILLIS = 400L
-        const val CLEARANCE_TTL_MILLIS = 30L * 60L * 1_000L
     }
 }
 

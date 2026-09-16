@@ -13,6 +13,10 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.SaveableStateHolder
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,7 +47,10 @@ internal fun LibraryScreen(
 ) {
     val colors = libraryColors(state.saved.settings.darkTheme)
     val focus = LocalFocusManager.current
-    LaunchedEffect(state.settingsVisible) { if (state.settingsVisible) focus.clearFocus() }
+    val screenState = rememberSaveableStateHolder()
+    LaunchedEffect(state.destination, state.activeSeries, state.settingsVisible, state.sourcePickerVisible) {
+        focus.clearFocus()
+    }
     val genreScroll = androidx.compose.runtime.saveable.rememberSaveable(
         state.selectedSourceId, state.homeKind, state.selectedGenre, state.genreStatusFilter,
         saver = androidx.compose.foundation.lazy.LazyListState.Saver,
@@ -55,7 +62,8 @@ internal fun LibraryScreen(
     BackHandler(
         enabled = detailVisible || genreCatalogVisible || state.settingsVisible ||
             state.preferencesVisible || state.downloadSelectionVisible || state.sourcePickerVisible ||
-            state.savedSelection.isNotEmpty(),
+            state.savedSelection.isNotEmpty() || state.pendingOfflineRemoval != null ||
+            state.destination != MainDestination.HOME,
     ) { accept(LibraryIntent.Back) }
 
     Box(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
@@ -64,7 +72,7 @@ internal fun LibraryScreen(
         } else if (genreCatalogVisible) {
             GenreCatalogScreen(state, artworkLoader, colors, genreScroll, accept)
         } else {
-            MainShell(state, artworkLoader, colors, accept, updateAvailable)
+            MainShell(state, artworkLoader, colors, accept, updateAvailable, screenState)
         }
         if (state.seriesMenuVisible) SeriesActionsOverlay(state, colors, accept)
         if (state.downloadSelectionVisible) DownloadSelectionOverlay(state, colors, accept)
@@ -82,14 +90,17 @@ private fun MainShell(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
     updateAvailable: Boolean,
+    screenState: SaveableStateHolder,
 ) {
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().imePadding()) {
         MainTopBar(state, colors, accept, updateAvailable)
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            when (state.destination) {
-                MainDestination.HOME -> HomeScreen(state, artworkLoader, colors, accept)
-                MainDestination.SEARCH -> SearchScreen(state, artworkLoader, colors, accept)
-                MainDestination.LIBRARY -> SavedLibraryScreen(state, artworkLoader, colors, accept)
+            screenState.SaveableStateProvider(state.destination) {
+                when (state.destination) {
+                    MainDestination.HOME -> HomeScreen(state, artworkLoader, colors, accept)
+                    MainDestination.SEARCH -> SearchScreen(state, artworkLoader, colors, accept)
+                    MainDestination.LIBRARY -> SavedLibraryScreen(state, artworkLoader, colors, accept)
+                }
             }
         }
         MainBottomNavigation(state.destination, colors, accept)
@@ -253,7 +264,7 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
     Column(
         Modifier.weight(1f).fillMaxHeight()
             .semantics { contentDescription = "하단 ${item.label}" }
-            .clickable { accept(LibraryIntent.DestinationSelected(item)) },
+            .selectable(selected = active, role = Role.Tab) { accept(LibraryIntent.DestinationSelected(item)) },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -281,19 +292,23 @@ internal fun LibraryAction(
     label: String,
     colors: LibraryColors,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     click: () -> Unit,
 ) {
     Box(
         modifier.shadow(4.dp, RoundedCornerShape(16.dp), spotColor = colors.accent.copy(alpha = 0.35f))
             .clip(RoundedCornerShape(16.dp))
-            .background(colors.accentGradient)
-            .clickable(onClick = click)
+            .background(if (enabled) colors.accentGradient else androidx.compose.ui.graphics.Brush.horizontalGradient(
+                listOf(colors.mutedSurface, colors.mutedSurface)))
+            .clickable(enabled = enabled, role = Role.Button, onClick = click)
             .padding(horizontal = 22.dp, vertical = 13.dp),
         contentAlignment = Alignment.Center,
     ) {
         BasicText(
             label,
-            style = bodyStyle(colors).copy(color = Color.White, fontWeight = FontWeight.Bold),
+            style = bodyStyle(colors).copy(color = if (enabled) Color.White else colors.secondary, fontWeight = FontWeight.Bold),
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }

@@ -100,13 +100,13 @@ internal class AppGraph(
                 // independent of provider work.
                 OfflineContentSource(ntkSource.value, offlineStore)
             },
-            SourceRegistration(WFWF_ID, "WFWF") {
+            SourceRegistration(WFWF_ID, "WFWF", searchMode = SearchMode.TITLE) {
                 OfflineContentSource(wfwfSource.value, offlineStore)
             },
-            SourceRegistration(NEWXTOON_ID, "뉴엑스툰", distinguishesKinds = false) {
+            SourceRegistration(NEWXTOON_ID, "뉴엑스툰", distinguishesKinds = false, searchMode = SearchMode.COMBINED) {
                 OfflineContentSource(newxtoonSource.value, offlineStore)
             },
-            SourceRegistration(GOODTOON_ID, "굿툰", distinguishesKinds = false) {
+            SourceRegistration(GOODTOON_ID, "굿툰", distinguishesKinds = false, searchMode = SearchMode.COMBINED) {
                 OfflineContentSource(goodtoonSource.value, offlineStore)
             },
         ),

@@ -407,11 +407,7 @@ internal class EngineSurfaceOwner(
     }
 
     private fun acknowledgeRetirements() {
-        retiring.keys.toList().forEach { key ->
-            if (destroyed.get() || !OwnedRendererBridge.nativeHasTexture(native, key)) {
-                retiring.remove(key)?.forEach { it.complete(Unit) }
-            }
-        }
+        retiring.acknowledgeNativeRetirements(native, destroyed.get())
         signalCapacity()
     }
 
@@ -459,3 +455,13 @@ private data class Timestamp(val kind: PresentationTimestampKind, val at: Long, 
 
 private fun awaitingFrameBuffer(attached: Boolean, closing: Boolean, native: Long): Boolean =
     attached && !closing && !OwnedRendererBridge.nativeCanSubmit(native)
+
+private fun MutableMap<Long, MutableList<CompletableDeferred<Unit>>>.acknowledgeNativeRetirements(
+    native: Long, destroyed: Boolean,
+) {
+    keys.toList().forEach { key ->
+        if (destroyed || !OwnedRendererBridge.nativeHasTexture(native, key)) {
+            remove(key)?.forEach { it.complete(Unit) }
+        }
+    }
+}

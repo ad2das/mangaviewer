@@ -7,17 +7,9 @@ import android.os.Trace
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.Surface
-import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
-import kotlin.coroutines.resume
-import kotlin.math.hypot
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import ml.melun.mangaview.viewer.FixedPx
 import ml.melun.mangaview.viewer.Viewport
 
@@ -46,7 +38,8 @@ internal interface ViewerSurfaceSink {
 internal class ViewerSurfaceHost(
     context: Context,
     private val sink: ViewerSurfaceSink,
-) : SurfaceView(context), SurfaceHolder.Callback {
+) : SurfaceView(context) {
+    private val attachment = ViewerSurfaceAttachment(this, sink)
     private val maximumFlingVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
     private val pointerDeltas = PointerDeltaLedger()
     private val dragQuantizer = PointerDeltaQuantizer()
@@ -59,8 +52,7 @@ internal class ViewerSurfaceHost(
         ::finishInteraction,
     )
     private val zoom = ViewerZoomState()
-    private var pinchActive = false
-    private var pinchBaselineSpan = 0f
+    private val pinch = ViewerPinchGesture(zoom, ::applyZoom, ::emitSyntheticScroll)
     private var velocityTracker: VelocityTracker? = null
     private var pointerId = MotionEvent.INVALID_POINTER_ID
     private var previousFrameNanos = 0L
@@ -77,18 +69,9 @@ internal class ViewerSurfaceHost(
     private var motionSequence = 0L
     private var nextMotionSequence = 1L
     private val traceGesture = ViewerInputTraceGesture()
-    private var foreground = true
-    private var surfaceReady = false
-    private var rendererAttached = false
-    private var attachPending = false
-    private var attachEpoch = 0L
-    private var attachJob: Job? = null
-    private var attachedWidth = 0
-    private var attachedHeight = 0
-
     init {
         holder.setFormat(PixelFormat.OPAQUE)
-        holder.addCallback(this)
+        holder.addCallback(attachment)
         setWillNotDraw(true)
         isFocusable = true
         isClickable = true
@@ -124,24 +107,22 @@ internal class ViewerSurfaceHost(
     override fun performClick(): Boolean = super.performClick()
 
     fun enterForeground() {
-        foreground = true
-        requestHighFrameRate()
-        attachIfReady()
+        setReaderFrameRate(true)
+        attachment.enterForeground()
     }
 
     fun enterBackground() {
-        foreground = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            requestedFrameRate = REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE
-        }
+        setReaderFrameRate(false)
         cancelMotion()
-        detachRenderer()
+        attachment.enterBackground()
     }
+
+    fun rendererUnavailable() = attachment.rendererUnavailable()
 
     fun cancelMotion() {
         flushDrag()
         fling.stop()
-        endPinch()
+        pinch.end()
         velocityTracker?.recycle()
         velocityTracker = null
         pointerId = MotionEvent.INVALID_POINTER_ID
@@ -175,55 +156,25 @@ internal class ViewerSurfaceHost(
         return true
     }
 
-    /** EGL can observe window loss before SurfaceHolder delivers its lifecycle callback. */
-    fun rendererUnavailable() {
-        rendererAttached = false
-        attachedWidth = 0
-        attachedHeight = 0
-        surfaceReady = surfaceReady && holder.surface.isValid
-        attachIfReady()
-    }
-
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         if (width <= 0 || height <= 0) return
         zoom.viewportChanged(width.toFloat())
         applyZoom()
         sink.viewportChanged(Viewport(FixedPx.fromPixels(width), FixedPx.fromPixels(height)))
-        if (rendererAttached && (width != attachedWidth || height != attachedHeight)) {
-            detachRenderer()
-        }
-        attachIfReady()
+        attachment.resized(width, height)
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        requestHighFrameRate()
-        attachIfReady()
+        setReaderFrameRate(true)
+        attachment.attachIfReady()
     }
 
     override fun onDetachedFromWindow() {
         cancelMotion()
-        detachRenderer()
+        attachment.detachRenderer()
         super.onDetachedFromWindow()
-    }
-
-    override fun surfaceCreated(holder: SurfaceHolder) {
-        surfaceReady = holder.surface.isValid
-        attachIfReady()
-    }
-
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        surfaceReady = holder.surface.isValid && width > 0 && height > 0
-        if (rendererAttached && (width != attachedWidth || height != attachedHeight)) {
-            detachRenderer()
-        }
-        attachIfReady()
-    }
-
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        surfaceReady = false
-        detachRenderer()
     }
 
     private fun begin(event: MotionEvent, tracing: Boolean) {
@@ -244,8 +195,7 @@ internal class ViewerSurfaceHost(
         lastMotionNanos = at
         latestVelocity = 0.0
         gestureMoved = false
-        pinchActive = false
-        pinchBaselineSpan = 0f
+        pinch.end()
         if (event.pointerCount >= 2) beginPinch(event)
     }
 
@@ -255,46 +205,8 @@ internal class ViewerSurfaceHost(
         velocityTracker?.recycle()
         velocityTracker = null
         pointerId = MotionEvent.INVALID_POINTER_ID
-        pinchActive = true
-        pinchBaselineSpan = pinchSpan(event)
+        pinch.begin(event)
         beginInteraction()
-    }
-
-    /** Two pointers own the gesture: their span changes the scale and their midpoint anchors it. */
-    private fun updatePinch(event: MotionEvent) {
-        if (event.pointerCount < 2) {
-            endPinch()
-            return
-        }
-        val span = pinchSpan(event)
-        if (span <= 0f) return
-        if (pinchBaselineSpan > 0f) {
-            val focusX = (event.getX(0) + event.getX(1)) / 2f
-            val focusY = (event.getY(0) + event.getY(1)) / 2f
-            val scroll = zoom.pinch(span / pinchBaselineSpan, focusX, focusY)
-            applyZoom()
-            if (scroll != 0.0) emitSyntheticScroll(scroll)
-        }
-        pinchBaselineSpan = span
-    }
-
-    private fun endPinch() {
-        if (!pinchActive) return
-        pinchActive = false
-        pinchBaselineSpan = 0f
-    }
-
-    private fun pinchSpan(event: MotionEvent): Float = pinchSpanExcluding(event, -1)
-
-    private fun pinchSpanExcluding(event: MotionEvent, excluded: Int): Float {
-        var first = -1
-        var second = -1
-        for (index in 0 until event.pointerCount) {
-            if (index == excluded) continue
-            if (first < 0) first = index else { second = index; break }
-        }
-        if (first < 0 || second < 0) return 0f
-        return hypot(event.getX(second) - event.getX(first), event.getY(second) - event.getY(first))
     }
 
     private fun applyZoom() {
@@ -304,8 +216,8 @@ internal class ViewerSurfaceHost(
     }
 
     private fun move(event: MotionEvent) {
-        if (pinchActive) {
-            updatePinch(event)
+        if (pinch.active) {
+            pinch.update(event)
             return
         }
         if (event.pointerCount >= 2) {
@@ -328,12 +240,12 @@ internal class ViewerSurfaceHost(
     }
 
     private fun changePointer(event: MotionEvent) {
-        if (pinchActive) {
+        if (pinch.active) {
             if (event.pointerCount - 1 >= 2) {
-                pinchBaselineSpan = pinchSpanExcluding(event, event.actionIndex)
+                pinch.rebase(event, event.actionIndex)
                 return
             }
-            endPinch()
+            pinch.end()
             val remaining = (0 until event.pointerCount).first { it != event.actionIndex }
             pointerId = event.getPointerId(remaining)
             velocityTracker?.recycle()
@@ -360,9 +272,9 @@ internal class ViewerSurfaceHost(
     }
 
     private fun end(event: MotionEvent, flingAfter: Boolean) {
-        if (pinchActive) {
+        if (pinch.active) {
             // A pinch never launches a fling and never counts as a tap.
-            endPinch()
+            pinch.end()
             velocityTracker?.recycle()
             velocityTracker = null
             pointerId = MotionEvent.INVALID_POINTER_ID
@@ -510,61 +422,6 @@ internal class ViewerSurfaceHost(
         sink.interactionChanged(false, System.nanoTime())
     }
 
-    private fun attachIfReady() {
-        if (rendererAttached || attachPending || !canAttach()) return
-        attachPending = true
-        val epoch = ++attachEpoch
-        attachJob = CoroutineScope(Dispatchers.Main.immediate).launch {
-            try {
-                retrySurfaceAttachment(
-                    MAXIMUM_ATTACH_RETRIES,
-                    ATTACH_RETRY_DELAY_MILLIS,
-                    canRetry = { epoch == attachEpoch && canAttach() },
-                    attach = { attachSurface(epoch) },
-                    exhausted = sink::surfaceAttachExhausted,
-                )
-            } finally {
-                if (epoch == attachEpoch) attachPending = false
-            }
-        }
-    }
-
-    private fun canAttach(): Boolean = foreground && surfaceReady && isAttachedToWindow && width > 0 && height > 0
-
-    private suspend fun attachSurface(epoch: Long): Boolean = suspendCancellableCoroutine { continuation ->
-        rendererAttached = true
-        attachedWidth = width
-        attachedHeight = height
-        sink.surfaceAvailable(holder.surface, width, height, display?.refreshRate ?: 60.0F) { attached ->
-            if (epoch != attachEpoch || !continuation.isActive) return@surfaceAvailable
-            if (!attached) {
-                // A window can die before SurfaceHolder delivers its lifecycle event.
-                rendererAttached = false
-                attachedWidth = 0
-                attachedHeight = 0
-            }
-            continuation.resume(attached)
-        }
-    }
-
-    private fun detachRenderer() {
-        attachEpoch++
-        attachJob?.cancel()
-        attachJob = null
-        attachPending = false
-        if (!rendererAttached) return
-        rendererAttached = false
-        attachedWidth = 0
-        attachedHeight = 0
-        sink.surfaceUnavailable()
-    }
-
-    private fun requestHighFrameRate() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            requestedFrameRate = REQUESTED_FRAME_RATE_CATEGORY_HIGH
-        }
-    }
-
     private fun issueMotionSequence(): Long = nextMotionSequence.also {
         nextMotionSequence = if (it == Long.MAX_VALUE) 1L else it + 1L
     }
@@ -572,7 +429,13 @@ internal class ViewerSurfaceHost(
     private companion object {
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val NANOS_PER_SECOND = 1_000_000_000.0
-        const val MAXIMUM_ATTACH_RETRIES = 25
-        const val ATTACH_RETRY_DELAY_MILLIS = 200L
+    }
+}
+
+/** Frame-rate requests belong to the Android view, independent of renderer attachment. */
+private fun SurfaceView.setReaderFrameRate(active: Boolean) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+        requestedFrameRate = if (active) android.view.View.REQUESTED_FRAME_RATE_CATEGORY_HIGH
+            else android.view.View.REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE
     }
 }

@@ -112,12 +112,13 @@ private fun SavedSearch(query: String, colors: LibraryColors, accept: (LibraryIn
             if (query.isNotEmpty()) {
                 Box(
                     Modifier.size(48.dp)
-                        .semantics { contentDescription = "보관함 검색어 지우기" },
+                        .semantics { contentDescription = "보관함 검색어 지우기" }
+                        .clip(CircleShape)
+                        .clickable { accept(LibraryIntent.SavedQueryChanged("")) },
                     contentAlignment = Alignment.CenterEnd,
                 ) {
                     Box(
-                        Modifier.size(22.dp).clip(CircleShape).background(colors.mutedSurface)
-                            .clickable { accept(LibraryIntent.SavedQueryChanged("")) },
+                        Modifier.size(22.dp).clip(CircleShape).background(colors.mutedSurface),
                         contentAlignment = Alignment.Center,
                     ) {
                         LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(10.dp))
@@ -468,37 +469,7 @@ private fun BookmarkCard(
             LibraryIconView(LibraryIcon.BOOKMARK, colors.accent, Modifier.size(26.dp))
         }
         Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                BasicText(
-                    bookmark.seriesTitle,
-                    modifier = Modifier.weight(1f, fill = false),
-                    style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.width(6.dp))
-                SourceLabelChip(bookmark.pageId.episodeId.seriesId.sourceId, sourceLabel, colors)
-            }
-            Spacer(Modifier.height(4.dp))
-            BasicText(
-                "${libraryDate(bookmark.createdAtEpochMillis)} 저장",
-                style = hintStyle(colors, 12),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(6.dp))
-            Box(
-                Modifier.clip(SavedBadgeShape)
-                    .background(colors.accentSurface)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            ) {
-                BasicText(
-                    "책갈피 위치로 이동",
-                    style = labelStyle(colors, true).copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
-                )
-            }
-        }
+        BookmarkDescription(bookmark, colors, sourceLabel, Modifier.weight(1f))
         if (selectionMode) {
             Spacer(Modifier.width(8.dp))
             SelectionMark(selected, colors)
@@ -608,4 +579,39 @@ private fun sourceTagTint(sourceId: SourceId): Color? = when (sourceId.value) {
     "newxtoon" -> Color(0xFFFB1976)
     "goodtoon" -> Color(0xFFE63946)
     else -> null
+}
+
+@Composable
+private fun BookmarkDescription(bookmark: SavedBookmark, colors: LibraryColors, sourceLabel: String, modifier: Modifier) {
+    Column(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            BasicText(
+                bookmark.seriesTitle,
+                modifier = Modifier.weight(1f, fill = false),
+                style = titleStyle(colors, 15).copy(fontWeight = FontWeight.Bold),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(6.dp))
+            SourceLabelChip(bookmark.pageId.episodeId.seriesId.sourceId, sourceLabel, colors)
+        }
+        Spacer(Modifier.height(4.dp))
+        BasicText(
+            "${libraryDate(bookmark.createdAtEpochMillis)} 저장",
+            style = hintStyle(colors, 12),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(6.dp))
+        Box(
+            Modifier.clip(SavedBadgeShape)
+                .background(colors.accentSurface)
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        ) {
+            BasicText(
+                "책갈피 위치로 이동",
+                style = labelStyle(colors, true).copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+            )
+        }
+    }
 }

@@ -35,8 +35,8 @@ internal fun SavedSelectionRemovalDialog(
             BasicText("선택한 항목을 삭제합니다. ${savedRemovalScope(tab)}", style = bodyStyle(colors, 14))
             Spacer(Modifier.height(20.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                LibraryAction("취소", colors, Modifier.weight(1f).height(48.dp), dismiss)
-                LibraryAction("삭제", colors, Modifier.weight(1f).height(48.dp), confirm)
+                LibraryAction("취소", colors, Modifier.weight(1f).height(48.dp), click = dismiss)
+                LibraryAction("삭제", colors, Modifier.weight(1f).height(48.dp), click = confirm)
             }
         }
     }

@@ -23,7 +23,6 @@ import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SourceSearchQuery
-import ml.melun.mangaview.source.SearchField
 
 internal class NtkCatalogService(
     private val sourceId: SourceId,
@@ -33,31 +32,13 @@ internal class NtkCatalogService(
 ) {
     private val mutex = Mutex()
     private var catalogs: Map<SeriesId, List<NtkEpisodeRecord>> = emptyMap()
+    private val searches = NtkSearchService(sourceId, parser) { documents.text(it, false) }
 
     suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> {
         return search(SourceSearchQuery(query, cursor = cursor))
     }
 
-    suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> {
-        val page = query.cursor?.toIntOrNull()?.coerceAtLeast(1) ?: 1
-        val encoded = URLEncoder.encode(query.text.trim(), Charsets.UTF_8.name())
-        // Follow the provider's actual search form. /api/works ignores keyword and
-        // returns its general catalog, so it cannot establish search results.
-        if (page > 1) return SourcePage(emptyList())
-        val field = if (query.field == SearchField.AUTHOR) "author" else "title"
-        val path = "/search?q=$encoded&field=$field&match=contains"
-        val items = parser.searchHtml(documents.text(path, false), sourceId)
-        return SourcePage(filterKind(items, query.kind))
-    }
-
-    private fun filterKind(items: List<SourceSeries>, kind: SeriesKind?): List<SourceSeries> {
-        if (kind == null) return items
-        return items.filter { item ->
-            val value = runCatching { NtkSeriesKey.decode(item.id).kind }.getOrNull()
-            (kind == SeriesKind.COMIC && value == NtkKind.MANHWA) ||
-                (kind == SeriesKind.WEBTOON && value == NtkKind.WEBTOON)
-        }
-    }
+    suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> = searches.search(query)
 
     suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         val includeCompleted = query.genre != null

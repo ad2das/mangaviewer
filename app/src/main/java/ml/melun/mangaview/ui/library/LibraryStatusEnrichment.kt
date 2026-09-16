@@ -1,6 +1,7 @@
 package ml.melun.mangaview.ui.library
 
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -56,9 +57,14 @@ internal class LibraryStatusEnrichment(
                     break
                 }
                 val source = runCatching { sourceRegistry.require(id.sourceId) }.getOrNull() ?: continue
-                val details = runCatching {
+                val details = try {
                     withContext(ioDispatcher) { source.seriesDetails(id) }
-                }.getOrNull()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    delay(STATUS_ENRICH_DELAY_MILLIS)
+                    continue
+                }
                 if (details == null) {
                     statusUnsupported += id.sourceId
                     statusQueue.removeAll { it.sourceId == id.sourceId }

@@ -92,8 +92,7 @@ internal object NtkBrowserViewFactory {
         gatewayClient: WebViewClient,
         profileName: String? = null,
     ): WebView {
-        WebView.setWebContentsDebuggingEnabled(false)
-        return WebView(context).apply {
+        return AndroidBrowserViews.create(context).apply {
             profileName?.let { name ->
                 require(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
                     "This WebView does not support isolated profiles"

@@ -70,22 +70,7 @@ internal fun savedSelectionRemoval(state: LibraryState, selection: Set<String>):
     val bookmarks = mutableListOf<SavedBookmark>()
     fun sourceOf(series: SavedSeries) = SourceSeries(series.id, series.title, thumbnailKey = series.thumbnailKey)
     when (state.libraryTab) {
-        SavedTab.ALL -> {
-            val recentIds = state.saved.recent.map { it.series.id }.toSet()
-            val favoriteIds = state.saved.favorites.map { it.id }.toSet()
-            val offlineIds = state.offlineEpisodes.map { it.series.id }.toSet()
-            combinedSavedSeries(state).forEach { series ->
-                if (seriesSelectionKey(series.id) !in selection) return@forEach
-                val source = sourceOf(series)
-                if (series.id in recentIds || series.id in favoriteIds) {
-                    items += SavedItemRemoval(source, SavedTab.ALL)
-                }
-                if (series.id in offlineIds) items += SavedItemRemoval(source, SavedTab.OFFLINE)
-                if (series.id !in recentIds && series.id !in favoriteIds && series.id !in offlineIds) {
-                    items += SavedItemRemoval(source, SavedTab.BOOKMARKS)
-                }
-            }
-        }
+        SavedTab.ALL -> items.addAll(allSelectedRemovals(state, selection))
         SavedTab.RECENT -> state.saved.recent.forEach {
             if (seriesSelectionKey(it.series.id) in selection) {
                 items += SavedItemRemoval(sourceOf(it.series), SavedTab.RECENT)
@@ -135,23 +120,7 @@ internal fun SavedSelectionActions(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(28.dp)
-                    .semantics { contentDescription = "선택 취소" }
-                    .clip(CircleShape)
-                    .background(colors.mutedSurface)
-                    .clickable { accept(LibraryIntent.SavedSelectionCleared) },
-                contentAlignment = Alignment.Center,
-            ) {
-                LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(12.dp))
-            }
-            Spacer(Modifier.width(10.dp))
-            BasicText(
-                "${selection.size}개 선택",
-                style = labelStyle(colors, false).copy(fontWeight = FontWeight.Bold),
-            )
-        }
+        SelectedCount(selection.size, colors) { accept(LibraryIntent.SavedSelectionCleared) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier.clip(RoundedCornerShape(10.dp)).clickable {
@@ -190,6 +159,47 @@ internal fun SavedSelectionActions(
                 confirming = false
                 accept(savedSelectionRemoval(state, selection))
             },
+        )
+    }
+}
+
+private fun allSelectedRemovals(state: LibraryState, selection: Set<String>): List<SavedItemRemoval> {
+    val items = mutableListOf<SavedItemRemoval>()
+    fun sourceOf(series: SavedSeries) = SourceSeries(series.id, series.title, thumbnailKey = series.thumbnailKey)
+    val recentIds = state.saved.recent.map { it.series.id }.toSet()
+    val favoriteIds = state.saved.favorites.map { it.id }.toSet()
+    val offlineIds = state.offlineEpisodes.map { it.series.id }.toSet()
+    combinedSavedSeries(state).forEach { series ->
+        if (seriesSelectionKey(series.id) !in selection) return@forEach
+        val source = sourceOf(series)
+        if (series.id in recentIds || series.id in favoriteIds) {
+            items += SavedItemRemoval(source, SavedTab.ALL)
+        }
+        if (series.id in offlineIds) items += SavedItemRemoval(source, SavedTab.OFFLINE)
+        if (series.id !in recentIds && series.id !in favoriteIds && series.id !in offlineIds) {
+            items += SavedItemRemoval(source, SavedTab.BOOKMARKS)
+        }
+    }
+    return items
+}
+
+@Composable
+private fun SelectedCount(count: Int, colors: LibraryColors, clear: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(28.dp)
+                .semantics { contentDescription = "선택 취소" }
+                .clip(CircleShape)
+                .background(colors.mutedSurface)
+                .clickable { clear() },
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.CLOSE, colors.secondary, Modifier.size(12.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        BasicText(
+            "${count}개 선택",
+            style = labelStyle(colors, false).copy(fontWeight = FontWeight.Bold),
         )
     }
 }

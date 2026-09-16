@@ -1,21 +1,9 @@
 package ml.melun.mangaview.activity
 
 import android.app.AlertDialog
-import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Build
-import android.os.Bundle
 import android.os.Process
-import android.os.SystemClock
-import android.view.Gravity
-import android.view.View
-import android.view.WindowInsets
-import android.view.WindowManager
-import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import kotlinx.coroutines.CancellationException
@@ -25,25 +13,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.app.AndroidWorkDispatcher
 import ml.melun.mangaview.app.EngineAppGraph
 import ml.melun.mangaview.app.EngineViewerWork
-import ml.melun.mangaview.data.settings.ViewerSettings
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.core.EpisodeId
-import ml.melun.mangaview.core.ReadingPosition
-import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.viewer.FixedPx
 import ml.melun.mangaview.viewer.Viewport
 import ml.melun.mangaview.viewer.ViewerTelemetrySnapshot
-import ml.melun.mangaview.viewer.runtime.ViewerCachedResume
 import ml.melun.mangaview.viewer.runtime.ViewerChromeState
 import ml.melun.mangaview.viewer.runtime.ViewerCachedResumeDiagnostic
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
@@ -78,18 +61,10 @@ internal class EngineViewerScreen(
         linuxPriority = Process.THREAD_PRIORITY_BACKGROUND,
     )
     private var runtime: EngineViewerRuntime? = null
+    private lateinit var ui: ViewerScreenUi
     private val presentationRecorder = ViewerPresentationRecorder()
     private val presentedRegionRecorder = PresentedRegionRecorder()
-    private lateinit var loading: ViewerLoadingOverlay
-    private lateinit var failureCard: LinearLayout
-    private lateinit var failureText: TextView
-    private lateinit var dimOverlay: View
-    private lateinit var settingsPanel: ViewerReaderSettingsPanel
-    private var appliedSettings: ViewerSettings? = null
-    private var volumeKeysEnabled = false
-    private var foreground = false
     private var reportedFailure: Throwable? = null
-    private lateinit var chrome: ViewerChromeController
     private var contentSource: EngineViewerWork? = null
     private lateinit var engine: EngineAppGraph
     private var openingHandoff: ml.melun.mangaview.app.EngineOpeningPreparations.Handoff? = null
@@ -109,6 +84,16 @@ internal class EngineViewerScreen(
         activity.configureViewerWindowInsets()
         val spec = launchSpec
         engine = (activity.application as ViewerApplication).graph.engine
+        ui = ViewerScreenUi(activity, sessionScope, ViewerChromeController.Actions(
+            back = ::finish,
+            previous = { navigateAdjacent(next = false) },
+            episodes = ::loadEpisodePicker,
+            next = { navigateAdjacent(next = true) },
+            bookmark = ::bookmarkCurrentPosition,
+            split = ::toggleSplitMode,
+            immersive = { ui.toggleImmersiveMode() },
+            settings = { ui.toggleSettingsPanel() },
+        ), retry = { runtime?.retryFailures() })
         val source = engine.session(spec)
         val viewport = initialViewport()
         openingHandoff = engine.openings.claim(spec.episodeId)
@@ -134,8 +119,7 @@ internal class EngineViewerScreen(
                 engineDiagnostics.presented(presented)
                 if (presented.swapSucceeded && presented.scene.completeCoverage &&
                     presented.scene.placements.isNotEmpty()) {
-                    loading.complete()
-                    if (failureCard.visibility == View.VISIBLE) failureCard.visibility = View.GONE
+                    ui.presentationComplete()
                 }
             },
             reportRendererClosed = engineDiagnostics::rendererClosed,
@@ -144,9 +128,9 @@ internal class EngineViewerScreen(
             preparedRenderer = rendererLease?.value,
         )
         runtime = createdRuntime
-        val root = content(createdRuntime)
+        val root = ui.content(createdRuntime)
         surfaceRoot = root as? ViewerTouchRoot
-        observeReaderSettings()
+        ui.observeReaderSettings()
         return root
     }
 
@@ -245,120 +229,28 @@ internal class EngineViewerScreen(
 
     fun enterForeground() {
         presentationRecorder.beginUiEpoch()
-        foreground = true
-        applyKeepScreenOn(appliedSettings?.keepScreenOn == true)
-        applyImmersive(appliedSettings?.immersiveMode == true)
+        ui.enterForeground()
         runtime?.enterForeground()
     }
 
     fun enterBackground() {
-        foreground = false
-        applyImmersive(false)
-        applyKeepScreenOn(false)
+        ui.enterBackground()
         runtime?.enterBackground()
     }
 
     /** Consumes a volume key when the reader has hardware-key navigation enabled. */
     fun handleVolumeKey(forward: Boolean): Boolean {
-        if (!volumeKeysEnabled) return false
+        if (!ui.volumeKeysEnabled) return false
         return stepViewport(forward)
     }
 
-    /** Lets reader-local overlays consume back before the host closes the whole session. */
-    fun handleBack(): Boolean {
-        if (::settingsPanel.isInitialized && settingsPanel.visible) {
-            settingsPanel.dismiss()
-            return true
-        }
-        if (::chrome.isInitialized && chrome.visible) {
-            chrome.hide()
-            return true
-        }
-        return false
-    }
+    fun handleBack(): Boolean = ::ui.isInitialized && ui.handleBack()
 
     private fun stepViewport(forward: Boolean): Boolean {
         val surface = runtime?.surface ?: return false
         val height = surface.height
         if (height <= 0) return false
         return surface.stepViewport(if (forward) height.toDouble() else -height.toDouble())
-    }
-
-    private fun observeReaderSettings() {
-        val library = (activity.application as ViewerApplication).graph.userLibrary
-        sessionScope.launch {
-            library.snapshot
-                .catch { failure -> android.util.Log.w("ViewerSettings", "reader settings unavailable", failure) }
-                .collect { snapshot -> applyReaderPreferences(snapshot.settings) }
-        }
-    }
-
-    private fun applyReaderPreferences(settings: ViewerSettings) {
-        if (appliedSettings == settings) return
-        appliedSettings = settings
-        volumeKeysEnabled = settings.volumeKeyNavigation
-        if (::dimOverlay.isInitialized) dimOverlay.alpha = settings.readerDimPercent / 100f
-        if (::chrome.isInitialized) chrome.setImmersiveActive(settings.immersiveMode)
-        if (foreground) {
-            applyKeepScreenOn(settings.keepScreenOn)
-            applyImmersive(settings.immersiveMode)
-        }
-    }
-
-    private fun persistSettings(transform: (ViewerSettings) -> ViewerSettings) {
-        val library = (activity.application as ViewerApplication).graph.userLibrary
-        sessionScope.launch {
-            try {
-                library.updateSettings(transform)
-            } catch (failure: Throwable) {
-                android.util.Log.e("ViewerSettings", "reader setting not saved", failure)
-            }
-        }
-    }
-
-    private fun toggleSettingsPanel() {
-        if (settingsPanel.visible) {
-            settingsPanel.dismiss()
-        } else {
-            settingsPanel.open(appliedSettings ?: ViewerSettings())
-        }
-    }
-
-    private fun retryFromFailure() {
-        failureCard.visibility = View.GONE
-        loading.restart()
-        runtime?.retryFailures()
-    }
-
-    private fun applyKeepScreenOn(enabled: Boolean) {
-        if (enabled) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-    }
-
-    @Suppress("DEPRECATION")
-    private fun applyImmersive(enabled: Boolean) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val controller = window.insetsController ?: return
-            if (enabled) {
-                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-                controller.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            } else {
-                controller.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-            }
-        } else {
-            window.decorView.systemUiVisibility = if (enabled) {
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            } else {
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-            }
-        }
     }
 
     fun close() {
@@ -406,141 +298,8 @@ internal class EngineViewerScreen(
         hardDecodeWork.closeAndAwait()
     }
 
-    private fun content(runtime: EngineViewerRuntime): FrameLayout =
-        ViewerTouchRoot(this).apply {
-        onSurfaceTap = {
-            // Immersive reading owns plain taps: the reader asked for the chrome to stay hidden
-            // until a deliberate long press requests it.
-            if (::chrome.isInitialized && appliedSettings?.immersiveMode != true) chrome.toggle()
-        }
-        onSurfaceLongPress = {
-            if (::chrome.isInitialized && appliedSettings?.immersiveMode == true) chrome.toggle()
-        }
-        onSurfaceDoubleTap = { x, y ->
-            // Tap coordinates arrive in root space; zoom transforms are surface-local.
-            val surface = runtime.surface
-            surface.toggleZoom(x - surface.left, y - surface.top)
-        }
-        setBackgroundColor(Color.BLACK)
-        installSystemBarInsets()
-        addView(runtime.surface, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
-        ))
-        dimOverlay = View(this@EngineViewerScreen).apply {
-            setBackgroundColor(Color.BLACK)
-            isClickable = false
-            isFocusable = false
-            alpha = 0f
-        }
-        addView(dimOverlay, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
-        ))
-        loading = ViewerLoadingOverlay(this@EngineViewerScreen)
-        addView(loading, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
-        ))
-        failureCard = buildFailureCard()
-        addView(failureCard, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM,
-        ).apply {
-            val margin = dp(24)
-            setMargins(margin, margin, margin, margin + dp(48))
-        })
-        // Chrome installs before the panel so the panel and its scrim stay above the bars.
-        installChrome(this, runtime)
-        settingsPanel = ViewerReaderSettingsPanel(this@EngineViewerScreen).apply {
-            onDimChanged = { percent -> dimOverlay.alpha = percent / 100f }
-            onDimCommitted = { percent -> persistSettings { it.copy(readerDimPercent = percent) } }
-            onKeepScreenOn = { enabled -> persistSettings { it.copy(keepScreenOn = enabled) } }
-            onVolumeKeys = { enabled -> persistSettings { it.copy(volumeKeyNavigation = enabled) } }
-            onClose = { dismiss() }
-        }
-        addView(settingsPanel, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
-        ))
-        }
-
-    private fun buildFailureCard(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        contentDescription = "viewer-failure"
-        val padH = dp(20)
-        setPadding(padH, dp(14), padH, dp(14))
-        background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = dp(16).toFloat()
-            setColor(0xF0181A22.toInt())
-            setStroke(dp(1), 0x33FFFFFF.toInt())
-        }
-        visibility = View.GONE
-        isClickable = true
-        failureText = TextView(this@EngineViewerScreen).apply {
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            gravity = Gravity.CENTER
-        }
-        addView(failureText, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-        ))
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL or Gravity.END
-        }
-        row.addView(actionButton("닫기", accent = false) { finish() }, LinearLayout.LayoutParams(dp(72), dp(48)))
-        row.addView(actionButton("다시 시도", accent = true) { retryFromFailure() },
-            LinearLayout.LayoutParams(dp(96), dp(48)).apply { marginStart = dp(8) })
-        addView(row, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-        ).apply { topMargin = dp(12) })
-    }
-
-    private fun actionButton(text: String, accent: Boolean, click: () -> Unit) = TextView(this).apply {
-        this.text = text
-        setTextColor(Color.WHITE)
-        textSize = 14f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        gravity = Gravity.CENTER
-        isClickable = true
-        isFocusable = true
-        background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = dp(12).toFloat()
-            setColor(if (accent) 0xFF7C5CFF.toInt() else 0xFF181C26.toInt())
-            setStroke(dp(1), if (accent) 0x669080FF.toInt() else 0x33FFFFFF.toInt())
-        }
-        setOnClickListener { click() }
-    }
-
-    private fun installChrome(root: ViewerTouchRoot, runtime: EngineViewerRuntime) {
-        chrome = ViewerChromeController(
-            activity = activity,
-            surface = runtime.surface,
-            snapshot = runtime::chromeSnapshot,
-            actions = ViewerChromeController.Actions(
-                back = ::finish,
-                previous = { navigateAdjacent(next = false) },
-                episodes = ::loadEpisodePicker,
-                next = { navigateAdjacent(next = true) },
-                bookmark = ::bookmarkCurrentPosition,
-                split = ::toggleSplitMode,
-                immersive = ::toggleImmersiveMode,
-                settings = ::toggleSettingsPanel,
-            ),
-        ).also { controller ->
-            controller.install(root)
-            controller.setImmersiveActive(appliedSettings?.immersiveMode == true)
-        }
-        root.excludesSurfaceTap = { x, y ->
-            loading.active || chrome.contains(x, y) || settingsPanel.visible ||
-                (failureCard.visibility == View.VISIBLE && failureCard.containsPoint(x, y))
-        }
-    }
-
     private fun onViewerOpened() {
-        if (::chrome.isInitialized) chrome.refresh()
+        if (::ui.isInitialized) ui.refreshChrome()
         if (!openingReleased && runtime?.bookmarkSnapshot() != null) {
             openingReleased = true
             sessionScope.launch { openingHandoff?.releasePreparation() }
@@ -556,14 +315,7 @@ internal class EngineViewerScreen(
     private fun toggleSplitMode() {
         val state = runtime?.chromeSnapshot() ?: return
         runtime?.setSplitMode(!state.splitMode)
-        if (::chrome.isInitialized) chrome.refresh()
-    }
-
-    private fun toggleImmersiveMode() {
-        val enabled = appliedSettings?.immersiveMode != true
-        persistSettings { it.copy(immersiveMode = enabled) }
-        applyImmersive(enabled)
-        if (::chrome.isInitialized) chrome.setImmersiveActive(enabled)
+        if (::ui.isInitialized) ui.refreshChrome()
     }
 
     private fun launchEpisode(episodeId: EpisodeId) = openEpisode(episodeId)
@@ -640,18 +392,6 @@ internal class EngineViewerScreen(
         dialog.show()
     }
 
-    private fun FrameLayout.installSystemBarInsets() {
-        setOnApplyWindowInsetsListener { view, insets ->
-            val safe = insets.viewerSafeDrawingInsets()
-            if (view.paddingLeft != safe.left || view.paddingTop != safe.top ||
-                view.paddingRight != safe.right || view.paddingBottom != safe.bottom
-            ) {
-                view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
-            }
-            insets
-        }
-    }
-
     private fun initialViewport(): Viewport {
         val metrics = resources.displayMetrics
         return Viewport(
@@ -662,14 +402,8 @@ internal class EngineViewerScreen(
 
     private fun showFailure(failure: Throwable) {
         reportedFailure = failure
-        loading.failed()
-        failureText.text = failure.message?.takeIf(String::isNotBlank) ?: "페이지를 불러오지 못했습니다"
-        failureCard.visibility = View.VISIBLE
+        ui.showFailure(failure)
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    private fun View.containsPoint(x: Float, y: Float): Boolean =
-        x >= left && x < right && y >= top && y < bottom
 
 }

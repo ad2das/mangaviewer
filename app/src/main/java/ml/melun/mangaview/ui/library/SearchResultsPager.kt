@@ -6,6 +6,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSeries
 
@@ -28,6 +34,7 @@ internal class SearchResultsPager(
         job = null
         fetch = null
         consumed.clear()
+        results = LibraryContent.Series(emptyList())
     }
 
     fun start(load: suspend (String?) -> SourcePage<SourceSeries>) {
@@ -51,36 +58,89 @@ internal class SearchResultsPager(
         if (consumed.isNotEmpty()) publish(results)
         job = scope.launch {
             try {
-                var requested = cursor
-                do {
-                    val page = withContext(dispatcher) { load(requested) }
-                    if (expected != version) return@launch
-                    check(page.nextCursor == null || (page.nextCursor != requested && page.nextCursor !in consumed)) {
-                        "제공처가 같은 검색 결과를 반복했습니다. 다시 시도해 주세요."
-                    }
-                    consumed.add(requested)
-                    results = results.copy(
-                        items = (results.items + page.items).distinctBy { it.id },
-                        nextCursor = page.nextCursor,
-                    )
-                    requested = page.nextCursor
-                    // A page can legitimately be empty mid-list when the provider filters it.
-                } while (page.items.isEmpty() && requested != null)
+                loadWithCooldown(cursor, expected, load)
+                if (expected != version) return@launch
                 results = results.copy(loadingNext = false)
                 publish(results)
+            } catch (timeout: TimeoutCancellationException) {
+                fail(expected, "응답이 늦어지고 있습니다. 연결을 확인하고 다시 시도해 주세요")
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (expected != version) return@launch
-                results = results.copy(loadingNext = false)
-                val message = failureDisplayMessage(failure, failureMessage)
-                if (consumed.isEmpty()) {
-                    publish(LibraryContent.Failure(message))
-                } else {
-                    results = results.copy(nextFailure = message)
-                    publish(results)
-                }
+                fail(expected, failureDisplayMessage(failure, failureMessage))
             }
         }
     }
+
+    private suspend fun loadWithCooldown(
+        cursor: String?,
+        expected: Long,
+        load: suspend (String?) -> SourcePage<SourceSeries>,
+    ) {
+        var requested = cursor
+        for (attempt in 0..2) {
+            try {
+                withTimeout(SEARCH_REQUEST_TIMEOUT_MILLIS) { loadPages(requested, expected, load) }
+                return
+            } catch (limited: SourceThrottledException) {
+                if (attempt == 2 || limited.retryAfterMillis !in 1L..120_000L) throw limited
+                awaitRetry(limited.retryAfterMillis, expected, "사이트 요청 제한으로 대기 중입니다")
+            } catch (timeout: TimeoutCancellationException) {
+                currentCoroutineContext().ensureActive()
+                if (attempt == 2) throw timeout
+                awaitRetry(1_500L, expected, "사이트 응답이 늦어지고 있습니다")
+            }
+            requested = if (consumed.isEmpty()) cursor else results.nextCursor
+        }
+    }
+
+    private suspend fun awaitRetry(waitMillis: Long, expected: Long, reason: String) {
+        var remaining = waitMillis
+        while (remaining > 0 && expected == version) {
+            val seconds = (remaining + 999L) / 1_000L
+            results = results.copy(loadingNext = true,
+                nextFailure = "$reason. ${seconds}초 후 자동으로 다시 시도합니다")
+            publish(results)
+            val interval = minOf(1_000L, remaining)
+            delay(interval)
+            remaining -= interval
+        }
+        if (expected == version) {
+            results = results.copy(nextFailure = null)
+            publish(results)
+        }
+    }
+
+    private suspend fun loadPages(
+        cursor: String?,
+        expected: Long,
+        load: suspend (String?) -> SourcePage<SourceSeries>,
+    ) {
+        var requested = cursor
+        repeat(8) {
+            val page = withContext(dispatcher) { load(requested) }
+            if (expected != version) return
+            check(page.nextCursor == null || (page.nextCursor != requested && page.nextCursor !in consumed)) {
+                "제공처가 같은 검색 결과를 반복했습니다. 다시 시도해 주세요."
+            }
+            val previousSize = results.items.size
+            consumed.add(requested)
+            results = results.copy(
+                items = (results.items + page.items).distinctBy { it.id },
+                nextCursor = page.nextCursor,
+                nextFailure = page.nextWarning,
+            )
+            requested = page.nextCursor
+            if (requested == null || page.nextWarning != null || results.items.size > previousSize) return
+        }
+        error("새 결과를 찾는 데 시간이 걸립니다. 더 불러오려면 다시 시도해 주세요")
+    }
+
+    private fun fail(expected: Long, message: String) {
+        if (expected != version) return
+        results = results.copy(loadingNext = false, nextFailure = message)
+        publish(if (consumed.isEmpty()) LibraryContent.Failure(message) else results)
+    }
 }
+
+internal const val SEARCH_REQUEST_TIMEOUT_MILLIS = 30_000L

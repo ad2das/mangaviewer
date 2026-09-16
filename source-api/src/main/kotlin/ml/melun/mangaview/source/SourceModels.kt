@@ -87,6 +87,8 @@ data class SourceEpisode(
 data class SourcePage<T>(
     val items: List<T>,
     val nextCursor: String? = null,
+    /** Pause automatic loading while retaining a cursor the user can explicitly resume. */
+    val nextWarning: String? = null,
 ) {
     init {
         require(nextCursor == null || nextCursor.isNotBlank()) { "Cursor must not be blank" }

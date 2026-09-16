@@ -66,6 +66,15 @@ class NewxtoonHtmlParser(private val origin: String) {
         return result.values.toList()
     }
 
+    fun searchCards(html: String): List<NewxtoonSeriesCard> {
+        val cards = seriesCards(html)
+        val document = Jsoup.parse(html, origin)
+        check(cards.isNotEmpty() || document.selectFirst("#page-search[name=q], #search-result-title") != null) {
+            "뉴엑스툰 검색 응답을 확인할 수 없습니다. 다시 시도해 주세요"
+        }
+        return cards
+    }
+
     fun seriesDetails(html: String): NewxtoonSeriesDetails {
         val document = Jsoup.parse(html, origin)
         val status = document.select("div > strong").firstNotNullOfOrNull { strong ->
@@ -98,6 +107,19 @@ class NewxtoonHtmlParser(private val origin: String) {
         val pages = pageLink.findAll(html).mapNotNull { it.groupValues[1].toIntOrNull() }.toList()
         return if (pages.any { it > current }) current + 1 else null
     }
+
+    /** Search must never follow pagination from scripts, other queries or unrelated catalogs. */
+    fun nextSearchPage(html: String, query: String, current: Int): Int? =
+        Jsoup.parse(html, origin).select("a[href]").mapNotNull { link ->
+            val uri = runCatching { java.net.URI(link.absUrl("href")) }.getOrNull() ?: return@mapNotNull null
+            if (uri.path != "/search" || uri.host != java.net.URI(origin).host) return@mapNotNull null
+            val params = runCatching { uri.rawQuery.orEmpty().split('&').associate { part ->
+                java.net.URLDecoder.decode(part.substringBefore('='), "UTF-8") to
+                    java.net.URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
+            } }.getOrNull() ?: return@mapNotNull null
+            if (params["q"] != query) return@mapNotNull null
+            params["page"]?.toIntOrNull()?.takeIf { it > current }
+        }.minOrNull()?.let { current + 1 }
 
     fun title(html: String): String? {
         val document = Jsoup.parse(html, origin)

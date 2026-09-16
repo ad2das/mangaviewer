@@ -447,24 +447,7 @@ class NtkDocumentParser {
         val IMAGE_FILE = Regex(".*\\.(?:jpe?g|png|webp)(?:[?#].*)?$")
     }
 
-    private data class EpisodePath(
-        val kind: NtkKind,
-        val workId: String,
-        val episodeId: String,
-        val fullPath: String,
-    ) {
-        companion object {
-            fun parse(value: String): EpisodePath? {
-                val match = PATTERN.matchEntire(value) ?: return null
-                val kind = NtkKind.entries.first { it.pathSegment == match.groupValues[1] }
-                return EpisodePath(kind, match.groupValues[2], match.groupValues[3], value)
-            }
 
-            private val PATTERN = Regex(
-                "^/(webtoon|manhwa)/([\\p{L}\\p{N}_-]{1,160})/([\\p{L}\\p{N}_.-]{1,200})$",
-            )
-        }
-    }
 }
 
 private fun logManifestParsing(started: Long, dom: Long, json: Long, images: Long) {
@@ -526,4 +509,23 @@ internal fun authoritativeEpisodeOrder(
     return records.sortedWith(
         compareByDescending<NtkEpisodeRecord> { it.sequenceNumber ?: Long.MIN_VALUE },
     )
+}
+
+private data class EpisodePath(
+    val kind: NtkKind,
+    val workId: String,
+    val episodeId: String,
+    val fullPath: String,
+) {
+    companion object {
+        fun parse(value: String): EpisodePath? {
+            val match = PATTERN.matchEntire(value) ?: return null
+            val kind = NtkKind.entries.first { it.pathSegment == match.groupValues[1] }
+            return EpisodePath(kind, match.groupValues[2], match.groupValues[3], value)
+        }
+
+        private val PATTERN = Regex(
+            "^/(webtoon|manhwa)/([\\p{L}\\p{N}_-]{1,160})/([\\p{L}\\p{N}_.-]{1,200})$",
+        )
+    }
 }

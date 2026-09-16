@@ -63,6 +63,10 @@ class GoodtoonContentSource(
     private val origin = GoodtoonOriginCoordinator(config.initialOrigin, originResolver, preparationScope, onOriginResolved)
     private val catalogStore = GoodtoonCatalogStore(::fetchCatalog)
     private val manifestStore = GoodtoonManifestStore(config.manifestCacheEpisodes, ::fetchManifest)
+    private val searchService = GoodtoonSearchService(
+        fetch = { path -> document(GoodtoonDocumentKind.SEARCH, path) },
+        parse = { document -> parser.series(document, ::seriesId) },
+    )
 
     /** All orders share one provider route, so the home fan-out must not fetch it three times. */
     private val catalogLock = Mutex()
@@ -76,11 +80,7 @@ class GoodtoonContentSource(
     override suspend fun search(query: String, cursor: String?): SourcePage<SourceSeries> =
         search(SourceSearchQuery(query, cursor = cursor))
 
-    override suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> {
-        if (query.cursor != null) return SourcePage(emptyList())
-        val document = document(GoodtoonDocumentKind.SEARCH, "/?q=${urlEncode(query.text.trim())}")
-        return SourcePage(parser.series(document, ::seriesId))
-    }
+    override suspend fun search(query: SourceSearchQuery): SourcePage<SourceSeries> = searchService.search(query)
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         val page = GoodtoonCatalogPagination.page(query.cursor)
@@ -340,7 +340,7 @@ class GoodtoonContentSource(
             throw IOException("GoodToon document request failed with ${response.statusCode}")
         }
         val finalUrl = response.finalUrl
-        val bytes = response.readBytes(MAX_DOCUMENT_BYTES)
+        val bytes = try { response.readBytes(MAX_DOCUMENT_BYTES) } finally { response.close() }
         val requested = URI(requestOrigin + path)
         require(requested.path == URI(finalUrl).path) { "GoodToon document identity changed" }
         val document = Jsoup.parse(ByteArrayInputStream(bytes), null, finalUrl)
@@ -353,7 +353,7 @@ class GoodtoonContentSource(
 
     private fun documentIsAvailable(kind: GoodtoonDocumentKind, document: Document): Boolean = when (kind) {
         GoodtoonDocumentKind.CATALOG -> document.select("a.card, .pagination").isNotEmpty()
-        GoodtoonDocumentKind.SEARCH -> true
+        GoodtoonDocumentKind.SEARCH -> document.selectFirst(".card-grid, a.card[href]") != null
         GoodtoonDocumentKind.SERIES -> document.selectFirst(".summary-title") != null
         GoodtoonDocumentKind.CHAPTER -> document.select("img.wp-manga-chapter-img").isNotEmpty()
         GoodtoonDocumentKind.CHAPTER_LIST -> true

@@ -91,6 +91,24 @@ class GoodtoonContentSourceTest {
         assertTrue(page.items.all { it.status == null })
     }
 
+    @Test fun `search follows pg links and keeps the query instead of dropping later pages`() = runTest {
+        val requests = mutableListOf<String>()
+        val source = source { request ->
+            requests += request.url
+            val page = if ("pg=2" in request.url) "2" else "1"
+            val next = if (page == "1") """
+                <div class='pagination'><a href='/?q=%EC%82%AC%EB%9E%91&amp;pg=5'>last</a></div>
+            """ else ""
+            htmlResponse(request.url, "<a class='card' href='/manga/gt-$page/'><div class='subject'>사랑 $page</div></a>$next")
+        }
+        val first = source.search("사랑")
+        assertEquals("2", first.nextCursor)
+        val second = source.search("사랑", first.nextCursor)
+        assertEquals("gt-2", second.items.single().id.remoteKey)
+        assertNull(second.nextCursor)
+        assertTrue(requests.last().contains("q=%EC%82%AC%EB%9E%91&pg=2"))
+    }
+
     @Test
     fun `genres expose the live chip list`() = runTest {
         val genres = defaultSource().genres(SeriesKind.WEBTOON)
