@@ -2,6 +2,8 @@ package ml.melun.mangaview.source.goodtoon
 
 import java.io.IOException
 import java.net.URI
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.source.CatalogOrder
@@ -57,13 +59,30 @@ class GoodtoonContentSourceTest {
     }
 
     @Test
+    fun `home orders share one catalog fetch because every order maps to the same route`() = runTest {
+        var catalogRequests = 0
+        val source = source { request ->
+            if (URI(request.url).path != "/ongoing/") throw IOException("unexpected ${request.url}")
+            catalogRequests += 1
+            htmlResponse(request.url, ongoing)
+        }
+        val pages = coroutineScope {
+            CatalogOrder.entries.map { order ->
+                async { source.catalog(CatalogQuery(SeriesKind.WEBTOON, order)) }
+            }.map { it.await() }
+        }
+        assertEquals(1, catalogRequests)
+        assertTrue(pages.all { it.items.size == 63 })
+        assertTrue(pages.all { it.nextCursor == "2" })
+    }
+
+    @Test
     fun `completed filter uses the end route and marks cards completed`() = runTest {
         val query = CatalogQuery(SeriesKind.WEBTOON, CatalogOrder.POPULAR, statusFilter = SeriesStatus.COMPLETED)
         val page = defaultSource().catalog(query)
         assertEquals(63, page.items.size)
         assertTrue(page.items.all { it.status == SeriesStatus.COMPLETED })
     }
-
     @Test
     fun `search parses cards without pagination`() = runTest {
         val page = defaultSource().search("소녀")

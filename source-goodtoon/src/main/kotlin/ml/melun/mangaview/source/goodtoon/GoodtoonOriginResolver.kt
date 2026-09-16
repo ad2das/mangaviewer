@@ -29,12 +29,18 @@ class GoodtoonOriginResolver(
     private val transport: SourceTransport,
     private val userAgent: String,
     private val probeParallelism: Int = 4,
+    private val onProbe: (String) -> Unit = {},
 ) {
     init { require(probeParallelism in 1..4) }
     private val flightLock = Mutex()
     private var inFlight: CompletableDeferred<Result<String?>>? = null
 
-    suspend fun resolve(currentOrigin: String): String? {
+    suspend fun resolve(currentOrigin: String, excluding: Set<String> = emptySet()): String? {
+        if (excluding.isNotEmpty()) {
+            val outcome = resolveNow(currentOrigin, excluding)
+            onProbe("resolve result = $outcome")
+            return outcome
+        }
         val claim = flightLock.withLock {
             inFlight?.let { return@withLock ResolutionClaim(it, leader = false) }
             val result = CompletableDeferred<Result<String?>>()
@@ -52,11 +58,14 @@ class GoodtoonOriginResolver(
                 }
             }
         }
-        return claim.result.await().getOrThrow()
+        val outcome = claim.result.await().getOrThrow()
+        onProbe("resolve result = $outcome")
+        return outcome
     }
 
-    private suspend fun resolveNow(currentOrigin: String): String? = coroutineScope {
-        val candidates = candidates(currentOrigin)
+    private suspend fun resolveNow(currentOrigin: String, excluding: Set<String> = emptySet()): String? = coroutineScope {
+        val candidates = candidates(currentOrigin).filterNot { originOf(it) in excluding }
+        onProbe("resolve start current=$currentOrigin candidates=${candidates.size}")
         val cursor = AtomicInteger()
         val results = Channel<String?>(probeParallelism)
         val workerCount = minOf(probeParallelism, candidates.size)
@@ -65,7 +74,7 @@ class GoodtoonOriginResolver(
                 while (true) {
                     val index = cursor.getAndIncrement()
                     if (index >= candidates.size) break
-                    probe(candidates[index])?.let { resolved ->
+                    probe(candidates[index], excluding = excluding)?.let { resolved ->
                         results.send(resolved)
                         return@launch
                     }
@@ -86,7 +95,11 @@ class GoodtoonOriginResolver(
         }
     }
 
-    private suspend fun probe(candidate: String, visited: Set<String> = emptySet()): String? = try {
+    private suspend fun probe(
+        candidate: String,
+        visited: Set<String> = emptySet(),
+        excluding: Set<String> = emptySet(),
+    ): String? = try {
         val response = transport.execute(
             SourceRequest(
                 url = "$candidate/ongoing/",
@@ -102,18 +115,24 @@ class GoodtoonOriginResolver(
             val finalOrigin = originOf(response.finalUrl)
             val body = response.readBytes(MAX_PROBE_BYTES).toString(Charsets.UTF_8)
             val updated = updatedOrigin(body)?.takeIf { it != candidate }
+            val alive = response.statusCode in 200..299 && looksAlive(body)
+            onProbe(
+                "probe $candidate -> status=${response.statusCode} bytes=${body.length} " +
+                    "updated=$updated alive=$alive",
+            )
             when {
-                updated != null && updated !in visited && visited.size < MAX_ADDRESS_HOPS ->
-                    probe(updated, visited + candidate)
+                updated != null && updated !in visited && updated !in excluding &&
+                    visited.size < MAX_ADDRESS_HOPS -> probe(updated, visited + candidate, excluding)
                 updated != null -> null
-                response.statusCode in 200..299 && looksAlive(body) && isProviderOrigin(finalOrigin) ->
+                alive && isProviderOrigin(finalOrigin) ->
                     finalOrigin
                 else -> null
             }
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
-    } catch (_: Exception) {
+    } catch (failure: Exception) {
+        onProbe("probe $candidate -> ${failure.javaClass.simpleName}")
         null
     }
 

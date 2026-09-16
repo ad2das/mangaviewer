@@ -16,6 +16,7 @@ import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.data.PageRepository
 import ml.melun.mangaview.data.cache.RawPageStore
 import ml.melun.mangaview.data.cache.CompleteEpisodeSnapshotStore
+import ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore
 import ml.melun.mangaview.data.db.DeferredViewerDatabase
 import ml.melun.mangaview.data.library.UserLibraryRepository
 import ml.melun.mangaview.data.network.OkHttpTransportFactory
@@ -68,6 +69,11 @@ internal class AppGraph(
     @Volatile var networkEvidenceObserver: SourceExchangeObserver? = null
     val offlineStore = OfflineEpisodeStore(
         File(appContext.applicationInfo.dataDir, "app_offline_episodes_v2"),
+        ioDispatcher,
+    )
+    /** Remembers the last delivered home rows so the home tab can paint before the network. */
+    val homeCatalogCache = HomeCatalogSnapshotStore(
+        File(appContext.applicationInfo.dataDir, "app_home_catalog_cache_v1"),
         ioDispatcher,
     )
     private val database = DeferredViewerDatabase(appContext, ioDispatcher)
@@ -232,7 +238,7 @@ internal class AppGraph(
             )
             transport.warmConnections(listOf(DEFAULT_NTK_ORIGIN), preferQuic = false)
             transport.warmConnections(listOf(DEFAULT_NTK_ORIGIN), preferQuic = true)
-            preconnectNtkDocumentOrigin(documentTransport)
+            preconnectOrigin(documentTransport, DEFAULT_NTK_ORIGIN)
             return DeferredSourceResource(source) {
                 source.close()
                 (transport as? Closeable)?.close()
@@ -247,19 +253,19 @@ internal class AppGraph(
 
     /**
      * HttpEngine construction alone does not resolve DNS or establish TLS. Open one bodyless H2
-     * exchange while the library UI is loading so the first exact episode document does not pay
-     * that cold connection cost. This is deliberately limited to the public document origin;
-     * signed image URLs are never probed or consumed by connection warming.
+     * exchange while the library UI is loading so the first catalog document does not pay that
+     * cold connection cost. This is deliberately limited to the public document origin; signed
+     * image URLs are never probed or consumed by connection warming.
      */
-    private fun preconnectNtkDocumentOrigin(transport: SourceTransport) {
+    private fun preconnectOrigin(transport: SourceTransport, url: String) {
         applicationScope.launch(ioDispatcher) {
             runCatching {
                 transport.execute(
                     SourceRequest(
-                        url = DEFAULT_NTK_ORIGIN,
+                        url = url,
                         method = SourceHttpMethod.HEAD,
                         headers = mapOf("Accept" to "text/html,*/*;q=0.1"),
-                        totalTimeoutMillis = NTK_PRECONNECT_TIMEOUT_MILLIS,
+                        totalTimeoutMillis = ORIGIN_PRECONNECT_TIMEOUT_MILLIS,
                         preferQuic = false,
                         priority = PageFetchPriority.BACKGROUND,
                     ),
@@ -295,6 +301,7 @@ internal class AppGraph(
             )
             transport.warmConnections(listOf(DEFAULT_WFWF_ORIGIN), preferQuic = false)
             source.warm()
+            preconnectOrigin(transport, DEFAULT_WFWF_ORIGIN)
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
             }
@@ -359,9 +366,16 @@ internal class AppGraph(
         coroutineContext.ensureActive()
         val transport = createGoodtoonTransport()
         try {
-            val source = GoodtoonContentSource(GoodtoonConfig(DEFAULT_GOODTOON_ORIGIN, userAgent()), transport, applicationScope)
+            val source = GoodtoonContentSource(
+                GoodtoonConfig(DEFAULT_GOODTOON_ORIGIN, userAgent()),
+                transport,
+                applicationScope,
+                originProbeObserver = { android.util.Log.i("GoodtoonOrigin", it) },
+                onOriginResolved = { origins.remember("goodtoon", it) },
+            )
             transport.warmConnections(listOf(DEFAULT_GOODTOON_ORIGIN), preferQuic = false)
             source.warm()
+            preconnectOrigin(transport, DEFAULT_GOODTOON_ORIGIN)
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
             }
@@ -391,7 +405,7 @@ internal class AppGraph(
         const val DEFAULT_NTK_ORIGIN = ml.melun.mangaview.source.ntk.NtkOriginResolver.DEFAULT_ORIGIN
         const         val DEFAULT_WFWF_ORIGIN = ml.melun.mangaview.source.wfwf.DEFAULT_WFWF_ORIGIN
         val DEFAULT_GOODTOON_ORIGIN = ml.melun.mangaview.source.goodtoon.DEFAULT_GOODTOON_ORIGIN
-        const val NTK_PRECONNECT_TIMEOUT_MILLIS = 4_000L
+        const val ORIGIN_PRECONNECT_TIMEOUT_MILLIS = 4_000L
         val NTK_ID = SourceId("ntk")
         val WFWF_ID = SourceId("wfwf")
         val NEWXTOON_ID = SourceId("newxtoon")

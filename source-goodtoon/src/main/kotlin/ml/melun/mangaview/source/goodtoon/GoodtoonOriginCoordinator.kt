@@ -17,6 +17,7 @@ internal class GoodtoonOriginCoordinator(
     initialOrigin: String,
     private val resolver: GoodtoonOriginResolver,
     scope: CoroutineScope?,
+    private val onOriginResolved: (String) -> Unit = {},
 ) {
     private val originLock = Mutex()
     private var origin = normalizeOrigin(initialOrigin)
@@ -41,22 +42,31 @@ internal class GoodtoonOriginCoordinator(
     }
 
     suspend fun <T> execute(request: suspend (String) -> T): T {
-        val attemptedOrigin = current()
-        return try {
-            raceStartup(attemptedOrigin, request)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (firstFailure: Exception) {
-            val replacement = recover(attemptedOrigin)
-            if (replacement == attemptedOrigin) throw firstFailure
-            request(replacement)
+        var candidate = current()
+        val tried = mutableSetOf<String>()
+        var lastFailure: Exception? = null
+        while (tried.size < MAX_ORIGIN_ATTEMPTS) {
+            tried += candidate
+            try {
+                return raceStartup(candidate, request)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                lastFailure = failure
+                val replacement = recover(candidate, tried)
+                if (replacement == candidate || replacement in tried) break
+                candidate = replacement
+            }
         }
+        throw lastFailure ?: IllegalStateException("GoodToon origin is unavailable")
     }
 
-    suspend fun recover(failedOrigin: String): String {
+    suspend fun recover(failedOrigin: String): String = recover(failedOrigin, emptySet())
+
+    private suspend fun recover(failedOrigin: String, excluding: Set<String>): String {
         val published = current()
-        if (published != failedOrigin) return published
-        return discover(failedOrigin)
+        if (published != failedOrigin && published !in excluding) return published
+        return discover(failedOrigin, excluding)
     }
 
     suspend fun observe(finalUrl: String, ticket: Long) {
@@ -64,15 +74,20 @@ internal class GoodtoonOriginCoordinator(
         originLock.withLock { if (ticket == revision) origin = observed }
     }
 
-    private suspend fun discover(baseOrigin: String): String {
-        val resolved = resolver.resolve(baseOrigin) ?: return current()
-        return originLock.withLock {
-            if (origin == baseOrigin && origin != normalizeOrigin(resolved)) {
-                origin = normalizeOrigin(resolved)
+    private suspend fun discover(baseOrigin: String, excluding: Set<String> = emptySet()): String {
+        val resolved = resolver.resolve(baseOrigin, excluding) ?: return current()
+        val normalized = normalizeOrigin(resolved)
+        var published = false
+        val publishedOrigin = originLock.withLock {
+            if (origin == baseOrigin && origin != normalized) {
+                origin = normalized
                 revision += 1L
+                published = true
             }
             origin
         }
+        if (published) onOriginResolved(normalized)
+        return publishedOrigin
     }
 
     private suspend fun <T> raceStartup(
@@ -95,6 +110,8 @@ internal class GoodtoonOriginCoordinator(
     }
 
     private companion object {
+        const val MAX_ORIGIN_ATTEMPTS = 3
+
         fun normalizeOrigin(value: String): String {
             val uri = URI(value)
             require(uri.scheme == "https" || uri.scheme == "http") { "GoodToon origin must use HTTP" }

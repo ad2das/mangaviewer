@@ -12,6 +12,7 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore
 import ml.melun.mangaview.source.AdjacentEpisodes
 import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
@@ -23,10 +24,13 @@ import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSeries
 import org.junit.Assert.assertEquals
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class LibraryCatalogLoaderRegressionTest {
+    @get:Rule val temporary = TemporaryFolder()
     @Test fun staleGenerationCannotPublishAfterSourceAndKindSwitch() = runTest {
         val slowId = SourceId("slow")
         val fastId = SourceId("fast")
@@ -104,11 +108,41 @@ class LibraryCatalogLoaderRegressionTest {
         assertEquals(0, fixture.readyCount)
     }
 
+    @Test fun rememberedHomePaintsBeforeTheNetworkAndSurvivesAFailedRefresh() = runTest {
+        val slow = FakeCatalogSource(SourceId("slow"))
+        val cache = HomeCatalogSnapshotStore(temporary.newFolder(), StandardTestDispatcher(testScheduler))
+        val remembered = series(slow.id, "remembered-1")
+        cache.save(slow.id, SeriesKind.WEBTOON, listOf(remembered), listOf(remembered), listOf(remembered))
+        val fixture = LoaderFixture(testScheduler, registry(slow), stateFor(slow), backgroundScope, cache)
+
+        fixture.loader.loadHome()
+        runCurrent()
+        assertEquals(fastHome(remembered), fixture.state.home)
+
+        slow.fail(CatalogOrder.POPULAR, IllegalStateException("offline"))
+        runCurrent()
+        assertEquals(fastHome(remembered), fixture.state.home)
+        assertEquals(0, fixture.readyCount)
+    }
+
+    @Test fun aFailedCatalogRowIsRetriedOnceBeforeTheHomeFails() = runTest {
+        val flaky = FailingOnceCatalogSource(SourceId("flaky"), series(SourceId("flaky"), "recovered-1"))
+        val fixture = LoaderFixture(testScheduler, registry(flaky), stateFor(flaky), backgroundScope)
+
+        fixture.loader.loadHome()
+        runCurrent()
+
+        assertEquals(fastHome(flaky.item), fixture.state.home)
+        assertEquals(CatalogOrder.entries.associateWith { 2 }, flaky.attempts)
+        assertEquals(1, fixture.readyCount)
+    }
+
     private class LoaderFixture(
         scheduler: TestCoroutineScheduler,
         registry: SourceRegistry,
         initial: LibraryState,
         scope: CoroutineScope,
+        homeCache: HomeCatalogSnapshotStore? = null,
     ) {
         var state: LibraryState = initial
         var readyCount: Int = 0
@@ -119,6 +153,7 @@ class LibraryCatalogLoaderRegressionTest {
             current = { state },
             update = { transform -> state = transform(state) },
             onHomeReady = { readyCount++ },
+            homeCache = homeCache,
         )
     }
 
@@ -160,6 +195,32 @@ private class FakeCatalogSource(
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         started += query.order
         return SourcePage(immediate ?: pending.getValue(query.order).await())
+    }
+
+    override suspend fun search(query: String, cursor: String?) = error("Unexpected search")
+
+    override suspend fun episodes(seriesId: SeriesId, cursor: String?) = error("Unexpected episodes")
+
+    override suspend fun manifest(episodeId: EpisodeId) = error("Unexpected manifest")
+
+    override suspend fun adjacent(episodeId: EpisodeId): AdjacentEpisodes = error("Unexpected adjacent")
+
+    override suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) = error("Unexpected prepare")
+
+    override suspend fun openPage(pageId: PageId, validation: PageValidation?): OpenedPage = error("Unexpected page")
+}
+
+private class FailingOnceCatalogSource(
+    override val id: SourceId,
+    val item: SourceSeries,
+) : ContentSource {
+    val attempts = mutableMapOf<CatalogOrder, Int>()
+
+    override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
+        val attempt = (attempts[query.order] ?: 0) + 1
+        attempts[query.order] = attempt
+        if (attempt == 1) throw IllegalStateException("first ${query.order} attempt failed")
+        return SourcePage(listOf(item))
     }
 
     override suspend fun search(query: String, cursor: String?) = error("Unexpected search")

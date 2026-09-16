@@ -40,6 +40,7 @@ internal class LibraryViewModel(
     private val offlineDownloads: OfflineDownloadManager,
     private val openings: () -> EngineOpeningPreparations,
     private val ioDispatcher: CoroutineDispatcher,
+    homeCache: ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore? = null,
 ) : ViewModel() {
     private val actions = LibraryActions(viewModelScope, ioDispatcher, sourceRegistry, userLibrary, offlineDownloads)
     private val mutableState = MutableStateFlow(initialLibraryState(sourceRegistry))
@@ -66,7 +67,7 @@ internal class LibraryViewModel(
     private val episodeWarmer = LibraryEpisodeWarmer(openings)
     private val catalogs = LibraryCatalogLoader(
         viewModelScope, ioDispatcher, sourceRegistry, { mutableState.value }, ::update,
-        { episodeWarmer.continuation(state.value) },
+        { episodeWarmer.continuation(state.value) }, homeCache,
     )
     private var contentJob: Job? = null
     private var detailsJob: Job? = null
@@ -482,6 +483,7 @@ internal class LibraryViewModelFactory(
     private val offlineDownloads: OfflineDownloadManager,
     private val openings: () -> EngineOpeningPreparations,
     private val ioDispatcher: CoroutineDispatcher,
+    private val homeCache: ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore? = null,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -493,6 +495,7 @@ internal class LibraryViewModelFactory(
             offlineDownloads,
             openings,
             ioDispatcher,
+            homeCache,
         ) as T
     }
 }

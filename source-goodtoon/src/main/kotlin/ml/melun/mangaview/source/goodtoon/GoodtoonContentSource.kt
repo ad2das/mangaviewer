@@ -4,6 +4,8 @@ import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.net.URI
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -51,12 +53,20 @@ class GoodtoonContentSource(
     private val transport: SourceTransport,
     preparationScope: CoroutineScope? = null,
     private val parser: GoodtoonHtmlParser = GoodtoonHtmlParser(),
-    originResolver: GoodtoonOriginResolver = GoodtoonOriginResolver(transport, config.userAgent),
+    originProbeObserver: (String) -> Unit = {},
+    originResolver: GoodtoonOriginResolver =
+        GoodtoonOriginResolver(transport, config.userAgent, onProbe = originProbeObserver),
+    onOriginResolved: (String) -> Unit = {},
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : ContentSource {
     override val id = goodtoonSourceId()
-    private val origin = GoodtoonOriginCoordinator(config.initialOrigin, originResolver, preparationScope)
+    private val origin = GoodtoonOriginCoordinator(config.initialOrigin, originResolver, preparationScope, onOriginResolved)
     private val catalogStore = GoodtoonCatalogStore(::fetchCatalog)
     private val manifestStore = GoodtoonManifestStore(config.manifestCacheEpisodes, ::fetchManifest)
+
+    /** All orders share one provider route, so the home fan-out must not fetch it three times. */
+    private val catalogLock = Mutex()
+    private var recentCatalog: CatalogSnapshot? = null
 
     /** Resolves and warms only the reusable provider origin; it never fetches user content. */
     fun warm() {
@@ -74,19 +84,30 @@ class GoodtoonContentSource(
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {
         val page = GoodtoonCatalogPagination.page(query.cursor)
-        val document = document(GoodtoonDocumentKind.CATALOG, GoodtoonCatalogPagination.path(query, page))
+        val path = GoodtoonCatalogPagination.path(query, page)
         val status = if (query.statusFilter == SeriesStatus.COMPLETED) {
             SeriesStatus.COMPLETED
         } else {
             SeriesStatus.ONGOING
         }
-        val items = parser.series(document, ::seriesId, status)
-        val next = GoodtoonCatalogPagination.nextPageCursor(
-            document,
-            GoodtoonCatalogPagination.path(query, page = 1),
-            page,
-        )
-        return SourcePage(items, next)
+        return catalogLock.withLock {
+            val remembered = recentCatalog
+            if (remembered != null && remembered.path == path &&
+                clock() - remembered.atMillis <= CATALOG_REUSE_MILLIS
+            ) {
+                return@withLock remembered.page
+            }
+            val document = document(GoodtoonDocumentKind.CATALOG, path)
+            val items = parser.series(document, ::seriesId, status)
+            val next = GoodtoonCatalogPagination.nextPageCursor(
+                document,
+                GoodtoonCatalogPagination.path(query, page = 1),
+                page,
+            )
+            SourcePage(items, next).also { fresh ->
+                recentCatalog = CatalogSnapshot(path, clock(), fresh)
+            }
+        }
     }
 
     override suspend fun genres(kind: SeriesKind): List<SourceGenre> = GOODTOON_GENRES
@@ -394,6 +415,7 @@ private val GOODTOON_GENRES = listOf(
 ).map { (wire, label) -> SourceGenre("genre:$wire", label) }
 
 private const val MAX_DOCUMENT_BYTES = 16 * 1_024 * 1_024
+private const val CATALOG_REUSE_MILLIS = 30_000L
 private const val PAGE_HEDGE_DELAY_MILLIS = 750L
 private const val PAGE_ALTERNATE_DELAY_MILLIS = 1_500L
 private const val FOCUS_PAGE_ALTERNATE_DELAY_MILLIS = 750L
@@ -409,3 +431,9 @@ private const val FORWARD_HEADER_TIMEOUT_MILLIS = 6_000L
 private const val NORMAL_HEADER_TIMEOUT_MILLIS = 8_000L
 private const val BACKGROUND_HEADER_TIMEOUT_MILLIS = 10_000L
 private val EXPIRED_PAGE_STATUSES = setOf(401, 403, 404, 410)
+
+private data class CatalogSnapshot(
+    val path: String,
+    val atMillis: Long,
+    val page: SourcePage<SourceSeries>,
+)

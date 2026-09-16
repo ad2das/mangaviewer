@@ -8,10 +8,12 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
+import ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore
 import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
 import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.SeriesKind
+import ml.melun.mangaview.source.SourceSeries
 
 import kotlinx.coroutines.CoroutineScope
 
@@ -23,6 +25,7 @@ internal class LibraryCatalogLoader(
     private val current: () -> LibraryState,
     private val update: (((LibraryState) -> LibraryState) -> Unit),
     private val onHomeReady: () -> Unit,
+    private val homeCache: HomeCatalogSnapshotStore? = null,
 ) {
     private var homeJob: Job? = null
     private var genreJob: Job? = null
@@ -31,20 +34,42 @@ internal class LibraryCatalogLoader(
         homeJob?.cancel()
         val snapshot = current()
         val version = ++homeVersion
-        update { it.copy(home = HomeContent.Loading) }
         homeJob = scope.launch {
+            // Paint the remembered home first; the refresh below replaces it when it arrives.
+            val cached = homeCache?.load(snapshot.selectedSourceId, snapshot.homeKind)
+            if (version != homeVersion) return@launch
+            update {
+                it.copy(
+                    home = cached?.let { hit -> HomeContent.Ready(hit.popular, hit.latest, hit.new) }
+                        ?: HomeContent.Loading,
+                )
+            }
             try {
                 val source = sourceRegistry.require(snapshot.selectedSourceId)
-                val result = withContext(ioDispatcher) { homeCatalogs(source, snapshot.homeKind) }
+                val kind = snapshot.homeKind
+                val result = withContext(ioDispatcher) { homeCatalogs(source, kind) }
                 if (version == homeVersion) {
                     update { it.copy(home = result) }
                     onHomeReady()
                 }
+                runCatching {
+                    homeCache?.save(
+                        snapshot.selectedSourceId,
+                        kind,
+                        result.popular,
+                        result.latest,
+                        result.new,
+                    )
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                if (version == homeVersion) update {
-                    it.copy(home = HomeContent.Failure(failureDisplayMessage(failure, "목록을 불러오지 못했습니다")))
+                if (version == homeVersion) update { state ->
+                    // A failed refresh must not replace a home the reader can still use.
+                    if (state.home is HomeContent.Ready) state
+                    else state.copy(
+                        home = HomeContent.Failure(failureDisplayMessage(failure, "목록을 불러오지 못했습니다")),
+                    )
                 }
             }
         }
@@ -84,9 +109,29 @@ internal class LibraryCatalogLoader(
 
 private suspend fun homeCatalogs(source: ContentSource, kind: SeriesKind): HomeContent.Ready =
     coroutineScope {
-        val popular = async { source.catalog(CatalogQuery(kind, CatalogOrder.POPULAR)).items }
-        val latest = async { source.catalog(CatalogQuery(kind, CatalogOrder.LATEST)).items }
-        val new = async { source.catalog(CatalogQuery(kind, CatalogOrder.NEW)).items }
+        val popular = async { catalogItems(source, CatalogQuery(kind, CatalogOrder.POPULAR)) }
+        val latest = async { catalogItems(source, CatalogQuery(kind, CatalogOrder.LATEST)) }
+        val new = async { catalogItems(source, CatalogQuery(kind, CatalogOrder.NEW)) }
         HomeContent.Ready(popular.await(), latest.await(), new.await())
+    }
+
+/**
+ * Blocked provider routes routinely answer on the second attempt once the transport recovery is
+ * warm, so one silent retry turns a home failure into a slower home.
+ */
+private suspend fun catalogItems(source: ContentSource, query: CatalogQuery): List<SourceSeries> =
+    try {
+        source.catalog(query).items
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (firstAttempt: Exception) {
+        try {
+            source.catalog(query).items
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (secondAttempt: Exception) {
+            firstAttempt.addSuppressed(secondAttempt)
+            throw firstAttempt
+        }
     }
 
