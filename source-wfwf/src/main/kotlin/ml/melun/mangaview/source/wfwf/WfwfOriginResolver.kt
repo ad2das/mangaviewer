@@ -31,7 +31,12 @@ class WfwfOriginResolver(
     private val flightLock = Mutex()
     private var inFlight: CompletableDeferred<Result<String?>>? = null
 
-    suspend fun resolve(currentOrigin: String): String? {
+    suspend fun resolve(currentOrigin: String, excluding: Set<String> = emptySet()): String? {
+        if (excluding.isNotEmpty()) {
+            val outcome = resolveNow(currentOrigin, excluding)
+            onProbe("resolve result = $outcome")
+            return outcome
+        }
         val claim = flightLock.withLock {
             inFlight?.let { return@withLock ResolutionClaim(it, leader = false) }
             val result = CompletableDeferred<Result<String?>>()
@@ -54,8 +59,8 @@ class WfwfOriginResolver(
         return outcome
     }
 
-    private suspend fun resolveNow(currentOrigin: String): String? = coroutineScope {
-        val candidates = candidates(currentOrigin)
+    private suspend fun resolveNow(currentOrigin: String, excluding: Set<String> = emptySet()): String? = coroutineScope {
+        val candidates = candidates(currentOrigin).filterNot { originOf(it) in excluding }
         onProbe("resolve start current=$currentOrigin candidates=${candidates.size}")
         val cursor = AtomicInteger()
         val results = Channel<String?>(probeParallelism)
@@ -65,7 +70,7 @@ class WfwfOriginResolver(
                 while (true) {
                     val index = cursor.getAndIncrement()
                     if (index >= candidates.size) break
-                    probe(candidates[index])?.let { resolved ->
+                    probe(candidates[index], excluding = excluding)?.let { resolved ->
                         results.send(resolved)
                         return@launch
                     }
@@ -86,7 +91,11 @@ class WfwfOriginResolver(
         }
     }
 
-    private suspend fun probe(candidate: String, visited: Set<String> = emptySet()): String? = try {
+    private suspend fun probe(
+        candidate: String,
+        visited: Set<String> = emptySet(),
+        excluding: Set<String> = emptySet(),
+    ): String? = try {
         val response = transport.execute(
             SourceRequest(
                 url = "$candidate/ing",
@@ -106,8 +115,8 @@ class WfwfOriginResolver(
             val alive = response.statusCode in 200..299 && looksAlive(body)
             onProbe("probe $candidate -> status=${response.statusCode} bytes=${body.length} updated=$updated alive=$alive")
             when {
-                updated != null && updated !in visited && visited.size < MAX_ADDRESS_HOPS ->
-                    probe(updated, visited + candidate)
+                updated != null && updated !in visited && updated !in excluding &&
+                    visited.size < MAX_ADDRESS_HOPS -> probe(updated, visited + candidate, excluding)
                 updated != null -> null
                 alive -> finalOrigin
                 else -> null
@@ -162,8 +171,8 @@ class WfwfOriginResolver(
         const val MAX_ADDRESS_HOPS = 2
         const val FORWARD_DISTANCE = 36
         const val BACKWARD_DISTANCE = 4
-        const val PROBE_TIMEOUT_MILLIS = 1_500L
-        const val RESOLUTION_TIMEOUT_MILLIS = 6_000L
+        const val PROBE_TIMEOUT_MILLIS = 3_000L
+        const val RESOLUTION_TIMEOUT_MILLIS = 10_000L
         const val MAX_PROBE_BYTES = 512 * 1_024
         val NUMBERED_HOST = Regex("wfwf([0-9]{1,5})\\.com", RegexOption.IGNORE_CASE)
         val UPDATED_URL = Regex("https://wfwf[0-9]{1,5}\\.com", RegexOption.IGNORE_CASE)

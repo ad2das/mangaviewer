@@ -1,5 +1,6 @@
 package ml.melun.mangaview.source.wfwf
 
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.awaitCancellation
@@ -78,6 +79,46 @@ class WfwfOriginCoordinatorTest {
     }
 
     @Test
+    fun failedRequestAdvancesToAnotherCandidateInsteadOfRetryingTheSameOrigin() = runTest {
+        val coordinator = WfwfOriginCoordinator(
+            initialOrigin = "https://wfwf489.com",
+            resolver = WfwfOriginResolver(
+                CoordinatorMultiProbeTransport(setOf("https://wfwf489.com", "https://wfwf490.com")),
+                "agent",
+            ),
+            scope = null,
+        )
+
+        val result = coordinator.execute { requestOrigin ->
+            if (requestOrigin == "https://wfwf489.com") throw IOException("catalog unavailable")
+            requestOrigin
+        }
+
+        assertEquals("https://wfwf490.com", result)
+    }
+
+    @Test
+    fun failedRequestSurfacesItsOwnFailureWhenNoOtherCandidateIsLive() = runTest {
+        val coordinator = WfwfOriginCoordinator(
+            initialOrigin = "https://wfwf489.com",
+            resolver = WfwfOriginResolver(
+                CoordinatorMultiProbeTransport(setOf("https://wfwf489.com")),
+                "agent",
+            ),
+            scope = null,
+        )
+
+        var failure: Exception? = null
+        try {
+            coordinator.execute<Unit> { throw IOException("catalog unavailable") }
+        } catch (thrown: Exception) {
+            failure = thrown
+        }
+
+        assertEquals("catalog unavailable", failure?.message)
+    }
+
+    @Test
     fun discoveredOriginCancelsAStalledRequestInsteadOfWaitingForItsTimeout() = runTest {
         val coordinator = WfwfOriginCoordinator(
             initialOrigin = "https://wfwf489.com",
@@ -100,6 +141,23 @@ class WfwfOriginCoordinatorTest {
 
         assertEquals("https://wfwf490.com", result)
         assertEquals(true, staleCancelled.get())
+    }
+}
+
+private class CoordinatorMultiProbeTransport(
+    private val liveOrigins: Set<String>,
+) : SourceTransport {
+    override suspend fun execute(request: SourceRequest): SourceResponse {
+        val alive = liveOrigins.any { request.url.startsWith(it) }
+        val bytes = if (alive) "<a href='/cl?toon=1'>WFWF</a>".toByteArray() else ByteArray(0)
+        return SourceResponse(
+            statusCode = if (alive) 200 else 404,
+            finalUrl = request.url,
+            headers = emptyMap(),
+            body = CoordinatorProbeBytes(bytes),
+            contentLength = bytes.size.toLong(),
+            contentType = "text/html",
+        )
     }
 }
 
