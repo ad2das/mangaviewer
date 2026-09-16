@@ -54,7 +54,8 @@ internal fun LibraryScreen(
     val genreCatalogVisible = state.selectedGenre != null
     BackHandler(
         enabled = detailVisible || genreCatalogVisible || state.settingsVisible ||
-            state.preferencesVisible || state.downloadSelectionVisible || state.sourcePickerVisible,
+            state.preferencesVisible || state.downloadSelectionVisible || state.sourcePickerVisible ||
+            state.savedSelection.isNotEmpty(),
     ) { accept(LibraryIntent.Back) }
 
     Box(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {

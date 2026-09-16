@@ -14,9 +14,6 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,26 +49,31 @@ internal fun SavedLibraryScreen(
         SavedSearch(state.savedQuery, colors, accept)
         Spacer(Modifier.height(10.dp))
         SavedTabs(state.libraryTab, colors, accept)
-        val count = savedCount(state)
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.width(4.dp).height(14.dp).clip(RoundedCornerShape(2.dp)).background(colors.accentGradient))
-                Spacer(Modifier.width(6.dp))
-                BasicText("${count}개 작품", style = labelStyle(colors, false).copy(fontWeight = FontWeight.Bold))
+        val selection = state.savedSelection
+        if (selection.isEmpty()) {
+            val count = savedCount(state)
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.width(4.dp).height(14.dp).clip(RoundedCornerShape(2.dp)).background(colors.accentGradient))
+                    Spacer(Modifier.width(6.dp))
+                    BasicText("${count}개 작품", style = labelStyle(colors, false).copy(fontWeight = FontWeight.Bold))
+                }
+                BasicText("최근 업데이트순", style = hintStyle(colors, 12))
             }
-            BasicText("최근 업데이트순", style = hintStyle(colors, 12))
+        } else {
+            SavedSelectionActions(state, query, colors, accept)
         }
         val sourceLabels = state.sources.associate { it.id to it.label }
         when (state.libraryTab) {
-            SavedTab.ALL -> AllSaved(state, query, artworkLoader, colors, accept)
-            SavedTab.RECENT -> RecentSaved(state.saved.recent, query, artworkLoader, colors, accept, sourceLabels)
-            SavedTab.FAVORITES -> FavoriteSaved(state.saved.favorites, query, artworkLoader, colors, accept, sourceLabels)
-            SavedTab.BOOKMARKS -> BookmarkSaved(state.saved.bookmarks, query, colors, accept, sourceLabels)
-            SavedTab.OFFLINE -> OfflineSaved(state, query, artworkLoader, colors, accept, sourceLabels)
+            SavedTab.ALL -> AllSaved(state, query, artworkLoader, colors, accept, selection)
+            SavedTab.RECENT -> RecentSaved(state.saved.recent, query, artworkLoader, colors, accept, sourceLabels, selection)
+            SavedTab.FAVORITES -> FavoriteSaved(state.saved.favorites, query, artworkLoader, colors, accept, sourceLabels, selection)
+            SavedTab.BOOKMARKS -> BookmarkSaved(state.saved.bookmarks, query, colors, accept, sourceLabels, selection)
+            SavedTab.OFFLINE -> OfflineSaved(state, query, artworkLoader, colors, accept, sourceLabels, selection)
         }
     }
 }
@@ -172,28 +174,9 @@ private fun AllSaved(
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
+    selection: Set<String>,
 ) {
-    val recentIds = state.saved.recent.map { it.series.id }.toSet()
-    val favoriteIds = state.saved.favorites.map { it.id }.toSet()
-    val offlineIds = state.offlineEpisodes.map { it.series.id }.toSet()
-    val bookmarksBySeries = state.saved.bookmarks.groupBy { it.pageId.episodeId.seriesId }
-    val bookmarkOnlyIds = bookmarksBySeries.keys
-        .filterNot { it in recentIds || it in favoriteIds || it in offlineIds }
-    val combined = state.saved.favorites +
-        state.saved.recent.filterNot { it.series.id in favoriteIds }.map { it.series } +
-        state.offlineEpisodes.map { it.series }.distinctBy { it.id }
-            .filterNot { it.id in recentIds || it.id in favoriteIds }
-            .map { item -> SavedSeries(item.id, item.title, item.thumbnailKey, false, 0L) } +
-        bookmarkOnlyIds.map { id ->
-            val marks = bookmarksBySeries.getValue(id)
-            SavedSeries(id, marks.first().seriesTitle, null, false, marks.maxOf { it.createdAtEpochMillis })
-        }
-    val removalTabs = buildMap {
-        state.saved.favorites.forEach { put(it.id, SavedTab.FAVORITES) }
-        state.saved.recent.forEach { if (it.series.id !in favoriteIds) put(it.series.id, SavedTab.RECENT) }
-        state.offlineEpisodes.forEach { if (it.series.id !in recentIds && it.series.id !in favoriteIds) put(it.series.id, SavedTab.OFFLINE) }
-        bookmarkOnlyIds.forEach { put(it, SavedTab.BOOKMARKS) }
-    }
+    val combined = combinedSavedSeries(state)
     FavoriteSaved(
         combined,
         query,
@@ -201,9 +184,8 @@ private fun AllSaved(
         colors,
         accept,
         state.sources.associate { it.id to it.label },
+        selection,
         "최근 읽거나 보관하거나 저장한 작품이 없습니다",
-        SavedTab.ALL,
-        removalTabFor = { series -> removalTabs[series.id] ?: SavedTab.ALL },
     )
 }
 
@@ -215,6 +197,7 @@ private fun RecentSaved(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
     sourceLabels: Map<SourceId, String>,
+    selection: Set<String>,
 ) {
     val filtered = items.filter { query.isEmpty() || it.series.title.contains(query, true) }
     if (filtered.isEmpty()) {
@@ -243,9 +226,10 @@ private fun RecentSaved(
                 badge = "이어보기 ›",
                 loader = loader,
                 colors = colors,
-                removalTab = SavedTab.RECENT,
-                accept = accept,
                 sourceLabels = sourceLabels,
+                selected = seriesSelectionKey(item.series.id) in selection,
+                selectionMode = selection.isNotEmpty(),
+                toggleSelection = { accept(LibraryIntent.SavedSelectionToggled(seriesSelectionKey(item.series.id))) },
                 click = {
                     accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits)))
                 },
@@ -262,9 +246,8 @@ private fun FavoriteSaved(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
     sourceLabels: Map<SourceId, String>,
+    selection: Set<String>,
     empty: String = "좋아요한 작품이 없습니다",
-    removalTab: SavedTab = SavedTab.FAVORITES,
-    removalTabFor: (SavedSeries) -> SavedTab = { removalTab },
 ) {
     val filtered = items.filter { query.isEmpty() || it.title.contains(query, true) }
     if (filtered.isEmpty()) {
@@ -293,9 +276,10 @@ private fun FavoriteSaved(
                 badge = null,
                 loader = loader,
                 colors = colors,
-                removalTab = removalTabFor(item),
-                accept = accept,
                 sourceLabels = sourceLabels,
+                selected = seriesSelectionKey(item.id) in selection,
+                selectionMode = selection.isNotEmpty(),
+                toggleSelection = { accept(LibraryIntent.SavedSelectionToggled(seriesSelectionKey(item.id))) },
                 click = { accept(LibraryIntent.SavedSeriesSelected(item)) },
             )
         }
@@ -310,6 +294,7 @@ private fun OfflineSaved(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
     sourceLabels: Map<SourceId, String>,
+    selection: Set<String>,
 ) {
     val series = state.offlineEpisodes.map { it.series }.distinctBy { it.id }
         .filter { query.isEmpty() || it.title.contains(query, true) }
@@ -339,9 +324,10 @@ private fun OfflineSaved(
                 badge = "저장완료",
                 loader = loader,
                 colors = colors,
-                removalTab = SavedTab.OFFLINE,
-                accept = accept,
                 sourceLabels = sourceLabels,
+                selected = seriesSelectionKey(item.id) in selection,
+                selectionMode = selection.isNotEmpty(),
+                toggleSelection = { accept(LibraryIntent.SavedSelectionToggled(seriesSelectionKey(item.id))) },
                 click = { accept(LibraryIntent.OfflineSeriesSelected(item)) },
             )
         }
@@ -356,33 +342,22 @@ private fun SavedSourceSeriesCard(
     badge: String?,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
-    removalTab: SavedTab,
-    accept: (LibraryIntent) -> Unit,
     sourceLabels: Map<SourceId, String>,
+    selected: Boolean,
+    selectionMode: Boolean,
     click: () -> Unit,
+    toggleSelection: () -> Unit,
 ) {
-    var removing by remember(series.id) { mutableStateOf(false) }
-    if (removing) {
-        SavedItemRemovalDialog(
-            item = SavedItemRemoval(series, removalTab),
-            colors = colors,
-            dismiss = { removing = false },
-            confirm = {
-                removing = false
-                accept(LibraryIntent.RemoveSavedItem(SavedItemRemoval(series, removalTab)))
-            },
-        )
-    }
     Row(
         Modifier.fillMaxWidth()
             .height(110.dp)
             .clip(SavedCardShape)
-            .background(colors.card)
-            .border(1.dp, colors.cardBorder, SavedCardShape)
+            .background(if (selected) colors.accentSurface else colors.card)
+            .border(1.dp, if (selected) colors.accent else colors.cardBorder, SavedCardShape)
             .combinedClickable(
-                onClick = click,
-                onLongClickLabel = "삭제",
-                onLongClick = { removing = true },
+                onClick = if (selectionMode) toggleSelection else click,
+                onLongClickLabel = "선택",
+                onLongClick = toggleSelection,
             )
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -403,7 +378,11 @@ private fun SavedSourceSeriesCard(
             Modifier.weight(1f),
             sourceLabels[series.id.sourceId] ?: series.id.sourceId.value.uppercase(),
         )
-        BasicText("›", style = hintStyle(colors, 18).copy(fontWeight = FontWeight.Light))
+        if (selectionMode) {
+            SelectionMark(selected, colors)
+        } else {
+            BasicText("›", style = hintStyle(colors, 18).copy(fontWeight = FontWeight.Light))
+        }
     }
 }
 
@@ -414,19 +393,8 @@ private fun BookmarkSaved(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
     sourceLabels: Map<SourceId, String>,
+    selection: Set<String>,
 ) {
-    var removing by remember { mutableStateOf<SavedBookmark?>(null) }
-    removing?.let { target ->
-        BookmarkRemovalDialog(
-            bookmark = target,
-            colors = colors,
-            dismiss = { removing = null },
-            confirm = {
-                removing = null
-                accept(LibraryIntent.RemoveBookmark(target))
-            },
-        )
-    }
     val filtered = items.filter { query.isEmpty() || it.seriesTitle.contains(query, true) }
     if (filtered.isEmpty()) {
         if (query.isNotEmpty()) {
@@ -455,10 +423,12 @@ private fun BookmarkSaved(
                 colors = colors,
                 sourceLabel = sourceLabels[item.pageId.episodeId.seriesId.sourceId]
                     ?: item.pageId.episodeId.seriesId.sourceId.value.uppercase(),
+                selected = bookmarkSelectionKey(item) in selection,
+                selectionMode = selection.isNotEmpty(),
                 click = {
                     accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits)))
                 },
-                longClick = { removing = item },
+                toggleSelection = { accept(LibraryIntent.SavedSelectionToggled(bookmarkSelectionKey(item))) },
             )
         }
     }
@@ -470,19 +440,21 @@ private fun BookmarkCard(
     bookmark: SavedBookmark,
     colors: LibraryColors,
     sourceLabel: String,
+    selected: Boolean,
+    selectionMode: Boolean,
     click: () -> Unit,
-    longClick: () -> Unit,
+    toggleSelection: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth()
             .height(96.dp)
             .clip(SavedCardShape)
-            .background(colors.card)
-            .border(1.dp, colors.cardBorder, SavedCardShape)
+            .background(if (selected) colors.accentSurface else colors.card)
+            .border(1.dp, if (selected) colors.accent else colors.cardBorder, SavedCardShape)
             .combinedClickable(
-                onClick = click,
-                onLongClickLabel = "책갈피 삭제",
-                onLongClick = longClick,
+                onClick = if (selectionMode) toggleSelection else click,
+                onLongClickLabel = "선택",
+                onLongClick = toggleSelection,
             )
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -527,29 +499,9 @@ private fun BookmarkCard(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun BookmarkRemovalDialog(
-    bookmark: SavedBookmark,
-    colors: LibraryColors,
-    dismiss: () -> Unit,
-    confirm: () -> Unit,
-) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = dismiss) {
-        Column(Modifier.fillMaxWidth().background(colors.card, RoundedCornerShape(16.dp)).padding(22.dp)) {
-            BasicText("책갈피 삭제", style = titleStyle(colors, 18))
-            Spacer(Modifier.height(10.dp))
-            BasicText(
-                "${bookmark.seriesTitle}\n${libraryDate(bookmark.createdAtEpochMillis)}에 저장한 위치를 삭제합니다.",
-                style = bodyStyle(colors, 14),
-            )
-            Spacer(Modifier.height(20.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                LibraryAction("취소", colors, Modifier.weight(1f).height(48.dp), dismiss)
-                LibraryAction("삭제", colors, Modifier.weight(1f).height(48.dp), confirm)
-            }
+        if (selectionMode) {
+            Spacer(Modifier.width(8.dp))
+            SelectionMark(selected, colors)
         }
     }
 }

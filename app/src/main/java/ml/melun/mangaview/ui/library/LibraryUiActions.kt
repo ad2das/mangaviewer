@@ -69,6 +69,18 @@ internal class LibraryUiActions(
         }
     }
 
+    fun removeSelected(intent: LibraryIntent.RemoveSelected) {
+        scope.launch {
+            try {
+                intent.items.forEach { actions.removeSaved(it) }
+                intent.bookmarks.forEach { actions.removeBookmark(it) }
+                update { it.copy(savedSelection = emptySet()) }
+                showMessage("${intent.items.size + intent.bookmarks.size}개 삭제 완료")
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { showMessage("삭제하지 못했습니다. 다시 시도해 주세요") }
+        }
+    }
+
     fun toggleDownloadSelection() {
         val snapshot = current()
         when {

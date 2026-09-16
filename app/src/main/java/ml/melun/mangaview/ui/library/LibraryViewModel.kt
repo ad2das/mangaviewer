@@ -101,6 +101,9 @@ internal class LibraryViewModel(
             is LibraryIntent.DetailTabSelected,
             is LibraryIntent.SearchKindSelected,
             is LibraryIntent.SearchFieldSelected,
+            is LibraryIntent.SavedSelectionToggled,
+            is LibraryIntent.SavedSelectionReplaced,
+            LibraryIntent.SavedSelectionCleared,
             -> acceptSelection(intent)
             else -> acceptAction(intent)
         }
@@ -114,12 +117,21 @@ internal class LibraryViewModel(
             is LibraryIntent.SourceSelected -> selectSource(intent.sourceId)
             is LibraryIntent.HomeKindSelected -> selectHomeKind(intent.value)
             is LibraryIntent.HomeTabSelected -> selectHomeTab(intent.value)
-            is LibraryIntent.SavedTabSelected -> update { it.copy(libraryTab = intent.value) }
+            is LibraryIntent.SavedTabSelected -> update { it.copy(libraryTab = intent.value, savedSelection = emptySet()) }
             is LibraryIntent.GenreSelected -> loadGenre(intent.value)
             is LibraryIntent.GenreFilterSelected -> selectGenreFilter(intent.value)
             is LibraryIntent.DetailTabSelected -> update { it.copy(detailTab = intent.value) }
             is LibraryIntent.SearchKindSelected -> update { it.copy(searchKind = intent.value) }
             is LibraryIntent.SearchFieldSelected -> update { it.copy(searchField = intent.value) }
+            is LibraryIntent.SavedSelectionToggled -> update {
+                it.copy(savedSelection = if (intent.key in it.savedSelection) {
+                    it.savedSelection - intent.key
+                } else {
+                    it.savedSelection + intent.key
+                })
+            }
+            is LibraryIntent.SavedSelectionReplaced -> update { it.copy(savedSelection = intent.keys.toSet()) }
+            LibraryIntent.SavedSelectionCleared -> update { it.copy(savedSelection = emptySet()) }
             else -> error("Not a selection intent: $intent")
         }
     }
@@ -183,6 +195,7 @@ internal class LibraryViewModel(
     private fun acceptPersistenceAction(intent: LibraryIntent) {
         when (intent) {
             is LibraryIntent.RemoveSavedItem -> { episodeWarmer.cancel(); uiActions.removeSaved(intent.item) }
+            is LibraryIntent.RemoveSelected -> { episodeWarmer.cancel(); uiActions.removeSelected(intent) }
             is LibraryIntent.StartTabChanged -> actions.updateSettings { it.copy(startTab = intent.value) }
             is LibraryIntent.DarkThemeChanged -> actions.updateSettings { it.copy(darkTheme = intent.enabled) }
             LibraryIntent.ClearSearchHistory -> actions.updateSettings { it.copy(recentQueries = emptyList()) }
@@ -204,6 +217,7 @@ internal class LibraryViewModel(
             sourcePickerVisible = false,
             seriesMenuVisible = false,
             downloadSelectionVisible = false,
+            savedSelection = emptySet(),
         ) }
         episodeWarmer.continuation(state.value)
         actions.updateSettings { it.copy(startTab = destination.ordinal) }
@@ -226,6 +240,7 @@ internal class LibraryViewModel(
             genreStatusFilter = null,
             genreCatalog = LibraryContent.Empty,
             sourcePickerVisible = false,
+            savedSelection = emptySet(),
         ) }
         actions.updateSettings { it.copy(sourceKey = sourceId.value) }
         catalogs.loadHome()
@@ -354,6 +369,10 @@ internal class LibraryViewModel(
     }
 
     private fun back() {
+        if (state.value.savedSelection.isNotEmpty()) {
+            update { it.copy(savedSelection = emptySet()) }
+            return
+        }
         if (uiActions.dismissOverlay()) return
         if (state.value.activeSeries != null) {
             cancelContent()

@@ -41,6 +41,7 @@ internal data class LibraryState(
     val saved: UserLibrarySnapshot = UserLibrarySnapshot(),
     val offlineEpisodes: List<DownloadedEpisode> = emptyList(),
     val downloadStates: Map<EpisodeId, EpisodeDownloadState> = emptyMap(),
+    val savedSelection: Set<String> = emptySet(),
     val settingsVisible: Boolean = false,
     val preferencesVisible: Boolean = false,
     val sourcePickerVisible: Boolean = false,
@@ -148,6 +149,13 @@ internal sealed interface LibraryIntent {
     data class EpisodeSelected(val episodeId: EpisodeId) : LibraryIntent
     data class SavedSeriesSelected(val series: SavedSeries) : LibraryIntent
     data class RemoveSavedItem(val item: SavedItemRemoval) : LibraryIntent
+    data class SavedSelectionToggled(val key: String) : LibraryIntent
+    data class SavedSelectionReplaced(val keys: List<String>) : LibraryIntent
+    data object SavedSelectionCleared : LibraryIntent
+    data class RemoveSelected(
+        val items: List<SavedItemRemoval>,
+        val bookmarks: List<SavedBookmark>,
+    ) : LibraryIntent
     data class OfflineSeriesSelected(val series: SourceSeries) : LibraryIntent
     data class SavedEpisodeSelected(val position: ReadingPosition) : LibraryIntent
     data class RemoveBookmark(val bookmark: SavedBookmark) : LibraryIntent
