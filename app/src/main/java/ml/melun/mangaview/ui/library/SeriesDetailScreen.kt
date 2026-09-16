@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -143,6 +144,9 @@ private fun DetailBody(
 ) {
     val series = state.activeSeries ?: return
     val quickRead = quickReadEpisode(state, series, episodes)
+    val readEpisodes = remember(state.saved.readEpisodes) {
+        state.saved.readEpisodes.mapTo(hashSetOf()) { it.episodeId }
+    }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 28.dp),
@@ -176,7 +180,7 @@ private fun DetailBody(
             items(episodes, key = { it.id.remoteKey }) { episode ->
                 EpisodeCard(
                     episode = episode,
-                    readState = episodeReadState(episode, resume),
+                    readState = episodeReadState(episode, resume, readEpisodes),
                     saved = state.offlineEpisodes.any { it.episode.id == episode.id },
                     downloadState = state.downloadStates[episode.id],
                     colors = colors,
@@ -379,27 +383,16 @@ private fun EpisodeCard(
 internal enum class EpisodeReadState { RESUME, READ }
 
 /**
- * Storage keeps one resume row per series, so "read" means older than the remembered episode and
- * "resume" marks the remembered episode itself. Unknown ordering stays unmarked.
+ * Read marks come from episodes the storage saw opened or on screen, so the list never infers
+ * "read" from resume order. The remembered episode keeps the resume badge.
  */
-internal fun episodeReadState(episode: SourceEpisode, resume: SourceEpisode?): EpisodeReadState? {
-    if (resume == null) return null
-    if (episode.id == resume.id) return EpisodeReadState.RESUME
-    return when (episodeNewerThan(episode, resume)) {
-        true -> null
-        false -> EpisodeReadState.READ
-        null -> null
-    }
-}
-
-private fun episodeNewerThan(episode: SourceEpisode, other: SourceEpisode): Boolean? {
-    val sequence = episode.sequenceNumber
-    val otherSequence = other.sequenceNumber
-    if (sequence != null && otherSequence != null) return sequence > otherSequence
-    val published = episode.publishedAtEpochMillis
-    val otherPublished = other.publishedAtEpochMillis
-    if (published != null && otherPublished != null) return published > otherPublished
-    return null
+internal fun episodeReadState(
+    episode: SourceEpisode,
+    resume: SourceEpisode?,
+    readEpisodes: Set<ml.melun.mangaview.core.EpisodeId>,
+): EpisodeReadState? {
+    if (resume?.id == episode.id) return EpisodeReadState.RESUME
+    return if (episode.id in readEpisodes) EpisodeReadState.READ else null
 }
 
 @Composable

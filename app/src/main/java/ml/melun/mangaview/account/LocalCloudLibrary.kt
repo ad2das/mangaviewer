@@ -16,8 +16,13 @@ internal interface CloudLocalPort {
 internal class LocalCloudLibrary(private val database: suspend () -> ViewerDatabase) : CloudLocalPort {
     override val changes: Flow<Unit> = flow {
         val db = database()
-        emitAll(combine(db.viewer().library(), db.viewer().progressHistory(), db.viewer().bookmarks(),
-            db.cloudLibrary().readingAnchorChanges(), db.cloudLibrary().bookmarkAnchorChanges()) { _, _, _, _, _ -> Unit })
+        emitAll(
+            combine(
+                combine(db.viewer().library(), db.viewer().progressHistory(), db.viewer().bookmarks(),
+                    db.viewer().readEpisodes(), db.cloudLibrary().readingAnchorChanges()) { _, _, _, _, _ -> Unit },
+                db.cloudLibrary().bookmarkAnchorChanges(),
+            ) { _, _ -> Unit },
+        )
     }
 
     override suspend fun snapshot(): List<CloudLibraryRecord> = CloudLibraryCodec.snapshot(database().cloudLibrary().snapshot())
@@ -71,6 +76,12 @@ internal class LocalCloudLibrary(private val database: suspend () -> ViewerDatab
                     db.viewer().saveBookmark(value)
                     CloudLibraryCodec.bookmarkAnchor(record)?.let { db.engine().upsertBookmarkAnchor(it) }
                 }
+            }
+            "read" -> {
+                val value = CloudLibraryCodec.read(record)
+                if (record.deleted) {
+                    db.viewer().deleteReadEpisode(value.sourceKey, value.seriesKey, value.episodeKey)
+                } else db.viewer().saveReadEpisode(value)
             }
         }
     }

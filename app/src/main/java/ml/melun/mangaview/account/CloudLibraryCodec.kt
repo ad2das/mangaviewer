@@ -24,6 +24,7 @@ internal object CloudLibraryCodec {
             }
             add(bookmark(item, anchor))
         }
+        value.readEpisodes.forEach { add(read(it)) }
     }.sortedBy { it.identity }
 
     fun series(item: LibraryEntryEntity): CloudLibraryRecord = record("series", item.updatedAtEpochMillis,
@@ -47,6 +48,9 @@ internal object CloudLibraryCodec {
                 if (anchor != null) native(anchor.sourceYQ32, anchor.viewportOffsetUnits)
             })
 
+    fun read(item: ReadEpisodeEntity): CloudLibraryRecord = record("read", item.readAtEpochMillis,
+        base(item.sourceKey, item.seriesKey).apply { addProperty("episode", item.episodeKey) })
+
     fun series(record: CloudLibraryRecord): LibraryEntryEntity = record.payload.let { p ->
         LibraryEntryEntity(p.text("source"), p.text("series"), p.text("title"),
             p.get("thumbnail")?.takeUnless { it.isJsonNull }?.asString, p.get("favorite").asBoolean, record.updatedAt)
@@ -62,6 +66,10 @@ internal object CloudLibraryCodec {
             p.get("offset").asLong, record.updatedAt)
     }
 
+    fun read(record: CloudLibraryRecord): ReadEpisodeEntity = record.payload.let { p ->
+        ReadEpisodeEntity(p.text("source"), p.text("series"), p.text("episode"), record.updatedAt)
+    }
+
     fun readingAnchor(record: CloudLibraryRecord): EngineReadingAnchorEntity? = record.payload.let { p ->
         if (!p.has("sourceYQ32")) return null
         EngineReadingAnchorEntity(p.text("source"), p.text("series"), p.text("episode"), p.text("page"),
@@ -75,7 +83,7 @@ internal object CloudLibraryCodec {
     }
 
     fun validate(record: CloudLibraryRecord) {
-        require(record.kind in setOf("series", "favorite", "progress", "bookmark") && record.updatedAt >= 0)
+        require(record.kind in setOf("series", "favorite", "progress", "bookmark", "read") && record.updatedAt >= 0)
         val p = record.payload
         require(p.text("source").isNotBlank() && p.text("source").length <= 64)
         require(p.text("series").isNotBlank() && p.text("series").length <= 2048)
@@ -85,6 +93,8 @@ internal object CloudLibraryCodec {
             require(p.get("favorite").asJsonPrimitive.isBoolean)
         } else if (record.kind == "favorite") {
             require(p.get("favorite").asJsonPrimitive.isBoolean && p.get("favorite").asBoolean)
+        } else if (record.kind == "read") {
+            require(p.text("episode").isNotBlank() && p.text("episode").length <= 2048)
         } else {
             require(p.text("episode").isNotBlank() && p.text("page").isNotBlank())
             require(p.get("offset").asLong >= 0)
@@ -98,6 +108,7 @@ internal object CloudLibraryCodec {
     private fun key(kind: String, p: JsonObject): String {
         val fields = mutableListOf(p.text("source"), p.text("series"))
         if (kind == "bookmark") fields += listOf(p.text("episode"), p.text("page"))
+        if (kind == "read") fields += p.text("episode")
         return fields.joinToString("") { "${it.length}:$it" }
     }
 

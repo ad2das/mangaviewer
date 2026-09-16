@@ -28,9 +28,16 @@ data class SavedBookmark(
     val createdAtEpochMillis: Long,
 )
 
+/** A single episode the user actually opened; never inferred from resume order. */
+data class ReadEpisode(
+    val episodeId: EpisodeId,
+    val readAtEpochMillis: Long,
+)
+
 data class UserLibrarySnapshot(
     val recent: List<RecentReading> = emptyList(),
     val favorites: List<SavedSeries> = emptyList(),
     val bookmarks: List<SavedBookmark> = emptyList(),
+    val readEpisodes: List<ReadEpisode> = emptyList(),
     val settings: ViewerSettings = ViewerSettings(),
 )

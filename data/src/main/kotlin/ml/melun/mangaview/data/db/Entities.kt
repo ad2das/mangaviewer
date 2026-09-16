@@ -59,3 +59,15 @@ data class BookmarkEntity(
     val offsetInPageUnits: Long,
     val createdAtEpochMillis: Long,
 )
+
+/** One row per episode the user actually opened, so the list never guesses from resume order. */
+@Entity(
+    tableName = "read_episodes",
+    primaryKeys = ["sourceKey", "seriesKey", "episodeKey"],
+)
+data class ReadEpisodeEntity(
+    val sourceKey: String,
+    val seriesKey: String,
+    val episodeKey: String,
+    val readAtEpochMillis: Long,
+)

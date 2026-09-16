@@ -59,11 +59,24 @@ interface ViewerDao {
     @Query("UPDATE library_entries SET favorite = 0, updatedAtEpochMillis = :at WHERE sourceKey = :source AND seriesKey = :series")
     suspend fun clearFavorite(source: String, series: String, at: Long)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveReadEpisode(episode: ReadEpisodeEntity)
+
+    @Query("SELECT * FROM read_episodes ORDER BY readAtEpochMillis DESC")
+    fun readEpisodes(): Flow<List<ReadEpisodeEntity>>
+
+    @Query("DELETE FROM read_episodes WHERE sourceKey = :source AND seriesKey = :series")
+    suspend fun deleteReadEpisodes(source: String, series: String)
+
+    @Query("DELETE FROM read_episodes WHERE sourceKey = :source AND seriesKey = :series AND episodeKey = :episode")
+    suspend fun deleteReadEpisode(source: String, series: String, episode: String)
+
     /** Remove only this source/series; bookmark records and their titles remain usable. */
     @Transaction
     suspend fun removeHistory(source: String, series: String, removeFavorite: Boolean, at: Long) {
         deleteReadingAnchor(source, series)
         deleteProgress(source, series)
+        deleteReadEpisodes(source, series)
         if (removeFavorite) clearFavorite(source, series, at)
     }
 

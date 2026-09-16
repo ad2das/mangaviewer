@@ -96,13 +96,29 @@ class CloudLibraryRecordsTest {
         val entry = LibraryEntryEntity("newxtoon", "series-1", "신작", null, true, 100)
         val reading = ReadingProgressEntity("newxtoon", "series-1", "ep-1", "p0002", 4096, 110)
         val bookmark = BookmarkEntity("newxtoon", "series-1", "ep-1", "p0003", 8192, 120)
-        val snapshot = CloudLibrarySnapshot(listOf(entry), listOf(reading), listOf(bookmark), emptyList(), emptyList())
+        val read = ReadEpisodeEntity("newxtoon", "series-1", "ep-7", 130)
+        val snapshot = CloudLibrarySnapshot(
+            listOf(entry), listOf(reading), listOf(bookmark), emptyList(), emptyList(), listOf(read),
+        )
         val records = CloudLibraryCodec.snapshot(snapshot)
         assertEquals(records, CloudLibraryRecords.decode(CloudLibraryRecords.encode(records)))
         assertEquals(records.sortedBy { it.identity },
             CloudLibraryRecords.localChanges(emptyList(), records, 200).sortedBy { it.identity })
         assertEquals("newxtoon", CloudLibraryCodec.progress(records.single { it.kind == "progress" }).sourceKey)
         assertEquals("newxtoon", CloudLibraryCodec.bookmark(records.single { it.kind == "bookmark" }).sourceKey)
+        assertEquals(read, CloudLibraryCodec.read(records.single { it.kind == "read" }))
+    }
+
+    @Test fun readMarkPerEpisodeRoundTripsAndDeletesLikeABookmark() {
+        val read = CloudLibraryCodec.read(ReadEpisodeEntity("ntk", "/webtoon/12", "nv-12-105", 70))
+        val other = CloudLibraryCodec.read(ReadEpisodeEntity("ntk", "/webtoon/12", "nv-12-104", 60))
+        assertNotEquals(read.identity, other.identity)
+        val decoded = CloudLibraryRecords.decode(CloudLibraryRecords.encode(listOf(read, other)))
+        assertEquals(listOf(other, read), decoded)
+        val removed = CloudLibraryRecords.localChanges(listOf(read), emptyList(), 90).single()
+        assertTrue(removed.deleted)
+        val restarted = CloudLibraryRecords.decode(CloudLibraryRecords.encode(listOf(removed)))
+        assertTrue(CloudLibraryRecords.merge(restarted, listOf(read)).single().deleted)
     }
 
     @Test fun corruptedCloudRecordCannotBecomeAnEmptySuccessfulRestore() {

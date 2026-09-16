@@ -57,7 +57,7 @@ internal fun SettingsOverlay(
             )
             Spacer(Modifier.height(14.dp))
             BasicText(
-                "동기화 항목: 최근 기록, 즐겨찾기, 책갈피, 이어보기 위치",
+                "동기화 항목: 최근 기록, 즐겨찾기, 책갈피, 이어보기 위치, 읽음 표시",
                 style = bodyStyle(colors, 13).copy(color = colors.secondary),
             )
             Spacer(Modifier.height(20.dp))

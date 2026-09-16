@@ -4,6 +4,22 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 object EngineDatabaseMigration {
+    val FROM_2_TO_3: Migration = object : Migration(2, 3) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `read_episodes` (
+                    `sourceKey` TEXT NOT NULL,
+                    `seriesKey` TEXT NOT NULL,
+                    `episodeKey` TEXT NOT NULL,
+                    `readAtEpochMillis` INTEGER NOT NULL,
+                    PRIMARY KEY(`sourceKey`, `seriesKey`, `episodeKey`)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
     val FROM_1_TO_2: Migration = object : Migration(1, 2) {
         override fun migrate(database: SupportSQLiteDatabase) {
             createAnchorTables(database)

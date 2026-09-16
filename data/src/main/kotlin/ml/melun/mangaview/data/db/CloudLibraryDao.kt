@@ -12,6 +12,7 @@ data class CloudLibrarySnapshot(
     val bookmarks: List<BookmarkEntity>,
     val readingAnchors: List<EngineReadingAnchorEntity>,
     val bookmarkAnchors: List<EngineBookmarkAnchorEntity>,
+    val readEpisodes: List<ReadEpisodeEntity> = emptyList(),
 )
 
 @Dao
@@ -25,6 +26,9 @@ interface CloudLibraryDao {
     @Query("SELECT * FROM bookmarks")
     suspend fun bookmarks(): List<BookmarkEntity>
 
+    @Query("SELECT * FROM read_episodes")
+    suspend fun readEpisodes(): List<ReadEpisodeEntity>
+
     @Query("SELECT * FROM engine_reading_anchors")
     suspend fun readingAnchors(): List<EngineReadingAnchorEntity>
 
@@ -37,6 +41,9 @@ interface CloudLibraryDao {
     @Query("SELECT * FROM engine_bookmark_anchors")
     fun bookmarkAnchorChanges(): Flow<List<EngineBookmarkAnchorEntity>>
 
+    @Query("SELECT * FROM read_episodes")
+    fun readEpisodeChanges(): Flow<List<ReadEpisodeEntity>>
+
     @Query("DELETE FROM library_entries WHERE sourceKey = :source AND seriesKey = :series")
     suspend fun deleteSeries(source: String, series: String)
 
@@ -44,5 +51,7 @@ interface CloudLibraryDao {
     suspend fun deleteProgress(source: String, series: String)
 
     @Transaction
-    suspend fun snapshot() = CloudLibrarySnapshot(series(), progress(), bookmarks(), readingAnchors(), bookmarkAnchors())
+    suspend fun snapshot() = CloudLibrarySnapshot(
+        series(), progress(), bookmarks(), readingAnchors(), bookmarkAnchors(), readEpisodes(),
+    )
 }

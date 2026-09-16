@@ -21,36 +21,41 @@ class EpisodeReadStateTest {
     @Test
     fun rememberedEpisodeIsMarkedForResume() {
         val remembered = episode("12", sequence = 12.0)
-        assertEquals(EpisodeReadState.RESUME, episodeReadState(remembered, remembered))
+        assertEquals(EpisodeReadState.RESUME, episodeReadState(remembered, remembered, emptySet()))
     }
 
     @Test
-    fun olderSequenceCountsAsRead() {
+    fun onlyOpenedEpisodesAreMarkedRead() {
         val resume = episode("12", sequence = 12.0)
-        assertEquals(EpisodeReadState.READ, episodeReadState(episode("8", sequence = 8.0), resume))
+        val read = setOf(resume.id, EpisodeId(series, "3"))
+        assertEquals(EpisodeReadState.READ, episodeReadState(episode("3", sequence = 3.0), resume, read))
+        assertNull(episodeReadState(episode("8", sequence = 8.0), resume, read))
     }
 
     @Test
-    fun newerSequenceStaysUnmarked() {
+    fun sequenceOrderNoLongerMarksEarlierEpisodesRead() {
+        val resume = episode("105", sequence = 105.0)
+        assertNull(episodeReadState(episode("104", sequence = 104.0), resume, emptySet()))
+        assertEquals(
+            EpisodeReadState.READ,
+            episodeReadState(episode("104", sequence = 104.0), resume, setOf(EpisodeId(series, "104"))),
+        )
+    }
+
+    @Test
+    fun readMarkWorksWithoutOrderingMetadata() {
+        val read = setOf(EpisodeId(series, "a"))
+        assertEquals(EpisodeReadState.READ, episodeReadState(episode("a"), null, read))
+    }
+
+    @Test
+    fun resumeBadgeWinsOverReadMark() {
         val resume = episode("12", sequence = 12.0)
-        assertNull(episodeReadState(episode("15", sequence = 15.0), resume))
+        assertEquals(EpisodeReadState.RESUME, episodeReadState(resume, resume, setOf(resume.id)))
     }
 
     @Test
-    fun publicationDateOrdersWhenSequenceIsMissing() {
-        val resume = episode("b", published = 2_000L)
-        assertEquals(EpisodeReadState.READ, episodeReadState(episode("a", published = 1_000L), resume))
-        assertNull(episodeReadState(episode("c", published = 3_000L), resume))
-    }
-
-    @Test
-    fun unorderableEpisodesStayUnmarked() {
-        val resume = episode("b", published = 2_000L)
-        assertNull(episodeReadState(episode("a"), resume))
-    }
-
-    @Test
-    fun withoutRememberedEpisodeNothingIsMarked() {
-        assertNull(episodeReadState(episode("1", sequence = 1.0), null))
+    fun withoutReadMarksOrResumeNothingIsMarked() {
+        assertNull(episodeReadState(episode("1", sequence = 1.0), null, emptySet()))
     }
 }

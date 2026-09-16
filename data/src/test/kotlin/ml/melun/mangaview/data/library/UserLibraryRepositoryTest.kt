@@ -5,6 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import ml.melun.mangaview.data.db.BookmarkEntity
 import ml.melun.mangaview.data.db.LibraryEntryEntity
+import ml.melun.mangaview.data.db.ReadEpisodeEntity
 import ml.melun.mangaview.data.db.ReadingProgressEntity
 import ml.melun.mangaview.data.settings.ViewerSettings
 
@@ -14,13 +15,16 @@ class UserLibraryRepositoryTest {
         val library = LibraryEntryEntity("source", "series", "Title", null, true, 10L)
         val progress = ReadingProgressEntity("source", "series", "episode", "p0012", 45L, 20L)
         val bookmark = BookmarkEntity("source", "series", "episode", "p0007", 3L, 15L)
+        val read = ReadEpisodeEntity("source", "series", "episode", 16L)
 
-        val snapshot = assembleSnapshot(listOf(library), listOf(progress), listOf(bookmark), ViewerSettings())
+        val snapshot = assembleSnapshot(listOf(library), listOf(progress), listOf(bookmark), listOf(read), ViewerSettings())
 
         assertEquals("Title", snapshot.recent.single().series.title)
         assertEquals("episode", snapshot.recent.single().episodeId.remoteKey)
         assertEquals("p0012", snapshot.recent.single().pageId.remoteKey)
         assertEquals("Title", snapshot.bookmarks.single().seriesTitle)
+        assertEquals("episode", snapshot.readEpisodes.single().episodeId.remoteKey)
+        assertEquals(16L, snapshot.readEpisodes.single().readAtEpochMillis)
         assertTrue(snapshot.favorites.single().favorite)
     }
 
@@ -28,7 +32,8 @@ class UserLibraryRepositoryTest {
     fun orphanedProgressRemainsUsableAfterIndependentTableWrites() {
         val progress = ReadingProgressEntity("wfwf", "42", "9", "p0000", 0L, 20L)
 
-        val recent = assembleSnapshot(emptyList(), listOf(progress), emptyList(), ViewerSettings()).recent.single()
+        val recent = assembleSnapshot(emptyList(), listOf(progress), emptyList(), emptyList(), ViewerSettings())
+            .recent.single()
 
         assertEquals("42", recent.series.title)
         assertEquals("wfwf", recent.episodeId.seriesId.sourceId.value)

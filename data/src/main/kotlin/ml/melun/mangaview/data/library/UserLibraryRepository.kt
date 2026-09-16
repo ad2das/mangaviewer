@@ -9,6 +9,7 @@ import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.data.db.BookmarkEntity
 import ml.melun.mangaview.data.db.LibraryEntryEntity
+import ml.melun.mangaview.data.db.ReadEpisodeEntity
 import ml.melun.mangaview.data.db.ReadingProgressEntity
 import ml.melun.mangaview.data.db.ViewerDao
 import ml.melun.mangaview.data.settings.ViewerSettings
@@ -23,6 +24,7 @@ class UserLibraryRepository(
         dao.library(),
         dao.progressHistory(),
         dao.bookmarks(),
+        dao.readEpisodes(),
         settingsStore.settings,
         ::assembleSnapshot,
     )
@@ -39,6 +41,12 @@ class UserLibraryRepository(
             entry(seriesId, title, thumbnailKey, favorite = false, now),
             progress(episodeId, now),
         )
+        dao.saveReadEpisode(readEpisode(episodeId, now))
+    }
+
+    /** A persisted viewer position proves the episode was on screen, so it counts as read. */
+    suspend fun markEpisodeRead(episodeId: EpisodeId) {
+        dao.saveReadEpisode(readEpisode(episodeId, clock()))
     }
 
     suspend fun setFavorite(
@@ -60,12 +68,14 @@ class UserLibraryRepository(
 
     suspend fun saveProgress(pageId: PageId, offsetInPageUnits: Long) {
         require(offsetInPageUnits >= 0L)
+        val now = clock()
         dao.saveProgress(
-            progress(pageId.episodeId, clock()).copy(
+            progress(pageId.episodeId, now).copy(
                 pageKey = pageId.remoteKey,
                 offsetInPageUnits = offsetInPageUnits,
             ),
         )
+        dao.saveReadEpisode(readEpisode(pageId.episodeId, now))
     }
 
     suspend fun readingPosition(episodeId: EpisodeId): ReadingPosition? {
@@ -119,19 +129,28 @@ class UserLibraryRepository(
         offsetInPageUnits = offset,
         createdAtEpochMillis = createdAt,
     )
+
+    private fun readEpisode(episodeId: EpisodeId, at: Long) = ReadEpisodeEntity(
+        sourceKey = episodeId.seriesId.sourceId.value,
+        seriesKey = episodeId.seriesId.remoteKey,
+        episodeKey = episodeId.remoteKey,
+        readAtEpochMillis = at,
+    )
 }
 
 internal fun assembleSnapshot(
     entries: List<LibraryEntryEntity>,
     progress: List<ReadingProgressEntity>,
     bookmarks: List<BookmarkEntity>,
+    readEpisodes: List<ReadEpisodeEntity>,
     settings: ViewerSettings,
 ): UserLibrarySnapshot {
     val seriesById = entries.associateBy { it.sourceKey to it.seriesKey }
     val favorites = entries.filter(LibraryEntryEntity::favorite).map(::savedSeries)
     val recent = progress.map { item -> recentReading(item, seriesById[item.sourceKey to item.seriesKey]) }
     val savedBookmarks = bookmarks.map { item -> bookmark(item, seriesById[item.sourceKey to item.seriesKey]) }
-    return UserLibrarySnapshot(recent, favorites, savedBookmarks, settings)
+    val reads = readEpisodes.map(::readEpisode)
+    return UserLibrarySnapshot(recent, favorites, savedBookmarks, reads, settings)
 }
 
 private fun savedSeries(entity: LibraryEntryEntity) = SavedSeries(
@@ -170,3 +189,8 @@ private fun bookmark(entity: BookmarkEntity, library: LibraryEntryEntity?): Save
         createdAtEpochMillis = entity.createdAtEpochMillis,
     )
 }
+
+private fun readEpisode(entity: ReadEpisodeEntity) = ReadEpisode(
+    episodeId = EpisodeId(SeriesId(SourceId(entity.sourceKey), entity.seriesKey), entity.episodeKey),
+    readAtEpochMillis = entity.readAtEpochMillis,
+)

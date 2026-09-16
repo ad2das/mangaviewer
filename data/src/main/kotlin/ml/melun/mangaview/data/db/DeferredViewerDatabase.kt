@@ -96,6 +96,17 @@ private class DeferredViewerDao(
 
     override fun bookmarks(): Flow<List<BookmarkEntity>> = deferredFlow { dao -> dao.bookmarks() }
 
+    override suspend fun saveReadEpisode(episode: ReadEpisodeEntity) =
+        database().viewer().saveReadEpisode(episode)
+
+    override suspend fun deleteReadEpisodes(source: String, series: String) =
+        database().viewer().deleteReadEpisodes(source, series)
+
+    override suspend fun deleteReadEpisode(source: String, series: String, episode: String) =
+        database().viewer().deleteReadEpisode(source, series, episode)
+
+    override fun readEpisodes(): Flow<List<ReadEpisodeEntity>> = deferredFlow { dao -> dao.readEpisodes() }
+
     private fun <T> deferredFlow(block: (ViewerDao) -> Flow<T>): Flow<T> = flow {
         emitAll(block(database().viewer()))
     }.flowOn(ioDispatcher)
