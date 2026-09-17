@@ -121,15 +121,7 @@ internal class EngineViewerScreen(
                 engineDiagnostics.presented(presented)
                 if (presented.swapSucceeded && presented.scene.completeCoverage &&
                     presented.scene.placements.isNotEmpty()) {
-                    if (!firstFrameReported) {
-                        firstFrameReported = true
-                        // Restore the engine-path accessibility contract the old pipeline owned:
-                        // instrumentation waits for this suffix to measure first-content latency.
-                        val presentedAtMillis = android.os.SystemClock.elapsedRealtime()
-                        android.util.Log.d("NtkFrame", "first-frame elapsedMs=" +
-                            (presentedAtMillis - viewerOpenedAtMillis))
-                        runtime?.surface?.contentDescription = "viewer-frame-presented:$presentedAtMillis"
-                    }
+                    reportFirstFrame()
                     ui.presentationComplete()
                 }
             },
@@ -143,6 +135,18 @@ internal class EngineViewerScreen(
         surfaceRoot = root as? ViewerTouchRoot
         ui.observeReaderSettings()
         return root
+    }
+
+    /**
+     * Publishes the engine-path accessibility contract the old pipeline owned: instrumentation
+     * waits for this suffix to measure first-content latency.
+     */
+    private fun reportFirstFrame() {
+        if (firstFrameReported) return
+        firstFrameReported = true
+        val presentedAtMillis = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("NtkFrame", "first-frame elapsedMs=${presentedAtMillis - viewerOpenedAtMillis}")
+        runtime?.surface?.contentDescription = "viewer-frame-presented:$presentedAtMillis"
     }
 
     fun open() {
