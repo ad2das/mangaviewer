@@ -28,19 +28,26 @@ class EngineTileWork(
         val uploadKey = WorkKey(page.key.principal, gpuResource, "graphics.upload", gpuRevision, EngineTexture::class.java)
         val resultKey = uploadKey.copy(operation = "graphics.texture")
         return WorkRequest(resultKey, WorkDomain.CONTROL, priority, authEpoch = page.authEpoch, execute = { parent ->
+            val startedAtNanos = System.nanoTime()
             parent.useDependency(page) { stored ->
                 validate(stored, tile)
                 parent.useDependency(pixels.request(page, tile, parent.priority.value)) { pixels ->
+                    EnginePageWork.observer?.invoke("decode-done elapsedMs=${elapsed(startedAtNanos)}")
                     val transfer = uploader.prepareTexture(pixels)
                     try {
-                        parent.dependency(WorkRequest(uploadKey, WorkDomain.UPLOAD, parent.priority.value,
+                        val uploaded = parent.dependency(WorkRequest(uploadKey, WorkDomain.UPLOAD, parent.priority.value,
                             authEpoch = page.authEpoch, execute = { transfer.upload(epoch) },
                             dispose = { uploader.release(it) }))
+                        EnginePageWork.observer?.invoke("upload-done elapsedMs=${elapsed(startedAtNanos)}")
+                        uploaded
                     } finally { withContext(NonCancellable) { transfer.close() } }
                 }
             }
         })
     }
+
+    private fun elapsed(startedAtNanos: Long): Long =
+        (System.nanoTime() - startedAtNanos).coerceAtLeast(0L) / 1_000_000L
 
     private fun validate(page: StoredPage, tile: EngineTileSpec) {
         require(page.pageId == tile.pageId && page.contentRevision == tile.contentRevision &&

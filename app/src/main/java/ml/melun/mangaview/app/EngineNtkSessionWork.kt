@@ -2,9 +2,8 @@ package ml.melun.mangaview.app
 
 import java.net.URI
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
@@ -62,31 +61,38 @@ internal class EngineNtkSessionWork(
         WorkKey(principal, episodeId.toString(), "ntk.episode", origin.toString(), EpisodeAccessPlan::class.java),
         WorkDomain.CONTROL, priority, execute = { parent ->
             coroutineScope {
-                // Bootstrap Chromium's TCP pool during document I/O, then reuse it for the
-                // CDN addresses supplied by the verified manifest below.
+                // Preconnect both the document pool and the image pool for the known origin before
+                // either request pays its own DNS/TCP/TLS setup on the first-image path.
+                transport.warmConnections(listOf(origin.toString()), preferQuic = false)
                 pageTransport.warmConnections(listOf(origin.toString()), preferQuic = false)
-                // Download independently of process binding, retaining both leases through authorization.
-                val browserReady = CompletableDeferred<Unit>()
-                val plan = async {
-                    parent.useDependency(documents.documentRequest(episodeId, origin, 0, parent.priority.value)) { source ->
-                        browserReady.await()
-                        resolveEpisode(parent, episodeId, source)
-                    }
+                val startedAtMillis = android.os.SystemClock.elapsedRealtime()
+                // The challenge and nv credential depend only on the known episode path, so they
+                // run alongside the document fetch and are reused by the native manifest flight.
+                val warm = async {
+                    runCatching { nativeManifest.warm(origin, episodeId.remoteKey, identity) }.getOrNull()
                 }
-                parent.useDependency(WorkRequest(
-                    WorkKey(principal, episodeId.toString(), "ntk.browser.prepare", origin.toString(), NtkEngineBrowserPreparation::class.java),
-                    WorkDomain.BROWSER, parent.priority.value, execute = { browser.prepareService() },
-                    dispose = { withContext(Dispatchers.IO) { it.close() } },
-                )) {
-                    browserReady.complete(Unit)
-                    plan.await()
+                // The native challenge/nv/HMAC flight returns the manifest without any WebView,
+                // so no browser process starts for the first image. Only a refused native flight
+                // binds the engine browser service, from inside the fallback capture.
+                parent.useDependency(documents.documentRequest(episodeId, origin, 0, parent.priority.value)) { source ->
+                    android.util.Log.d("NtkEpisodes", "document-ready elapsedMs=" +
+                        (android.os.SystemClock.elapsedRealtime() - startedAtMillis))
+                    resolveEpisode(parent, episodeId, source, startedAtMillis, warm)
                 }
             }
         },
     )
 
-    private suspend fun resolveEpisode(parent: WorkContext, episodeId: EpisodeId, source: SourceDocument): EpisodeAccessPlan {
+    private suspend fun resolveEpisode(
+        parent: WorkContext,
+        episodeId: EpisodeId,
+        source: SourceDocument,
+        startedAtMillis: Long,
+        warm: Deferred<NtkNativeManifestClient.Warm?>,
+    ): EpisodeAccessPlan {
+        fun elapsed() = android.os.SystemClock.elapsedRealtime() - startedAtMillis
         val parsed = withContext(parsingDispatcher) { planner.parseDocument(episodeId, source, 0) }
+        android.util.Log.d("NtkEpisodes", "parsed elapsedMs=${elapsed()} descriptor=${parsed.descriptor != null}")
         val completed = if (parsed.descriptor == null) withContext(parsingDispatcher) { planner.complete(parsed) }
         else parent.useDependency(WorkRequest(
             WorkKey(principal, episodeId.toString(), "ntk.browser", source.replaySha256, NtkEngineAuthorization::class.java),
@@ -94,7 +100,8 @@ internal class EngineNtkSessionWork(
                 try {
                     // The provider's own challenge/nv/HMAC flight returns the identical manifest
                     // without the isolated WebView; the browser capture stays the fallback.
-                    nativeManifest.capture(origin, parsed, identity)
+                    val prewarmed = runCatching { warm.await() }.getOrNull()
+                    nativeManifest.capture(origin, parsed, identity, prewarmed)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Throwable) {
@@ -102,12 +109,17 @@ internal class EngineNtkSessionWork(
                     browser.capture(parsed)
                 }
             },
-        )) { proof -> withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) } }
+        )) { proof ->
+            android.util.Log.d("NtkEpisodes", "proof elapsedMs=${elapsed()}")
+            withContext(parsingDispatcher) { planner.completeAuthorized(parsed, proof) }
+        }
+        android.util.Log.d("NtkEpisodes", "plan elapsedMs=${elapsed()} pages=${completed.pages.size}")
         require(completed.manifest.id == episodeId && completed.documentSha256 == source.sha256 &&
             completed.finalDocumentUrl == source.finalUrl)
         // Reuse the initialized Chromium HTTP/2 pool for the provider-verified CDN addresses.
         pageTransport.warmConnections(completed.pages.flatMap { it.candidates }.map(URI::toString), preferQuic = false)
         observer?.observed(episodeId, source, completed)
+        android.util.Log.d("NtkEpisodes", "resolved elapsedMs=${elapsed()}")
         return completed
     }
 

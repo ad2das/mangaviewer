@@ -35,6 +35,9 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner,
         graph = StartupMainThreadPolicy.detectUnexpectedDiskIo(debuggable) {
             AppGraph(this, applicationScope, workDispatchers.source, workDispatchers.io)
         }
+        // Construct the engine graph (and its warmed renderer owner) before any reader launch so a
+        // direct-entry startup does not pay graph construction inside the first-image window.
+        graph.engine
     }
 
     override fun onTerminate() {

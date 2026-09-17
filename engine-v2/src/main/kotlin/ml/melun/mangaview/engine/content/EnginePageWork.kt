@@ -39,17 +39,27 @@ class EnginePageWork(
 ) {
     init { require(principal.isNotBlank()) }
 
+    private fun note(phase: String, startedAtNanos: Long, detail: String = "") {
+        val observer = observer ?: return
+        val elapsedMs = (System.nanoTime() - startedAtNanos).coerceAtLeast(0L) / 1_000_000L
+        observer("$phase elapsedMs=$elapsedMs $detail")
+    }
+
     fun request(plan: EpisodeAccessPlan, pageId: PageId, priority: WorkPriority): WorkRequest<StoredPage> {
         require(plan.manifest.id.seriesId.sourceId == planner.sourceId)
         plan.page(pageId)
         val identity = PageWorkIdentity(principal, plan, pageId)
         return identity.request("page", StoredPage::class.java, WorkDomain.CONTROL, priority) { context ->
+            val startedAtNanos = System.nanoTime()
+            note("page-start", startedAtNanos, "priority=$priority candidates=${plan.page(pageId).candidates.size}")
             val cached = context.dependency(identity.request(
                 "lookup", PinnedPage::class.java, WorkDomain.STORAGE, context.priority.value,
                 dispose = { it.close() },
             ) { PinnedPage(storage.find(pageId, plan.contentRevision)) })
-            cached.page ?: if (plan.localOnly) throw IOException("Complete cached episode is no longer available")
+            val result = cached.page ?: if (plan.localOnly) throw IOException("Complete cached episode is no longer available")
                 else load(context, identity, plan, pageId)
+            note("page-done", startedAtNanos, "cached=${cached.page != null}")
+            result
         }
     }
 
@@ -59,6 +69,7 @@ class EnginePageWork(
         plan: EpisodeAccessPlan,
         pageId: PageId,
     ): StoredPage {
+        val loadStartedAtNanos = System.nanoTime()
         for (requirement in plan.prerequisites) {
             context.dependency(prerequisite(plan, requirement, context.priority.value))
         }
@@ -68,10 +79,12 @@ class EnginePageWork(
         ) { transfer(it, plan, pageId) { dimensions ->
             context.publishMetadata(WorkMetadata.PageGeometry(pageId, plan.contentRevision, dimensions))
         } })
+        note("body-done", loadStartedAtNanos)
         val committed = context.dependency(identity.request(
             "publish", PinnedPage::class.java, WorkDomain.STORAGE, context.priority.value,
             dispose = { it.close() },
         ) { PinnedPage(storage.publish(prepared)) })
+        note("published", loadStartedAtNanos, "bytes=${committed.page?.byteCount ?: -1L}")
         return checkNotNull(committed.page)
     }
 
@@ -149,6 +162,11 @@ class EnginePageWork(
     private class PinnedPage(private val lease: StoredPageLease?) : Closeable {
         val page: StoredPage? get() = lease?.page
         override fun close() { lease?.close() }
+    }
+
+    companion object {
+        /** Optional process-local timing hook; the app wires it to logcat and engine-v2 stays JVM-only. */
+        @Volatile var observer: ((String) -> Unit)? = null
     }
 }
 

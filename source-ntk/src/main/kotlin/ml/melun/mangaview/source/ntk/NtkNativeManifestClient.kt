@@ -28,16 +28,19 @@ class NtkNativeManifestClient(
     private val transport: SourceTransport,
     private val userAgent: String,
 ) {
-    suspend fun capture(
-        origin: URI,
-        document: NtkAccessDocument,
-        identity: NtkBrowserIdentity,
-    ): NtkEngineAuthorization {
-        val descriptor = requireNotNull(document.descriptor) {
-            "NTK native manifest requires a protected document"
-        }
+    /** Cookies plus nv credential from the pre-document challenge flight. */
+    class Warm internal constructor(
+        internal val cookies: MutableMap<String, String>,
+        internal val session: String,
+    )
+
+    /**
+     * Runs the challenge and nv credential against the known episode path before the document
+     * exists. [capture] reuses the result so the two round trips overlap the document fetch
+     * instead of the first-image critical path.
+     */
+    suspend fun warm(origin: URI, episodePath: String, identity: NtkBrowserIdentity): Warm {
         val base = URI(origin.scheme, origin.authority, null, null, null).toString()
-        val episodePath = document.episodeId.remoteKey
         val referer = base + episodePath
         val cookies = linkedMapOf(
             "ntk_fp" to identity.fingerprint,
@@ -45,6 +48,29 @@ class NtkNativeManifestClient(
         )
         challenge(base, episodePath, referer, cookies)
         val session = session(base, episodePath, referer, cookies)
+        return Warm(cookies, session)
+    }
+
+    suspend fun capture(
+        origin: URI,
+        document: NtkAccessDocument,
+        identity: NtkBrowserIdentity,
+        warm: Warm? = null,
+    ): NtkEngineAuthorization {
+        val descriptor = requireNotNull(document.descriptor) {
+            "NTK native manifest requires a protected document"
+        }
+        val base = URI(origin.scheme, origin.authority, null, null, null).toString()
+        val episodePath = document.episodeId.remoteKey
+        val referer = base + episodePath
+        val cookies = warm?.cookies ?: linkedMapOf(
+            "ntk_fp" to identity.fingerprint,
+            "ntk_pid" to identity.persistentId,
+        )
+        val session = warm?.session ?: run {
+            challenge(base, episodePath, referer, cookies)
+            session(base, episodePath, referer, cookies)
+        }
         val nonce = randomToken(NONCE_BYTES)
         val manifest = exchange(
             origin = base,

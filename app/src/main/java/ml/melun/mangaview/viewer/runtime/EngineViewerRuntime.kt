@@ -184,8 +184,11 @@ internal class EngineViewerRuntime(
         reportAttached: (Boolean) -> Unit) {
         val generation = ++surfaceGeneration
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val attachStartedAtNanos = System.nanoTime()
             try {
                 val attached = renderer.attach(surface, width, height, refreshRate)
+                android.util.Log.d("NtkFrame", "renderer-attach attached=$attached elapsedMs=" +
+                    ((System.nanoTime() - attachStartedAtNanos).coerceAtLeast(0L) / 1_000_000L))
                 if (!closing && generation == surfaceGeneration) {
                     if (attached) {
                         graphics.enabled(true)

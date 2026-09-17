@@ -71,6 +71,8 @@ internal class EngineViewerScreen(
     private var rendererLease: ml.melun.mangaview.app.EngineRendererPreparation<
         ml.melun.mangaview.viewer.runtime.EngineSurfaceOwner>.Lease? = null
     private var openingReleased = false
+    private var firstFrameReported = false
+    private var viewerOpenedAtMillis = 0L
     private val engineClosed = CompletableDeferred<Unit>()
     private val engineDiagnostics = EngineViewerDiagnostics()
     @Volatile private var surfaceRoot: ViewerTouchRoot? = null
@@ -119,6 +121,15 @@ internal class EngineViewerScreen(
                 engineDiagnostics.presented(presented)
                 if (presented.swapSucceeded && presented.scene.completeCoverage &&
                     presented.scene.placements.isNotEmpty()) {
+                    if (!firstFrameReported) {
+                        firstFrameReported = true
+                        // Restore the engine-path accessibility contract the old pipeline owned:
+                        // instrumentation waits for this suffix to measure first-content latency.
+                        val presentedAtMillis = android.os.SystemClock.elapsedRealtime()
+                        android.util.Log.d("NtkFrame", "first-frame elapsedMs=" +
+                            (presentedAtMillis - viewerOpenedAtMillis))
+                        runtime?.surface?.contentDescription = "viewer-frame-presented:$presentedAtMillis"
+                    }
                     ui.presentationComplete()
                 }
             },
@@ -136,6 +147,7 @@ internal class EngineViewerScreen(
 
     fun open() {
         val createdRuntime = requireNotNull(runtime)
+        viewerOpenedAtMillis = android.os.SystemClock.elapsedRealtime()
         engineDiagnostics.opened(System.nanoTime())
         sessionScope.launch {
             openingHandoff?.awaitPredecessor()

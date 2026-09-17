@@ -23,9 +23,12 @@ internal object NtkBrowserCaptureScript {
               );
             } catch (_) {}
           };
+          // The manifest request needs only the nv session and its HMAC proof. It does not
+          // wait for the scope acknowledgement: the provider serves the same manifest with
+          // acked=false, so firing before the ACK removes the guard/minSeen round trip from
+          // the first-image path. A refused attempt re-arms exactly one post-ACK retry.
           const scheduleManifest = () => {
-            if (!window.__nativeAckReady || window.__nativeManifestObserved ||
-                window.__nativeManifestFallbackScheduled) return;
+            if (window.__nativeManifestObserved || window.__nativeManifestFallbackScheduled) return;
             const descriptor = window.__nativeManifestDescriptor;
             if (!descriptor || typeof descriptor.path !== 'string' ||
                 !descriptor.body) return;
@@ -34,6 +37,7 @@ internal object NtkBrowserCaptureScript {
               window.__nativeManifestFallbackScheduled = false;
               if (window.__nativeManifestObserved || window.__nativeManifestFlight ||
                   typeof window.__nativePrepareManifestRequest !== 'function') return;
+              report('manifest-preack-start');
               window.__nativeManifestFlight = window.__nativePrepareManifestRequest(descriptor)
                 .then(prepared => {
                   if (!prepared || window.__nativeManifestObserved) return null;
@@ -43,7 +47,23 @@ internal object NtkBrowserCaptureScript {
                   window.__nativeManifestFlight = null;
                   return null;
                 }
-                if (!response.ok) window.__nativeManifestFlight = null;
+                if (!response.ok) {
+                  window.__nativeManifestFlight = null;
+                  report('manifest-preack-refused', response.status);
+                  if (!window.__nativeManifestRetryArmed) {
+                    window.__nativeManifestRetryArmed = true;
+                    window.__nativeManifestObserved = false;
+                    if (window.__nativeAckReady) {
+                      scheduleManifest();
+                    } else {
+                      window.addEventListener('ntk-ad-ack-ready', () => {
+                        scheduleManifest();
+                      }, {once: true});
+                    }
+                  }
+                } else {
+                  window.__nativeManifestRetryArmed = false;
+                }
                 return response;
               }).catch(error => {
                 window.__nativeManifestFlight = null;

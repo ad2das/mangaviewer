@@ -44,6 +44,11 @@ internal class EngineAppGraph(
     private val newxtoonClearance: NewxtoonClearance? = null,
     private val newxtoonUserAgent: String = userAgent,
 ) {
+    init {
+        // Route the engine's JVM-only page/decode timing hook to logcat on device.
+        ml.melun.mangaview.engine.content.EnginePageWork.observer =
+            { message -> android.util.Log.d("NtkPageWork", message) }
+    }
     // One body beyond the twelve background transfers and two visible reserves is kept for the
     // document-end original so a fast reader cannot outrun a displayable episode end.
     private val workLimits = WorkLimits(network = 16, bodies = 15, backgroundNetwork = 12)
@@ -61,6 +66,9 @@ internal class EngineAppGraph(
                 bufferedCompositor = Build.VERSION.SDK_INT >= 31)
         }, prepare = { it.prepare() }, dispose = { it.close() },
         reportFailure = { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) })
+    // Create and prepare the GL owner as soon as the engine graph exists so a direct reader
+    // launch attaches a warm renderer instead of paying native context setup on the first frame.
+    init { renderers.warm() }
     private val openingDecode = AndroidWorkDispatcher("viewer-opening-decode", 1, android.os.Process.THREAD_PRIORITY_BACKGROUND)
     private val openingPixels = EngineOpeningPixels(
         ml.melun.mangaview.engine.content.EnginePixelWork(
