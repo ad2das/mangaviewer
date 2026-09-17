@@ -67,8 +67,23 @@ class NewxtoonThrottleRetryTest {
         source.search("생존"); source.search(" 생존 ")
         assertEquals(1, transport.calls)
         source.search("생존", "2")
-        assertEquals(2_500L, testScheduler.currentTime)
+        assertEquals(NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS, testScheduler.currentTime)
         assertEquals(2, transport.calls)
+    }
+
+    @Test fun aThrottledAttemptTightensTheFollowingSpacingAboveTheFloor() = runTest {
+        val transport = StatusTransport(429 to "", 200 to "<input id='page-search' name='q'>")
+        transport.retryAfter = "0"
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport) { testScheduler.currentTime }
+        assertTrue(source.search("생존").items.isEmpty())
+        source.search("생존", "2")
+        val afterSecond = testScheduler.currentTime
+        source.search("생존", "3")
+        val spacing = testScheduler.currentTime - afterSecond
+        assertTrue(
+            "throttling must widen the following spacing beyond the floor, got $spacing",
+            spacing > NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS,
+        )
     }
 
     @Test fun retriesThrottledDocumentRequestsUntilTheySucceed() = runTest {

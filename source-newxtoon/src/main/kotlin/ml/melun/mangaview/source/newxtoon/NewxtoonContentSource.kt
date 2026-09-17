@@ -4,6 +4,9 @@ import java.io.Closeable
 import java.io.IOException
 import java.net.URLEncoder
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -203,18 +206,28 @@ class NewxtoonContentSource(
         val embedded = parser.chapters(html)
         val pagination = parser.chapterPagination(html) ?: return embedded
         // The series page already renders the first chapter page; the feed serves the rest.
-        var page = if (embedded.isEmpty()) 1 else pagination.nextPage
+        var next = if (embedded.isEmpty()) 1 else pagination.nextPage
         val visited = mutableSetOf<Int>()
         val merged = LinkedHashMap<String, NewxtoonChapter>()
         embedded.forEach { merged.putIfAbsent(it.id, it) }
-        if (page != null && merged.isNotEmpty()) onPartial(merged.values.toList())
-        while (page != null && visited.size < MAX_CHAPTER_PAGES && visited.add(page)) {
-            val payload = parser.chapterPage(fetch(chapterPageUrl(pagination.url, page)))
-            payload.chapters.forEach { merged.putIfAbsent(it.id, it) }
-            page = payload.nextPage
-            if (page != null && merged.isNotEmpty()) onPartial(merged.values.toList())
+        if (next != null && merged.isNotEmpty()) onPartial(merged.values.toList())
+        // A long series needs a dozen feed pages. Fetch a small window at a time and drive the next
+        // window from the last page's next_page, so a 185-chapter list no longer pays one round trip
+        // per page in series. The document lane still paces and throttles every request.
+        while (next != null && visited.size < MAX_CHAPTER_PAGES) {
+            val start = next ?: break
+            val pages = (start until start + CHAPTER_PAGE_BATCH)
+                .take((MAX_CHAPTER_PAGES - visited.size).coerceAtLeast(0))
+                .filter { visited.add(it) }
+            if (pages.isEmpty()) break
+            val payloads = coroutineScope {
+                pages.map { page -> async { parser.chapterPage(fetch(chapterPageUrl(pagination.url, page))) } }.awaitAll()
+            }
+            payloads.forEach { payload -> payload.chapters.forEach { merged.putIfAbsent(it.id, it) } }
+            next = payloads.last().nextPage
+            if (merged.isNotEmpty()) onPartial(merged.values.toList())
         }
-        check(page == null) { "뉴엑스툰 회차 페이지가 반복되거나 너무 많습니다. 다시 시도해 주세요" }
+        check(next == null) { "뉴엑스툰 회차 페이지가 반복되거나 너무 많습니다. 다시 시도해 주세요" }
         return merged.values.toList()
     }
 
@@ -283,5 +296,8 @@ class NewxtoonContentSource(
 
     private companion object {
         const val MAX_CHAPTER_PAGES = 400
+        // Two pages per window: the next page is known from the previous response, so the window
+        // speculates at most one page past the provider's last page.
+        const val CHAPTER_PAGE_BATCH = 2
     }
 }

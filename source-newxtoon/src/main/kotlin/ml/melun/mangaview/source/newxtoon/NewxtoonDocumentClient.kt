@@ -13,39 +13,77 @@ import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 
-/** One origin-wide document lane: coalesce duplicate loads and respect the server's cooldown. */
+/** Floor of the adaptive request spacing. The provider tolerates a much faster lane than before. */
+internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 500L
+
+/** Ceiling the spacing backs off to after throttling: the previously fixed 2.5s cadence. */
+internal const val NEWXTOON_MAX_REQUEST_INTERVAL_MILLIS = 2_500L
+
+private const val INTERVAL_DECAY_MILLIS = 250L
+
+/**
+ * One origin-wide document lane: identical loads coalesce onto the first request, the provider's
+ * own cooldown is honoured, and requests leave at an adaptive spacing. A throttled response doubles
+ * the spacing up to the known-safe cadence; every accepted response walks it back toward the floor,
+ * so a series with dozens of chapter pages no longer pays 2.5s per page.
+ */
 internal class NewxtoonDocumentClient(
     private val transport: SourceTransport,
     private val clock: () -> Long,
 ) {
     private val lock = Mutex()
     private val cache = LinkedHashMap<String, CachedDocument>(16, 0.75f, true)
+    private val inFlight = mutableMapOf<String, kotlinx.coroutines.CompletableDeferred<String>>()
     private var nextRequestAt = 0L
     private var cooldownUntil = 0L
+    @Volatile private var requestIntervalMillis = NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS
 
-    suspend fun fetch(request: SourceRequest, validate: (String) -> Unit = {}): String = lock.withLock {
-        cache[request.url]?.takeIf { clock() - it.savedAt in 0..CACHE_TTL_MILLIS }?.let {
-            return@withLock it.html
+    suspend fun fetch(request: SourceRequest, validate: (String) -> Unit = {}): String {
+        val url = request.url
+        val existing = lock.withLock {
+            cache[url]?.takeIf { clock() - it.savedAt in 0..CACHE_TTL_MILLIS }?.let { return it.html }
+            inFlight[url]?.let { return@withLock it to false }
+            kotlinx.coroutines.CompletableDeferred<String>().also { inFlight[url] = it } to true
         }
-        val cooldown = cooldownUntil - clock()
-        if (cooldown > 0) throw throttled(cooldown)
-        delay((nextRequestAt - clock()).coerceAtLeast(0))
-        val html = fetchWithRetry(request)
-        validate(html)
-        if (html.length <= MAX_CACHED_DOCUMENT_CHARS) {
-            cache[request.url] = CachedDocument(html, clock())
-            while (cache.size > MAX_CACHED_DOCUMENTS) cache.remove(cache.keys.first())
+        val shared = existing.first
+        if (!existing.second) return shared.await()
+        try {
+            val sendAt = lock.withLock {
+                val now = clock()
+                val cooldown = cooldownUntil - now
+                if (cooldown > 0) throw throttled(cooldown)
+                val at = if (nextRequestAt > now) nextRequestAt else now
+                nextRequestAt = saturatedAdd(at, requestIntervalMillis)
+                at
+            }
+            delay((sendAt - clock()).coerceAtLeast(0))
+            val html = fetchWithRetry(request)
+            validate(html)
+            lock.withLock {
+                if (html.length <= MAX_CACHED_DOCUMENT_CHARS) {
+                    cache[url] = CachedDocument(html, clock())
+                    while (cache.size > MAX_CACHED_DOCUMENTS) cache.remove(cache.keys.first())
+                }
+            }
+            shared.complete(html)
+            return html
+        } catch (failure: Throwable) {
+            shared.completeExceptionally(failure)
+            throw failure
+        } finally {
+            lock.withLock { if (inFlight[url] === shared) inFlight.remove(url) }
         }
-        html
     }
 
     private suspend fun fetchWithRetry(request: SourceRequest): String {
         for (attempt in 0..2) {
             try {
                 val response = transport.execute(request)
-                nextRequestAt = clock() + REQUEST_INTERVAL_MILLIS
                 val html = readResponse(response, attempt)
-                if (html != null) return html
+                if (html != null) {
+                    relaxInterval()
+                    return html
+                }
             } catch (limited: SourceThrottledException) {
                 throw limited
             } catch (rejected: DocumentRejected) {
@@ -68,6 +106,7 @@ internal class NewxtoonDocumentClient(
         response.close()
         if (status == 429) {
             val wait = retryAfter ?: DEFAULT_COOLDOWN_MILLIS
+            tightenInterval()
             cooldownUntil = maxOf(cooldownUntil, saturatedAdd(clock(), wait))
             if (wait > MAX_INLINE_RETRY_MILLIS || attempt == 2) throw throttled(wait)
             delay(wait.coerceAtLeast(250L))
@@ -85,6 +124,16 @@ internal class NewxtoonDocumentClient(
         throw DocumentRejected(status)
     }
 
+    private fun relaxInterval() {
+        requestIntervalMillis = (requestIntervalMillis - INTERVAL_DECAY_MILLIS)
+            .coerceAtLeast(NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS)
+    }
+
+    private fun tightenInterval() {
+        requestIntervalMillis = (requestIntervalMillis * 2)
+            .coerceAtMost(NEWXTOON_MAX_REQUEST_INTERVAL_MILLIS)
+    }
+
     private fun throttled(delayMillis: Long) = SourceThrottledException(
         "NEWXTOON request throttled with 429; retry after the provider cooldown",
         delayMillis.coerceAtLeast(0L),
@@ -94,7 +143,6 @@ internal class NewxtoonDocumentClient(
     private class DocumentRejected(status: Int) : IOException("NEWXTOON request failed with $status")
 
     private companion object {
-        const val REQUEST_INTERVAL_MILLIS = 2_500L
         const val DEFAULT_COOLDOWN_MILLIS = 60_000L
         const val MAX_INLINE_RETRY_MILLIS = 2_000L
         const val CACHE_TTL_MILLIS = 15_000L

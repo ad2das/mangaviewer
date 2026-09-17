@@ -35,8 +35,8 @@ class NewxtoonChapterPaginationTest {
             requestCounts += transport.requests.size
             assertTrue("Partial lists must not invent a first-chapter sequence", partial.all { it.sequenceNumber == null })
         }
-        assertEquals(listOf(20, 40), partialCounts)
-        assertEquals(listOf(1, 2), requestCounts)
+        assertEquals(listOf(20, 42), partialCounts)
+        assertEquals(listOf(1, 3), requestCounts)
         assertEquals(42, all.size)
         assertEquals("1063130", all.first().id.remoteKey)
         assertEquals("5318", all.last().id.remoteKey)
@@ -79,9 +79,14 @@ class NewxtoonChapterPaginationTest {
         )
 
         assertEquals(3, transport.requests.size)
-        assertTrue(transport.requests[0].url.endsWith("/comics/41"))
-        assertTrue(transport.requests[1].url.endsWith("/comics/41/chapters?page=2"))
-        assertTrue(transport.requests[2].url.endsWith("/comics/41/chapters?page=3"))
+        assertEquals(
+            "the series page is fetched once and the feed window covers both remaining pages",
+            setOf("/comics/41", "/comics/41/chapters?page=2", "/comics/41/chapters?page=3"),
+            transport.requests.map { request ->
+                val uri = java.net.URI(request.url)
+                uri.path + (uri.query?.let { "?$it" } ?: "")
+            }.toSet(),
+        )
     }
 
     @Test fun doesNotFollowTheChapterFeedWhenTheSeriesPageHasNoNextPage() = runBlocking {
