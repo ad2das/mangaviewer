@@ -19,6 +19,11 @@ import ml.melun.mangaview.source.readBytes
 internal class NtkDocumentClient(
     private val config: NtkConfig,
     private val transport: SourceTransport,
+    /**
+     * Cover artwork lives on a CDN whose chain the platform trust store cannot build, so it is
+     * fetched through the same browser engine the reader pages use instead of the document client.
+     */
+    private val artworkTransport: SourceTransport = transport,
 ) {
     private val origin = NtkOriginSession(config.initialOrigin)
 
@@ -227,7 +232,7 @@ internal class NtkDocumentClient(
     suspend fun openArtwork(value: String, refererPath: String): OpenedPage? {
         val base = "${origin.current()}/"
         val url = runCatching { URI(base).resolve(value.trim()).toString() }.getOrNull() ?: return null
-        val response = transport.execute(SourceRequest(url, headers = requestHeaders(origin.url(refererPath))))
+        val response = artworkTransport.execute(SourceRequest(url, headers = requestHeaders(origin.url(refererPath))))
         if (response.statusCode !in 200..299) {
             response.close()
             return null

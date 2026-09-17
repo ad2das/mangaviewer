@@ -46,6 +46,24 @@ class OkHttpTransportFactory(
         }
     }
 
+    /**
+     * A client for provider image CDNs whose chain the platform cannot build. It is never used for
+     * a host outside [ProviderImageTrust]; [ProviderImageTransport] enforces that routing.
+     */
+    fun createForProviderImages(cookieJar: CookieJar = CookieJar.NO_COOKIES): OkHttpSourceTransport {
+        val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
+        val client = OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .cookieJar(cookieJar)
+            .sslSocketFactory(ProviderImageTrust.socketFactory(), ProviderImageTrust.trustManager())
+            .connectionPool(ConnectionPool(parallelism, 5L, TimeUnit.MINUTES))
+            .connectTimeout(10L, TimeUnit.SECONDS)
+            .readTimeout(30L, TimeUnit.SECONDS)
+            .writeTimeout(30L, TimeUnit.SECONDS)
+            .build()
+        return OkHttpSourceTransport(client, ioDispatcher)
+    }
+
     private fun create(
         cookieJar: CookieJar,
         protocols: List<Protocol>,

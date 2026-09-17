@@ -20,6 +20,7 @@ import ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore
 import ml.melun.mangaview.data.db.DeferredViewerDatabase
 import ml.melun.mangaview.data.library.UserLibraryRepository
 import ml.melun.mangaview.data.network.OkHttpTransportFactory
+import ml.melun.mangaview.data.network.ProviderImageTransport
 import ml.melun.mangaview.data.network.HttpEngineSourceTransport
 import ml.melun.mangaview.data.offline.OfflineDownloadManager
 import ml.melun.mangaview.data.offline.OfflineEpisodeStore
@@ -227,6 +228,9 @@ internal class AppGraph(
         coroutineContext.ensureActive()
         val transport = createNtkTransport()
         val documentTransport = ObservedSourceTransport(resilient(transportFactory.create()), "catalog-ntk-document") { networkEvidenceObserver }
+        // Cover artwork sits on an image CDN whose chain the platform cannot build, so those hosts
+        // leave through a relaxed client while every other host keeps the normal transport.
+        val artworkTransport = ProviderImageTransport(documentTransport, transportFactory.createForProviderImages())
         try {
             coroutineContext.ensureActive()
             val source = NtkContentSource(
@@ -238,6 +242,7 @@ internal class AppGraph(
                 transport,
                 ntkGateway,
                 documentTransport = documentTransport,
+                artworkTransport = artworkTransport,
             )
             transport.warmConnections(listOf(DEFAULT_NTK_ORIGIN), preferQuic = false)
             transport.warmConnections(listOf(DEFAULT_NTK_ORIGIN), preferQuic = true)
@@ -246,10 +251,12 @@ internal class AppGraph(
                 source.close()
                 (transport as? Closeable)?.close()
                 documentTransport.close()
+                artworkTransport.close()
             }
         } catch (failure: Throwable) {
             (transport as? Closeable)?.close()
             documentTransport.close()
+            artworkTransport.close()
             throw failure
         }
     }

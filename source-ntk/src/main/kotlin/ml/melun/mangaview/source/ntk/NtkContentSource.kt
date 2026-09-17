@@ -40,9 +40,10 @@ class NtkContentSource(
     accessGateway: NtkAccessGateway,
     parser: NtkDocumentParser = NtkDocumentParser(),
     documentTransport: SourceTransport = transport,
+    artworkTransport: SourceTransport = transport,
 ) : ContentSource, Closeable {
     override val id = SourceId("ntk")
-    private val documents = NtkDocumentClient(config, documentTransport)
+    private val documents = NtkDocumentClient(config, documentTransport, artworkTransport)
     private val catalog = NtkCatalogService(id, config.searchPageSize, documents, parser)
     private val pages = NtkPageService(
         transport,
