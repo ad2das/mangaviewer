@@ -77,8 +77,8 @@ internal fun LibraryScreen(
         if (state.seriesMenuVisible) SeriesActionsOverlay(state, colors, accept)
         if (state.downloadSelectionVisible) DownloadSelectionOverlay(state, colors, accept)
         if (state.pendingOfflineRemoval != null) OfflineRemovalConfirmation(state, colors, accept)
-        if (state.settingsVisible) SettingsOverlay(colors, accept, account, updateAvailable, onOpenCrashReport)
-        if (state.preferencesVisible) PreferencesOverlay(state, colors, accept)
+        if (state.settingsVisible) SettingsOverlay(colors, accept, account, updateAvailable)
+        if (state.preferencesVisible) PreferencesOverlay(state, colors, accept, onOpenCrashReport)
         if (state.sourcePickerVisible) SourcePickerOverlay(state, colors, accept)
     }
 }

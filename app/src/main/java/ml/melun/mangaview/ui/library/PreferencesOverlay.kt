@@ -22,7 +22,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-internal fun PreferencesOverlay(state: LibraryState, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+internal fun PreferencesOverlay(
+    state: LibraryState,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+    onOpenCrashReport: () -> Unit,
+) {
     Column(Modifier.fillMaxSize().background(colors.background)) {
         PreferencesHeader(colors, accept)
         LazyColumn(
@@ -65,6 +70,8 @@ internal fun PreferencesOverlay(state: LibraryState, colors: LibraryColors, acce
                         .background(colors.card)
                         .border(1.dp, colors.outline, RoundedCornerShape(18.dp)),
                 ) {
+                    PreferenceRow("오류 리포트 보내기", "", colors, onOpenCrashReport)
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(colors.outline))
                     PreferenceRow("오픈소스 라이선스", "", colors) { accept(LibraryIntent.OpenLicenses) }
                 }
             }
