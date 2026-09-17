@@ -7,6 +7,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -29,6 +30,7 @@ import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SourceSeriesDetails
+import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourceTransport
 
 const val DEFAULT_NEWXTOON_ORIGIN = "https://newxtoon1.com"
@@ -213,20 +215,29 @@ class NewxtoonContentSource(
         // The header advertises the total chapter count and the feed page size, so the whole feed
         // range is known and can be fetched in parallel windows instead of one round trip per page.
         val pageSize = parser.chapterPageSize(html)
-        val total = parser.chapterTotal(html)
-        val lastPage = if (pageSize != null && total != null) {
-            ((total + pageSize - 1) / pageSize).coerceAtLeast(1)
+        val advertised = parser.chapterTotal(html)
+        // Only trust the advertised total when it can actually cover the embedded list and stays
+        // inside a sane page range; the discovery walk remains the authority for anything else.
+        val lastPage = if (pageSize != null && advertised != null && advertised >= merged.size) {
+            ((advertised + pageSize - 1) / pageSize).coerceAtLeast(1).takeIf { it <= MAX_CHAPTER_PAGES }
         } else null
-        if (lastPage != null) {
-            for (window in (2..lastPage).take(MAX_CHAPTER_PAGES).chunked(CHAPTER_PAGE_WINDOW)) {
-                fetchChapterPages(pagination.url, window).forEach { payload ->
-                    payload.chapters.forEach { merged.putIfAbsent(it.id, it) }
+        if (lastPage != null && advertised != null) {
+            try {
+                for (window in (2..lastPage).take(MAX_CHAPTER_PAGES).chunked(CHAPTER_PAGE_WINDOW)) {
+                    fetchChapterPages(pagination.url, window).forEach { payload ->
+                        payload.chapters.forEach { merged.putIfAbsent(it.id, it) }
+                    }
+                    if (merged.isNotEmpty()) onPartial(merged.values.toList())
                 }
-                if (merged.isNotEmpty()) onPartial(merged.values.toList())
+                if (merged.size >= advertised) return merged.values.toList()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: IOException) {
+                // A refused window must not lose the whole list. The gentler walk below reuses the
+                // document cache, so pages the parallel intake already served cost no extra request.
             }
-            return merged.values.toList()
         }
-        // No advertised total: walk next_page in bounded speculative windows.
+        // No advertised total, or the parallel intake was refused: walk next_page in small windows.
         val visited = mutableSetOf<Int>()
         var next = firstPage
         while (true) {
@@ -248,8 +259,27 @@ class NewxtoonContentSource(
     /** Fetches feed pages concurrently; the document lane still paces and throttles every request. */
     private suspend fun fetchChapterPages(feedUrl: String, pages: List<Int>): List<NewxtoonChapterPage> =
         coroutineScope {
-            pages.map { page -> async { parser.chapterPage(fetch(chapterPageUrl(feedUrl, page))) } }.awaitAll()
+            pages.map { page -> async { fetchChapterPage(feedUrl, page) } }.awaitAll()
         }
+
+    /** One feed page with bounded retries, so a single throttled or failed page cannot kill the list. */
+    private suspend fun fetchChapterPage(feedUrl: String, page: Int): NewxtoonChapterPage {
+        var last: IOException? = null
+        for (attempt in 0 until CHAPTER_PAGE_ATTEMPTS) {
+            try {
+                return parser.chapterPage(fetch(chapterPageUrl(feedUrl, page)))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (throttled: SourceThrottledException) {
+                last = throttled
+                delay(throttled.retryAfterMillis.coerceIn(250L, CHAPTER_PAGE_MAX_WAIT_MILLIS))
+            } catch (failure: IOException) {
+                last = failure
+                delay(500L * (attempt + 1))
+            }
+        }
+        throw checkNotNull(last) { "Newxtoon chapter page $page failed" }
+    }
 
     private fun chapterPageUrl(feedUrl: String, page: Int): String =
         feedUrl + (if (feedUrl.contains('?')) "&" else "?") + "page=$page"
@@ -317,9 +347,11 @@ class NewxtoonContentSource(
     private companion object {
         const val MAX_CHAPTER_PAGES = 400
         // The whole feed range is known when the header advertises the total, so it is fetched in
-        // parallel windows of this size. The discovery path speculates at most one page past the
-        // provider's last page.
-        const val CHAPTER_PAGE_WINDOW = 12
+        // parallel windows. The window stays small: a wide burst invites the provider's throttle and
+        // one refused page must not cost the list. The discovery path speculates at most one page.
+        const val CHAPTER_PAGE_WINDOW = 4
         const val CHAPTER_DISCOVERY_WINDOW = 2
+        const val CHAPTER_PAGE_ATTEMPTS = 3
+        const val CHAPTER_PAGE_MAX_WAIT_MILLIS = 3_000L
     }
 }

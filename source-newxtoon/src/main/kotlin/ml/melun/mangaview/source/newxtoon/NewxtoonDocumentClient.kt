@@ -13,8 +13,8 @@ import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 
-/** Floor of the adaptive request spacing. The provider serves ten concurrent feed pages without a 429. */
-internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 100L
+/** Floor of the adaptive request spacing. Kept well under the old 2.5s cadence but not aggressive. */
+internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 400L
 
 /** Ceiling the spacing backs off to after throttling: the previously fixed 2.5s cadence. */
 internal const val NEWXTOON_MAX_REQUEST_INTERVAL_MILLIS = 2_500L
