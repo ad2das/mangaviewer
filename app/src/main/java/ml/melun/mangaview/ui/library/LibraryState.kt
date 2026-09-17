@@ -113,7 +113,13 @@ internal sealed interface LibraryContent {
         val loadingNext: Boolean = false,
         val nextFailure: String? = null,
     ) : LibraryContent
-    data class Episodes(val series: SourceSeries, val items: List<SourceEpisode>) : LibraryContent
+    data class Episodes(
+        val series: SourceSeries,
+        val items: List<SourceEpisode>,
+        val refreshing: Boolean = false,
+        val refreshFailure: String? = null,
+        val complete: Boolean = true,
+    ) : LibraryContent
     data class Failure(val message: String) : LibraryContent
 }
 

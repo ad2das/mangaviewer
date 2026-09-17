@@ -51,7 +51,7 @@ internal fun SeriesDetailScreen(
         DetailToolbar(series, state.saved.favorites.any { it.id == series.id }, colors, accept)
         when (val content = state.content) {
             LibraryContent.Loading -> DetailLoading(state, artworkLoader, colors, accept)
-            is LibraryContent.Episodes -> DetailBody(state, content.items, artworkLoader, colors, accept)
+            is LibraryContent.Episodes -> DetailBody(state, content, artworkLoader, colors, accept)
             is LibraryContent.Failure -> DetailFailure(state, content.message, artworkLoader, colors, accept)
             else -> DetailLoading(state, artworkLoader, colors, accept)
         }
@@ -88,12 +88,13 @@ private fun DetailToolbar(
 }
 
 @Composable
-private fun IconButton(icon: LibraryIcon, label: String, color: Color, click: () -> Unit) {
+private fun IconButton(icon: LibraryIcon, label: String, color: Color, enabled: Boolean = true, click: () -> Unit) {
     Box(
         Modifier.size(48.dp)
             .semantics { contentDescription = label }
+            .alpha(if (enabled) 1f else 0.35f)
             .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = click),
+            .clickable(enabled = enabled, onClick = click),
         contentAlignment = Alignment.Center,
     ) {
         LibraryIconView(icon, color, Modifier.size(24.dp))
@@ -137,13 +138,14 @@ private fun DetailFailure(
 @Composable
 private fun DetailBody(
     state: LibraryState,
-    episodes: List<SourceEpisode>,
+    content: LibraryContent.Episodes,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
     val series = state.activeSeries ?: return
-    val quickRead = quickReadEpisode(state, series, episodes)
+    val episodes = content.items
+    val quickRead = if (content.complete) quickReadEpisode(state, series, episodes) else null
     val readEpisodes = remember(state.saved.readEpisodes) {
         state.saved.readEpisodes.mapTo(hashSetOf()) { it.episodeId }
     }
@@ -154,9 +156,10 @@ private fun DetailBody(
         item { DetailHeader(series, quickRead, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept) }
         item { DetailTabs(state.detailTab, colors, accept) }
         if (state.detailTab != DetailTab.EPISODES) {
-            item { DetailInformation(state.detailTab, series, episodes.size, state.activeSeriesDetails, colors) }
+            item { DetailInformation(state.detailTab, series, episodes.size, state.activeSeriesDetails, colors, content.complete) }
         }
-        item { EpisodeCountHeader(episodes.size, colors) }
+        item { EpisodeCountHeader(content, colors, accept) }
+        item { EpisodeRefreshStatus(content, colors) }
         if (episodes.isEmpty()) {
             item { LibraryMessage("등록된 회차가 없습니다", colors, Modifier.height(220.dp)) }
         } else {
@@ -282,6 +285,7 @@ private fun DetailInformation(
     episodeCount: Int,
     details: SourceSeriesDetails?,
     colors: LibraryColors,
+    complete: Boolean,
 ) {
     val text = when (tab) {
         DetailTab.INTRO -> details?.description?.takeIf(String::isNotBlank)
@@ -291,7 +295,7 @@ private fun DetailInformation(
             append("출처: ${series.id.sourceId.value.uppercase()}")
             details?.status?.let { append("\n상태: ${it.label()}") }
             details?.authors?.takeIf(String::isNotBlank)?.let { append("\n작가: $it") }
-            append("\n총 회차: ${episodeCount}개")
+            append("\n${if (complete) "총 회차" else "불러온 회차"}: ${episodeCount}개")
             append("\n원작 식별자: ${series.id.remoteKey}")
         }
         DetailTab.EPISODES -> return
@@ -541,7 +545,7 @@ private fun EpisodeStorageAction(episode: SourceEpisode, saved: Boolean, downloa
 }
 
 @Composable
-private fun EpisodeCountHeader(count: Int, colors: LibraryColors) {
+private fun EpisodeCountHeader(content: LibraryContent.Episodes, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(start = 18.dp, top = 22.dp, end = 18.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -554,6 +558,20 @@ private fun EpisodeCountHeader(count: Int, colors: LibraryColors) {
             BasicText("회차", style = sectionStyle(colors, 16))
         }
         Spacer(Modifier.width(8.dp))
-        BasicText("${count}개", style = hintStyle(colors, 13))
+        BasicText("${content.items.size}개${if (content.complete) "" else " 불러옴"}", style = hintStyle(colors, 13))
+        Spacer(Modifier.weight(1f))
+        IconButton(LibraryIcon.REFRESH, "회차 새로고침", colors.accent, enabled = !content.refreshing) {
+            accept(LibraryIntent.RetryDetail)
+        }
     }
+}
+
+@Composable
+private fun EpisodeRefreshStatus(content: LibraryContent.Episodes, colors: LibraryColors) {
+    val message = content.refreshFailure?.let { "$it · 새로고침으로 다시 시도" }
+        ?: if (content.refreshing) {
+            if (content.complete) "새 회차를 확인하고 있습니다" else "나머지 회차를 불러오고 있습니다"
+        } else return
+    BasicText(message, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+        hintStyle(colors, 12).copy(color = if (content.refreshFailure != null) colors.error else colors.secondary))
 }

@@ -23,6 +23,35 @@ class NewxtoonChapterPaginationTest {
     private fun source(transport: SourceTransport) =
         NewxtoonContentSource(NewxtoonConfig(userAgent = "MangaViewer test"), transport)
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun publishesEmbeddedChaptersBeforeRequestingTheFeedAndKeepsTheCompleteOrder() = kotlinx.coroutines.test.runTest {
+        val transport = PaginationTransport(fixture("series-paged.html"), fixture("chapters-page-2.json"),
+            fixture("chapters-page-tail.json"))
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport) { testScheduler.currentTime }
+        val partialCounts = mutableListOf<Int>()
+        val requestCounts = mutableListOf<Int>()
+        val all = source.episodeCatalog(SeriesId(sourceId, "41")) { partial ->
+            partialCounts += partial.size
+            requestCounts += transport.requests.size
+            assertTrue("Partial lists must not invent a first-chapter sequence", partial.all { it.sequenceNumber == null })
+        }
+        assertEquals(listOf(20, 40), partialCounts)
+        assertEquals(listOf(1, 2), requestCounts)
+        assertEquals(42, all.size)
+        assertEquals("1063130", all.first().id.remoteKey)
+        assertEquals("5318", all.last().id.remoteKey)
+        assertEquals(1.0, all.last().sequenceNumber)
+    }
+
+    @Test fun cancellingAfterTheFirstPartialDoesNotFetchOrReturnAFakeCompleteCatalog() = runBlocking {
+        val transport = PaginationTransport(fixture("series-paged.html"))
+        try {
+            source(transport).episodeCatalog(SeriesId(sourceId, "41")) { throw kotlinx.coroutines.CancellationException() }
+            org.junit.Assert.fail("Cancelled catalog must not complete")
+        } catch (_: kotlinx.coroutines.CancellationException) { }
+        assertEquals(1, transport.requests.size)
+    }
+
     @Test fun mergesEveryProviderPageAndDeduplicatesBoundaryChapters() = runBlocking {
         val transport = PaginationTransport(
             fixture("series-paged.html"),

@@ -49,6 +49,11 @@ internal class OfflineContentSource(
     override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest =
         offline.manifest(episodeId) ?: online.manifest(episodeId)
 
+    override suspend fun episodeCatalog(
+        seriesId: SeriesId,
+        onPartial: suspend (List<SourceEpisode>) -> Unit,
+    ): List<SourceEpisode> = online.episodeCatalog(seriesId, onPartial)
+
     override suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? =
         online.seriesDetails(seriesId)
 

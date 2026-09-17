@@ -22,6 +22,27 @@ interface ContentSource {
 
     suspend fun episodes(seriesId: SeriesId, cursor: String? = null): SourcePage<SourceEpisode>
 
+    /** Live catalog with optional partial lists; only the return value is a complete catalog. */
+    suspend fun episodeCatalog(
+        seriesId: SeriesId,
+        onPartial: suspend (List<SourceEpisode>) -> Unit,
+    ): List<SourceEpisode> {
+        val episodes = linkedMapOf<EpisodeId, SourceEpisode>()
+        val visited = mutableSetOf<String?>()
+        var cursor: String? = null
+        do {
+            check(visited.size < 512 && visited.add(cursor)) { "회차 페이지가 반복됩니다. 다시 시도해 주세요" }
+            val page = episodes(seriesId, cursor)
+            page.items.forEach { episode ->
+                check(episode.id.seriesId == seriesId) { "다른 작품의 회차가 반환되었습니다" }
+                episodes.putIfAbsent(episode.id, episode)
+            }
+            cursor = page.nextCursor
+            if (cursor != null && episodes.isNotEmpty()) onPartial(episodes.values.toList())
+        } while (cursor != null)
+        return episodes.values.toList()
+    }
+
     /** Optional series metadata (status/synopsis/authors); sources that expose it may override. */
     suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? = null
 

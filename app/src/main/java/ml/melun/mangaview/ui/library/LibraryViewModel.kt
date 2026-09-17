@@ -3,16 +3,12 @@ package ml.melun.mangaview.ui.library
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.SeriesId
@@ -25,7 +21,6 @@ import ml.melun.mangaview.data.offline.OfflineDownloadManager
 import ml.melun.mangaview.data.offline.OfflineEpisodeStore
 import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
-import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SeriesKind
@@ -40,6 +35,7 @@ internal class LibraryViewModel(
     private val openings: () -> EngineOpeningPreparations,
     private val ioDispatcher: CoroutineDispatcher,
     homeCache: ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore? = null,
+    episodeCache: ml.melun.mangaview.data.cache.EpisodeCatalogSnapshotStore? = null,
 ) : ViewModel() {
     private val actions = LibraryActions(viewModelScope, ioDispatcher, sourceRegistry, userLibrary, offlineDownloads)
     private val mutableState = MutableStateFlow(initialLibraryState(sourceRegistry))
@@ -71,9 +67,13 @@ internal class LibraryViewModel(
         viewModelScope, ioDispatcher, sourceRegistry, { mutableState.value }, ::update,
         { episodeWarmer.continuation(state.value) }, homeCache,
     )
-    private var contentJob: Job? = null
-    private var detailsJob: Job? = null
-    private var contentVersion = 0L
+    private val details = LibraryDetailLoader(
+        viewModelScope, ioDispatcher, { sourceRegistry.require(it.sourceId) }, offlineStore::episodes,
+        { mutableState.value }, ::update,
+        ready = { series, episodes -> preferredEpisode(state.value, series, episodes)?.let(episodeWarmer::warm) },
+        readSnapshot = { episodeCache?.load(it) },
+        saveSnapshot = { episodeCache?.save(it) },
+    )
     private val observers = LibraryStateObservers(sourceRegistry, userLibrary, offlineStore, offlineDownloads)
 
     val state: StateFlow<LibraryState> = mutableState.asStateFlow()
@@ -204,7 +204,7 @@ internal class LibraryViewModel(
         ) }
         episodeWarmer.continuation(state.value)
         actions.updateSettings { it.copy(startTab = destination.ordinal) }
-        if (destination == MainDestination.HOME && mutableState.value.home is HomeContent.Failure) catalogs.loadHome()
+        resumeDiscovery()
     }
 
     private fun selectSource(sourceId: ml.melun.mangaview.core.SourceId) {
@@ -290,58 +290,17 @@ internal class LibraryViewModel(
     }
 
     private fun episodes(series: SourceSeries, offlineOnly: Boolean = false) {
-        val source = sourceRegistry.require(series.id.sourceId)
-        update { it.copy(activeSeries = series, detailTab = DetailTab.INTRO,
-            activeSeriesDetails = null,
-            detailOffline = offlineOnly,
-            selectedSourceId = if (offlineOnly) series.id.sourceId else it.selectedSourceId,
-            lastSeries = if (offlineOnly) listOf(series) else it.lastSeries,
-        ) }
-        // The reader's own series is almost always continued at the remembered episode, so start
-        // that preparation before the list round-trip finishes; the list result reconciles it.
-        if (!offlineOnly) {
-            recentEpisodeFor(state.value.saved, series.id)?.let(episodeWarmer::warm)
-        }
-        launchContent(
-            load = {
-                if (offlineOnly) offlineStore.episodes(series.id)
-                else source.episodes(series.id).items
-            },
-            success = { result: List<SourceEpisode> ->
-                update { it.copy(content = LibraryContent.Episodes(series, result)) }
-                preferredEpisode(state.value, series, result)?.let(episodeWarmer::warm)
-                if (!offlineOnly) loadSeriesDetails(source, series)
-            },
-            failureMessage = "회차를 불러오지 못했습니다",
-        )
+        searches.pause()
+        statusEnrichment.cancel()
+        catalogs.cancelHome()
+        episodeWarmer.cancel()
+        details.open(series, offlineOnly)
     }
 
     private fun retryDetail() {
         val snapshot = state.value
         val series = snapshot.activeSeries ?: return
-        episodes(series, offlineOnly = snapshot.detailOffline)
-    }
-
-    private fun <T> launchContent(
-        load: suspend () -> T,
-        success: (T) -> Unit,
-        failureMessage: String,
-    ) {
-        cancelContent()
-        val version = ++contentVersion
-        update { it.copy(content = LibraryContent.Loading) }
-        contentJob = viewModelScope.launch {
-            try {
-                val result = withContext(ioDispatcher) { load() }
-                if (version == contentVersion) success(result)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Throwable) {
-                if (version == contentVersion) update {
-                    it.copy(content = LibraryContent.Failure(failureDisplayMessage(failure, failureMessage)))
-                }
-            }
-        }
+        details.open(series, offlineOnly = snapshot.detailOffline, refresh = true)
     }
 
     private fun back() {
@@ -360,6 +319,7 @@ internal class LibraryViewModel(
                 downloadSelectionVisible = false,
                 content = if (it.destination == MainDestination.SEARCH) it.searchContent else LibraryContent.Empty,
             ) }
+            resumeDiscovery()
             return
         }
         if (state.value.selectedGenre != null) {
@@ -405,23 +365,14 @@ internal class LibraryViewModel(
         effectChannel.trySend(LibraryEffect.OpenEpisode(position.pageId.episodeId, position))
     }
 
-    private fun cancelContent() {
-        contentVersion += 1L
-        contentJob?.cancel()
-        contentJob = null
-        detailsJob?.cancel()
-        detailsJob = null
-    }
+    private fun cancelContent() = details.cancel()
 
-    private fun loadSeriesDetails(source: ContentSource, series: SourceSeries) {
-        detailsJob?.cancel()
-        detailsJob = viewModelScope.launch {
-            val details = runCatching {
-                withContext(ioDispatcher) { source.seriesDetails(series.id) }
-            }.getOrNull()
-            if (state.value.activeSeries?.id == series.id) {
-                update { it.copy(activeSeriesDetails = details) }
-            }
+    private fun resumeDiscovery() {
+        if (state.value.destination == MainDestination.SEARCH) {
+            searches.resume()
+            (state.value.searchContent as? LibraryContent.Series)?.items?.let(statusEnrichment::enrich)
+        } else if (state.value.destination == MainDestination.HOME && state.value.home !is HomeContent.Ready) {
+            catalogs.loadHome()
         }
     }
 
@@ -488,6 +439,7 @@ internal class LibraryViewModelFactory(
     private val openings: () -> EngineOpeningPreparations,
     private val ioDispatcher: CoroutineDispatcher,
     private val homeCache: ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore? = null,
+    private val episodeCache: ml.melun.mangaview.data.cache.EpisodeCatalogSnapshotStore? = null,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -500,6 +452,7 @@ internal class LibraryViewModelFactory(
             openings,
             ioDispatcher,
             homeCache,
+            episodeCache,
         ) as T
     }
 }

@@ -64,7 +64,10 @@ class WfwfContentSource(
 ) : ContentSource {
     override val id = SourceId("wfwf")
     private val origin = WfwfOriginCoordinator(config.initialOrigin, originResolver, preparationScope, onOriginResolved)
-    private val catalogStore = WfwfCatalogStore(::fetchCatalog)
+    private val catalogStore = WfwfCatalogStore(
+        fetchProgressively = { series, partial -> fetchEpisodeCatalog(series, parser, ::document, partial) },
+        fetch = { fetchEpisodeCatalog(it, parser, ::document) },
+    )
     private val manifestStore = WfwfManifestStore(config.manifestCacheEpisodes, ::fetchManifest)
 
     /** Resolves and warms only the reusable provider origin; it never fetches user content. */
@@ -131,6 +134,14 @@ class WfwfContentSource(
         require(seriesId.sourceId == id) { "Series belongs to another source" }
         if (cursor != null) return SourcePage(emptyList())
         return SourcePage(catalogStore.load(seriesId, refresh = true))
+    }
+
+    override suspend fun episodeCatalog(
+        seriesId: SeriesId,
+        onPartial: suspend (List<SourceEpisode>) -> Unit,
+    ): List<SourceEpisode> {
+        require(seriesId.sourceId == id) { "Series belongs to another source" }
+        return catalogStore.load(seriesId, refresh = true, onPartial = onPartial)
     }
 
     override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest {
@@ -351,33 +362,6 @@ class WfwfContentSource(
         PageFetchPriority.ADJACENT_FORWARD -> NORMAL_HEADER_TIMEOUT_MILLIS
         PageFetchPriority.BACKGROUND -> BACKGROUND_HEADER_TIMEOUT_MILLIS
     }
-    private suspend fun fetchCatalog(seriesId: SeriesId): List<SourceEpisode> {
-        val key = WfwfSeriesKey.decode(seriesId)
-        val first = document(listPath(key))
-        val pages = mutableListOf(parser.episodes(first, seriesId, key))
-        val fetchedPages = mutableSetOf(1)
-        var pending = parser.catalogPageNumbers(first, key).filterNot(fetchedPages::contains).distinct()
-        while (pending.isNotEmpty()) {
-            val batch = pending
-            val loaded = coroutineScope {
-                batch.map { page ->
-                    async {
-                        val pageDocument = document(listPagePath(key, page))
-                        page to pageDocument
-                    }
-                }.map { it.await() }
-            }
-            val discovered = mutableListOf<Int>()
-            loaded.forEach { (page, pageDocument) ->
-                fetchedPages += page
-                pages += parser.episodes(pageDocument, seriesId, key)
-                discovered += parser.catalogPageNumbers(pageDocument, key)
-            }
-            pending = discovered.filterNot(fetchedPages::contains).distinct()
-        }
-        return parser.mergeEpisodePages(pages)
-    }
-
     private suspend fun fetchComicCatalogPage(page: Int): WfwfComicCatalogPage {
         val query = CatalogQuery(SeriesKind.COMIC, CatalogOrder.LATEST)
         val firstPagePath = WfwfCatalogPagination.path(query, page = 1)
@@ -498,6 +482,38 @@ private fun adjacentFrom(catalog: List<SourceEpisode>, episodeId: EpisodeId): Ad
         previous = catalog.getOrNull(index + 1)?.id,
         next = catalog.getOrNull(index - 1)?.id,
     )
+}
+
+private suspend fun fetchEpisodeCatalog(
+    seriesId: SeriesId,
+    parser: WfwfHtmlParser,
+    document: suspend (String) -> Document,
+    onPartial: suspend (List<SourceEpisode>) -> Unit = {},
+): List<SourceEpisode> {
+    val key = WfwfSeriesKey.decode(seriesId)
+    val first = document(listPath(key))
+    val pages = mutableListOf(parser.episodes(first, seriesId, key))
+    val fetchedPages = mutableSetOf(1)
+    var pending = parser.catalogPageNumbers(first, key).filterNot(fetchedPages::contains).distinct()
+    if (pending.isNotEmpty() && pages.first().isNotEmpty()) onPartial(pages.first())
+    val slots = kotlinx.coroutines.sync.Semaphore(4)
+    while (pending.isNotEmpty()) {
+        val loaded = coroutineScope {
+            pending.map { page -> async {
+                slots.acquire()
+                try { page to document(listPagePath(key, page)) } finally { slots.release() }
+            } }.map { it.await() }
+        }
+        val discovered = mutableListOf<Int>()
+        loaded.forEach { (page, pageDocument) ->
+            fetchedPages += page
+            pages += parser.episodes(pageDocument, seriesId, key)
+            discovered += parser.catalogPageNumbers(pageDocument, key)
+        }
+        pending = discovered.filterNot(fetchedPages::contains).distinct()
+        if (pending.isNotEmpty()) onPartial(parser.mergeEpisodePages(pages))
+    }
+    return parser.mergeEpisodePages(pages)
 }
 
 private fun listPath(key: WfwfSeriesKey): String = when (key.kind) {

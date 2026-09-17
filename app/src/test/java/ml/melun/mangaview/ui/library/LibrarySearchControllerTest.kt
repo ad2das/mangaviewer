@@ -37,6 +37,7 @@ class LibrarySearchControllerTest {
         pending.complete(SourcePage(listOf(series), "2")); runCurrent()
         assertEquals(detail, fixture.state.content)
         assertEquals("2", (fixture.state.searchContent as LibraryContent.Series).nextCursor)
+        assertEquals("Hidden search results must not compete with the episode list for metadata", 0, fixture.enrichments)
     }
 
     @Test fun clearingQueryCancelsSearchAndRemovesTheOldResultSet() = runTest {

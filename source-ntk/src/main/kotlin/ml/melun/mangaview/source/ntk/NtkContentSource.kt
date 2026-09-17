@@ -68,6 +68,16 @@ class NtkContentSource(
         return catalog.episodes(seriesId, cursor)
     }
 
+    override suspend fun episodeCatalog(
+        seriesId: SeriesId,
+        onPartial: suspend (List<SourceEpisode>) -> Unit,
+    ): List<SourceEpisode> {
+        require(seriesId.sourceId == id) { "Series belongs to another source" }
+        return catalog.records(seriesId, force = true) { records ->
+            onPartial(records.map(NtkEpisodeRecord::episode))
+        }.map(NtkEpisodeRecord::episode)
+    }
+
     override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest = coroutineScope {
         requireSource(episodeId)
         val fallbackLock = Any()

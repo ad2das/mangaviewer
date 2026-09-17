@@ -61,7 +61,7 @@ class GoodtoonContentSource(
 ) : ContentSource {
     override val id = goodtoonSourceId()
     private val origin = GoodtoonOriginCoordinator(config.initialOrigin, originResolver, preparationScope, onOriginResolved)
-    private val catalogStore = GoodtoonCatalogStore(::fetchCatalog)
+    private val catalogStore = GoodtoonCatalogStore(fetchProgressively = ::fetchCatalog, fetch = { fetchCatalog(it) })
     private val manifestStore = GoodtoonManifestStore(config.manifestCacheEpisodes, ::fetchManifest)
     private val searchService = GoodtoonSearchService(
         fetch = { path -> document(GoodtoonDocumentKind.SEARCH, path) },
@@ -116,6 +116,14 @@ class GoodtoonContentSource(
         require(seriesId.sourceId == id) { "Series belongs to another source" }
         if (cursor != null) return SourcePage(emptyList())
         return SourcePage(catalogStore.load(seriesId, refresh = true))
+    }
+
+    override suspend fun episodeCatalog(
+        seriesId: SeriesId,
+        onPartial: suspend (List<SourceEpisode>) -> Unit,
+    ): List<SourceEpisode> {
+        require(seriesId.sourceId == id) { "Series belongs to another source" }
+        return catalogStore.load(seriesId, refresh = true, onPartial = onPartial)
     }
 
     override suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? {
@@ -276,7 +284,10 @@ class GoodtoonContentSource(
         PageFetchPriority.BACKGROUND -> BACKGROUND_HEADER_TIMEOUT_MILLIS
     }
 
-    private suspend fun fetchCatalog(seriesId: SeriesId): List<SourceEpisode> {
+    private suspend fun fetchCatalog(
+        seriesId: SeriesId,
+        onPartial: suspend (List<SourceEpisode>) -> Unit = {},
+    ): List<SourceEpisode> {
         val key = GoodtoonSeriesKey.decode(seriesId)
         val accumulator = GoodtoonEpisodeCatalogAccumulator()
         var page = 1
@@ -284,6 +295,7 @@ class GoodtoonContentSource(
             val document = document(GoodtoonDocumentKind.CHAPTER_LIST, key.chaptersPath(page))
             val parsed = parser.chapters(document, seriesId, key)
             if (!accumulator.absorb(parsed)) return accumulator.episodes()
+            onPartial(accumulator.episodes())
             page += 1
         }
     }

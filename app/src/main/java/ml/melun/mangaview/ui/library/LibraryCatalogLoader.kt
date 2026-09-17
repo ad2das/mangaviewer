@@ -31,6 +31,7 @@ internal class LibraryCatalogLoader(
     private var genreJob: Job? = null
     private var homeVersion = 0L
     fun loadHome() {
+        if (current().activeSeries != null) return
         homeJob?.cancel()
         val snapshot = current()
         val version = ++homeVersion

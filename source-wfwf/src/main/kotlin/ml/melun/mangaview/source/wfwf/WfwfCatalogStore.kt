@@ -12,13 +12,17 @@ import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.source.SourceEpisode
 
 internal class WfwfCatalogStore(
+    private val fetchProgressively: (suspend (SeriesId, suspend (List<SourceEpisode>) -> Unit) -> List<SourceEpisode>)? = null,
     private val fetch: suspend (SeriesId) -> List<SourceEpisode>,
 ) {
     private val mutex = Mutex()
     private var cached: Map<SeriesId, List<SourceEpisode>> = emptyMap()
     private var flights: Map<SeriesId, CompletableDeferred<List<SourceEpisode>>> = emptyMap()
 
-    suspend fun load(seriesId: SeriesId, refresh: Boolean): List<SourceEpisode> {
+    suspend fun load(
+        seriesId: SeriesId, refresh: Boolean,
+        onPartial: suspend (List<SourceEpisode>) -> Unit = {},
+    ): List<SourceEpisode> {
         while (true) {
             currentCoroutineContext().ensureActive()
             when (val claim = claim(seriesId, refresh)) {
@@ -28,7 +32,7 @@ internal class WfwfCatalogStore(
                 } catch (_: FlightOwnerCancelledException) {
                     continue
                 }
-                is Claim.Fetch -> return fetchOwned(seriesId, claim.result)
+                is Claim.Fetch -> return fetchOwned(seriesId, claim.result, onPartial)
             }
         }
     }
@@ -44,8 +48,9 @@ internal class WfwfCatalogStore(
     private suspend fun fetchOwned(
         seriesId: SeriesId,
         result: CompletableDeferred<List<SourceEpisode>>,
+        onPartial: suspend (List<SourceEpisode>) -> Unit,
     ): List<SourceEpisode> = try {
-        val loaded = fetch(seriesId)
+        val loaded = fetchProgressively?.invoke(seriesId, onPartial) ?: fetch(seriesId)
         mutex.withLock {
             cached = cached + (seriesId to loaded)
             removeFlight(seriesId, result)

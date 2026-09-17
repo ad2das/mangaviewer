@@ -76,6 +76,9 @@ internal class AppGraph(
         File(appContext.applicationInfo.dataDir, "app_home_catalog_cache_v1"),
         ioDispatcher,
     )
+    val episodeCatalogCache = ml.melun.mangaview.data.cache.EpisodeCatalogSnapshotStore(
+        File(appContext.applicationInfo.dataDir, "app_episode_catalog_cache_v1"), ioDispatcher,
+    )
     private val database = DeferredViewerDatabase(appContext, ioDispatcher)
     private val transportFactory = OkHttpTransportFactory(ioDispatcher)
     private val origins by lazy { ProviderOriginDirectory(appContext, ioDispatcher, userAgent()) }

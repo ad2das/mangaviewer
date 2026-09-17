@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
                 { graph.engine.openings },
                 Dispatchers.IO,
                 graph.homeCatalogCache,
+                graph.episodeCatalogCache,
             ),
         )[LibraryViewModel::class.java]
         pendingCrashReport = CrashLog.pending(this)

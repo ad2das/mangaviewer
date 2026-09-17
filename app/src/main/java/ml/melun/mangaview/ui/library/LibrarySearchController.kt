@@ -30,7 +30,7 @@ internal class LibrarySearchController(
                 } else state.content,
             )
         }
-        if (content is LibraryContent.Series && enrichedItems !== content.items) {
+        if (content is LibraryContent.Series && enrichedItems !== content.items && current().activeSeries == null) {
             enrichedItems = content.items
             loaded(content.items)
         }
@@ -82,4 +82,6 @@ internal class LibrarySearchController(
     }
 
     fun next() = pager.next()
+    fun pause() = pager.pause()
+    fun resume() = pager.resume()
 }

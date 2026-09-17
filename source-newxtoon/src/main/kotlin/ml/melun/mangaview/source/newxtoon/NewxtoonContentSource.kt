@@ -108,6 +108,7 @@ class NewxtoonContentSource(
     }
 
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> {
+        if (cursor != null) return SourcePage(emptyList())
         val chapters = chapters(seriesId)
         // The provider lists chapters newest-first, so positional sequence numbers count down:
         // the final entry (the first chapter) gets 1 and wins firstEpisode()'s minimum.
@@ -118,6 +119,16 @@ class NewxtoonContentSource(
                 sequenceNumber = (chapters.size - index).toDouble(),
             )
         }, null)
+    }
+
+    override suspend fun episodeCatalog(
+        seriesId: SeriesId,
+        onPartial: suspend (List<SourceEpisode>) -> Unit,
+    ): List<SourceEpisode> = chapters(seriesId) { partial ->
+        onPartial(partial.map { SourceEpisode(EpisodeId(seriesId, it.id), it.title) })
+    }.let { chapters ->
+        chapters.mapIndexed { index, chapter -> SourceEpisode(EpisodeId(seriesId, chapter.id), chapter.title,
+            sequenceNumber = (chapters.size - index).toDouble()) }
     }
 
     override suspend fun manifest(episodeId: EpisodeId): EpisodeManifest {
@@ -177,7 +188,11 @@ class NewxtoonContentSource(
 
     override fun close() = Unit
 
-    private suspend fun chapters(seriesId: SeriesId): List<NewxtoonChapter> {
+    private suspend fun chapters(
+        seriesId: SeriesId,
+        onPartial: suspend (List<NewxtoonChapter>) -> Unit = {},
+    ): List<NewxtoonChapter> {
+        require(seriesId.sourceId == id) { "Series belongs to another source" }
         val html = fetch(seriesPath(seriesId))
         val details = parser.seriesDetails(html)
         lastSeriesDetails = seriesId to SourceSeriesDetails(
@@ -192,11 +207,14 @@ class NewxtoonContentSource(
         val visited = mutableSetOf<Int>()
         val merged = LinkedHashMap<String, NewxtoonChapter>()
         embedded.forEach { merged.putIfAbsent(it.id, it) }
+        if (page != null && merged.isNotEmpty()) onPartial(merged.values.toList())
         while (page != null && visited.size < MAX_CHAPTER_PAGES && visited.add(page)) {
             val payload = parser.chapterPage(fetch(chapterPageUrl(pagination.url, page)))
             payload.chapters.forEach { merged.putIfAbsent(it.id, it) }
             page = payload.nextPage
+            if (page != null && merged.isNotEmpty()) onPartial(merged.values.toList())
         }
+        check(page == null) { "뉴엑스툰 회차 페이지가 반복되거나 너무 많습니다. 다시 시도해 주세요" }
         return merged.values.toList()
     }
 

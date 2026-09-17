@@ -90,6 +90,11 @@ internal class DeferredContentSource(
     override suspend fun episodes(seriesId: SeriesId, cursor: String?): SourcePage<SourceEpisode> =
         source().episodes(seriesId, cursor)
 
+    override suspend fun episodeCatalog(
+        seriesId: SeriesId,
+        onPartial: suspend (List<SourceEpisode>) -> Unit,
+    ): List<SourceEpisode> = source().episodeCatalog(seriesId, onPartial)
+
     override suspend fun seriesDetails(seriesId: SeriesId): SourceSeriesDetails? =
         source().seriesDetails(seriesId)
 

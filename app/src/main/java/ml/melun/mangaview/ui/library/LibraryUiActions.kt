@@ -121,10 +121,10 @@ internal class LibraryUiActions(
         val snapshot = current()
         when {
             snapshot.downloadSelectionVisible -> update { it.copy(downloadSelectionVisible = false) }
-            snapshot.content is LibraryContent.Episodes -> update {
+            snapshot.content is LibraryContent.Episodes && snapshot.content.complete -> update {
                 it.copy(downloadSelectionVisible = true, seriesMenuVisible = false)
             }
-            else -> showMessage("회차 목록을 불러온 뒤 다시 시도해 주세요")
+            else -> showMessage("회차 목록을 모두 불러온 뒤 다시 시도해 주세요")
         }
     }
 

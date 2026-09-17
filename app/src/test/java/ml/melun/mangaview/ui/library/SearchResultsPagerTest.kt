@@ -10,6 +10,30 @@ import org.junit.Test
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class SearchResultsPagerTest {
+    @Test fun openingDetailsPausesPendingSearchAndResumesTheSameCursorWithoutLosingResults() = runTest {
+        var output: LibraryContent = LibraryContent.Empty
+        val pending = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val requests = mutableListOf<String?>()
+        var secondAttempts = 0
+        val pager = SearchResultsPager(this, StandardTestDispatcher(testScheduler), "failed") { output = it }
+        pager.start { cursor ->
+            requests += cursor
+            if (cursor == null) SourcePage(listOf(series(1)), "2") else {
+                if (secondAttempts++ == 0) pending.await()
+                SourcePage(listOf(series(2)))
+            }
+        }
+        runCurrent(); pager.next(); runCurrent(); pager.pause(); runCurrent()
+        assertFalse((output as LibraryContent.Series).loadingNext)
+        assertEquals(listOf(series(1)), (output as LibraryContent.Series).items)
+        pager.next(); runCurrent()
+        assertEquals(listOf(null, "2"), requests)
+        pager.resume(); advanceUntilIdle()
+        assertEquals(listOf(null, "2", "2"), requests)
+        assertEquals(listOf(series(1), series(2)), (output as LibraryContent.Series).items)
+        assertNull((output as LibraryContent.Series).nextCursor)
+    }
+
     @Test fun reconciliationWarningKeepsResultsAndCanResumeAtTheRepairCursor() = runTest {
         var output: LibraryContent = LibraryContent.Empty
         val requested = mutableListOf<String?>()

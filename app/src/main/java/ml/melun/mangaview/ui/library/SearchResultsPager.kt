@@ -27,12 +27,14 @@ internal class SearchResultsPager(
     private var fetch: (suspend (String?) -> SourcePage<SourceSeries>)? = null
     private var results = LibraryContent.Series(emptyList())
     private val consumed = mutableSetOf<String?>()
+    private var resumePending = false
 
     fun reset() {
         version++
         job?.cancel()
         job = null
         fetch = null
+        resumePending = false
         consumed.clear()
         results = LibraryContent.Series(emptyList())
     }
@@ -46,9 +48,27 @@ internal class SearchResultsPager(
     }
 
     fun next() {
-        if (results.loadingNext || fetch == null) return
+        if (resumePending || results.loadingNext || fetch == null) return
         val cursor = results.nextCursor
         if (cursor != null || consumed.isEmpty()) request(cursor)
+    }
+
+    /** Yield network work to an opened series without losing a partially consumed search. */
+    fun pause() {
+        if (resumePending) return
+        resumePending = job?.isActive == true
+        if (!resumePending) return
+        version++
+        job?.cancel()
+        job = null
+        results = results.copy(loadingNext = false, nextFailure = null)
+        if (consumed.isNotEmpty()) publish(results)
+    }
+
+    fun resume() {
+        if (!resumePending) return
+        resumePending = false
+        next()
     }
 
     private fun request(cursor: String?) {

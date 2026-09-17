@@ -109,7 +109,10 @@ internal class NtkCatalogService(
         if (cursor == null) SourcePage(records(seriesId, force = true).map(NtkEpisodeRecord::episode))
         else SourcePage(emptyList())
 
-    suspend fun records(seriesId: SeriesId, force: Boolean): List<NtkEpisodeRecord> {
+    suspend fun records(
+        seriesId: SeriesId, force: Boolean,
+        onPartial: suspend (List<NtkEpisodeRecord>) -> Unit = {},
+    ): List<NtkEpisodeRecord> {
         if (!force) mutex.withLock { catalogs[seriesId] }?.let { return it }
         val key = NtkSeriesKey.decode(seriesId)
         val path = "/api/${key.kind.pathSegment}/${key.workKey}/episodes"
@@ -117,7 +120,7 @@ internal class NtkCatalogService(
         val loaded = if (api != null && api.episodes.isNotEmpty() && api.isComplete) {
             api.episodes
         } else {
-            documentEpisodes(seriesId, key)
+            documentEpisodes(seriesId, key, onPartial)
         }
         require(loaded.isNotEmpty()) { "NTK series contains no episodes" }
         mutex.withLock { catalogs = catalogs + (seriesId to loaded) }
@@ -150,15 +153,18 @@ internal class NtkCatalogService(
     private suspend fun documentEpisodes(
         seriesId: SeriesId,
         key: NtkSeriesKey,
+        onPartial: suspend (List<NtkEpisodeRecord>) -> Unit,
     ): List<NtkEpisodeRecord> = coroutineScope {
         val firstPayload = documents.text(key.path(), false)
         val pageCount = parser.episodePageCount(firstPayload)
+        val merged = linkedMapOf<EpisodeId, NtkEpisodeRecord>()
+        parser.episodes(firstPayload, seriesId).episodes.forEach { merged[it.episode.id] = it }
+        if (pageCount > 1 && merged.isNotEmpty()) onPartial(authoritativeEpisodeOrder(merged.values))
         val semaphore = Semaphore(4)
         val remaining = (2..pageCount).map { page ->
             async { semaphore.withPermit { documents.text("${key.path()}?epage=$page", false) } }
         }.awaitAll()
-        val merged = linkedMapOf<EpisodeId, NtkEpisodeRecord>()
-        (listOf(firstPayload) + remaining).forEach { payload ->
+        remaining.forEach { payload ->
             parser.episodes(payload, seriesId).episodes.forEach { record ->
                 merged[record.episode.id] = merge(merged[record.episode.id], record)
             }
