@@ -13,8 +13,8 @@ import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 
-/** Floor of the adaptive request spacing. The provider tolerates a much faster lane than before. */
-internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 500L
+/** Floor of the adaptive request spacing. The provider serves ten concurrent feed pages without a 429. */
+internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 100L
 
 /** Ceiling the spacing backs off to after throttling: the previously fixed 2.5s cadence. */
 internal const val NEWXTOON_MAX_REQUEST_INTERVAL_MILLIS = 2_500L
@@ -81,7 +81,9 @@ internal class NewxtoonDocumentClient(
                 val response = transport.execute(request)
                 val html = readResponse(response, attempt)
                 if (html != null) {
-                    relaxInterval()
+                    // Only a request the provider accepted first time proves the current pace is
+                    // safe; a retry that followed a 429 must not immediately unwind the back-off.
+                    if (attempt == 0) relaxInterval()
                     return html
                 }
             } catch (limited: SourceThrottledException) {

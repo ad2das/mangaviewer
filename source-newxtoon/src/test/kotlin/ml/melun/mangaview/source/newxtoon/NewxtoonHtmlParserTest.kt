@@ -28,6 +28,24 @@ class NewxtoonHtmlParserTest {
         assertTrue(chapters.all { it.title.isNotBlank() })
     }
 
+    @Test fun readsTheAdvertisedChapterTotalAndFeedPageSize() {
+        val html = """
+            <section id="chapters" aria-labelledby="chapters-title">
+              <h2 id="chapters-title">회차 목록 <span class="ml-1">총 185화</span></h2>
+              <div data-chapters-url="https://newxtoon1.com/comics/1876/chapters"
+                   data-chapter-page-size="20"></div>
+            </section>
+        """.trimIndent()
+        assertEquals(185, parser.chapterTotal(html))
+        assertEquals(20, parser.chapterPageSize(html))
+    }
+
+    @Test fun aChapterHeaderWithoutATotalLeavesTheRangeUnknown() {
+        val html = """<h2 id="mobile-chapters-title">회차 목록</h2>"""
+        assertNull(parser.chapterTotal(html))
+        assertNull(parser.chapterPageSize(html))
+    }
+
     @Test fun parsesChapterPaginationFromTheSeriesPage() {
         val paged = parser.chapterPagination(fixture("series-paged.html"))
         assertEquals("https://newxtoon1.com/comics/41/chapters", paged?.url)

@@ -151,6 +151,20 @@ class NewxtoonHtmlParser(private val origin: String) {
         return NewxtoonChapterPagination(url, scope.attr("data-chapter-next-page").trim().toIntOrNull())
     }
 
+    /** The chapter list header advertises the full chapter count, for example "회차 목록 총 185화". */
+    fun chapterTotal(html: String): Int? {
+        val document = Jsoup.parse(html, origin)
+        val scope = document.selectFirst("#mobile-chapters-title, #chapters-title") ?: return null
+        return TOTAL_CHAPTERS.find(scope.text())?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    /** Chapters per feed page, as declared by the series page. */
+    fun chapterPageSize(html: String): Int? {
+        val document = Jsoup.parse(html, origin)
+        return document.selectFirst("[data-chapter-page-size]")
+            ?.attr("data-chapter-page-size")?.trim()?.toIntOrNull()?.takeIf { it > 0 }
+    }
+
     /** The chapter feed returns rendered anchors plus the next page number, or null at the end. */
     fun chapterPage(json: String): NewxtoonChapterPage {
         val rendered = jsonString(json, "html").orEmpty()
@@ -218,6 +232,7 @@ class NewxtoonHtmlParser(private val origin: String) {
 
     private companion object {
         val NEXT_PAGE_FIELD = Regex(""""next_page"\s*:\s*(\d+|null)""")
+        val TOTAL_CHAPTERS = Regex("""총\s*(\d+)\s*화""")
         val JSON_ESCAPES = mapOf(
             '"' to '"', '\\' to '\\', '/' to '/', 'n' to '\n', 'r' to '\r', 't' to '\t',
             'b' to '\b', 'f' to '\u000C',

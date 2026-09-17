@@ -205,24 +205,38 @@ class NewxtoonContentSource(
         )
         val embedded = parser.chapters(html)
         val pagination = parser.chapterPagination(html) ?: return embedded
-        // The series page already renders the first chapter page; the feed serves the rest.
-        var next = if (embedded.isEmpty()) 1 else pagination.nextPage
-        val visited = mutableSetOf<Int>()
         val merged = LinkedHashMap<String, NewxtoonChapter>()
         embedded.forEach { merged.putIfAbsent(it.id, it) }
-        if (next != null && merged.isNotEmpty()) onPartial(merged.values.toList())
-        // A long series needs a dozen feed pages. Fetch a small window at a time and drive the next
-        // window from the last page's next_page, so a 185-chapter list no longer pays one round trip
-        // per page in series. The document lane still paces and throttles every request.
-        while (next != null && visited.size < MAX_CHAPTER_PAGES) {
+        // The series page already renders the first chapter page; the feed serves the rest.
+        val firstPage = if (embedded.isEmpty()) 1 else pagination.nextPage
+        if (firstPage != null && merged.isNotEmpty()) onPartial(merged.values.toList())
+        // The header advertises the total chapter count and the feed page size, so the whole feed
+        // range is known and can be fetched in parallel windows instead of one round trip per page.
+        val pageSize = parser.chapterPageSize(html)
+        val total = parser.chapterTotal(html)
+        val lastPage = if (pageSize != null && total != null) {
+            ((total + pageSize - 1) / pageSize).coerceAtLeast(1)
+        } else null
+        if (lastPage != null) {
+            for (window in (2..lastPage).take(MAX_CHAPTER_PAGES).chunked(CHAPTER_PAGE_WINDOW)) {
+                fetchChapterPages(pagination.url, window).forEach { payload ->
+                    payload.chapters.forEach { merged.putIfAbsent(it.id, it) }
+                }
+                if (merged.isNotEmpty()) onPartial(merged.values.toList())
+            }
+            return merged.values.toList()
+        }
+        // No advertised total: walk next_page in bounded speculative windows.
+        val visited = mutableSetOf<Int>()
+        var next = firstPage
+        while (true) {
             val start = next ?: break
-            val pages = (start until start + CHAPTER_PAGE_BATCH)
+            if (visited.size >= MAX_CHAPTER_PAGES) break
+            val pages = (start until start + CHAPTER_DISCOVERY_WINDOW)
                 .take((MAX_CHAPTER_PAGES - visited.size).coerceAtLeast(0))
                 .filter { visited.add(it) }
             if (pages.isEmpty()) break
-            val payloads = coroutineScope {
-                pages.map { page -> async { parser.chapterPage(fetch(chapterPageUrl(pagination.url, page))) } }.awaitAll()
-            }
+            val payloads = fetchChapterPages(pagination.url, pages)
             payloads.forEach { payload -> payload.chapters.forEach { merged.putIfAbsent(it.id, it) } }
             next = payloads.last().nextPage
             if (merged.isNotEmpty()) onPartial(merged.values.toList())
@@ -230,6 +244,12 @@ class NewxtoonContentSource(
         check(next == null) { "뉴엑스툰 회차 페이지가 반복되거나 너무 많습니다. 다시 시도해 주세요" }
         return merged.values.toList()
     }
+
+    /** Fetches feed pages concurrently; the document lane still paces and throttles every request. */
+    private suspend fun fetchChapterPages(feedUrl: String, pages: List<Int>): List<NewxtoonChapterPage> =
+        coroutineScope {
+            pages.map { page -> async { parser.chapterPage(fetch(chapterPageUrl(feedUrl, page))) } }.awaitAll()
+        }
 
     private fun chapterPageUrl(feedUrl: String, page: Int): String =
         feedUrl + (if (feedUrl.contains('?')) "&" else "?") + "page=$page"
@@ -296,8 +316,10 @@ class NewxtoonContentSource(
 
     private companion object {
         const val MAX_CHAPTER_PAGES = 400
-        // Two pages per window: the next page is known from the previous response, so the window
-        // speculates at most one page past the provider's last page.
-        const val CHAPTER_PAGE_BATCH = 2
+        // The whole feed range is known when the header advertises the total, so it is fetched in
+        // parallel windows of this size. The discovery path speculates at most one page past the
+        // provider's last page.
+        const val CHAPTER_PAGE_WINDOW = 12
+        const val CHAPTER_DISCOVERY_WINDOW = 2
     }
 }
