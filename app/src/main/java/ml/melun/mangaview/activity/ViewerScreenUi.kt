@@ -62,7 +62,7 @@ internal class ViewerScreenUi(
 
     fun showFailure(failure: Throwable) {
         loading.failed()
-        failureText.text = failure.message?.takeIf(String::isNotBlank) ?: "페이지를 불러오지 못했습니다"
+        failureText.text = viewerFailureMessage(failure)
         failureCard.animate().cancel()
         if (failureCard.visibility != View.VISIBLE) {
             failureCard.alpha = 0f
