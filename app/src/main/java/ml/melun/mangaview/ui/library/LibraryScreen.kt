@@ -49,6 +49,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ml.melun.mangaview.app.SourceOption
@@ -220,22 +221,32 @@ private fun MainTopBar(
     accept: (LibraryIntent) -> Unit,
     updateAvailable: Boolean,
 ) {
-    Row(
-        Modifier.fillMaxWidth().height(64.dp)
-            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-            .padding(horizontal = 18.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        MainDestinationTitle(state.destination, colors, Modifier.weight(1f))
-        val source = state.sources.firstOrNull { it.id == state.selectedSourceId }
-        MainSourceChip(source, colors, accept)
-        Spacer(Modifier.width(10.dp))
-        MainAccountButton(colors, accept, updateAvailable)
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // The brand title and the PLUS badge need room; on narrow phones the source chip
+        // collapses to its logo so the title stays on one line instead of wrapping.
+        val compact = maxWidth < 400.dp
+        Row(
+            Modifier.fillMaxWidth().height(64.dp)
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                .padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MainDestinationTitle(state.destination, colors, Modifier.weight(1f), compact)
+            val source = state.sources.firstOrNull { it.id == state.selectedSourceId }
+            MainSourceChip(source, colors, accept, compact)
+            Spacer(Modifier.width(10.dp))
+            MainAccountButton(colors, accept, updateAvailable)
+        }
     }
 }
 
 @Composable
-private fun MainDestinationTitle(destination: MainDestination, colors: LibraryColors, modifier: Modifier) {
+private fun MainDestinationTitle(
+    destination: MainDestination,
+    colors: LibraryColors,
+    modifier: Modifier,
+    compact: Boolean,
+) {
     when (destination) {
         MainDestination.HOME -> {
             Row(modifier, verticalAlignment = Alignment.CenterVertically) {
@@ -246,7 +257,10 @@ private fun MainDestinationTitle(destination: MainDestination, colors: LibraryCo
                             append("View")
                         }
                     },
-                    style = displayStyle(colors, 24).copy(fontWeight = FontWeight.Black),
+                    modifier = Modifier.weight(1f, fill = false),
+                    style = displayStyle(colors, if (compact) 22 else 24).copy(fontWeight = FontWeight.Black),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.width(8.dp))
                 Box(
@@ -257,6 +271,7 @@ private fun MainDestinationTitle(destination: MainDestination, colors: LibraryCo
                     BasicText(
                         "PLUS",
                         style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.ExtraBold),
+                        maxLines = 1,
                     )
                 }
             }
@@ -279,7 +294,12 @@ private fun MainDestinationTitle(destination: MainDestination, colors: LibraryCo
 }
 
 @Composable
-private fun MainSourceChip(source: SourceOption?, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+private fun MainSourceChip(
+    source: SourceOption?,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+    compact: Boolean,
+) {
     Row(
         Modifier.height(48.dp)
             .semantics { contentDescription = source?.let { "사이트: ${it.label}" } ?: "사이트 선택" }
@@ -289,16 +309,20 @@ private fun MainSourceChip(source: SourceOption?, colors: LibraryColors, accept:
             .background(colors.card)
             .border(1.dp, colors.cardBorder, RoundedCornerShape(19.dp))
             .clickable { accept(LibraryIntent.ToggleSourcePicker) }
-            .padding(start = 7.dp, end = 12.dp),
+            .padding(start = 7.dp, end = if (compact) 9.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val art = LegacySiteArtwork.forSource(source?.id?.value)
         Image(art, null, Modifier.size(22.dp), contentScale = ContentScale.Fit)
-        Spacer(Modifier.width(6.dp))
-        BasicText(
-            source?.label ?: "SOURCE",
-            style = labelStyle(colors, true).copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
-        )
+        if (!compact) {
+            Spacer(Modifier.width(6.dp))
+            BasicText(
+                source?.label ?: "SOURCE",
+                style = labelStyle(colors, true).copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
