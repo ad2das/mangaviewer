@@ -132,8 +132,7 @@ internal class LibraryViewModel(
             LibraryIntent.LoadMoreGenre -> genrePager.next()
             LibraryIntent.LoadMoreSearch -> searches.next()
             LibraryIntent.Search -> searches.submit()
-            LibraryIntent.RetryHome -> catalogs.loadHome()
-            LibraryIntent.RetryDetail -> retryDetail()
+            LibraryIntent.RetryHome, LibraryIntent.RetryGenres, LibraryIntent.RetryDetail -> retry(intent)
             LibraryIntent.ToggleSettings, LibraryIntent.TogglePreferences, LibraryIntent.ToggleSourcePicker ->
                 uiActions.toggleOverlay(intent)
             LibraryIntent.AccountSignIn, LibraryIntent.AccountSignOut, LibraryIntent.AccountRetry -> {
@@ -295,6 +294,14 @@ internal class LibraryViewModel(
         catalogs.cancelHome()
         episodeWarmer.cancel()
         details.open(series, offlineOnly)
+    }
+
+    private fun retry(intent: LibraryIntent) {
+        when (intent) {
+            LibraryIntent.RetryGenres -> catalogs.loadGenres()
+            LibraryIntent.RetryHome -> catalogs.loadHome()
+            else -> retryDetail()
+        }
     }
 
     private fun retryDetail() {

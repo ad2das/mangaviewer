@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import ml.melun.mangaview.app.AppGraph
 import ml.melun.mangaview.app.AppWorkDispatchers
 import ml.melun.mangaview.app.StartupMainThreadPolicy
@@ -25,6 +26,8 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner,
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        // Exit-history scanning hits the binder and the filesystem; keep it off the startup path.
+        applicationScope.launch(workDispatchers.io) { CrashLog.scanLastExit(this@ViewerApplication) }
         if (NtkBrowserProcess.isCurrent(this)) {
             NtkBrowserProcess.configureWebViewStorage(this)
             val network = ml.melun.mangaview.app.NtkBrowserNetwork().also { browserNetwork = it }

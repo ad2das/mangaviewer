@@ -1,6 +1,7 @@
 package ml.melun.mangaview.ui.library
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,7 +21,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -111,7 +116,13 @@ private fun DetailLoading(
     val series = state.activeSeries ?: return
     Column(Modifier.fillMaxSize()) {
         DetailHeader(series, null, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept)
-        LibraryMessage("회차를 불러오는 중…", colors, Modifier.weight(1f))
+        DetailEpisodeSkeleton(
+            colors,
+            Modifier.weight(1f).semantics {
+                liveRegion = LiveRegionMode.Polite
+                progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
+            },
+        )
     }
 }
 
@@ -149,6 +160,9 @@ private fun DetailBody(
     val readEpisodes = remember(state.saved.readEpisodes) {
         state.saved.readEpisodes.mapTo(hashSetOf()) { it.episodeId }
     }
+    val offlineIds = remember(state.offlineEpisodes) {
+        state.offlineEpisodes.mapTo(hashSetOf()) { it.episode.id }
+    }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 28.dp),
@@ -166,20 +180,22 @@ private fun DetailBody(
             val resume = state.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
                 ?.let { id -> episodes.firstOrNull { it.id == id } }
             items(episodes, key = { it.id.remoteKey }) { episode ->
+                val saved = episode.id in offlineIds
                 EpisodeCard(
                     episode = episode,
                     readState = episodeReadState(episode, resume, readEpisodes),
-                    saved = state.offlineEpisodes.any { it.episode.id == episode.id },
+                    saved = saved,
                     downloadState = state.downloadStates[episode.id],
                     colors = colors,
                     open = { accept(LibraryIntent.EpisodeSelected(episode.id)) },
                     storageAction = {
-                        if (state.offlineEpisodes.any { it.episode.id == episode.id }) {
+                        if (saved) {
                             accept(LibraryIntent.RemoveOfflineEpisode(episode.id))
                         } else {
                             accept(LibraryIntent.DownloadEpisode(series, episode))
                         }
                     },
+                    modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
                 )
             }
         }
@@ -252,10 +268,12 @@ private fun DetailTabs(selected: DetailTab, colors: LibraryColors, accept: (Libr
             val active = tab == selected
             val surface by animateColorAsState(
                 targetValue = if (active) colors.card else Color.Transparent,
+                animationSpec = tween(LibraryMotion.Fast),
                 label = "detailTabSurface",
             )
             val labelColor by animateColorAsState(
                 targetValue = if (active) colors.text else colors.secondary,
+                animationSpec = tween(LibraryMotion.Fast),
                 label = "detailTabLabel",
             )
             Box(
@@ -321,9 +339,10 @@ private fun EpisodeCard(
     colors: LibraryColors,
     open: () -> Unit,
     storageAction: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).height(88.dp)
+        modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).height(88.dp)
             .clip(EpisodeCardShape)
             .background(colors.card)
             .border(1.dp, colors.cardBorder, EpisodeCardShape)

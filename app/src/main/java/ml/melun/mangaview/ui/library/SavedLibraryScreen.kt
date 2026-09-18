@@ -1,6 +1,7 @@
 package ml.melun.mangaview.ui.library
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,6 +15,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,9 +51,13 @@ internal fun SavedLibraryScreen(
         SavedSearch(state.savedQuery, colors, accept)
         Spacer(Modifier.height(10.dp))
         SavedTabs(state.libraryTab, colors, accept)
+        if (!state.savedLoaded) {
+            SavedSkeleton(colors, Modifier.weight(1f))
+            return@Column
+        }
         val selection = state.savedSelection
         if (selection.isEmpty()) {
-            val count = savedCount(state)
+            val count = remember(state.libraryTab, state.saved, state.offlineEpisodes) { savedCount(state) }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -67,7 +73,7 @@ internal fun SavedLibraryScreen(
         } else {
             SavedSelectionActions(state, query, colors, accept)
         }
-        val sourceLabels = state.sources.associate { it.id to it.label }
+        val sourceLabels = remember(state.sources) { state.sources.associate { it.id to it.label } }
         when (state.libraryTab) {
             SavedTab.ALL -> AllSaved(state, query, artworkLoader, colors, accept, selection)
             SavedTab.RECENT -> RecentSaved(state.saved.recent, query, artworkLoader, colors, accept, sourceLabels, selection)
@@ -142,10 +148,12 @@ private fun SavedTabs(selected: SavedTab, colors: LibraryColors, accept: (Librar
             val active = tab == selected
             val surface by animateColorAsState(
                 targetValue = if (active) colors.card else Color.Transparent,
+                animationSpec = tween(LibraryMotion.Fast),
                 label = "savedTabSurface",
             )
             val labelColor by animateColorAsState(
                 targetValue = if (active) colors.text else colors.secondary,
+                animationSpec = tween(LibraryMotion.Fast),
                 label = "savedTabLabel",
             )
             Box(
@@ -177,7 +185,7 @@ private fun AllSaved(
     accept: (LibraryIntent) -> Unit,
     selection: Set<String>,
 ) {
-    val combined = combinedSavedSeries(state)
+    val combined = remember(state.saved, state.offlineEpisodes) { combinedSavedSeries(state) }
     FavoriteSaved(
         combined,
         query,
@@ -200,7 +208,9 @@ private fun RecentSaved(
     sourceLabels: Map<SourceId, String>,
     selection: Set<String>,
 ) {
-    val filtered = items.filter { query.isEmpty() || it.series.title.contains(query, true) }
+    val filtered = remember(items, query) {
+        items.filter { query.isEmpty() || it.series.title.contains(query, true) }
+    }
     if (filtered.isEmpty()) {
         if (query.isNotEmpty()) {
             EmptySaved(
@@ -234,6 +244,7 @@ private fun RecentSaved(
                 click = {
                     accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits)))
                 },
+                modifier = Modifier.animateItem(),
             )
         }
     }
@@ -250,7 +261,9 @@ private fun FavoriteSaved(
     selection: Set<String>,
     empty: String = "좋아요한 작품이 없습니다",
 ) {
-    val filtered = items.filter { query.isEmpty() || it.title.contains(query, true) }
+    val filtered = remember(items, query) {
+        items.filter { query.isEmpty() || it.title.contains(query, true) }
+    }
     if (filtered.isEmpty()) {
         if (query.isNotEmpty()) {
             EmptySaved(
@@ -282,6 +295,7 @@ private fun FavoriteSaved(
                 selectionMode = selection.isNotEmpty(),
                 toggleSelection = { accept(LibraryIntent.SavedSelectionToggled(seriesSelectionKey(item.id))) },
                 click = { accept(LibraryIntent.SavedSeriesSelected(item)) },
+                modifier = Modifier.animateItem(),
             )
         }
     }
@@ -297,8 +311,13 @@ private fun OfflineSaved(
     sourceLabels: Map<SourceId, String>,
     selection: Set<String>,
 ) {
-    val series = state.offlineEpisodes.map { it.series }.distinctBy { it.id }
-        .filter { query.isEmpty() || it.title.contains(query, true) }
+    val series = remember(state.offlineEpisodes, query) {
+        state.offlineEpisodes.map { it.series }.distinctBy { it.id }
+            .filter { query.isEmpty() || it.title.contains(query, true) }
+    }
+    val episodeCounts = remember(state.offlineEpisodes) {
+        state.offlineEpisodes.groupingBy { it.series.id }.eachCount()
+    }
     if (series.isEmpty()) {
         if (query.isNotEmpty()) {
             EmptySaved(
@@ -318,7 +337,7 @@ private fun OfflineSaved(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         items(series, key = { "${it.id.sourceId.value}:${it.id.remoteKey}" }) { item ->
-            val count = state.offlineEpisodes.count { it.series.id == item.id }
+            val count = episodeCounts[item.id] ?: 0
             SavedSourceSeriesCard(
                 series = item,
                 subtitle = "${count}개 회차 오프라인 저장",
@@ -330,6 +349,7 @@ private fun OfflineSaved(
                 selectionMode = selection.isNotEmpty(),
                 toggleSelection = { accept(LibraryIntent.SavedSelectionToggled(seriesSelectionKey(item.id))) },
                 click = { accept(LibraryIntent.OfflineSeriesSelected(item)) },
+                modifier = Modifier.animateItem(),
             )
         }
     }
@@ -348,9 +368,10 @@ private fun SavedSourceSeriesCard(
     selectionMode: Boolean,
     click: () -> Unit,
     toggleSelection: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .height(110.dp)
             .clip(SavedCardShape)
             .background(if (selected) colors.accentSurface else colors.card)
@@ -396,7 +417,9 @@ private fun BookmarkSaved(
     sourceLabels: Map<SourceId, String>,
     selection: Set<String>,
 ) {
-    val filtered = items.filter { query.isEmpty() || it.seriesTitle.contains(query, true) }
+    val filtered = remember(items, query) {
+        items.filter { query.isEmpty() || it.seriesTitle.contains(query, true) }
+    }
     if (filtered.isEmpty()) {
         if (query.isNotEmpty()) {
             EmptySaved(
@@ -430,6 +453,7 @@ private fun BookmarkSaved(
                     accept(LibraryIntent.SavedEpisodeSelected(ReadingPosition(item.pageId, item.offsetInPageUnits)))
                 },
                 toggleSelection = { accept(LibraryIntent.SavedSelectionToggled(bookmarkSelectionKey(item))) },
+                modifier = Modifier.animateItem(),
             )
         }
     }
@@ -445,9 +469,10 @@ private fun BookmarkCard(
     selectionMode: Boolean,
     click: () -> Unit,
     toggleSelection: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .height(96.dp)
             .clip(SavedCardShape)
             .background(if (selected) colors.accentSurface else colors.card)

@@ -41,7 +41,7 @@ internal class ViewerScreenUi(
 
     fun presentationComplete() {
         loading.complete()
-        failureCard.visibility = View.GONE
+        hideFailureCard()
     }
 
     fun refreshChrome() {
@@ -63,7 +63,34 @@ internal class ViewerScreenUi(
     fun showFailure(failure: Throwable) {
         loading.failed()
         failureText.text = failure.message?.takeIf(String::isNotBlank) ?: "페이지를 불러오지 못했습니다"
-        failureCard.visibility = View.VISIBLE
+        failureCard.animate().cancel()
+        if (failureCard.visibility != View.VISIBLE) {
+            failureCard.alpha = 0f
+            failureCard.translationY = dp(16).toFloat()
+            failureCard.visibility = View.VISIBLE
+        }
+        failureCard.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(CARD_ANIMATION_MS)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
+            .start()
+    }
+
+    private fun hideFailureCard() {
+        if (failureCard.visibility != View.VISIBLE) return
+        failureCard.animate().cancel()
+        failureCard.animate()
+            .alpha(0f)
+            .translationY(dp(12).toFloat())
+            .setDuration(CARD_ANIMATION_MS)
+            .setInterpolator(android.view.animation.AccelerateInterpolator())
+            .withEndAction {
+                failureCard.visibility = View.GONE
+                failureCard.alpha = 1f
+                failureCard.translationY = 0f
+            }
+            .start()
     }
 
     fun observeReaderSettings() {
@@ -103,13 +130,15 @@ internal class ViewerScreenUi(
     fun toggleSettingsPanel() {
         if (settingsPanel.visible) {
             settingsPanel.dismiss()
+            if (::chrome.isInitialized) chrome.setAutoHidePaused(false)
         } else {
             settingsPanel.open(appliedSettings ?: ViewerSettings())
+            if (::chrome.isInitialized) chrome.setAutoHidePaused(true)
         }
     }
 
     private fun retryFromFailure() {
-        failureCard.visibility = View.GONE
+        hideFailureCard()
         loading.restart()
         retry()
     }
@@ -158,6 +187,7 @@ internal class ViewerScreenUi(
         onSurfaceDoubleTap = { x, y ->
             // Tap coordinates arrive in root space; zoom transforms are surface-local.
             val surface = runtime.surface
+            surface.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
             surface.toggleZoom(x - surface.left, y - surface.top)
         }
         setBackgroundColor(Color.BLACK)
@@ -306,4 +336,7 @@ internal class ViewerScreenUi(
     private fun View.containsPoint(x: Float, y: Float): Boolean =
         x >= left && x < right && y >= top && y < bottom
 
+    private companion object {
+        const val CARD_ANIMATION_MS = 180L
+    }
 }

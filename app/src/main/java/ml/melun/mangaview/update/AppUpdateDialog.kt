@@ -39,6 +39,10 @@ internal fun AppUpdateDialog(state: AppUpdateState, colors: LibraryColors, dismi
                 else -> state.message
             }
             BasicText(description, style = hintStyle(colors, 15))
+            if (state.phase == UpdatePhase.DOWNLOADING) {
+                Spacer(Modifier.height(14.dp))
+                DownloadProgressBar(state.percent, colors)
+            }
             Spacer(Modifier.height(22.dp))
             when (state.phase) {
                 UpdatePhase.AVAILABLE -> UpdateButton("다운로드", colors, download)
@@ -59,6 +63,24 @@ private fun UpdatePhase.title(): String = when (this) {
     UpdatePhase.READY -> "설치 준비 완료"
     UpdatePhase.FAILED -> "업데이트 실패"
     UpdatePhase.IDLE -> "앱 업데이트"
+}
+
+@Composable
+private fun DownloadProgressBar(percent: Int?, colors: LibraryColors) {
+    val fraction = (percent ?: 0).coerceIn(0, 100) / 100f
+    Box(
+        Modifier.fillMaxWidth().height(6.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(colors.mutedSurface),
+    ) {
+        if (fraction > 0f) {
+            Box(
+                Modifier.fillMaxWidth(fraction).fillMaxHeight()
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(colors.accentGradient),
+            )
+        }
+    }
 }
 
 @Composable

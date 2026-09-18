@@ -5,7 +5,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -14,7 +13,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -22,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.distinctUntilChanged
 import ml.melun.mangaview.source.SeriesStatus
+import ml.melun.mangaview.source.SourceGenre
 
 @Composable
 internal fun GenreCatalogScreen(
@@ -54,15 +58,46 @@ internal fun GenreCatalogScreen(
         }
         when (val catalog = state.genreCatalog) {
             LibraryContent.Empty, LibraryContent.Loading ->
-                LibraryMessage(genre.label + " 작품을 불러오는 중…", colors, Modifier.weight(1f))
-            is LibraryContent.Failure ->
-                LibraryMessage(catalog.message, colors, Modifier.weight(1f))
+                CatalogGridSkeleton(
+                    colors,
+                    Modifier.weight(1f).semantics {
+                        liveRegion = LiveRegionMode.Polite
+                        progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
+                    },
+                )
+            is LibraryContent.Failure -> GenreCatalogFailure(catalog.message, genre, colors, accept, Modifier.weight(1f))
             is LibraryContent.Series -> GenreSeriesList(
                 catalog, artworkLoader, colors,
                 Modifier.weight(1f), list, state.genreStatusFilter, accept,
             )
             is LibraryContent.Episodes -> Unit
         }
+    }
+}
+
+@Composable
+private fun GenreCatalogFailure(
+    message: String,
+    genre: SourceGenre,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            Modifier.size(64.dp).clip(CircleShape).background(colors.mutedSurface),
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.REFRESH, colors.muted, Modifier.size(30.dp))
+        }
+        Spacer(Modifier.height(16.dp))
+        BasicText(message, style = hintStyle(colors, 14))
+        Spacer(Modifier.height(16.dp))
+        LibraryAction("다시 시도", colors) { accept(LibraryIntent.GenreSelected(genre)) }
     }
 }
 

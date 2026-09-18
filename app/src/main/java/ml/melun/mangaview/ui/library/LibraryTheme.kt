@@ -1,10 +1,34 @@
 package ml.melun.mangaview.ui.library
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Easing
+
+/** Shared timing/easing tokens so every surface moves with one rhythm. */
+internal object LibraryMotion {
+    /** Micro feedback: color changes, ripples, presses. */
+    const val Fast = 140
+    /** Default: tab swaps, chrome reveal, list placement. */
+    const val Medium = 240
+    /** Large surfaces: screen pushes, sheets, scrims. */
+    const val Slow = 360
+
+    /** Decelerating curve for elements entering or settling. */
+    val EaseOut: Easing = CubicBezierEasing(0.16f, 1f, 0.30f, 1f)
+
+    /** Symmetric curve for cross-fades and moves. */
+    val EaseInOut: Easing = CubicBezierEasing(0.40f, 0f, 0.20f, 1f)
+}
+
+/** One allocation per theme instead of one per recomposition. */
+@Composable
+internal fun rememberLibraryColors(dark: Boolean): LibraryColors = remember(dark) { libraryColors(dark) }
 
 internal data class LibraryColors(
     val background: Color,
@@ -29,15 +53,16 @@ internal data class LibraryColors(
     val bronze: Color = Color(0xFFE29578),
     val dark: Boolean = false,
 ) {
-    val accentGradient: Brush get() = Brush.horizontalGradient(listOf(accentGradientStart, accentGradientEnd))
-    val goldGradient: Brush get() = Brush.horizontalGradient(listOf(Color(0xFFFFD700), Color(0xFFFF9100)))
-    val fireGradient: Brush get() = Brush.horizontalGradient(listOf(Color(0xFFFF416C), Color(0xFFFF4B2B)))
-    val upGradient: Brush get() = Brush.horizontalGradient(listOf(Color(0xFFFF2A66), Color(0xFFFF6584)))
-    val newGradient: Brush get() = Brush.horizontalGradient(listOf(Color(0xFF00E676), Color(0xFF00B0FF)))
-    val vipGradient: Brush get() = Brush.horizontalGradient(listOf(Color(0xFF7C5CFF), Color(0xFF00F2FE)))
-    val cardBorder: Color get() = if (dark) Color(0x28FFFFFF) else Color(0x0E000000)
-    val cardHighlight: Color get() = if (dark) Color(0x18FFFFFF) else Color(0x40FFFFFF)
-    val heroOverlayGradient: Brush get() = Brush.verticalGradient(
+    // Cached at construction: allocating brushes per recomposition shows up in scroll traces.
+    val accentGradient: Brush = Brush.horizontalGradient(listOf(accentGradientStart, accentGradientEnd))
+    val goldGradient: Brush = Brush.horizontalGradient(listOf(Color(0xFFFFD700), Color(0xFFFF9100)))
+    val fireGradient: Brush = Brush.horizontalGradient(listOf(Color(0xFFFF416C), Color(0xFFFF4B2B)))
+    val upGradient: Brush = Brush.horizontalGradient(listOf(Color(0xFFFF2A66), Color(0xFFFF6584)))
+    val newGradient: Brush = Brush.horizontalGradient(listOf(Color(0xFF00E676), Color(0xFF00B0FF)))
+    val vipGradient: Brush = Brush.horizontalGradient(listOf(Color(0xFF7C5CFF), Color(0xFF00F2FE)))
+    val cardBorder: Color = if (dark) Color(0x28FFFFFF) else Color(0x0E000000)
+    val cardHighlight: Color = if (dark) Color(0x18FFFFFF) else Color(0x40FFFFFF)
+    val heroOverlayGradient: Brush = Brush.verticalGradient(
         listOf(
             Color.Black.copy(alpha = 0.18f),
             Color.Transparent,

@@ -42,6 +42,7 @@ internal data class LibraryState(
     val activeSeriesDetails: SourceSeriesDetails? = null,
     val lastSeries: List<SourceSeries> = emptyList(),
     val saved: UserLibrarySnapshot = UserLibrarySnapshot(),
+    val savedLoaded: Boolean = false,
     val offlineEpisodes: List<DownloadedEpisode> = emptyList(),
     val downloadStates: Map<EpisodeId, EpisodeDownloadState> = emptyMap(),
     val savedSelection: Set<String> = emptySet(),
@@ -138,6 +139,7 @@ internal sealed interface LibraryIntent {
     data class SearchFieldSelected(val value: SearchField) : LibraryIntent
     data object Search : LibraryIntent
     data object RetryHome : LibraryIntent
+    data object RetryGenres : LibraryIntent
     data object RetryDetail : LibraryIntent
     data object LoadMoreGenre : LibraryIntent
     data object LoadMoreSearch : LibraryIntent

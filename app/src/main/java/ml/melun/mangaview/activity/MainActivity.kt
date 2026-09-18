@@ -49,7 +49,7 @@ import ml.melun.mangaview.ui.library.LibraryScreen
 import ml.melun.mangaview.ui.library.LibraryViewModel
 import ml.melun.mangaview.ui.library.LibraryViewModelFactory
 import ml.melun.mangaview.ui.library.LibraryColors
-import ml.melun.mangaview.ui.library.libraryColors
+import ml.melun.mangaview.ui.library.rememberLibraryColors
 import ml.melun.mangaview.ui.library.libraryPressIndication
 import ml.melun.mangaview.ui.library.providesSelectionFeedback
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
@@ -136,7 +136,12 @@ class MainActivity : ComponentActivity() {
             val account by graph.account.state.collectAsStateWithLifecycle()
             val updateState by updates.state.collectAsStateWithLifecycle()
             val reading by reader.visible.collectAsStateWithLifecycle()
+            val scannedReport by CrashLog.pendingReport.collectAsStateWithLifecycle()
             var crashReport by remember { mutableStateOf(pendingCrashReport) }
+            LaunchedEffect(scannedReport) {
+                if (scannedReport != null && crashReport == null) crashReport = scannedReport
+            }
+            val colors = rememberLibraryColors(state.saved.settings.darkTheme)
             UpdateInstallEffect(updateState, reading, updates)
             LaunchedEffect(state.saved.settings.darkTheme) {
                 if (readerScreen() == null) applySystemBars(state.saved.settings.darkTheme)
@@ -162,13 +167,13 @@ class MainActivity : ComponentActivity() {
             if (!reading) {
                 AppUpdateDialog(
                     updateState,
-                    libraryColors(state.saved.settings.darkTheme),
+                    colors,
                     updates::dismiss,
                     updates::check,
                     updates::download,
                     ::installUpdate,
                 )
-                CrashReportHost(crashReport, libraryColors(state.saved.settings.darkTheme)) {
+                CrashReportHost(crashReport, colors) {
                     CrashLog.consumePending(this@MainActivity)
                     crashReport = null
                 }

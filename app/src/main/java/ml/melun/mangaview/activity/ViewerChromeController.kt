@@ -5,15 +5,19 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import java.util.ArrayDeque
+import java.util.IdentityHashMap
 import kotlin.math.abs
 import ml.melun.mangaview.viewer.runtime.ViewerChromeState
 
@@ -66,6 +70,9 @@ internal class ViewerChromeController(
         finishHiddenGesture = ::finishHiddenGesture,
     )
     private var showing = false
+    private var autoHidePaused = false
+    private val accentState = IdentityHashMap<View, Boolean>()
+    private val autoHide = Runnable { if (showing && !autoHidePaused) setVisible(false) }
 
     val visible: Boolean get() = showing
 
@@ -73,7 +80,9 @@ internal class ViewerChromeController(
         configureBars()
         root.addView(top, barParams(Gravity.TOP))
         root.addView(bottom, barParams(Gravity.BOTTOM))
-        setVisible(false)
+        showing = false
+        top.visibility = View.GONE
+        bottom.visibility = View.GONE
     }
 
     fun toggle() {
@@ -87,6 +96,12 @@ internal class ViewerChromeController(
 
     fun hide() {
         if (visible) setVisible(false)
+    }
+
+    /** Settings sheets keep the bars parked instead of letting the idle timer yank them away. */
+    fun setAutoHidePaused(paused: Boolean) {
+        autoHidePaused = paused
+        if (paused) cancelAutoHide() else if (showing) scheduleAutoHide()
     }
 
     fun refresh() {
@@ -131,18 +146,23 @@ internal class ViewerChromeController(
     }
 
     private fun update(state: ViewerChromeState?) {
-        title.text = state?.title ?: "회차 불러오는 중"
-        page.text = state?.let { "${it.pageNumber} / ${it.pageCount}" } ?: "– / –"
-        progress.progress = state?.takeIf { it.pageCount > 0 }
+        setText(title, state?.title ?: "회차 불러오는 중")
+        setText(page, state?.let { "${it.pageNumber} / ${it.pageCount}" } ?: "– / –")
+        val progressValue = state?.takeIf { it.pageCount > 0 }
             ?.let { it.pageNumber * PROGRESS_SCALE / it.pageCount } ?: 0
+        if (progress.progress != progressValue) progress.progress = progressValue
         previous.enable(state?.previousEpisodeId != null)
         next.enable(state?.nextEpisodeId != null)
         episodes.enable(state != null)
         split.enable(state != null)
         val splitOn = state?.splitMode == true
-        split.text = if (splitOn) "단면" else "양면"
+        setText(split, if (splitOn) "단면" else "양면")
         split.contentDescription = if (splitOn) "단면 보기, 누르면 양면" else "양면 보기, 누르면 단면"
         accent(split, splitOn)
+    }
+
+    private fun setText(view: TextView, value: String) {
+        if (view.text?.toString() != value) view.text = value
     }
 
     /** Mirrors the immersive setting on the quick toggle inside the chrome. */
@@ -152,12 +172,65 @@ internal class ViewerChromeController(
     }
 
     private fun setVisible(show: Boolean) {
+        if (showing == show) return
         showing = show
-        top.alpha = 1f
-        bottom.alpha = 1f
-        val value = if (show) View.VISIBLE else View.GONE
-        top.visibility = value
-        bottom.visibility = value
+        cancelAutoHide()
+        if (show) {
+            top.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            showBars()
+            scheduleAutoHide()
+        } else {
+            hideBarsAnimated()
+        }
+    }
+
+    private fun showBars() {
+        val offset = dp(14).toFloat()
+        listOf(top, bottom).forEachIndexed { index, bar ->
+            val from = if (index == 0) -offset else offset
+            bar.animate().cancel()
+            bar.visibility = View.VISIBLE
+            bar.alpha = 0f
+            bar.translationY = from
+            bar.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(SHOW_DURATION_MS)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }
+    }
+
+    private fun hideBarsAnimated() {
+        val offset = dp(14).toFloat()
+        listOf(top, bottom).forEachIndexed { index, bar ->
+            val to = if (index == 0) -offset else offset
+            bar.animate().cancel()
+            bar.animate()
+                .alpha(0f)
+                .translationY(to)
+                .setDuration(HIDE_DURATION_MS)
+                .setInterpolator(AccelerateInterpolator())
+                .withEndAction {
+                    if (!showing) {
+                        bar.visibility = View.GONE
+                        bar.alpha = 1f
+                        bar.translationY = 0f
+                    }
+                }
+                .start()
+        }
+    }
+
+    private fun scheduleAutoHide() {
+        top.removeCallbacks(autoHide)
+        if (showing && !autoHidePaused) {
+            top.postDelayed(autoHide, AUTO_HIDE_DELAY_MS)
+        }
+    }
+
+    private fun cancelAutoHide() {
+        top.removeCallbacks(autoHide)
     }
 
     private fun label(size: Float, style: Int = Typeface.NORMAL) = TextView(activity).apply {
@@ -188,6 +261,8 @@ internal class ViewerChromeController(
     }
 
     private fun accent(view: TextView, enabled: Boolean) {
+        if (accentState[view] == enabled) return
+        accentState[view] = enabled
         view.background = roundedDrawable(
             if (enabled) ACCENT_BUTTON_BACKGROUND else BUTTON_BACKGROUND,
             dp(12).toFloat(), dp(1), if (enabled) ACCENT_BORDER else BUTTON_BORDER,
@@ -204,6 +279,9 @@ internal class ViewerChromeController(
 
     private fun hideWithoutDetachingTouchTarget() {
         showing = false
+        cancelAutoHide()
+        top.animate().cancel()
+        bottom.animate().cancel()
         top.alpha = 0f
         bottom.alpha = 0f
     }
@@ -213,6 +291,8 @@ internal class ViewerChromeController(
         bottom.visibility = View.GONE
         top.alpha = 1f
         bottom.alpha = 1f
+        top.translationY = 0f
+        bottom.translationY = 0f
     }
 
     private fun TextView.enable(enabled: Boolean) {
@@ -243,6 +323,9 @@ internal class ViewerChromeController(
         const val ACCENT_BORDER = 0x669080FF.toInt()
         const val ACCENT_PROGRESS = 0xFF7C5CFF.toInt()
         const val PROGRESS_SCALE = 1000
+        const val SHOW_DURATION_MS = 180L
+        const val HIDE_DURATION_MS = 140L
+        const val AUTO_HIDE_DELAY_MS = 3_500L
     }
 }
 

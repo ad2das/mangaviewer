@@ -29,6 +29,7 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
     private val dimValue = label(13f, Typeface.BOLD).apply { gravity = Gravity.CENTER_VERTICAL or Gravity.END }
     private val keepScreenOn = toggle()
     private val volumeKeys = toggle()
+    private lateinit var card: LinearLayout
     private var binding = false
 
     init {
@@ -36,7 +37,7 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         setBackgroundColor(0xB0000000.toInt())
         setOnClickListener { onClose() }
 
-        val card = LinearLayout(context).apply {
+        card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             background = rounded(0xF0181A22.toInt(), dp(20).toFloat(), dp(1), 0x33FFFFFF.toInt())
             val pad = dp(20)
@@ -81,10 +82,44 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         dim.progress = settings.readerDimPercent
         dimValue.text = dimLabel(settings.readerDimPercent)
         binding = false
-        visibility = View.VISIBLE
+        animate().cancel()
+        if (visibility != View.VISIBLE) {
+            alpha = 0f
+            visibility = View.VISIBLE
+        }
+        card.animate().cancel()
+        card.alpha = 0f
+        card.translationY = dp(28).toFloat()
+        animate().alpha(1f).setDuration(FADE_MS).start()
+        card.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(ENTER_MS)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
+            .start()
     }
 
-    fun dismiss() { visibility = View.GONE }
+    fun dismiss() {
+        if (visibility != View.VISIBLE) return
+        animate().cancel()
+        card.animate().cancel()
+        card.animate()
+            .alpha(0f)
+            .translationY(dp(20).toFloat())
+            .setDuration(EXIT_MS)
+            .setInterpolator(android.view.animation.AccelerateInterpolator())
+            .start()
+        animate()
+            .alpha(0f)
+            .setDuration(EXIT_MS)
+            .withEndAction {
+                visibility = View.GONE
+                alpha = 1f
+                card.alpha = 1f
+                card.translationY = 0f
+            }
+            .start()
+    }
 
     private fun dimRow(): View = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -163,5 +198,8 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
 
     private companion object {
         const val MAX_DIM_PERCENT = 70
+        const val FADE_MS = 160L
+        const val ENTER_MS = 200L
+        const val EXIT_MS = 140L
     }
 }

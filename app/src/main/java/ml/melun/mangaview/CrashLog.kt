@@ -42,6 +42,11 @@ internal object CrashLog {
         ApplicationExitInfo.REASON_OTHER to "other",
     )
 
+    private val pendingState = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** Publishes a report found by [scanLastExit] so the UI can offer it without blocking startup. */
+    val pendingReport: kotlinx.coroutines.flow.StateFlow<String?> get() = pendingState
+
     fun install(context: Context) {
         val app = context.applicationContext
         val previous = Thread.getDefaultUncaughtExceptionHandler()
@@ -49,7 +54,16 @@ internal object CrashLog {
             runCatching { write(app, thread, failure) }
             previous?.uncaughtException(thread, failure)
         }
+    }
+
+    /**
+     * Scans the exit history and publishes any new report. This does binder calls and file IO, so
+     * callers hand it to a background dispatcher instead of paying for it in Application.onCreate.
+     */
+    fun scanLastExit(context: Context) {
+        val app = context.applicationContext
         runCatching { recordLastExit(app) }
+        pendingState.value = pending(app)
     }
 
     fun latest(context: Context): File = File(File(context.filesDir, DIR), "latest.txt")
@@ -73,6 +87,7 @@ internal object CrashLog {
         val app = context.applicationContext
         File(File(app.filesDir, DIR), PENDING).delete()
         runCatching { File(File(app.getExternalFilesDir(null), DIR), PENDING).delete() }
+        pendingState.value = null
     }
 
     private fun read(file: File): String? =

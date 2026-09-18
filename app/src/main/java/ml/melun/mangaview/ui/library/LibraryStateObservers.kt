@@ -41,7 +41,7 @@ internal class LibraryStateObservers(
             library.snapshot.collectLatest { snapshot ->
                 var reload = false
                 update { state ->
-                    if (restoredDestination) return@update state.copy(saved = snapshot)
+                    if (restoredDestination) return@update state.copy(saved = snapshot, savedLoaded = true)
                     restoredDestination = true
                     val sourceId = state.sources.firstOrNull {
                         it.id.value == snapshot.settings.sourceKey
@@ -50,6 +50,7 @@ internal class LibraryStateObservers(
                     reload = sourceId != state.selectedSourceId || kind != state.homeKind
                     state.copy(
                         saved = snapshot,
+                        savedLoaded = true,
                         destination = if (destinationSelected) state.destination else MainDestination.fromStored(snapshot.settings.startTab),
                         selectedSourceId = sourceId,
                         homeKind = kind,

@@ -83,9 +83,12 @@ internal fun SearchScreen(
             is LibraryContent.Series -> if (content.items.isEmpty() && content.nextCursor == null && content.nextFailure == null) {
                 SearchNoResults(state.submittedQuery, colors)
             } else {
+                val favoriteIds = remember(state.saved.favorites) {
+                    state.saved.favorites.mapTo(hashSetOf()) { it.id }
+                }
                 SearchSeriesList(
                     content,
-                    state.saved.favorites.mapTo(hashSetOf()) { it.id },
+                    favoriteIds,
                     artworkLoader,
                     colors,
                     searchAccept,
@@ -338,8 +341,12 @@ private fun SearchSeriesList(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item { SearchResultsHeader(query, content, colors) }
-        items(content.items, key = { "${it.id.sourceId.value}:${it.id.remoteKey}" }) { series ->
-            SearchSeriesCard(series, series.id in favorites, loader, colors, accept)
+        items(
+            content.items,
+            key = { "${it.id.sourceId.value}:${it.id.remoteKey}" },
+            contentType = { "search-series" },
+        ) { series ->
+            SearchSeriesCard(series, series.id in favorites, loader, colors, accept, Modifier.animateItem())
         }
         item(key = "search-status") {
             Column(
@@ -382,9 +389,10 @@ private fun SearchSeriesCard(
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .heightIn(min = 116.dp)
             .clip(SearchResultCardShape)
             .background(colors.card)

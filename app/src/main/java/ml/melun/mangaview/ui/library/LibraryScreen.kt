@@ -1,7 +1,24 @@
 package ml.melun.mangaview.ui.library
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -45,7 +62,7 @@ internal fun LibraryScreen(
     updateAvailable: Boolean = false,
     onOpenCrashReport: () -> Unit = {},
 ) {
-    val colors = libraryColors(state.saved.settings.darkTheme)
+    val colors = rememberLibraryColors(state.saved.settings.darkTheme)
     val focus = LocalFocusManager.current
     val screenState = rememberSaveableStateHolder()
     LaunchedEffect(state.destination, state.activeSeries, state.settingsVisible, state.sourcePickerVisible) {
@@ -67,20 +84,103 @@ internal fun LibraryScreen(
     ) { accept(LibraryIntent.Back) }
 
     Box(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
-        if (detailVisible) {
-            SeriesDetailScreen(state, artworkLoader, colors, accept)
-        } else if (genreCatalogVisible) {
-            GenreCatalogScreen(state, artworkLoader, colors, genreScroll, accept)
-        } else {
-            MainShell(state, artworkLoader, colors, accept, updateAvailable, screenState)
+        val layer = when {
+            detailVisible -> LibraryLayer.Detail
+            genreCatalogVisible -> LibraryLayer.Genre
+            else -> LibraryLayer.Shell
         }
-        if (state.seriesMenuVisible) SeriesActionsOverlay(state, colors, accept)
-        if (state.downloadSelectionVisible) DownloadSelectionOverlay(state, colors, accept)
-        if (state.pendingOfflineRemoval != null) OfflineRemovalConfirmation(state, colors, accept)
-        if (state.settingsVisible) SettingsOverlay(colors, accept, account, updateAvailable)
-        if (state.preferencesVisible) PreferencesOverlay(state, colors, accept, onOpenCrashReport)
-        if (state.sourcePickerVisible) SourcePickerOverlay(state, colors, accept)
+        AnimatedContent(
+            targetState = layer,
+            transitionSpec = { layerTransition(initialState, targetState) },
+            label = "libraryLayer",
+        ) { target ->
+            when (target) {
+                LibraryLayer.Detail -> SeriesDetailScreen(state, artworkLoader, colors, accept)
+                LibraryLayer.Genre -> GenreCatalogScreen(state, artworkLoader, colors, genreScroll, accept)
+                LibraryLayer.Shell -> MainShell(state, artworkLoader, colors, accept, updateAvailable, screenState)
+            }
+        }
+        AnimatedVisibility(
+            visible = state.seriesMenuVisible,
+            enter = fadeIn(tween(LibraryMotion.Fast)) +
+                slideInVertically(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut)) { -it / 8 },
+            exit = fadeOut(tween(LibraryMotion.Fast)) +
+                slideOutVertically(tween(LibraryMotion.Fast)) { -it / 12 },
+            label = "seriesMenu",
+        ) { SeriesActionsOverlay(state, colors, accept) }
+        AnimatedVisibility(
+            visible = state.downloadSelectionVisible,
+            enter = fadeIn(tween(LibraryMotion.Medium)) +
+                slideInHorizontally(tween(LibraryMotion.Slow, easing = LibraryMotion.EaseOut)) { it },
+            exit = fadeOut(tween(LibraryMotion.Fast)) +
+                slideOutHorizontally(tween(LibraryMotion.Fast)) { it / 4 },
+            label = "downloadSelection",
+        ) { DownloadSelectionOverlay(state, colors, accept) }
+        AnimatedVisibility(
+            visible = state.pendingOfflineRemoval != null,
+            enter = fadeIn(tween(LibraryMotion.Fast)) +
+                scaleIn(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut), initialScale = 0.94f),
+            exit = fadeOut(tween(LibraryMotion.Fast)) +
+                scaleOut(tween(LibraryMotion.Fast), targetScale = 0.98f),
+            label = "offlineRemoval",
+        ) { OfflineRemovalConfirmation(state, colors, accept) }
+        AnimatedVisibility(
+            visible = state.settingsVisible,
+            enter = fadeIn(tween(LibraryMotion.Medium)) +
+                slideInVertically(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut)) { it / 4 },
+            exit = fadeOut(tween(LibraryMotion.Fast)) +
+                slideOutVertically(tween(LibraryMotion.Fast)) { it / 6 },
+            label = "settings",
+        ) { SettingsOverlay(colors, accept, account, updateAvailable) }
+        AnimatedVisibility(
+            visible = state.preferencesVisible,
+            enter = fadeIn(tween(LibraryMotion.Medium)) +
+                slideInHorizontally(tween(LibraryMotion.Slow, easing = LibraryMotion.EaseOut)) { it / 3 },
+            exit = fadeOut(tween(LibraryMotion.Fast)) +
+                slideOutHorizontally(tween(LibraryMotion.Fast)) { it / 4 },
+            label = "preferences",
+        ) { PreferencesOverlay(state, colors, accept, onOpenCrashReport) }
+        AnimatedVisibility(
+            visible = state.sourcePickerVisible,
+            enter = fadeIn(tween(LibraryMotion.Fast)) +
+                scaleIn(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut), initialScale = 0.96f),
+            exit = fadeOut(tween(LibraryMotion.Fast)) +
+                scaleOut(tween(LibraryMotion.Fast), targetScale = 0.98f),
+            label = "sourcePicker",
+        ) { SourcePickerOverlay(state, colors, accept) }
     }
+}
+
+/** Shell -> Genre -> Detail push direction; the reverse slides back out. */
+private fun AnimatedContentTransitionScope<LibraryLayer>.layerTransition(
+    from: LibraryLayer,
+    to: LibraryLayer,
+): ContentTransform {
+    val forward = to.ordinal > from.ordinal
+    val enter = slideInHorizontally(tween(LibraryMotion.Slow, easing = LibraryMotion.EaseOut)) { full ->
+        if (forward) full / 5 else -full / 10
+    } + fadeIn(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut))
+    val exit = slideOutHorizontally(tween(LibraryMotion.Slow, easing = LibraryMotion.EaseOut)) { full ->
+        if (forward) -full / 10 else full / 5
+    } + fadeOut(tween(LibraryMotion.Fast))
+    return enter togetherWith exit
+}
+
+private enum class LibraryLayer { Shell, Genre, Detail }
+
+/** Bottom tabs cross-fade with a small horizontal shift in tab order direction. */
+private fun AnimatedContentTransitionScope<MainDestination>.tabTransition(
+    from: MainDestination,
+    to: MainDestination,
+): ContentTransform {
+    val forward = to.ordinal > from.ordinal
+    val enter = slideInHorizontally(tween(LibraryMotion.Slow, easing = LibraryMotion.EaseOut)) { full ->
+        if (forward) full / 14 else -full / 14
+    } + fadeIn(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut))
+    val exit = slideOutHorizontally(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseInOut)) { full ->
+        if (forward) -full / 14 else full / 14
+    } + fadeOut(tween(LibraryMotion.Fast))
+    return enter togetherWith exit
 }
 
 @Composable
@@ -95,11 +195,17 @@ private fun MainShell(
     Column(Modifier.fillMaxSize().imePadding()) {
         MainTopBar(state, colors, accept, updateAvailable)
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            screenState.SaveableStateProvider(state.destination) {
-                when (state.destination) {
-                    MainDestination.HOME -> HomeScreen(state, artworkLoader, colors, accept)
-                    MainDestination.SEARCH -> SearchScreen(state, artworkLoader, colors, accept)
-                    MainDestination.LIBRARY -> SavedLibraryScreen(state, artworkLoader, colors, accept)
+            AnimatedContent(
+                targetState = state.destination,
+                transitionSpec = { tabTransition(initialState, targetState) },
+                label = "mainTab",
+            ) { destination ->
+                screenState.SaveableStateProvider(destination) {
+                    when (destination) {
+                        MainDestination.HOME -> HomeScreen(state, artworkLoader, colors, accept)
+                        MainDestination.SEARCH -> SearchScreen(state, artworkLoader, colors, accept)
+                        MainDestination.LIBRARY -> SavedLibraryScreen(state, artworkLoader, colors, accept)
+                    }
                 }
             }
         }
@@ -255,11 +361,21 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
     val active = item == selected
     val pill by animateColorAsState(
         targetValue = if (active) colors.accentSurface else Color.Transparent,
+        animationSpec = tween(LibraryMotion.Fast),
         label = "navPill",
     )
     val iconColor by animateColorAsState(
         targetValue = if (active) colors.accent else colors.secondary,
+        animationSpec = tween(LibraryMotion.Fast),
         label = "navIcon",
+    )
+    val iconScale by animateFloatAsState(
+        targetValue = if (active) 1f else 0.9f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow,
+        ),
+        label = "navIconScale",
     )
     Column(
         Modifier.weight(1f).fillMaxHeight()
@@ -270,6 +386,10 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
     ) {
         Box(
             Modifier.size(width = 58.dp, height = 32.dp)
+                .graphicsLayer {
+                    scaleX = iconScale
+                    scaleY = iconScale
+                }
                 .clip(RoundedCornerShape(16.dp))
                 .background(pill),
             contentAlignment = Alignment.Center,

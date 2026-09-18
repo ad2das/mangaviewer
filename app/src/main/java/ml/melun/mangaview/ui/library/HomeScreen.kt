@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -22,9 +23,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -156,7 +160,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.genreRows(
     }
     when (val genres = state.genres) {
         GenreContent.Empty, GenreContent.Loading -> item { GenreMessage("장르를 불러오는 중…", colors) }
-        is GenreContent.Failure -> item { GenreMessage(genres.message, colors) }
+        is GenreContent.Failure -> item { GenreFailure(genres.message, colors, accept) }
         is GenreContent.Ready -> items(genres.items.chunked(3), key = { row -> row.joinToString("|") { it.key } }) { row ->
             GenreRow(row, colors, accept)
         }
@@ -202,6 +206,18 @@ private fun GenreMessage(message: String, colors: LibraryColors) {
         contentAlignment = Alignment.Center,
     ) {
         BasicText(message, style = hintStyle(colors, 14))
+    }
+}
+
+@Composable
+private fun GenreFailure(message: String, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        BasicText(message, style = hintStyle(colors, 14))
+        Spacer(Modifier.height(16.dp))
+        LibraryAction("다시 시도", colors) { accept(LibraryIntent.RetryGenres) }
     }
 }
 
@@ -381,15 +397,14 @@ private fun RankedRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(items, key = { it.id.remoteKey }) { series ->
-            val rank = items.indexOf(series) + 1
+        itemsIndexed(items, key = { _, series -> series.id.remoteKey }) { index, series ->
+            val rank = index + 1
             Column(
                 Modifier.width(152.dp)
                     .height(246.dp)
                     .graphicsLayer {
                         shape = GridCardShape
                         clip = true
-                        compositingStrategy = CompositingStrategy.Offscreen
                     }
                     .background(colors.card)
                     .border(1.dp, colors.cardBorder, GridCardShape)
@@ -451,7 +466,6 @@ private fun SeriesGridCard(
             .graphicsLayer {
                 shape = GridCardShape
                 clip = true
-                compositingStrategy = CompositingStrategy.Offscreen
             }
             .background(colors.card)
             .border(1.dp, colors.cardBorder, GridCardShape)
@@ -485,15 +499,14 @@ private fun SeriesGridCard(
 
 @Composable
 private fun HomeLoading(colors: LibraryColors) {
-    Column(Modifier.fillMaxWidth().padding(20.dp)) {
-        Box(
-            Modifier.fillMaxWidth()
-                .height(260.dp)
-                .clip(RoundedCornerShape(22.dp))
-                .background(colors.mutedSurface),
-        )
-        Spacer(Modifier.height(24.dp))
-        BasicText("작품 목록을 불러오는 중…", style = hintStyle(colors, 15))
+    Column(
+        Modifier.fillMaxWidth()
+            .semantics {
+                liveRegion = LiveRegionMode.Polite
+                progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
+            },
+    ) {
+        HomeSkeleton(colors)
     }
 }
 
