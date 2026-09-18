@@ -17,29 +17,33 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class NtkArtworkProbeDeviceTest {
     @Test fun reportsCoverKeysAndArtworkFetch() = runBlocking<Unit> {
+        listOf(SeriesKind.WEBTOON, SeriesKind.COMIC).forEach { kind -> probe(kind) }
+    }
+
+    private suspend fun probe(kind: SeriesKind) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val graph = (context.applicationContext as ViewerApplication).graph
         val source = graph.sources.require(SourceId("ntk"))
         val page = runCatching {
-            source.catalog(CatalogQuery(SeriesKind.WEBTOON, CatalogOrder.POPULAR))
+            source.catalog(CatalogQuery(kind, CatalogOrder.POPULAR))
         }.getOrElse { failure ->
-            Log.e("NtkArtworkProbe", "catalog failed", failure)
-            return@runBlocking
+            Log.e("NtkArtworkProbe", "$kind catalog failed", failure)
+            return
         }
-        Log.i("NtkArtworkProbe", "series=${page.items.size}")
+        Log.i("NtkArtworkProbe", "$kind series=${page.items.size}")
         page.items.take(5).forEach { series ->
-            Log.i("NtkArtworkProbe", "key=${series.id.remoteKey} thumb=${series.thumbnailKey}")
+            Log.i("NtkArtworkProbe", "$kind key=${series.id.remoteKey} thumb=${series.thumbnailKey}")
         }
-        val first = page.items.firstOrNull() ?: return@runBlocking
+        val first = page.items.firstOrNull() ?: return
         val started = SystemClock.elapsedRealtime()
         val opened = runCatching { source.openArtwork(first) }.getOrElse { failure ->
-            Log.e("NtkArtworkProbe", "openArtwork threw elapsedMs=${SystemClock.elapsedRealtime() - started}", failure)
-            return@runBlocking
+            Log.e("NtkArtworkProbe", "$kind openArtwork threw elapsedMs=${SystemClock.elapsedRealtime() - started}", failure)
+            return
         }
         val elapsed = SystemClock.elapsedRealtime() - started
         if (opened == null) {
-            Log.w("NtkArtworkProbe", "openArtwork=null elapsedMs=$elapsed")
-            return@runBlocking
+            Log.w("NtkArtworkProbe", "$kind openArtwork=null elapsedMs=$elapsed")
+            return
         }
         val bytes = opened.use { page ->
             val buffer = ByteArray(64 * 1024)
@@ -51,6 +55,6 @@ class NtkArtworkProbeDeviceTest {
             }
             total
         }
-        Log.i("NtkArtworkProbe", "openArtwork bytes=$bytes elapsedMs=$elapsed")
+        Log.i("NtkArtworkProbe", "$kind openArtwork bytes=$bytes elapsedMs=$elapsed")
     }
 }

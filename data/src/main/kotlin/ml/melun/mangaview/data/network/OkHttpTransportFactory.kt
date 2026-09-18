@@ -54,6 +54,7 @@ class OkHttpTransportFactory(
         val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
         val client = OkHttpClient.Builder()
             .dispatcher(dispatcher)
+            .dns(ProviderImageDns())
             .cookieJar(cookieJar)
             .sslSocketFactory(ProviderImageTrust.socketFactory(), ProviderImageTrust.trustManager())
             .connectionPool(ConnectionPool(parallelism, 5L, TimeUnit.MINUTES))

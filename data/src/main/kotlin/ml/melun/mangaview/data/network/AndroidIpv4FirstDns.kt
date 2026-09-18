@@ -37,6 +37,21 @@ internal fun <T> rotatedAddressOrder(addresses: List<T>, cursor: Int): List<T> {
     return addresses.drop(offset) + addresses.take(offset)
 }
 
+/**
+ * Provider image CDNs publish AAAA records that some emulator and carrier networks black-hole;
+ * OkHttp then burns the full connect timeout on IPv6 before the IPv4 route is tried. Dropping the
+ * AAAA family whenever an A record exists keeps a blocked host's failure fast, which is what lets
+ * the mirror fallback engage immediately. IPv6-only answers still pass through unchanged.
+ */
+internal class ProviderImageDns(private val resolver: Dns = Dns.SYSTEM) : Dns {
+    override fun lookup(hostname: String): List<InetAddress> {
+        if (hostname.isBlank()) throw UnknownHostException("hostname == null")
+        val resolved = resolver.lookup(hostname)
+        val ipv4 = resolved.filterIsInstance<Inet4Address>()
+        return ipv4.ifEmpty { resolved }
+    }
+}
+
 /** Fallback DNS may return both families. Route rotation must retain the IPv4-first contract. */
 internal fun ipv4FirstAddressOrder(addresses: List<InetAddress>, cursor: Int): List<InetAddress> {
     val (ipv4, remaining) = addresses.partition { it is Inet4Address }
