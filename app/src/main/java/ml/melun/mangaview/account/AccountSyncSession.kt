@@ -65,8 +65,7 @@ internal class AccountSyncSession(
         while (true) {
             if (remote.unresolvedRecords > 0) withTimeoutOrNull(60_000L) { wake.receive() }
             else wake.receive()
-            delay(1_200L)
-            while (wake.tryReceive().isSuccess) { /* use the latest database state */ }
+            coalesceChanges()
             try {
                 synchronize()
                 retryDelay = 2_000L
@@ -77,6 +76,14 @@ internal class AccountSyncSession(
                 retryDelay = (retryDelay * 2).coerceAtMost(60_000L)
                 wake.trySend(Unit)
             }
+        }
+    }
+
+    /** Trailing debounce: bursts of edits become one exchange after the last wake. */
+    private suspend fun coalesceChanges() {
+        val start = now()
+        while (now() - start < COALESCE_MAX_MS) {
+            if (withTimeoutOrNull(COALESCE_QUIET_MS) { wake.receive() } == null) return
         }
     }
 
@@ -101,5 +108,10 @@ internal class AccountSyncSession(
         val value = AccountCheckpoint(uid, records)
         checkpoint.write(value)
         saved = value
+    }
+
+    companion object {
+        const val COALESCE_QUIET_MS = 150L
+        const val COALESCE_MAX_MS = 600L
     }
 }

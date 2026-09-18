@@ -16,12 +16,24 @@ class AccountSyncSessionTest {
         val local = MemoryLocal(listOf(bookmark))
         val cloud = WaitingRemote().apply { unresolvedRecords = 1; response.complete(listOf(bookmark)) }
         val job = backgroundScope.launch { session(local, MemoryCheckpoint(null), cloud).run() }
-        runCurrent(); advanceTimeBy(1201); runCurrent()
+        runCurrent(); advanceTimeBy(settle()); runCurrent()
         assertEquals(1, cloud.uploads.size)
         advanceTimeBy(61_201); runCurrent()
         assertEquals(2, cloud.uploads.size)
-        local.changes.emit(Unit); runCurrent(); advanceTimeBy(1201); runCurrent()
+        local.changes.emit(Unit); runCurrent(); advanceTimeBy(settle()); runCurrent()
         assertEquals(3, cloud.uploads.size)
+        job.cancelAndJoin()
+    }
+
+    @Test fun rapidLocalChangesCoalesceIntoOneExchange() = runTest {
+        val local = MemoryLocal(listOf(bookmark))
+        val cloud = WaitingRemote().apply { response.complete(listOf(bookmark)) }
+        val job = backgroundScope.launch { session(local, MemoryCheckpoint(null), cloud).run() }
+        runCurrent(); advanceTimeBy(settle()); runCurrent()
+        assertEquals(1, cloud.uploads.size)
+        repeat(3) { local.changes.emit(Unit); runCurrent() }
+        advanceTimeBy(settle()); runCurrent()
+        assertEquals(2, cloud.uploads.size)
         job.cancelAndJoin()
     }
 
@@ -30,7 +42,7 @@ class AccountSyncSessionTest {
         val checkpoint = MemoryCheckpoint(AccountCheckpoint("owner", listOf(bookmark)))
         val cloud = WaitingRemote()
         val job = backgroundScope.launch { session(local, checkpoint, cloud).run() }
-        runCurrent(); advanceTimeBy(1201); runCurrent()
+        runCurrent(); advanceTimeBy(settle()); runCurrent()
         assertEquals(1, cloud.uploads.size)
         local.records = emptyList(); local.changes.emit(Unit); runCurrent()
         assertTrue(checkpoint.value!!.records.single().deleted)
@@ -56,12 +68,14 @@ class AccountSyncSessionTest {
         val checkpoint = MemoryCheckpoint(null)
         val cloud = WaitingRemote()
         val job = backgroundScope.launch { session(local, checkpoint, cloud).run() }
-        runCurrent(); advanceTimeBy(1201); runCurrent()
+        runCurrent(); advanceTimeBy(settle()); runCurrent()
         job.cancelAndJoin()
         cloud.response.complete(listOf(bookmark)); runCurrent()
         assertTrue(local.records.isEmpty())
         assertTrue(cloud.unsubscribed)
     }
+
+    private fun settle() = AccountSyncSession.COALESCE_QUIET_MS + 1
 
     private fun session(local: MemoryLocal, checkpoint: MemoryCheckpoint, remote: WaitingRemote) =
         AccountSyncSession("owner", local, checkpoint, remote, Channel(Channel.CONFLATED), { true }, { _, _ -> }, { 20 })

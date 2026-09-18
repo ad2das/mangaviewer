@@ -91,7 +91,7 @@ internal class AccountSync(
 
     private suspend fun runSession(auth: FirebaseAuth, user: FirebaseUser) {
         val name = user.email ?: user.displayName.orEmpty()
-        val remote = FirebaseLibraryRemote(auth, FirebaseFirestore.getInstance(auth.app), user.uid, episodes)
+        val remote = FirebaseLibraryRemote(auth, FirebaseFirestore.getInstance(auth.app), user.uid, episodes, scope)
         AccountSyncSession(user.uid, local, checkpoint, remote, wake,
             isCurrent = { auth.currentUser?.uid == user.uid },
             status = { message, busy -> mutableState.value = AccountState(true, name, message, busy) },
