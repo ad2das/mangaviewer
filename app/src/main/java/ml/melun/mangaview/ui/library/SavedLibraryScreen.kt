@@ -2,6 +2,7 @@ package ml.melun.mangaview.ui.library
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -588,12 +590,23 @@ private fun SourceLabelChip(sourceId: SourceId, label: String, colors: LibraryCo
     val content = tint?.let {
         lerp(it, if (colors.dark) Color.White else Color.Black, if (colors.dark) 0.30f else 0.50f)
     } ?: colors.secondary
+    val favicon = LegacySiteArtwork.forSourceOrNull(sourceId.value)
     Box(
         Modifier.clip(SavedBadgeShape)
             .background(background)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .padding(horizontal = if (favicon != null) 3.dp else 6.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        BasicText(label, style = hintStyle(colors, 10).copy(color = content, fontWeight = FontWeight.Bold))
+        if (favicon != null) {
+            Image(
+                favicon,
+                contentDescription = "출처: $label",
+                modifier = Modifier.size(16.dp),
+                contentScale = ContentScale.Fit,
+            )
+        } else {
+            BasicText(label, style = hintStyle(colors, 10).copy(color = content, fontWeight = FontWeight.Bold))
+        }
     }
 }
 
