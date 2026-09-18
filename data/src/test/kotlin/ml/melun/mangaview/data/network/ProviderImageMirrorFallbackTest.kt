@@ -1,6 +1,8 @@
 package ml.melun.mangaview.data.network
 
 import java.io.IOException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import ml.melun.mangaview.source.PageByteStream
 import ml.melun.mangaview.source.PageFetchPriority
@@ -102,6 +104,69 @@ class ProviderImageMirrorFallbackTest {
         assertTrue(candidates.contains(MIRROR_ON_CDN1))
         assertFalse(candidates.any { it.contains("aws-cdn9.site") })
         assertTrue(ProviderImageTrust.mirrorCandidates("https://example.com/cover.jpg").isEmpty())
+    }
+
+    @Test fun oneRequestBudgetCoversTheWholeMirrorSweep() = runBlocking {
+        var clock = 0L
+        val attempts = mutableListOf<SourceRequest>()
+        val relaxed = SourceTransport { request ->
+            attempts += request
+            clock += 30_000_000_000L
+            throw IOException("timeout")
+        }
+        val transport = ProviderImageTransport(
+            SourceTransport { error("delegate") },
+            relaxed,
+            nowNanos = { clock },
+        )
+        try {
+            transport.execute(SourceRequest(THUMBNAIL_ON_CDN9, totalTimeoutMillis = 45_000L))
+            fail()
+        } catch (_: IOException) {
+            // The sweep stops once the shared request budget is spent.
+        }
+        assertEquals(2, attempts.size)
+        assertEquals(15_000L, attempts[1].totalTimeoutMillis)
+    }
+
+    @Test fun aRememberedMirrorThatStopsWorkingIsReplaced() = runBlocking {
+        var cdn1Works = true
+        val requested = mutableListOf<String>()
+        val relaxed = SourceTransport { request ->
+            requested += request.url
+            when {
+                request.url.contains("aws-cdn9.site") -> throw IOException("connection reset")
+                request.url.contains("aws-cdn1.site") && !cdn1Works -> throw IOException("connection reset")
+                else -> artworkResponse(request.url)
+            }
+        }
+        val transport = ProviderImageTransport(SourceTransport { error("delegate") }, relaxed)
+        transport.execute(SourceRequest(THUMBNAIL_ON_CDN9)).close()
+        cdn1Works = false
+        requested.clear()
+        val response = transport.execute(SourceRequest(THUMBNAIL_ON_CDN9))
+        assertEquals(MIRROR_ON_CDN2, response.finalUrl)
+        assertEquals(listOf(MIRROR_ON_CDN1, THUMBNAIL_ON_CDN9, MIRROR_ON_CDN2), requested)
+        response.close()
+        requested.clear()
+        transport.execute(SourceRequest(THUMBNAIL_ON_CDN9)).close()
+        assertEquals(MIRROR_ON_CDN2, requested.first())
+    }
+
+    @Test fun parallelRequestsShareTheMirrorDecisionWithoutLosingResponses() = runBlocking {
+        val relaxed = SourceTransport { request ->
+            if (request.url.contains("aws-cdn9.site")) throw IOException("connection reset")
+            artworkResponse(request.url)
+        }
+        val transport = ProviderImageTransport(SourceTransport { error("delegate") }, relaxed)
+        val responses = (1..16)
+            .map { async { transport.execute(SourceRequest(THUMBNAIL_ON_CDN9)) } }
+            .awaitAll()
+        responses.forEach { response ->
+            assertEquals(200, response.statusCode)
+            assertEquals(MIRROR_ON_CDN1, response.finalUrl)
+            response.close()
+        }
     }
 
     private fun artworkResponse(url: String) =

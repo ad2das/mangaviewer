@@ -3,7 +3,6 @@ package ml.melun.mangaview.source.ntk
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.URI
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -231,7 +230,7 @@ internal class NtkDocumentClient(
 
     suspend fun openArtwork(value: String, refererPath: String): OpenedPage? {
         val base = "${origin.current()}/"
-        val url = runCatching { URI(base).resolve(value.trim()).toString() }.getOrNull() ?: return null
+        val url = NtkArtworkUrl.resolve(base, value) ?: return null
         val response = artworkTransport.execute(SourceRequest(url, headers = requestHeaders(origin.url(refererPath))))
         if (response.statusCode !in 200..299) {
             response.close()

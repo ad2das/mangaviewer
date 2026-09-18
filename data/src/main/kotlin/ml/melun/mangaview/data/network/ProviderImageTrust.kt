@@ -63,6 +63,7 @@ object ProviderImageTrust {
 class ProviderImageTransport(
     private val delegate: SourceTransport,
     private val relaxed: SourceTransport,
+    private val nowNanos: () -> Long = System::nanoTime,
 ) : SourceTransport by delegate, Closeable {
     private val workingMirrors = ConcurrentHashMap<String, String>()
 
@@ -104,12 +105,17 @@ class ProviderImageTransport(
             add(request.url)
             mirrors.forEach { mirror -> if (mirror != remembered) add(mirror) }
         }
+        val started = nowNanos()
         var originalResponse: SourceResponse? = null
         var firstFailure: IOException? = null
         try {
             for (candidate in candidates) {
+                // One request budget covers the whole sweep: a network where every candidate
+                // stalls must not multiply the caller's timeout by the number of mirrors.
+                val remaining = request.totalTimeoutMillis - (nowNanos() - started) / 1_000_000
+                if (remaining <= 0) break
                 val response = try {
-                    relaxedRoute(request.copy(url = candidate))
+                    relaxedRoute(request.copy(url = candidate, totalTimeoutMillis = remaining))
                 } catch (failure: IOException) {
                     if (firstFailure == null) firstFailure = failure
                     if (candidate == remembered) workingMirrors.remove(originalHost)
@@ -142,6 +148,7 @@ class ProviderImageTransport(
 
     /** The delegate is owned by its creator; this wrapper only owns the relaxed client. */
     override fun close() {
+        workingMirrors.clear()
         (relaxed as? Closeable)?.close()
     }
 }

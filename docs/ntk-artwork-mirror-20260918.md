@@ -53,3 +53,19 @@ different host (`booktoki8.org`), which is why only webtoons failed.
   same object served by `aws-cdn1.site`; `aws-cdn9.site` blocked), COMIC
   `bytes=704176 elapsedMs=660` from `booktoki8.org` unchanged.
 - Visual: NTK 웹툰 home hero and 이번 주 인기 TOP grid render covers.
+
+## Stability pass (same day)
+
+- `ProviderImageTransport` now gives the whole mirror sweep a single request
+  budget (`totalTimeoutMillis`): a network where every candidate stalls can no
+  longer multiply the caller's timeout by the number of mirrors. Remembered
+  mirrors are cleared on `close()`.
+- `NtkArtworkUrl` replaces `URI.resolve` for artwork references. Hangul file
+  names (e.g. `/wt/thumbs/전생자(카카오).jpg`, 4 of 80 recent items) were passed
+  through unencoded and failed downstream, so `openArtwork` returned null before
+  any request and the tile stayed gray forever. Code points outside the RFC 3986
+  ASCII set are now percent-encoded (UTF-8); existing `%` escapes are preserved
+  so nothing is double-encoded.
+- Residual: those `/wt/thumbs/` objects answer 404 on `aws-cdn1.site`, the only
+  mirror reachable from this network, so the four sampled Hangul-name covers
+  stay gray here; they load wherever the CDN object is reachable.
