@@ -251,7 +251,8 @@ private fun TagChip(label: String, colors: LibraryColors) {
             .background(colors.mutedSurface)
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
-        BasicText(label, style = hintStyle(colors, 11).copy(fontWeight = FontWeight.Medium))
+        BasicText(label, style = hintStyle(colors, 11).copy(fontWeight = FontWeight.Medium),
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -527,7 +528,10 @@ private fun DetailDescription(series: SourceSeries, details: SourceSeriesDetails
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     subtitle.split(",", "/", "·").take(2).forEach { tag ->
                         if (tag.isNotBlank()) TagChip(tag.trim(), colors)
                     }
