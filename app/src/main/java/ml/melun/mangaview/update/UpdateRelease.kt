@@ -23,12 +23,15 @@ internal data class UpdateRelease(
     }
 
     fun newerThan(installedVersion: Long): Boolean = version > installedVersion
-    val label: String get() = versionName?.takeIf(String::isNotBlank)?.let { "$it ($version)" } ?: version.toString()
+    val label: String get() = formatLabel(versionName, version)
 
     companion object {
         const val MAX_APK_BYTES = 128L * 1024 * 1024
         const val METADATA_URL = "https://github.com/ad2das/mangaviewer/releases/download/main-latest/version.json"
         const val RELEASE_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/releases/tags/main-latest"
+
+        fun formatLabel(versionName: String?, version: Long): String =
+            versionName?.takeIf(String::isNotBlank)?.let { "$it ($version)" } ?: version.toString()
 
         fun parseManifest(text: String): UpdateRelease {
             val row = JsonParser.parseString(text).asJsonObject

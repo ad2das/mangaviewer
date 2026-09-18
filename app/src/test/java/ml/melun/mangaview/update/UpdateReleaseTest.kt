@@ -17,6 +17,12 @@ class UpdateReleaseTest {
         assertEquals("5.0.0 ($version)", current.label)
     }
 
+    @Test fun formatsVersionLabelsConsistentlyForInstalledAndReleasedBuilds() {
+        assertEquals("5.0.0 ($version)", UpdateRelease.formatLabel("5.0.0", version))
+        assertEquals(version.toString(), UpdateRelease.formatLabel(null, version))
+        assertEquals(version.toString(), UpdateRelease.formatLabel("   ", version))
+    }
+
     @Test fun rejectsMismatchedApkNamesAndUntrustedLinks() {
         for (link in listOf(url.replace(version.toString(), "2147000000"), url.replace("https:", "http:"),
             url.replace("github.com", "github.com.evil.example"), url.replace("ad2das", "another-owner"),

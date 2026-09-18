@@ -30,7 +30,9 @@ internal class AppUpdateViewModel(application: Application, private val reposito
     private var checkGeneration = 0L
     private var pendingAutomaticInstall = false
     @Suppress("DEPRECATION")
-    private val installedVersion = application.packageManager.getPackageInfo(application.packageName, 0).longVersionCode
+    private val installedPackage = application.packageManager.getPackageInfo(application.packageName, 0)
+    private val installedVersion = installedPackage.longVersionCode
+    private val installedLabel = UpdateRelease.formatLabel(installedPackage.versionName, installedVersion)
 
     fun check() {
         if (operation?.isActive == true) { mutable.update { it.copy(visible = true) }; return }
@@ -53,7 +55,7 @@ internal class AppUpdateViewModel(application: Application, private val reposito
             if (generation != checkGeneration) return
             mutable.value = AppUpdateState(if (release.newerThan(installedVersion)) UpdatePhase.AVAILABLE else UpdatePhase.CURRENT,
                 visible = !silent || release.newerThan(installedVersion), release = release,
-                message = "현재 버전: $installedVersion\n배포 버전: ${release.label}")
+                message = "현재 버전: $installedLabel\n배포 버전: ${release.label}")
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             if (!silent) mutable.value = AppUpdateState(UpdatePhase.FAILED, visible = true,
