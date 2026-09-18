@@ -8,6 +8,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.app.SourceRegistry
+import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.data.cache.HomeCatalogSnapshotStore
 import ml.melun.mangaview.source.CatalogOrder
 import ml.melun.mangaview.source.CatalogQuery
@@ -30,27 +31,32 @@ internal class LibraryCatalogLoader(
     private var homeJob: Job? = null
     private var genreJob: Job? = null
     private var homeVersion = 0L
+    private var shownSource: SourceId? = null
+    private var shownKind: SeriesKind? = null
     fun loadHome() {
         if (current().activeSeries != null) return
         homeJob?.cancel()
         val snapshot = current()
         val version = ++homeVersion
+        // A cancelled reload must never leave another provider's cards under the current chip.
+        if (!showsHomeFor(snapshot)) update { it.copy(home = HomeContent.Loading) }
         homeJob = scope.launch {
             // Paint the remembered home first; the refresh below replaces it when it arrives.
             val cached = homeCache?.load(snapshot.selectedSourceId, snapshot.homeKind)
             if (version != homeVersion) return@launch
-            update {
-                it.copy(
-                    home = cached?.let { hit -> HomeContent.Ready(hit.popular, hit.latest, hit.new) }
-                        ?: HomeContent.Loading,
-                )
+            if (cached != null) {
+                publishHome(snapshot, HomeContent.Ready(cached.popular, cached.latest, cached.new))
+            } else {
+                update { it.copy(home = HomeContent.Loading) }
+                shownSource = null
+                shownKind = null
             }
             try {
                 val source = sourceRegistry.require(snapshot.selectedSourceId)
                 val kind = snapshot.homeKind
                 val result = withContext(ioDispatcher) { homeCatalogs(source, kind) }
                 if (version == homeVersion) {
-                    update { it.copy(home = result) }
+                    publishHome(snapshot, result)
                     onHomeReady()
                 }
                 runCatching {
@@ -74,6 +80,17 @@ internal class LibraryCatalogLoader(
                 }
             }
         }
+    }
+
+    private fun showsHomeFor(snapshot: LibraryState): Boolean =
+        snapshot.home is HomeContent.Ready &&
+            shownSource == snapshot.selectedSourceId &&
+            shownKind == snapshot.homeKind
+
+    private fun publishHome(snapshot: LibraryState, content: HomeContent.Ready) {
+        update { it.copy(home = content) }
+        shownSource = snapshot.selectedSourceId
+        shownKind = snapshot.homeKind
     }
 
     fun loadGenres() {

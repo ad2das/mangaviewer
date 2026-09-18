@@ -74,6 +74,46 @@ class LibraryCatalogLoaderRegressionTest {
         assertEquals(0, fixture.readyCount)
     }
 
+    @Test fun cancelledSourceSwitchLeavesNoStaleHomeFromThePreviousProvider() = runTest {
+        val shownId = SourceId("shown")
+        val nextId = SourceId("next")
+        val shown = FakeCatalogSource(shownId, immediate = listOf(series(shownId, "shown-1")))
+        val next = FakeCatalogSource(nextId)
+        val fixture = LoaderFixture(testScheduler, registry(shown, next), stateFor(shown), backgroundScope)
+
+        fixture.loader.loadHome()
+        runCurrent()
+        assertEquals(fastHome(series(shownId, "shown-1")), fixture.state.home)
+
+        fixture.state = fixture.state.copy(selectedSourceId = nextId)
+        fixture.loader.loadHome()
+        assertEquals(HomeContent.Loading, fixture.state.home)
+        fixture.loader.cancelHome()
+        runCurrent()
+
+        assertEquals(HomeContent.Loading, fixture.state.home)
+        assertEquals(1, fixture.readyCount)
+    }
+
+    @Test fun refreshingTheSameSourceKeepsTheLoadedHomeVisibleWhenCancelled() = runTest {
+        val id = SourceId("same")
+        val source = FakeCatalogSource(id, immediate = listOf(series(id, "same-1")))
+        val fixture = LoaderFixture(testScheduler, registry(source), stateFor(source), backgroundScope)
+
+        fixture.loader.loadHome()
+        runCurrent()
+        val loaded = fastHome(series(id, "same-1"))
+        assertEquals(loaded, fixture.state.home)
+
+        source.immediate = null
+        fixture.loader.loadHome()
+        fixture.loader.cancelHome()
+        runCurrent()
+
+        assertEquals(loaded, fixture.state.home)
+        assertEquals(1, fixture.readyCount)
+    }
+
     @Test fun staleFailureCannotOverwriteNewerGeneration() = runTest {
         val slowId = SourceId("slow")
         val fastId = SourceId("fast")
@@ -179,7 +219,7 @@ class LibraryCatalogLoaderRegressionTest {
 
 private class FakeCatalogSource(
     override val id: SourceId,
-    private val immediate: List<SourceSeries>? = null,
+    var immediate: List<SourceSeries>? = null,
 ) : ContentSource {
     private val pending = CatalogOrder.entries.associateWith { CompletableDeferred<List<SourceSeries>>() }
     val started = mutableSetOf<CatalogOrder>()

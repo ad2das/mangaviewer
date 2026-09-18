@@ -45,7 +45,6 @@ internal class LibraryDetailLoader(
         update { it.copy(activeSeries = series,
             detailTab = if (refresh && it.activeSeries?.id == series.id) it.detailTab else DetailTab.INTRO,
             activeSeriesDetails = cached?.details, detailOffline = offlineOnly,
-            selectedSourceId = if (offlineOnly) series.id.sourceId else it.selectedSourceId,
             lastSeries = if (offlineOnly) listOf(series) else it.lastSeries,
             seriesMenuVisible = false,
             content = cached?.let { snapshot -> content(series, snapshot, refresh) }
