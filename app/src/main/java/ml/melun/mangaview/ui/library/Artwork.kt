@@ -22,6 +22,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -51,6 +52,11 @@ internal fun SeriesArtwork(
                         loaded != null -> ArtworkState.Ready(loaded)
                         value is ArtworkState.Ready -> value
                         else -> ArtworkState.Missing
+                    }
+                    if (loaded == null && !series.thumbnailKey.isNullOrBlank()) {
+                        retryArtworkLoad(ARTWORK_RETRY_ATTEMPTS, ARTWORK_RETRY_FIRST_DELAY_MS) {
+                            loader.load(series, edge)
+                        }?.let { value = ArtworkState.Ready(it) }
                     }
                 }
         }
@@ -91,3 +97,21 @@ private fun MissingArtwork(title: String, colors: LibraryColors) {
 /** First letter or digit of the title, skipping leading quotes and punctuation. */
 internal fun artworkPlaceholderLabel(title: String): String =
     title.trim().firstOrNull { it.isLetterOrDigit() }?.toString().orEmpty()
+
+/**
+ * A failed cover fetch can be transient (flaky network, mirror hiccup). Retry with backoff
+ * while the slot stays composed; the caller already shows the placeholder, so this never
+ * blocks the UI. Gives up after a bounded number of attempts.
+ */
+internal suspend fun <T> retryArtworkLoad(attempts: Int, firstDelayMs: Long, load: suspend () -> T?): T? {
+    var waitMs = firstDelayMs
+    repeat(attempts) {
+        delay(waitMs)
+        waitMs *= 2
+        load()?.let { return it }
+    }
+    return null
+}
+
+private const val ARTWORK_RETRY_ATTEMPTS = 4
+private const val ARTWORK_RETRY_FIRST_DELAY_MS = 1_000L
