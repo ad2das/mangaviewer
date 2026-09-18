@@ -346,7 +346,7 @@ private fun SearchSeriesList(
             key = { "${it.id.sourceId.value}:${it.id.remoteKey}" },
             contentType = { "search-series" },
         ) { series ->
-            SearchSeriesCard(series, series.id in favorites, loader, colors, accept, Modifier.animateItem())
+            SearchSeriesCard(series, series.id in favorites, loader, colors, accept, Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null))
         }
         item(key = "search-status") {
             Column(
