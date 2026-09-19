@@ -34,6 +34,10 @@ class EpisodeTimeline private constructor(
         require(prior == null || prior.nextEpisodeId == null || prior.nextEpisodeId == manifest.id) {
             "Episode is not the declared successor"
         }
+        require(manifest.pages.isNotEmpty()) { "Appended episode has no pages" }
+        require(manifest.pages.map(PageSpec::id).toSet().size == manifest.pages.size) {
+            "Page ids must be unique within an appended episode"
+        }
         require(manifest.pages.none { it.id in pageIndex }) { "Page is already in the timeline" }
         return rebuild(
             episodes.map(TimelineEpisode::manifest) + manifest,

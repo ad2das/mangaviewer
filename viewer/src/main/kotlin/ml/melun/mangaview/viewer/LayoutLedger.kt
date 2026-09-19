@@ -76,6 +76,9 @@ class LayoutLedger private constructor(
     }
 
     fun append(pages: List<PageSpec>): LayoutLedger {
+        require(pages.map(PageSpec::id).toSet().size == pages.size) {
+            "Page ids must be unique within an appended list"
+        }
         require(pages.none { contains(it.id) }) { "Appended pages must be new" }
         if (pages.isEmpty()) return this
         val additions = pages.map { page -> page.toLayout(viewportWidth) }
