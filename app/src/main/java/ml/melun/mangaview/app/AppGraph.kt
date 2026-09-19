@@ -354,16 +354,23 @@ internal class AppGraph(
         }
     }
 
-    private fun createNewxtoonTransport(): SourceTransport = ObservedSourceTransport(
-        NewxtoonClearanceTransport(
-            transportFactory.protect(
-                transportFactory.create(newxtoonClearance.cookieJar),
-                newxtoonClearance.cookieJar,
-            ),
-            ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN,
-            newxtoonClearance::solve,
-            newxtoonClearance::solveFresh,
-        ), "catalog-newxtoon", { networkEvidenceObserver })
+    private fun createNewxtoonTransport(): SourceTransport {
+        // Cloudflare binds the clearance cookie to the client hints the solving WebView sent,
+        // so every newxtoon route (direct and SNI recovery) must repeat them.
+        val hints = newxtoonClearance.clientHints
+        val browserHeaders = OkHttpTransportFactory.browserHeaders(hints)
+        return ObservedSourceTransport(
+            NewxtoonClearanceTransport(
+                transportFactory.protect(
+                    transportFactory.createBrowserLike(newxtoonClearance.cookieJar, hints),
+                    newxtoonClearance.cookieJar,
+                    browserHeaders,
+                ),
+                ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN,
+                newxtoonClearance::solve,
+                newxtoonClearance::solveFresh,
+            ), "catalog-newxtoon", { networkEvidenceObserver })
+    }
 
     private fun createGoodtoonSource(): DeferredContentSource = DeferredContentSource(
         id = GOODTOON_ID,

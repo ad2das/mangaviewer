@@ -58,6 +58,15 @@ import org.json.JSONTokener
 
 private const val TAG = "NewxtoonClearance"
 
+/** The emulator's model and build id mark the session as non-phone; only there they are rewritten. */
+private val spoofsDeviceIdentity: Boolean = run {
+    val fingerprint = android.os.Build.FINGERPRINT
+    val hardware = android.os.Build.HARDWARE
+    fingerprint.startsWith("generic") || fingerprint.contains("emulator") ||
+        hardware.contains("goldfish") || hardware.contains("ranchu") ||
+        android.os.Build.MODEL.startsWith("sdk_")
+}
+
 private const val PROBE_SCRIPT = """
 (function(){
   function deepFrames(){
@@ -100,6 +109,80 @@ private const val TAP_PROBE_SCRIPT = """
 """
 
 /**
+ * The emulator renders through a translated software GL stack ("Android Emulator OpenGL ES
+ * Translator") and reports an x86_64 platform, both of which mark the session as non-phone
+ * before Cloudflare even looks at the interaction. These are JavaScript-visible only, so they
+ * are patched at document start in every frame; nothing here contradicts a real request header.
+ */
+private const val FINGERPRINT_SCRIPT = """
+(function(){
+  try{
+    var vendor="Qualcomm";
+    var renderer="Adreno (TM) 740";
+    var patch=function(proto){
+      if(!proto||!proto.getParameter){return;}
+      var original=proto.getParameter;
+      var patched=function(parameter){
+        if(parameter===37445){return vendor;}
+        if(parameter===37446){return renderer;}
+        return original.call(this,parameter);
+      };
+      patched.toString=function(){return "function getParameter() { [native code] }";};
+      proto.getParameter=patched;
+    };
+    patch(window.WebGLRenderingContext&&window.WebGLRenderingContext.prototype);
+    patch(window.WebGL2RenderingContext&&window.WebGL2RenderingContext.prototype);
+  }catch(error){}
+  try{
+    Object.defineProperty(Navigator.prototype,"platform",{
+      get:function(){return "Linux aarch64";},configurable:true
+    });
+  }catch(error){}
+  try{
+    Object.defineProperty(Navigator.prototype,"hardwareConcurrency",{
+      get:function(){return 8;},configurable:true
+    });
+  }catch(error){}
+  try{
+    var chromeVersion=/Chrome\/([0-9]+)/.exec(navigator.userAgent);
+    var major=chromeVersion?chromeVersion[1]:"152";
+    var fullMatch=/Chrome\/([0-9.]+)/.exec(navigator.userAgent);
+    var full=fullMatch?fullMatch[1]:major+".0.0.0";
+    var brands=[
+      {brand:"Chromium",version:major},
+      {brand:"Not?A_Brand",version:"24"},
+      {brand:"Android WebView",version:major}
+    ];
+    var entropy={
+      architecture:"arm",bitness:"64",brands:brands,formFactors:["Mobile"],
+      fullVersionList:[
+        {brand:"Chromium",version:full},
+        {brand:"Not?A_Brand",version:"24.0.0.0"},
+        {brand:"Android WebView",version:full}
+      ],
+      mobile:true,model:"SM-S918N",platform:"Android",platformVersion:"15.0.0",
+      uaFullVersion:full,wow64:false
+    };
+    var hints={
+      brands:brands,mobile:true,platform:"Android",
+      getHighEntropyValues:function(names){
+        var out={};
+        for(var index=0;index<names.length;index++){
+          var name=names[index];
+          if(entropy[name]!==undefined){out[name]=entropy[name];}
+        }
+        return Promise.resolve(out);
+      },
+      toJSON:function(){return {brands:brands,mobile:true,platform:"Android"};}
+    };
+    Object.defineProperty(Navigator.prototype,"userAgentData",{
+      get:function(){return hints;},configurable:true
+    });
+  }catch(error){}
+})();
+"""
+
+/**
  * Solves Cloudflare's managed challenge for the newxtoon origin in a real WebView and shares the
  * resulting cookies with every OkHttp route that talks to the origin.
  */
@@ -112,23 +195,31 @@ internal class NewxtoonClearance(
     private val mutex = Mutex()
     private val main = Handler(Looper.getMainLooper())
 
-    /**
-     * Cloudflare scores the "wv" WebView marker in the user agent as a bot signal, so the string
-     * is reduced to the plain Chromium identity of the same engine build. The clearance cookie is
-     * bound to the user agent, so the catalog and engine transports must send exactly this string.
-     */
-    val sourceUserAgent: String = (runCatching { WebSettings.getDefaultUserAgent(appContext) }
-        .getOrElse { fallbackUserAgent() })
+    /** The clearance cookie is bound to this exact string, so every newxtoon route repeats it. */
+    val sourceUserAgent: String = runCatching { WebSettings.getDefaultUserAgent(appContext) }
+        .getOrElse { fallbackUserAgent() }
+        .let { engineUserAgent ->
+            if (!spoofsDeviceIdentity) engineUserAgent
+            else engineUserAgent
+                .replace(android.os.Build.MODEL, DEVICE_MODEL)
+                .replace(android.os.Build.ID, DEVICE_BUILD)
+        }
         .replace("; wv", "")
         .replace(" Version/4.0", "")
+
+    /** The client hints the challenge WebView actually sends, replayed on the OkHttp route. */
+    val clientHints: String = run {
+        val version = Regex("Chrome/([0-9]+)").find(sourceUserAgent)?.groupValues?.get(1) ?: "124"
+        "\"Chromium\";v=\"$version\", \"Not?A_Brand\";v=\"24\", \"Android WebView\";v=\"$version\""
+    }
 
     private fun fallbackUserAgent(): String {
         val version = runCatching {
             WebViewCompat.getCurrentWebViewPackage(appContext)?.versionName
         }.getOrNull() ?: "124.0.0.0"
         return "Mozilla/5.0 (Linux; Android ${android.os.Build.VERSION.RELEASE}; " +
-            "${android.os.Build.MODEL}) AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/$version Mobile Safari/537.36"
+            "$DEVICE_MODEL Build/$DEVICE_BUILD; wv) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Version/4.0 Chrome/$version Mobile Safari/537.36"
     }
 
     /** A cached cookie that still draws a challenge is stale; run the challenge again. */
@@ -154,31 +245,34 @@ internal class NewxtoonClearance(
     }
 
     private suspend fun runChallengeLocked(): Boolean {
-        Log.i(TAG, "solve: starting webview challenge")
-        val solved = try {
-            clearWebViewCookies()
-            withTimeoutOrNull(SOLVE_TIMEOUT_MILLIS) { runChallenge() } == true
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            Log.w(TAG, "solve: challenge failed", failure)
-            false
+        for (attempt in 1..CHALLENGE_ATTEMPTS) {
+            Log.i(TAG, "solve: starting webview challenge attempt=$attempt")
+            val solved = try {
+                clearWebViewCookies()
+                withTimeoutOrNull(SOLVE_TIMEOUT_MILLIS) { runChallenge() } == true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w(TAG, "solve: challenge failed", failure)
+                false
+            }
+            Log.i(TAG, "solve: completed=$solved clearancePresent=${cookies.hasClearance()} attempt=$attempt")
+            if (solved) {
+                cookies.harvest()
+                return true
+            }
+            // A single stalled verification does not mean the next one will stall too; the
+            // managed challenge is re-rolled with a new Ray ID on every page load.
+            delay(CHALLENGE_RETRY_DELAY_MILLIS)
         }
-        Log.i(TAG, "solve: completed=$solved clearancePresent=${cookies.hasClearance()}")
-        if (solved) cookies.harvest()
-        return solved
+        return false
     }
 
     /** Cloudflare's interstitial title; anything else means the real site has loaded. */
     private fun isChallengeTitle(title: String?): Boolean =
         title.isNullOrBlank() || title.contains("Just a moment", ignoreCase = true)
 
-    /**
-     * The WebView persists cookies across app runs, and a stale cf_clearance poisons the
-     * challenge flow (the widget never produces an interactive checkbox). Start clean.
-     * CookieManager callbacks are delivered through the calling thread's Looper, so this
-     * must run on the main thread or the callback never fires.
-     */
+    /** A stale cf_clearance poisons the challenge flow, so every attempt starts clean. */
     private suspend fun clearWebViewCookies() {
         withContext(Dispatchers.Main.immediate) {
             try {
@@ -380,6 +474,10 @@ internal class NewxtoonClearance(
                     }
                 }
             }
+            if (spoofsDeviceIdentity &&
+                WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                WebViewCompat.addDocumentStartJavaScript(webView, FINGERPRINT_SCRIPT, setOf("*"))
+            }
             webView.resumeTimers()
             window.attach(webView)
             Log.i(TAG, "webview created ua=${webView.settings.userAgentString} relay=${relay.proxyUrl} loading $ORIGIN")
@@ -448,23 +546,28 @@ internal class NewxtoonClearance(
             id = 0
             toolType = MotionEvent.TOOL_TYPE_FINGER
         })
-        fun event(action: Int, at: Long): MotionEvent {
+        fun event(action: Int, at: Long, px: Float, py: Float, pressed: Boolean): MotionEvent {
             val coordinates = arrayOf(MotionEvent.PointerCoords().apply {
-                this.x = x
-                this.y = y
-                pressure = 1f
+                this.x = px
+                this.y = py
+                pressure = if (pressed) 1f else 0f
                 size = 1f
             })
             return MotionEvent.obtain(0L, at, action, 1, properties, coordinates, 0, 0,
                 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
         }
         val downTime = SystemClock.uptimeMillis()
-        val down = event(MotionEvent.ACTION_DOWN, downTime).let {
-            webView.dispatchTouchEvent(it).also { _ -> it.recycle() }
+        fun send(action: Int, offset: Long, px: Float, py: Float, pressed: Boolean): Boolean {
+            val motion = event(action, downTime + offset, px, py, pressed)
+            return webView.dispatchTouchEvent(motion).also { motion.recycle() }
         }
-        val up = event(MotionEvent.ACTION_UP, downTime + 80).let {
-            webView.dispatchTouchEvent(it).also { _ -> it.recycle() }
-        }
+        // An instant down/up reads as a synthetic click; the challenge also samples the
+        // pointer path, so the touch drifts a pixel or two before it lifts.
+        val down = send(MotionEvent.ACTION_DOWN, 0L, x, y, true)
+        send(MotionEvent.ACTION_MOVE, 60L, x + 1.5f, y + 1f, true)
+        send(MotionEvent.ACTION_MOVE, 130L, x - 1f, y + 1.5f, true)
+        send(MotionEvent.ACTION_MOVE, 200L, x + 0.5f, y, true)
+        val up = send(MotionEvent.ACTION_UP, 280L, x, y, false)
         Log.i(TAG, "tap ${x.roundToInt()},${y.roundToInt()} down=$down up=$up")
     }
 
@@ -472,6 +575,12 @@ internal class NewxtoonClearance(
         const val ORIGIN = "https://newxtoon1.com"
         const val SOLVE_TIMEOUT_MILLIS = 25_000L
         const val POLL_INTERVAL_MILLIS = 400L
+        const val CHALLENGE_ATTEMPTS = 3
+        const val CHALLENGE_RETRY_DELAY_MILLIS = 1_000L
+        // The emulator model and build id are the loudest "not a phone" markers left in the
+        // user agent; a real device identity replaces them (no request header contradicts it).
+        const val DEVICE_MODEL = "SM-S918N"
+        const val DEVICE_BUILD = "UP1A.231005.007"
     }
 }
 
