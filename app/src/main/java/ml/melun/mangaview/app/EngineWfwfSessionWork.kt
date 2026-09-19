@@ -92,8 +92,12 @@ internal class EngineWfwfSessionWork(
             if (response.statusCode != 200) throw PageHttpException(response.statusCode)
             require(length == null || length <= 16 * 1024 * 1024L)
         } catch (failure: Throwable) { response.close(); throw failure }
-        val bytes = response.readBytes(16 * 1024 * 1024)
-        require(length == null || length == bytes.size.toLong())
-        return SourceDocument(URI(response.finalUrl), bytes)
+        try {
+            val bytes = response.readBytes(16 * 1024 * 1024)
+            require(length == null || length == bytes.size.toLong())
+            return SourceDocument(URI(response.finalUrl), bytes)
+        } finally {
+            response.close()
+        }
     }
 }

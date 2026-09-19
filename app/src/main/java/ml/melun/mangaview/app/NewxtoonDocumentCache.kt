@@ -89,14 +89,28 @@ internal class NewxtoonDocumentCache(context: Context) {
             val bodyFile = bodyFile(url)
             val tmp = File(dir, bodyFile.name + ".tmp")
             tmp.writeBytes(body)
-            tmp.renameTo(bodyFile)
+            // renameTo fails when the target exists on some filesystems; replace guarantees the
+            // refreshed body lands instead of silently keeping the stale copy.
+            if (!tmp.renameTo(bodyFile)) {
+                runCatching { bodyFile.delete() }
+                check(tmp.renameTo(bodyFile)) { "cache commit failed for $url" }
+            }
             metaFile.writeText(meta.toString())
             prune()
         }.onFailure { Log.w(TAG, "cache write failed for $url", it) }
     }
 
     /** Serializes concurrent fetches of the same URL; the second caller re-reads the cache. */
-    fun urlLock(url: String): Mutex = locks.getOrPut(url) { Mutex() }
+    fun urlLock(url: String): Mutex {
+        // Unbounded growth turns the map into a leak across a long session, so idle locks retire.
+        if (locks.size >= MAX_URL_LOCKS) {
+            val iterator = locks.entries.iterator()
+            while (iterator.hasNext() && locks.size > MAX_URL_LOCKS / 2) {
+                if (!iterator.next().value.isLocked) iterator.remove()
+            }
+        }
+        return locks.getOrPut(url) { Mutex() }
+    }
 
     suspend fun <T> synchronizedOn(url: String, block: suspend () -> T): T = urlLock(url).withLock {
         block()
@@ -124,6 +138,7 @@ internal class NewxtoonDocumentCache(context: Context) {
 
     private companion object {
         const val MAX_BYTES = 96L * 1024 * 1024
+        const val MAX_URL_LOCKS = 512
     }
 }
 

@@ -95,8 +95,12 @@ internal class EngineGoodtoonSessionWork(
             response.close()
             throw failure
         }
-        val bytes = response.readBytes(16 * 1024 * 1024)
-        require(length == null || length == bytes.size.toLong())
-        return SourceDocument(URI(response.finalUrl), bytes)
+        try {
+            val bytes = response.readBytes(16 * 1024 * 1024)
+            require(length == null || length == bytes.size.toLong())
+            return SourceDocument(URI(response.finalUrl), bytes)
+        } finally {
+            response.close()
+        }
     }
 }

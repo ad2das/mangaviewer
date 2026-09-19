@@ -108,7 +108,7 @@ class EngineRuntimeBoundaryIntegrationTest {
                 source.requestedPages.filter { it.episodeId == current }.toSet())
             assertEquals((0 until 23).map { PageId.at(next, it) }.toSet(),
                 source.requestedPages.filter { it.episodeId == next }.toSet())
-            assertEquals(WorkPriority.NEXT_EPISODE, source.priorities.getValue(PageId.at(next, 2)))
+            assertEquals(WorkPriority.NEXT_IMAGE, source.priorities.getValue(PageId.at(next, 2)))
             assertTrue(render.diagnosticSnapshot().residentTextureTiles.any { it.pageId == PageId.at(next, 2) })
             val final = scenes.last()
             assertTrue(final.completeCoverage)

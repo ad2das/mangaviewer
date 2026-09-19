@@ -153,7 +153,11 @@ internal class EngineNewxtoonSessionWork(
             response.close()
             throw PageHttpException(response.statusCode)
         }
-        return response.readBytes(CHAPTER_FEED_MAX_BYTES).toString(Charsets.UTF_8)
+        try {
+            return response.readBytes(CHAPTER_FEED_MAX_BYTES).toString(Charsets.UTF_8)
+        } finally {
+            response.close()
+        }
     }
 
     private suspend fun fetchSeries(seriesId: SeriesId): SourceDocument {
@@ -170,9 +174,13 @@ internal class EngineNewxtoonSessionWork(
             response.close()
             throw failure
         }
-        val bytes = response.readBytes(16 * 1024 * 1024)
-        require(length == null || length == bytes.size.toLong())
-        return SourceDocument(URI(response.finalUrl), bytes)
+        try {
+            val bytes = response.readBytes(16 * 1024 * 1024)
+            require(length == null || length == bytes.size.toLong())
+            return SourceDocument(URI(response.finalUrl), bytes)
+        } finally {
+            response.close()
+        }
     }
 
     private companion object {

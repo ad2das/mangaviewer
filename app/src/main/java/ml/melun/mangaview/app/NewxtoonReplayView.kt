@@ -55,10 +55,20 @@ internal class NewxtoonReplayView(
             }
             return ReplayBrowser(view, replayWindow, relay)
         } catch (cancelled: CancellationException) {
+            // The browser outlives this coroutine unless it is destroyed now; teardown cannot
+            // wait on a dispatcher the cancelled context would refuse.
+            withContext(NonCancellable + Dispatchers.Main.immediate) {
+                view?.let { teardownChallengeWebView(it) }
+                window?.close()
+            }
+            withContext(NonCancellable) {
+                clearChallengeProxyOverride(main)
+                relay.close()
+            }
             throw cancelled
         } catch (failure: Exception) {
             Log.w(TAG, "replay view failed", failure)
-            withContext(Dispatchers.Main.immediate) {
+            withContext(NonCancellable + Dispatchers.Main.immediate) {
                 view?.let { teardownChallengeWebView(it) }
                 window?.close()
             }
@@ -73,7 +83,7 @@ internal class NewxtoonReplayView(
     suspend fun close(replay: ReplayBrowser) = close(replay.view, replay.window, replay.relay)
 
     private suspend fun close(view: WebView, window: ChallengeWindow, relay: BrowserTlsRelay) {
-        withContext(Dispatchers.Main.immediate) {
+        withContext(NonCancellable + Dispatchers.Main.immediate) {
             teardownChallengeWebView(view)
             window.close()
         }

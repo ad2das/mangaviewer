@@ -178,9 +178,13 @@ internal class EngineNtkSessionWork(
                 try { response.close() } catch (cleanup: Throwable) { if (cleanup !== failure) failure.addSuppressed(cleanup) }
                 throw failure
             }
-            val bytes = response.readBytes(DOCUMENT_LIMIT)
-            require(length == null || length == bytes.size.toLong())
-            SourceDocument(URI(response.finalUrl), bytes, response.headers)
+            try {
+                val bytes = response.readBytes(DOCUMENT_LIMIT)
+                require(length == null || length == bytes.size.toLong())
+                SourceDocument(URI(response.finalUrl), bytes, response.headers)
+            } finally {
+                response.close()
+            }
         },
     )
 

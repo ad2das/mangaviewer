@@ -216,16 +216,22 @@ internal class NewxtoonClearance(
     suspend fun fetchPage(url: String, headers: Map<String, String>): FetchedPage? {
         // A verified clearance already rides with the page, so a still-settling challenge view
         // can serve the document while the interstitial finishes in the background.
-        val view: WebView? = solvedView
+        var view: WebView? = solvedView
             ?: if (cookies.hasVerifiedClearance()) {
                 settlingView?.takeIf { settlingViewUsable }
             } else null
             ?: ensureSolvedView()
+        var page = view?.let { fetcher.fetch(it, url, headers, FETCH_TIMEOUT_MILLIS) }
+        if (page == null && view != null && view !== solvedView) {
+            // The view died mid-fetch (refused replay tore it down); a fresh browser may already
+            // be up, so the request retries once against it instead of paying the full timeout.
+            view = solvedView?.takeIf { it !== view } ?: ensureSolvedView()
+            page = view?.let { fetcher.fetch(it, url, headers, FETCH_TIMEOUT_MILLIS) }
+        }
         if (view == null) {
             Log.i(TAG, "replay unavailable (no browser) for $url")
             return null
         }
-        val page = fetcher.fetch(view, url, headers, FETCH_TIMEOUT_MILLIS)
         if (page == null) {
             Log.i(TAG, "replay bridge empty for $url")
             return null
@@ -349,7 +355,9 @@ internal class NewxtoonClearance(
                 solvedWindow = window
                 solvedRelay = relay
             } else {
-                withContext(Dispatchers.Main.immediate) { window?.close() }
+                // A cancelled ladder still owes the window its teardown; NonCancellable keeps the
+                // main-thread detach reachable while the coroutine is already unwinding.
+                withContext(NonCancellable + Dispatchers.Main.immediate) { window?.close() }
                 withContext(NonCancellable) {
                     clearChallengeProxyOverride(main)
                     relay.close()
@@ -369,7 +377,9 @@ internal class NewxtoonClearance(
         solvedView = null
         solvedWindow = null
         solvedRelay = null
-        withContext(Dispatchers.Main.immediate) {
+        // Teardown must survive a cancelled caller: the solved browser is a heavy resource and a
+        // plain withContext(Main) would skip the detach while the coroutine unwinds.
+        withContext(NonCancellable + Dispatchers.Main.immediate) {
             teardownChallengeWebView(view)
             window?.close()
         }

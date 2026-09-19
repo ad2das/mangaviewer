@@ -471,8 +471,8 @@ class EngineSessionRuntimeTest {
         try {
             runtime.open()
             runCurrent()
-            assertEquals(2, activeNext)
-            assertEquals(listOf(0, 1).map { PageId.at(next, it) },
+            assertEquals(4, activeNext)
+            assertEquals(listOf(0, 1, 2, 3).map { PageId.at(next, it) },
                 source.startedPriorities.keys.filter { it.episodeId == next })
             openingGate.complete(Unit)
             runCurrent()

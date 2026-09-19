@@ -80,8 +80,7 @@ internal fun buildFetchScript(id: String, url: String, headers: Map<String, Stri
 }
 
 /** Decodes one bridge payload; null when the fetch failed or the message is not a response. */
-internal fun parseFetchPayload(message: String): FetchedPage? = runCatching {
-    val json = JSONObject(message)
+internal fun parseFetchPayload(json: JSONObject): FetchedPage? = runCatching {
     if (json.has("error")) return@runCatching null
     val status = json.getInt("status")
     val url = json.optString("url")
@@ -131,9 +130,10 @@ internal class NewxtoonFetchBridge(private val main: Handler) {
     }
 
     fun onMessage(message: String) {
-        val id = runCatching { JSONObject(message).optString("id") }.getOrNull()
-        if (id.isNullOrEmpty()) return
-        val payload = parseFetchPayload(message)
+        val json = runCatching { JSONObject(message) }.getOrNull() ?: return
+        val id = json.optString("id")
+        if (id.isEmpty()) return
+        val payload = parseFetchPayload(json)
         waiters.remove(id)?.let { waiter -> if (waiter.isActive) waiter.resume(payload) }
     }
 
