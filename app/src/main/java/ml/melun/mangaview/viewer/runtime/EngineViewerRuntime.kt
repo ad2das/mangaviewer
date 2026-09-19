@@ -64,7 +64,7 @@ internal class EngineViewerRuntime(
     private val reportRendererClosed: (Long, Long, Long) -> Unit = { _, _, _ -> },
     preparedRenderer: EngineSurfaceOwner? = null,
 ) : ViewerSurfaceSink {
-    private val main = Handler(Looper.getMainLooper())
+    private val main = Handler.createAsync(Looper.getMainLooper())
     private val memory = ViewerMemoryEnvironment(context) { }
     private val budget = DeviceMemoryBudget.fromPhysicalRam(memory.totalPhysicalBytes)
     private val frameProvenance = FrameWorkProvenanceLedger()

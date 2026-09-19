@@ -54,7 +54,7 @@ internal class EngineViewerScreen(
     private val sessionScope = CoroutineScope(sessionJob + Dispatchers.Main.immediate)
     private val hardDecodeWork = AndroidWorkDispatcher(
         name = "viewer-engine-decode",
-        threads = 2,
+        threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4),
         // Native decode is latency-sensitive but still must yield to input, UI and RenderThread.
         // A dedicated background-priority lane keeps it independent from warm decode without
         // stealing VSYNC CPU time on lower-core emulators and phones.

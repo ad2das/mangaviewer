@@ -40,6 +40,25 @@ data class EngineVerifiedPageObservation(
     val firstVerifiedAtNanos: Long,
 )
 
+/** Every input the demand planner reads, as a value key. Scroll-only movement keeps the same key. */
+internal data class DemandKey(
+    val generation: Long,
+    val geometryRevision: Long,
+    val positionResolved: Boolean,
+    val initialPresented: Boolean,
+    val transferVersion: Long,
+    val anchorPage: PageId?,
+    val visiblePages: Set<PageId>,
+    val requiredDimensions: Set<PageId>,
+    val requiredEpisodes: Set<EpisodeId>,
+    val requiredNavigation: Set<EpisodeId>,
+    val plans: Map<EpisodeId, EpisodeAccessPlan>,
+    val pages: Map<PageId, PageContentIdentity>,
+    val prepared: Set<PageId>,
+    val failedPages: Set<PageId>,
+    val failedEpisodes: Set<EpisodeId>,
+)
+
 /** Cumulative metadata for the episode that created this runtime; it owns no page or file lease. */
 data class EngineLaunchPreparationSnapshot(
     val generation: Long,
@@ -88,6 +107,9 @@ class EngineSessionRuntime(
     private var positionResolved = false
     private var started = false
     private var foreground = true
+    private var demandVersion = 0L
+    private var lastDemandKey: DemandKey? = null
+    private var lastDemands: List<SessionDemand<*>> = emptyList()
     private var closed = false
     private var processing = false
     private var dirty = false
@@ -142,6 +164,8 @@ class EngineSessionRuntime(
         positionResolved = true
         targetEpisode = episodeId
         initialPresented = !awaitInitialPresentation
+        lastDemandKey = null
+        lastDemands = emptyList()
         process(update)
     }
 
@@ -232,7 +256,7 @@ class EngineSessionRuntime(
                 val state = session.snapshot
                 val demand = when {
                     !started || closed -> emptyList()
-                    foreground -> demands(state)
+                    foreground -> cachedDemands(state)
                     else -> cachedPlanPins()
                 }
                 val batch = receipts.toList()
@@ -250,6 +274,23 @@ class EngineSessionRuntime(
         // Complete snapshots pin every original until navigation or close, including background
         // suspension. The ready dependency performs no network, decoding or ongoing storage work.
         SessionDemand(held.request) { plan -> check(plan === held.plan) { "Cached plan ownership changed" } }
+    }
+
+    /** Demand inputs are versioned by preparation, not by input revision: a scroll that only
+     * moves inside the same visible pages reuses the identical request set instead of
+     * rebuilding every SessionDemand lambda and rescanning manifest pages on each sample.
+     * Mutable sets are copied into the key so in-place mutation invalidates the entry. */
+    private fun cachedDemands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
+        val key = DemandKey(state.generation, state.geometryRevision, positionResolved,
+            initialPresented, demandVersion, state.anchor?.pageId,
+            state.visibleRegions.mapTo(linkedSetOf()) { it.pageId }, state.requiredDimensions,
+            state.requiredEpisodes, state.requiredNavigation, plans, pages,
+            prepared.toSet(), failedReadAheadPages.toSet(), failedReadAheadEpisodes.toSet())
+        if (key == lastDemandKey) return lastDemands
+        val result = demands(state)
+        lastDemandKey = key
+        lastDemands = result
+        return result
     }
 
     private fun demands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
@@ -294,6 +335,7 @@ class EngineSessionRuntime(
         val geometry = metadata as? WorkMetadata.PageGeometry ?: return
         require(geometry.pageId == id && geometry.contentRevision == plan.contentRevision)
         if (matchesVerifiedGeometry(pages[id], geometry) && id in prepared && id !in failedReadAheadPages) return
+        demandVersion++
         earlyTransfers.observed(id)
         process(session.dispatch(SessionEvent.DimensionsResolved(generation, id, geometry.dimensions)))
     }

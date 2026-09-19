@@ -132,7 +132,8 @@ bool GlViewerRenderer::installScene(const GlViewerFrame& frame) noexcept {
 
 int GlViewerRenderer::presentBuffered(const GlViewerFrame& frame) noexcept {
     if (hasReadbackRequest(frame.token)) issueReadback(frame, 0);
-    glFinish();
+    // No glFinish here: presentReady exports a native fence that SurfaceFlinger waits on, so a
+    // CPU-side drain of the whole pipe only stalls the owner queue on software rasterizers.
     const bool ready = glSucceeded("buffered frame completion");
     const bool submitted = ready && buffered_->presentReady(frame.token);
     completeReadbackSwap(frame.token, submitted, contextLost_);

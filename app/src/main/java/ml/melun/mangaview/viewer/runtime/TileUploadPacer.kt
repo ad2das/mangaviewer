@@ -10,7 +10,7 @@ import kotlinx.coroutines.sync.withLock
  * presenter's glFinish pays the full GPU transfer on the owner thread.
  */
 internal class TileUploadPacer(
-    private val bytesPerWindow: Long = 9L * 1024 * 1024,
+    private val bytesPerWindow: Long = 18L * 1024 * 1024,
     private val windowNanos: Long = 16_666_667L,
     private val nanoTime: () -> Long = System::nanoTime,
     private val sleep: suspend (Long) -> Unit = { nanos -> delay(nanos / 1_000_000L + 1L) },
