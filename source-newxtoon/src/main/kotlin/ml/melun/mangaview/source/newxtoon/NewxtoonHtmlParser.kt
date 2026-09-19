@@ -1,5 +1,6 @@
 package ml.melun.mangaview.source.newxtoon
 
+import java.io.IOException
 import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceGenre
 import org.jsoup.Jsoup
@@ -178,11 +179,17 @@ class NewxtoonHtmlParser(private val origin: String) {
 
     /** The chapter feed returns rendered anchors plus the next page number, or null at the end. */
     fun chapterPage(json: String): NewxtoonChapterPage {
-        val rendered = jsonString(json, "html").orEmpty()
-        val nextPage = NEXT_PAGE_FIELD.find(json)?.groupValues?.get(1)
-            ?.takeIf { it != "null" }
-            ?.toIntOrNull()
-        return NewxtoonChapterPage(chapters(rendered), nextPage)
+        // A truncated or malformed feed must surface as IOException so the fetch lane treats it
+        // as a retryable transport failure instead of an unchecked crash that kills the list.
+        try {
+            val rendered = jsonString(json, "html").orEmpty()
+            val nextPage = NEXT_PAGE_FIELD.find(json)?.groupValues?.get(1)
+                ?.takeIf { it != "null" }
+                ?.toIntOrNull()
+            return NewxtoonChapterPage(chapters(rendered), nextPage)
+        } catch (malformed: IllegalArgumentException) {
+            throw IOException("NEWXTOON chapter feed is malformed", malformed)
+        }
     }
 
     fun pages(html: String): List<NewxtoonPage> {
@@ -225,6 +232,12 @@ class NewxtoonHtmlParser(private val origin: String) {
         val marker = "\"$field\""
         var index = json.indexOf(marker)
         while (index >= 0) {
+            // An escaped quote inside a string value contains the marker verbatim (\"html\") —
+            // the preceding backslash disqualifies it as a real field key.
+            if (index > 0 && json[index - 1] == '\\') {
+                index = json.indexOf(marker, index + marker.length)
+                continue
+            }
             var cursor = index + marker.length
             while (cursor < json.length && json[cursor].isWhitespace()) cursor += 1
             if (cursor < json.length && json[cursor] == ':') {
