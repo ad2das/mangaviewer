@@ -501,12 +501,19 @@ private suspend fun fetchEpisodeCatalog(
         val loaded = coroutineScope {
             pending.map { page -> async {
                 slots.acquire()
-                try { page to document(listPagePath(key, page)) } finally { slots.release() }
+                try {
+                    page to document(listPagePath(key, page))
+                } catch (failure: java.io.IOException) {
+                    // One refused catalog page must not propagate through coroutineScope and
+                    // discard every page already accumulated; it terminates discovery instead.
+                    page to null
+                } finally { slots.release() }
             } }.map { it.await() }
         }
         val discovered = mutableListOf<Int>()
         loaded.forEach { (page, pageDocument) ->
             fetchedPages += page
+            if (pageDocument == null) return@forEach
             pages += parser.episodes(pageDocument, seriesId, key)
             discovered += parser.catalogPageNumbers(pageDocument, key)
         }

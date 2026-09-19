@@ -280,9 +280,15 @@ class HttpEngineSourceTransport(
     }
 
     private fun awaitEngine(future: CompletableFuture<EngineEntry>): EngineEntry = try {
-        future.get()
+        // A bare get() pins the caller's dispatcher thread forever: build() can stall and the
+        // invoking coroutine cannot cancel a blocking wait. Bound the wait so a wedged engine
+        // creation surfaces as a request failure instead of a permanently hung lane.
+        future.get(ENGINE_ACQUIRE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
     } catch (failure: ExecutionException) {
         throw failure.cause ?: failure
+    } catch (failure: java.util.concurrent.TimeoutException) {
+        future.cancel(true)
+        throw IOException("HTTP engine creation timed out")
     }
 
     private fun createEngine(
@@ -375,6 +381,7 @@ class HttpEngineSourceTransport(
         const val MAX_ENGINES = 2
         const val HTTP_ENGINE_ROUTE_POOLS = 2
         const val MAXIMUM_SIMULTANEOUS_BODY_READS = 3
+        const val ENGINE_ACQUIRE_TIMEOUT_MILLIS = 15_000L
     }
 }
 

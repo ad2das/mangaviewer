@@ -82,6 +82,9 @@ class RawPageStore(
                 }
                 val entity = result.toEntity(pageId, key, destination.name, nowMillis())
                 indexWriter.upsert(entity)
+                // The first-lookup EMPTY latch must not survive a write; otherwise every later
+                // find() skips the DAO and the freshly written page only exists in `recent`.
+                synchronized(bootstrapLock) { bootstrapState = CacheBootstrapState.INDEXED }
                 val cached = entity.toCachedPage(pageId, destination).also { recent[key] = it }
                 trimAfterCompletedWrite()
                 cached

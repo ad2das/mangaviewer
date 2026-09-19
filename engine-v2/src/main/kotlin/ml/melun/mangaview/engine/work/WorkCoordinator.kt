@@ -1,6 +1,7 @@
 package ml.melun.mangaview.engine.work
 
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.ContinuationInterceptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -225,22 +226,32 @@ class WorkCoordinator(
     ): Any {
         try {
             // A resumed mutex waiter owns the lock before its dispatcher runs it. Keep
-            // that ownership off the UI queue, where a traversal can stall all work.
-            return withContext(workerScope.coroutineContext.minusKey(Job)) {
-                mutex.withLock {
-                    checkSubscriptionLive(subscriber)
-                }
-                val value = subscriber.ready.await()
-                mutex.withLock {
-                    checkSubscriptionLive(subscriber)
-                    if (!subscriber.delivered) subscriber.delivered = true
-                }
-                value
+            // that ownership off the UI queue, where a traversal can stall all work —
+            // but keep the caller's Job: minusKey(Job) severed cancellation, so a
+            // cancelled subscriber kept waiting and its detach/last-subscriber cleanup
+            // never ran, wedging the record.
+            val relocate = workerScope.coroutineContext[ContinuationInterceptor]
+            return if (relocate == null || relocate == currentCoroutineContext()[ContinuationInterceptor]) {
+                awaitReady(subscriber)
+            } else {
+                withContext(relocate) { awaitReady(subscriber) }
             }
         } catch (failure: Throwable) {
             withContext(NonCancellable) { detachAndAwait(record, subscriber) }
             throw failure
         }
+    }
+
+    private suspend fun awaitReady(subscriber: WorkSubscriber): Any {
+        mutex.withLock {
+            checkSubscriptionLive(subscriber)
+        }
+        val value = subscriber.ready.await()
+        mutex.withLock {
+            checkSubscriptionLive(subscriber)
+            if (!subscriber.delivered) subscriber.delivered = true
+        }
+        return value
     }
 
     internal suspend fun detachAndAwait(record: WorkRecord, subscriber: WorkSubscriber) {

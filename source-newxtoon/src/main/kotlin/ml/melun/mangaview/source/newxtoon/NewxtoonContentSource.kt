@@ -35,6 +35,7 @@ import ml.melun.mangaview.source.SourceSeries
 import ml.melun.mangaview.source.SourceSeriesDetails
 import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourceTransport
+import org.jsoup.Jsoup
 
 const val DEFAULT_NEWXTOON_ORIGIN = "https://newxtoon1.com"
 
@@ -86,8 +87,18 @@ class NewxtoonContentSource(
                 require(it > 0 && it.toString() == value) { "검색 페이지를 확인할 수 없습니다" }
             }
         } ?: 1
-        val html = fetch("/search?q=" + URLEncoder.encode(text, "UTF-8") + "&page=$page") { parser.searchCards(it) }
-        return SourcePage(parser.searchCards(html).map(::series), parser.nextSearchPage(html, text, page)?.toString())
+        // Parse once: the old flow ran Jsoup five times on the same document (validate ->
+        // searchCards -> internal parse, then searchCards + nextSearchPage again).
+        val document = Jsoup.parse(
+            fetch("/search?q=" + URLEncoder.encode(text, "UTF-8") + "&page=$page") {
+                parser.searchCards(Jsoup.parse(it, origin))
+            },
+            origin,
+        )
+        return SourcePage(
+            parser.searchCards(document).map(::series),
+            parser.nextSearchPage(document, text, page)?.toString(),
+        )
     }
 
     override suspend fun catalog(query: CatalogQuery): SourcePage<SourceSeries> {

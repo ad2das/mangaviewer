@@ -13,10 +13,11 @@ import ml.melun.mangaview.source.SourceEpisode
 
 internal class GoodtoonCatalogStore(
     private val fetchProgressively: (suspend (SeriesId, suspend (List<SourceEpisode>) -> Unit) -> List<SourceEpisode>)? = null,
+    private val clock: () -> Long = System::currentTimeMillis,
     private val fetch: suspend (SeriesId) -> List<SourceEpisode>,
 ) {
     private val mutex = Mutex()
-    private var cached: Map<SeriesId, List<SourceEpisode>> = emptyMap()
+    private val cached = LinkedHashMap<SeriesId, CachedCatalog>(16, 0.75f, true)
     private var flights: Map<SeriesId, CompletableDeferred<List<SourceEpisode>>> = emptyMap()
 
     suspend fun load(
@@ -38,7 +39,12 @@ internal class GoodtoonCatalogStore(
     }
 
     private suspend fun claim(seriesId: SeriesId, refresh: Boolean): Claim = mutex.withLock {
-        if (!refresh) cached[seriesId]?.let { return@withLock Claim.Cached(it) }
+        if (!refresh) {
+            // An unbounded, expiry-less map grew one episode list per series forever and served
+            // arbitrarily stale catalogs; entries retire on TTL and the map stays bounded.
+            cached[seriesId]?.takeIf { clock() - it.savedAt in 0..CATALOG_TTL_MILLIS }
+                ?.let { return@withLock Claim.Cached(it.episodes) }
+        }
         flights[seriesId]?.let { return@withLock Claim.Wait(it) }
         val result = CompletableDeferred<List<SourceEpisode>>()
         flights = flights + (seriesId to result)
@@ -52,7 +58,8 @@ internal class GoodtoonCatalogStore(
     ): List<SourceEpisode> = try {
         val loaded = fetchProgressively?.invoke(seriesId, onPartial) ?: fetch(seriesId)
         mutex.withLock {
-            cached = cached + (seriesId to loaded)
+            cached[seriesId] = CachedCatalog(loaded, clock())
+            while (cached.size > MAX_CACHED_CATALOGS) cached.remove(cached.keys.first())
             removeFlight(seriesId, result)
         }
         result.complete(loaded)
@@ -82,5 +89,12 @@ internal class GoodtoonCatalogStore(
         data class Fetch(val result: CompletableDeferred<List<SourceEpisode>>) : Claim
     }
 
+    private data class CachedCatalog(val episodes: List<SourceEpisode>, val savedAt: Long)
+
     private class FlightOwnerCancelledException : Exception()
+
+    private companion object {
+        const val CATALOG_TTL_MILLIS = 10 * 60_000L
+        const val MAX_CACHED_CATALOGS = 32
+    }
 }

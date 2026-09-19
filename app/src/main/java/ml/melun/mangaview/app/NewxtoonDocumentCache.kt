@@ -41,7 +41,8 @@ internal class CachedDocument(
  */
 internal class NewxtoonDocumentCache(context: Context) {
     private val dir = File(context.filesDir, "newxtoon_documents").apply { mkdirs() }
-    private val locks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    private val locks = LinkedHashMap<String, UrlLock>()
+    private val locksGuard = Any()
 
     fun read(url: String): CachedDocument? {
         val meta = metaFile(url)
@@ -100,22 +101,45 @@ internal class NewxtoonDocumentCache(context: Context) {
         }.onFailure { Log.w(TAG, "cache write failed for $url", it) }
     }
 
-    /** Serializes concurrent fetches of the same URL; the second caller re-reads the cache. */
-    fun urlLock(url: String): Mutex {
-        // Unbounded growth turns the map into a leak across a long session, so idle locks retire.
-        if (locks.size >= MAX_URL_LOCKS) {
+    /**
+     * Serializes concurrent fetches of the same URL; the second caller re-reads the cache.
+     * Claim/evict runs under [locksGuard] and a holder count tracks everyone who owns a reference,
+     * so an entry can only be evicted while nobody holds it — the old isLocked probe had a gap
+     * between computeIfAbsent and withLock where a live entry could still be dropped.
+     */
+    private fun claimUrlLock(url: String): UrlLock = synchronized(locksGuard) {
+        val entry = locks.getOrPut(url) { UrlLock() }
+        entry.holders += 1
+        if (locks.size > MAX_URL_LOCKS) {
             val iterator = locks.entries.iterator()
             while (iterator.hasNext() && locks.size > MAX_URL_LOCKS / 2) {
-                if (!iterator.next().value.isLocked) iterator.remove()
+                if (iterator.next().value.holders == 0) iterator.remove()
             }
         }
-        // getOrPut is not atomic on ConcurrentHashMap: two threads can build separate mutexes for
-        // one URL and the "single-flight" fetch would run twice, tearing the shared files.
-        return locks.computeIfAbsent(url) { Mutex() }
+        entry
     }
 
-    suspend fun <T> synchronizedOn(url: String, block: suspend () -> T): T = urlLock(url).withLock {
-        block()
+    private fun releaseUrlLock(url: String, entry: UrlLock) = synchronized(locksGuard) {
+        entry.holders -= 1
+        if (entry.holders == 0 && locks.size > MAX_URL_LOCKS / 2 && locks[url] === entry) {
+            locks.remove(url)
+        }
+    }
+
+    suspend fun <T> synchronizedOn(url: String, block: suspend () -> T): T {
+        val entry = claimUrlLock(url)
+        return entry.mutex.withLock {
+            try {
+                block()
+            } finally {
+                releaseUrlLock(url, entry)
+            }
+        }
+    }
+
+    private class UrlLock {
+        val mutex = Mutex()
+        var holders = 0
     }
 
     private fun metaFile(url: String) = File(dir, key(url) + ".json")

@@ -13,12 +13,15 @@ import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import ml.melun.mangaview.data.network.BrowserTlsRelay
 import ml.melun.mangaview.source.ntk.AndroidBrowserViews
 
 private const val TAG = "NewxtoonClearance"
+private const val REPLAY_COMMIT_TIMEOUT_MS = 20_000L
 
 /** A committed replay browser: the view plus the resources keeping its identity alive. */
 internal class ReplayBrowser(
@@ -49,7 +52,16 @@ internal class NewxtoonReplayView(
             val replayWindow = withContext(Dispatchers.Main.immediate) { ChallengeWindow(appContext) }
             window = replayWindow
             view = build(replayWindow, relay) ?: return null
-            if (!awaitCommit(view, relay)) {
+            val committed = try {
+                // No callback is guaranteed after loadDataWithBaseURL (OEM WebView quirks drop
+                // onPageFinished/onReceivedError); create() runs under the clearance mutex, so an
+                // unbounded suspend here wedges every later clearance solve.
+                withTimeout(REPLAY_COMMIT_TIMEOUT_MS) { awaitCommit(view, relay) }
+            } catch (timeout: TimeoutCancellationException) {
+                Log.w(TAG, "replay view commit timed out")
+                false
+            }
+            if (!committed) {
                 close(view, replayWindow, relay)
                 return null
             }

@@ -278,6 +278,9 @@ internal class ViewerSurfaceHost(
             velocityTracker?.recycle()
             velocityTracker = null
             pointerId = MotionEvent.INVALID_POINTER_ID
+            // beginPinch opened an interaction; without this close the sink keeps reporting
+            // gesture-in-progress until the next gesture or a background transition.
+            finishInteraction()
             return
         }
         val tracker = velocityTracker

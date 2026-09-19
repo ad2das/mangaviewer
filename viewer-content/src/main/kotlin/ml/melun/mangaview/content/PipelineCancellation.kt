@@ -41,8 +41,13 @@ internal fun acceptDecodeStopped(command: PipelineCommand.DecodeStopped, generat
 
 internal fun CoroutineScope.notifyCancellation(job: Job, commands: SendChannel<PipelineCommand>,
     command: PipelineCommand) {
+    // The Stopped notification must fire on every completion, not only on isCancelled: cancel()
+    // on a job that already completed normally leaves isCancelled false, while the actor has
+    // already marked the record cancelRequested and dropped the matching Finished result. The
+    // accept* guards make a spurious Stopped a no-op, so an unconditional send is safe and it
+    // is the only thing that releases the slot when cancel loses the race.
     job.invokeOnCompletion {
-        if (job.isCancelled) launch {
+        launch {
             try {
                 commands.send(command)
             } catch (_: ClosedSendChannelException) {

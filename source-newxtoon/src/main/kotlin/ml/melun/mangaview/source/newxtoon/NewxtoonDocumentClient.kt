@@ -4,6 +4,7 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,7 +37,7 @@ internal class NewxtoonDocumentClient(
     private val cache = LinkedHashMap<String, CachedDocument>(16, 0.75f, true)
     private val inFlight = mutableMapOf<String, kotlinx.coroutines.CompletableDeferred<String>>()
     private var nextRequestAt = 0L
-    private var cooldownUntil = 0L
+    @Volatile private var cooldownUntil = 0L
     @Volatile private var requestIntervalMillis = NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS
 
     suspend fun fetch(request: SourceRequest, validate: (String) -> Unit = {}): String {
@@ -69,7 +70,12 @@ internal class NewxtoonDocumentClient(
             shared.complete(html)
             return html
         } catch (failure: Throwable) {
-            shared.completeExceptionally(failure)
+            // A cancelled leader must not deliver CancellationException to followers: their
+            // coroutines are still alive and the await() would abort them with a phantom cancel.
+            // Followers see a retryable failure instead; the leader rethrows its own cancellation.
+            shared.completeExceptionally(
+                if (failure is CancellationException) IOException("NEWXTOON shared fetch was cancelled") else failure
+            )
             throw failure
         } finally {
             lock.withLock { if (inFlight[url] === shared) inFlight.remove(url) }
@@ -84,7 +90,9 @@ internal class NewxtoonDocumentClient(
                 if (html != null) {
                     // Only a request the provider accepted first time proves the current pace is
                     // safe; a retry that followed a 429 must not immediately unwind the back-off.
-                    if (attempt == 0) relaxInterval()
+                    // Interval pacing is read under lock in fetch(); mutate it there too so a
+                    // concurrent tighten/relax cannot lose an update mid-read-modify-write.
+                    if (attempt == 0) lock.withLock { relaxInterval() }
                     return html
                 }
             } catch (limited: SourceThrottledException) {
@@ -109,8 +117,12 @@ internal class NewxtoonDocumentClient(
         response.close()
         if (status == 429) {
             val wait = retryAfter ?: DEFAULT_COOLDOWN_MILLIS
-            tightenInterval()
-            cooldownUntil = maxOf(cooldownUntil, saturatedAdd(clock(), wait))
+            // cooldownUntil is read under lock in fetch(); updating it unlocked let a concurrent
+            // writer drop the longer cooldown and let reads tear on the unsynchronized long.
+            lock.withLock {
+                tightenInterval()
+                cooldownUntil = maxOf(cooldownUntil, saturatedAdd(clock(), wait))
+            }
             if (wait > MAX_INLINE_RETRY_MILLIS || attempt == 2) throw throttled(wait)
             delay(wait.coerceAtLeast(250L))
             return null
@@ -118,7 +130,9 @@ internal class NewxtoonDocumentClient(
         if (status in RETRYABLE_STATUS_CODES && attempt < 2) {
             val wait = retryAfter ?: (1_000L * (attempt + 1))
             if (wait > MAX_INLINE_RETRY_MILLIS) {
-                cooldownUntil = maxOf(cooldownUntil, saturatedAdd(clock(), wait))
+                lock.withLock {
+                    cooldownUntil = maxOf(cooldownUntil, saturatedAdd(clock(), wait))
+                }
                 throw throttled(wait)
             }
             delay(wait.coerceAtLeast(250L))

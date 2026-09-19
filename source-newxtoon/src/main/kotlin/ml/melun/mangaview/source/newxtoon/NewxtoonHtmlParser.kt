@@ -3,6 +3,7 @@ package ml.melun.mangaview.source.newxtoon
 import ml.melun.mangaview.source.SeriesStatus
 import ml.melun.mangaview.source.SourceGenre
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 data class NewxtoonSeriesCard(
@@ -46,8 +47,9 @@ class NewxtoonHtmlParser(private val origin: String) {
         return result.values.toList()
     }
 
-    fun seriesCards(html: String): List<NewxtoonSeriesCard> {
-        val document = Jsoup.parse(html, origin)
+    fun seriesCards(html: String): List<NewxtoonSeriesCard> = seriesCards(Jsoup.parse(html, origin))
+
+    fun seriesCards(document: Document): List<NewxtoonSeriesCard> {
         val result = linkedMapOf<String, NewxtoonSeriesCard>()
         for (anchor in document.select("a[href]")) {
             val id = seriesLink.matchEntire(anchor.attr("href").trim())?.groupValues?.get(1) ?: continue
@@ -71,9 +73,10 @@ class NewxtoonHtmlParser(private val origin: String) {
         return result.values.toList()
     }
 
-    fun searchCards(html: String): List<NewxtoonSeriesCard> {
-        val cards = seriesCards(html)
-        val document = Jsoup.parse(html, origin)
+    fun searchCards(html: String): List<NewxtoonSeriesCard> = searchCards(Jsoup.parse(html, origin))
+
+    fun searchCards(document: Document): List<NewxtoonSeriesCard> {
+        val cards = seriesCards(document)
         check(cards.isNotEmpty() || document.selectFirst("#page-search[name=q], #search-result-title") != null) {
             "뉴엑스툰 검색 응답을 확인할 수 없습니다. 다시 시도해 주세요"
         }
@@ -115,7 +118,10 @@ class NewxtoonHtmlParser(private val origin: String) {
 
     /** Search must never follow pagination from scripts, other queries or unrelated catalogs. */
     fun nextSearchPage(html: String, query: String, current: Int): Int? =
-        Jsoup.parse(html, origin).select("a[href]").mapNotNull { link ->
+        nextSearchPage(Jsoup.parse(html, origin), query, current)
+
+    fun nextSearchPage(document: Document, query: String, current: Int): Int? =
+        document.select("a[href]").mapNotNull { link ->
             val uri = runCatching { java.net.URI(link.absUrl("href")) }.getOrNull() ?: return@mapNotNull null
             if (uri.path != "/search" || uri.host != java.net.URI(origin).host) return@mapNotNull null
             val params = runCatching { uri.rawQuery.orEmpty().split('&').associate { part ->

@@ -202,6 +202,29 @@ class ViewerContentPipelineTest {
     }
 
     @Test
+    fun cancellingAnAlreadyFinishedWorkerStillReportsStopped() = runTest {
+        // The wedge: a worker job completes before the actor's cancel() lands. Job.cancel() on a
+        // completed job leaves isCancelled false, so a Stopped notification gated on isCancelled
+        // never fires — and the *Finished acceptor already dropped the result on cancelRequested.
+        // The record would stay Fetching/Decoding forever, consuming a network/decode slot.
+        val commands = kotlinx.coroutines.channels.Channel<PipelineCommand>(4)
+        val job = launch { }
+        job.join()
+        notifyCancellation(job, commands, PipelineCommand.FetchStopped(1L, PageId.at(
+            EpisodeId(SeriesId(SourceId("ntk"), "pipeline"), "episode"), 0), 7L))
+        runCurrent()
+        job.cancel()
+        assertFalse("cancel() after completion must not mark the job cancelled", job.isCancelled)
+        runCurrent()
+        val stopped = commands.tryReceive().getOrNull()
+        assertTrue(
+            "A worker completed before its cancel must still release its slot",
+            stopped is PipelineCommand.FetchStopped,
+        )
+        commands.close()
+    }
+
+    @Test
     fun retargetedFetchKeepsItsSlotUntilPhysicalCancellationCompletes() = runTest {
         val fixture = PipelineFixture(pageCount = 6)
         val gate = CompletableDeferred<Unit>()
