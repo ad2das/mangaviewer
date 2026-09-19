@@ -1,15 +1,19 @@
 package ml.melun.mangaview.app
 
 import java.io.Closeable
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import ml.melun.mangaview.source.PageByteStream
 import ml.melun.mangaview.source.SourceHttpMethod
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceResponse
 import ml.melun.mangaview.source.SourceTransport
+import ml.melun.mangaview.source.readBytes
 import android.util.Log
 
 private const val TAG = "NewxtoonClearance"
+private const val MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 
 /**
  * Retries a challenged newxtoon request after the WebView clears the origin. Cloudflare binds the
@@ -23,17 +27,101 @@ internal class NewxtoonClearanceTransport(
     private val solveFresh: suspend () -> Boolean = solve,
     private val fetchPage: suspend (String, Map<String, String>) -> FetchedPage? = { _, _ -> null },
     private val solvedViewReady: () -> Boolean = { false },
+    private val clearanceVerified: () -> Boolean = { false },
+    private val documents: NewxtoonDocumentCache? = null,
+    private val refreshScope: CoroutineScope? = null,
 ) : SourceTransport by inner, Closeable {
     /** Set once the WebView route has proven it serves this origin; phones keep using HTTP. */
     @Volatile
     private var webViewRoute = false
 
+    /** Set once plain HTTP serves a cleared request — one round trip, no bridge, forever after. */
+    @Volatile
+    private var directRoute = false
+
     override suspend fun execute(request: SourceRequest): SourceResponse {
         val sameOrigin = request.url.startsWith(origin)
         val replayable = sameOrigin && request.method == SourceHttpMethod.GET
-        // A live solved WebView means the plain HTTP route is already known to draw the
-        // challenge, so skipping it saves a refused request plus a retry on every document.
-        if (replayable && (webViewRoute || solvedViewReady())) {
+        val cache = documents
+        // Documents answer from the disk cache first; a stale copy still answers instantly and
+        // one background refresh keeps the next read current. Nothing else may pay the WebView
+        // bridge twice for the same URL, so misses are single-flight per URL.
+        if (cache != null && replayable) {
+            cache.read(request.url)?.let { cached ->
+                if (!cached.isFresh()) scheduleRefresh(request)
+                return cached.response(request.url)
+            }
+            return cache.synchronizedOn(request.url) {
+                cache.read(request.url)?.let { cached ->
+                    if (!cached.isFresh()) scheduleRefresh(request)
+                    cached.response(request.url)
+                } ?: fetchAndCache(request)
+            }
+        }
+        return fetchFresh(request)
+    }
+
+    /** Revalidates a stale entry without holding its reader; failures keep the old copy. */
+    private fun scheduleRefresh(request: SourceRequest) {
+        val cache = documents ?: return
+        val scope = refreshScope ?: return
+        scope.launch {
+            runCatching {
+                cache.synchronizedOn(request.url) {
+                    if (cache.read(request.url)?.isFresh() == false) fetchAndCache(request)?.close()
+                }
+            }.onFailure { Log.d(TAG, "refresh failed for ${request.url}") }
+        }
+    }
+
+    /** Fetches fresh bytes and stores a served document so the next read skips the bridge. */
+    private suspend fun fetchAndCache(request: SourceRequest): SourceResponse {
+        val response = fetchFresh(request)
+        val cache = documents ?: return response
+        if (response.statusCode != 200) return response
+        val bytes = try {
+            response.readBytes(MAX_DOCUMENT_BYTES)
+        } catch (failure: Throwable) {
+            response.close()
+            throw failure
+        }
+        response.close()
+        cache.write(request.url, response, bytes, newxtoonDocumentFreshFor(request.url))
+        return SourceResponse(
+            statusCode = response.statusCode,
+            finalUrl = response.finalUrl.ifBlank { request.url },
+            headers = response.headers,
+            body = ByteArrayPageStream(bytes),
+            contentLength = bytes.size.toLong(),
+            contentType = response.contentType,
+        )
+    }
+
+    private suspend fun fetchFresh(request: SourceRequest): SourceResponse {
+        val sameOrigin = request.url.startsWith(origin)
+        val replayable = sameOrigin && request.method == SourceHttpMethod.GET
+        // Once plain HTTP serves a cleared request it stays the fastest route: a bare round trip
+        // with no bridge, no view, no replay. A challenge answer demotes it back below replay.
+        if (replayable && directRoute) {
+            val direct = inner.execute(request)
+            if (!direct.isChallenge()) return direct
+            direct.close()
+            directRoute = false
+            replay(request)?.let { webViewRoute = true; return it }
+        }
+        // A verified clearance with no solved browser yet probes the direct route once — the
+        // cookie alone may already serve it, which is cheaper than standing the view up.
+        if (replayable && clearanceVerified() && !webViewRoute && !solvedViewReady()) {
+            val probed = inner.execute(request)
+            if (!probed.isChallenge()) {
+                directRoute = true
+                return probed
+            }
+            probed.close()
+        }
+        // A live solved WebView — or a clearance already proven to serve — means replaying inside
+        // the browser whose identity owns the cookie beats paying another refused request.
+        if (replayable && (webViewRoute || solvedViewReady() || clearanceVerified())) {
             val replayed = replay(request)
             if (replayed != null) return replayed
             webViewRoute = false
@@ -47,6 +135,7 @@ internal class NewxtoonClearanceTransport(
         // A solved browser can replay the request in about a second, so one plain retry and the
         // replay come first; the challenge retry ladder is only the last resort.
         var retried = inner.execute(request)
+        if (replayable && retried.statusCode != 403) directRoute = true
         retried = replayInstead(request, retried, replayable)
         if (retried.isChallenge()) {
             retried.close()
@@ -111,7 +200,7 @@ internal class NewxtoonClearanceTransport(
 }
 
 /** A fully buffered response body; the WebView fetch already delivered every byte. */
-private class ByteArrayPageStream(private val bytes: ByteArray) : PageByteStream {
+internal class ByteArrayPageStream(private val bytes: ByteArray) : PageByteStream {
     private var offset = 0
 
     override suspend fun readAtMost(destination: ByteArray, offset: Int, byteCount: Int): Int {

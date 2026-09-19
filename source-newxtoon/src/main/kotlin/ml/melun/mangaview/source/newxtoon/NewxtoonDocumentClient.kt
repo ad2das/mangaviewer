@@ -13,8 +13,9 @@ import ml.melun.mangaview.source.SourceThrottledException
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 
-/** Floor of the adaptive request spacing. Kept well under the old 2.5s cadence but not aggressive. */
-internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 200L
+/** Floor of the adaptive request spacing. The disk cache absorbs most traffic now, so the floor
+ * only shapes genuine network bursts instead of taxing every document read. */
+internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 100L
 
 /** Ceiling the spacing backs off to after throttling: the previously fixed 2.5s cadence. */
 internal const val NEWXTOON_MAX_REQUEST_INTERVAL_MILLIS = 2_500L

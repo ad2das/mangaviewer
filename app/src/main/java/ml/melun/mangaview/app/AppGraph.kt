@@ -339,6 +339,40 @@ internal class AppGraph(
         initialize = ::initializeNewxtoonSource,
     )
 
+    /**
+     * Pre-builds the newxtoon replay browser while the app starts for a user whose clearance
+     * already proved itself, then preloads the catalog landing documents into the disk cache so
+     * the first catalog paint never waits on the fetch bridge. Without a persisted clearance
+     * nothing is spawned — a fresh user pays the real challenge exactly once on first use.
+     */
+    /**
+     * Stands the newxtoon replay browser up at app start so the first catalog tap never waits on
+     * a challenge: a verified clearance takes the instant replay-view path, otherwise the real
+     * challenge resolves in the background while the home screen is up. Once a route exists the
+     * catalog landing documents are pulled into the disk cache ahead of the user.
+     */
+    fun warmProtectedSources() {
+        applicationScope.launch {
+            val ready = if (newxtoonClearance.persistedClearancePresent) {
+                runCatching { newxtoonClearance.warmSolvedView(); true }.getOrDefault(false)
+            } else {
+                runCatching { newxtoonClearance.solve() }.getOrDefault(false)
+            }
+            if (!ready) return@launch
+            val source = runCatching { newxtoonSource.value }.getOrNull() ?: return@launch
+            runCatching {
+                source.catalog(ml.melun.mangaview.source.CatalogQuery(
+                    ml.melun.mangaview.source.SeriesKind.COMIC,
+                    ml.melun.mangaview.source.CatalogOrder.LATEST))
+            }
+            runCatching {
+                source.catalog(ml.melun.mangaview.source.CatalogQuery(
+                    ml.melun.mangaview.source.SeriesKind.COMIC,
+                    ml.melun.mangaview.source.CatalogOrder.POPULAR))
+            }
+        }
+    }
+
     private suspend fun initializeNewxtoonSource(): DeferredSourceResource {
         coroutineContext.ensureActive()
         val transport = createNewxtoonTransport()
@@ -347,7 +381,12 @@ internal class AppGraph(
             transport.warmConnections(listOf(ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), preferQuic = false)
             // A persisted clearance resolves this instantly; otherwise the challenge browser warms
             // while the catalog opens so the first request does not pay the whole solve up front.
-            applicationScope.launch { newxtoonClearance.solve() }
+            applicationScope.launch {
+                newxtoonClearance.solve()
+                // A persisted clearance resolves instantly, so the replay browser is ready before
+                // the first uncached document instead of spinning up behind a refused request.
+                newxtoonClearance.warmSolvedView()
+            }
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
             }
@@ -374,6 +413,9 @@ internal class AppGraph(
                 newxtoonClearance::solveFresh,
                 newxtoonClearance::fetchPage,
                 newxtoonClearance::solvedViewReady,
+                newxtoonClearance::clearanceVerified,
+                newxtoonClearance.documents,
+                newxtoonClearance.refreshScope,
             ), "catalog-newxtoon", { networkEvidenceObserver })
     }
 

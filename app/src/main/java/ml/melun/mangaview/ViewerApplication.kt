@@ -41,6 +41,9 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner,
         // Construct the engine graph (and its warmed renderer owner) before any reader launch so a
         // direct-entry startup does not pay graph construction inside the first-image window.
         graph.engine
+        // The newxtoon replay browser takes seconds to spin up, so a proven user gets it for free
+        // instead of behind the first catalog tap.
+        graph.warmProtectedSources()
     }
 
     override fun onTerminate() {

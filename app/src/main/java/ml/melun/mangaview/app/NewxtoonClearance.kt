@@ -26,7 +26,9 @@ import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -180,9 +182,24 @@ internal class NewxtoonClearance(
     private val mutex = Mutex()
     private val main = Handler(Looper.getMainLooper())
 
+    /** Durable document store shared by every transport that replays through the solved view. */
+    val documents = NewxtoonDocumentCache(context)
+    /** Background scope for stale-while-revalidate refreshes launched by the transports. */
+    val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     /** The WebView that solved the challenge; its browser identity owns the clearance cookie. */
     @Volatile
     private var solvedView: WebView? = null
+    /**
+     * The challenge view while it is still resolving. A verified clearance is seeded before the
+     * page loads, so this view can serve document fetches immediately instead of waiting for the
+     * interstitial to fully resolve.
+     */
+    @Volatile
+    private var settlingView: WebView? = null
+    /** True once the settling view's document committed, so evaluated fetch code has an origin. */
+    @Volatile
+    private var settlingViewUsable = false
     @Volatile
     private var solvedWindow: ChallengeWindow? = null
     @Volatile
@@ -222,20 +239,26 @@ internal class NewxtoonClearance(
         runChallengeLocked()
     }
 
-    /** Returns true only when a clearance cookie is present for the origin. */
+    /**
+     * Returns true only when a clearance cookie is present for the origin. A present cookie is
+     * not enough to serve: the replay browser must exist too, so the view is stood up alongside
+     * the cookie — instantly for a verified clearance, through the challenge otherwise.
+     */
     suspend fun solve(): Boolean {
-        if (cookies.hasClearance()) {
-            Log.i(TAG, "solve: clearance cookie already present")
-            cookies.harvest()
-            return true
-        }
-        return mutex.withLock {
-            if (cookies.hasClearance()) {
-                cookies.harvest()
-                return@withLock true
+        if (!cookies.hasClearance()) {
+            return mutex.withLock {
+                if (cookies.hasClearance()) {
+                    cookies.harvest()
+                    true
+                } else {
+                    runChallengeLocked()
+                }
             }
-            runChallengeLocked()
         }
+        Log.i(TAG, "solve: clearance cookie already present")
+        cookies.harvest()
+        // A cookie without a replay browser still pays the refused-request chain per document.
+        return ensureSolvedView() != null
     }
 
     /**
@@ -245,11 +268,36 @@ internal class NewxtoonClearance(
     val solvedViewReady: Boolean get() = solvedView != null
 
     /**
+     * True once a clearance was proven to serve documents. The cookie is fingerprint-bound to the
+     * solving browser, so the plain HTTP route is already known dead and requests may skip it.
+     */
+    val clearanceVerified: Boolean get() = cookies.hasVerifiedClearance()
+
+    /** True while a proven clearance survives process death; safe to pre-warm on app start. */
+    val persistedClearancePresent: Boolean get() = cookies.hasPersistedClearance()
+
+    /**
+     * Pre-creates the replay browser while the catalog opens so the first uncached document does
+     * not pay a refused HTTP round trip plus a view spin-up. A verified clearance takes the
+     * instant replay-view path; anything else resolves through the regular challenge.
+     */
+    suspend fun warmSolvedView() {
+        ensureSolvedView()
+    }
+
+    /**
      * Runs a challenged route inside the WebView that solved the challenge, whose identity the
      * clearance cookie belongs to. Returns null when no solved browser can serve the route.
      */
     suspend fun fetchPage(url: String, headers: Map<String, String>): FetchedPage? {
-        val view = ensureSolvedView() ?: return null
+        // A verified clearance already rides with the page, so a still-settling challenge view
+        // can serve the document while the interstitial finishes in the background.
+        val view: WebView? = solvedView
+            ?: if (cookies.hasVerifiedClearance()) {
+                settlingView?.takeIf { settlingViewUsable }
+            } else null
+            ?: ensureSolvedView()
+        if (view == null) return null
         return fetcher.fetch(view, url, headers, FETCH_TIMEOUT_MILLIS)?.also { page ->
             // A served document proves the clearance works from this browser; a 403 proves nothing.
             if (page.statusCode in 200..399) cookies.markVerified()
@@ -260,8 +308,100 @@ internal class NewxtoonClearance(
         solvedView?.let { return it }
         return mutex.withLock {
             solvedView ?: run {
-                if (runChallengeLocked()) solvedView else null
+                // A proven clearance needs no interstitial: the replay browser only hosts fetches,
+                // so it stands up with an inert same-origin document instead of loading the site.
+                if (cookies.hasVerifiedClearance() && runReplayViewLocked()) solvedView
+                else if (runChallengeLocked()) solvedView
+                else null
             }
+        }
+    }
+
+    /**
+     * Stands up a replay browser without loading the site at all: the clearance cookie is seeded
+     * into the WebView jar and an inert document commits under the origin, so fetches issued from
+     * it carry the proven browser identity immediately. Used only once a clearance is verified.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    private suspend fun runReplayViewLocked(): Boolean {
+        val relay = BrowserTlsRelay()
+        var window: ChallengeWindow? = null
+        var view: WebView? = null
+        try {
+            withContext(Dispatchers.Main.immediate) {
+                if (!installChallengeProxyOverride(relay, main)) {
+                    Log.w(TAG, "proxy override unavailable; replay view stays on the direct route")
+                }
+                val replayWindow = ChallengeWindow(appContext)
+                window = replayWindow
+                val webView = AndroidBrowserViews.create(replayWindow.context)
+                webView.settings.javaScriptEnabled = true
+                webView.settings.domStorageEnabled = true
+                webView.settings.userAgentString = sourceUserAgent
+                webView.addJavascriptInterface(fetcher.Bridge(), BRIDGE_NAME)
+                webView.webViewClient = object : WebViewClient() {
+                    override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler,
+                                                           host: String, realm: String) {
+                        relay.credentials(host, realm)?.let { handler.proceed(it.first, it.second) }
+                            ?: handler.cancel()
+                    }
+                    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                        Log.w(TAG, "replay view renderer gone didCrash=${detail.didCrash()}")
+                        return true
+                    }
+                }
+                replayWindow.attach(webView)
+                cookies.seedWebView()
+                view = webView
+            }
+            val ready = view ?: return false
+            // loadDataWithBaseURL commits a same-origin document without any network round trip;
+            // fetches only need the committed origin, not a rendered site.
+            val committed = withContext(Dispatchers.Main.immediate) {
+                suspendCancellableCoroutine<Boolean> { continuation ->
+                    ready.webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView, url: String) {
+                            if (continuation.isActive) continuation.resume(true)
+                        }
+                        override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler,
+                                                               host: String, realm: String) {
+                            relay.credentials(host, realm)?.let { handler.proceed(it.first, it.second) }
+                                ?: handler.cancel()
+                        }
+                        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                            Log.w(TAG, "replay view renderer gone didCrash=${detail.didCrash()}")
+                            if (continuation.isActive) continuation.resume(false)
+                            return true
+                        }
+                        override fun onReceivedError(view: WebView, request: WebResourceRequest,
+                                                     error: WebResourceError) {
+                            if (request.isForMainFrame && continuation.isActive) continuation.resume(false)
+                        }
+                    }
+                    ready.loadDataWithBaseURL(ORIGIN, "<html><body></body></html>", "text/html",
+                        Charsets.UTF_8.name(), null)
+                    continuation.invokeOnCancellation { ready.stopLoading() }
+                }
+            }
+            if (!committed) return false
+            solvedView = ready
+            solvedWindow = window
+            solvedRelay = relay
+            Log.i(TAG, "replay view ready (no challenge page)")
+            return true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Log.w(TAG, "replay view failed", failure)
+            withContext(Dispatchers.Main.immediate) {
+                view?.let { teardownChallengeWebView(it) }
+                window?.close()
+            }
+            withContext(NonCancellable) {
+                clearChallengeProxyOverride(main)
+                relay.close()
+            }
+            return false
         }
     }
 
@@ -359,6 +499,8 @@ internal class NewxtoonClearance(
             val finish: (Boolean, String) -> Unit = { cleared, reason ->
                 if (!settled) {
                     settled = true
+                    settlingView = null
+                    settlingViewUsable = false
                     pollJob?.cancel()
                     captures.forEach(Job::cancel)
                     Log.i(TAG, "challenge finished cleared=$cleared reason=$reason")
@@ -403,6 +545,9 @@ internal class NewxtoonClearance(
 
                 override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                     Log.i(TAG, "page started $url")
+                    // Once the origin's document commits, evaluated fetch code runs inside it —
+                    // a verified-clearance replay no longer needs to wait for the full challenge.
+                    if (view === webView) settlingViewUsable = true
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
@@ -423,8 +568,19 @@ internal class NewxtoonClearance(
                 }
 
                 override fun shouldInterceptRequest(view: WebView,
-                                                     request: WebResourceRequest): android.webkit.WebResourceResponse? {
-                    Log.i(TAG, "request ${request.method} ${request.url}")
+                                                      request: WebResourceRequest): android.webkit.WebResourceResponse? {
+                    // Only cosmetic bytes are cut: third-party images/media/fonts and known
+                    // trackers cost seconds of page load, while every script and XHR stays
+                    // untouched so the challenge flow keeps full fidelity.
+                    if (request.isForMainFrame) return null
+                    val host = request.url.host?.lowercase() ?: return null
+                    val path = request.url.path?.lowercase() ?: ""
+                    val cosmetic = TRACKER_HOSTS.any { host == it || host.endsWith(".$it") } ||
+                        COSMETIC_EXTENSIONS.any { path.endsWith(it) }
+                    if (cosmetic) {
+                        Log.i(TAG, "blocked ${request.method} ${request.url.host}")
+                        return EMPTY_RESPONSE
+                    }
                     return null
                 }
             }
@@ -486,6 +642,8 @@ internal class NewxtoonClearance(
             window.attach(webView)
             // A persisted clearance that is still valid makes the interstitial resolve at once.
             cookies.seedWebView()
+            // While the challenge resolves, a verified-clearance fetch may use this view already.
+            if (cookies.hasVerifiedClearance()) settlingView = webView
             Log.i(TAG, "webview created ua=${webView.settings.userAgentString} relay=${relay.proxyUrl} loading $ORIGIN")
             webView.loadUrl(ORIGIN)
             startPolling()
@@ -494,6 +652,8 @@ internal class NewxtoonClearance(
 
     /** Replaces the solved browser; its relay and proxy override are torn down with it. */
     private suspend fun releaseSolvedViewLocked() {
+        settlingView = null
+        settlingViewUsable = false
         val view = solvedView ?: return
         val window = solvedWindow
         val relay = solvedRelay
@@ -512,6 +672,18 @@ internal class NewxtoonClearance(
 
     private companion object {
         const val ORIGIN = "https://newxtoon1.com"
+        val EMPTY_RESPONSE = android.webkit.WebResourceResponse(
+            "text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+        val TRACKER_HOSTS = setOf(
+            "tj.websitestatistics.top",
+            "quicksharefiles.top",
+            "googletagmanager.com",
+            "google-analytics.com",
+        )
+        val COSMETIC_EXTENSIONS = listOf(
+            ".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif", ".svg", ".ico",
+            ".mp4", ".webm", ".woff", ".woff2", ".ttf", ".otf",
+        )
         const val SOLVE_TIMEOUT_MILLIS = 25_000L
         const val FETCH_TIMEOUT_MILLIS = 15_000L
         const val POLL_INTERVAL_MILLIS = 400L

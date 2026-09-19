@@ -80,6 +80,19 @@ internal class NewxtoonCookieStore(
         }
     }
 
+    /**
+     * True only when a clearance was actually proven to serve requests — a persisted cookie or a
+     * completed solve. A pending cf_clearance mid-challenge does not qualify, so transports may
+     * trust this to mean the plain HTTP route will be refused by fingerprint binding.
+     */
+    fun hasVerifiedClearance(): Boolean {
+        if (!verified.get()) return false
+        if (clearanceValue() != null) return true
+        return jarStore[host].orEmpty().any {
+            it.name == CLEARANCE_COOKIE && it.expiresAt > System.currentTimeMillis()
+        }
+    }
+
     fun hasClearance(): Boolean {
         if (clearanceValue() != null) return true
         // The WebView cookie jar does not survive a process death; the persisted value does. The
@@ -140,6 +153,9 @@ internal class NewxtoonCookieStore(
                 .build(),
         )
     }
+
+    /** True when a previously proven clearance survives this process and is still inside its TTL. */
+    fun hasPersistedClearance(): Boolean = persistedClearance() != null
 
     private fun persistedClearance(): String? {
         val store = prefs ?: return null
