@@ -1,6 +1,7 @@
 package ml.melun.mangaview.source.ntk
 
 import android.content.Context
+import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -10,6 +11,8 @@ import android.webkit.WebView
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+
+private const val HOST_TAG = "NtkBrowserHost"
 
 internal data class NtkBrowserHostCallbacks(
     val currentRequest: () -> RemoteRequest?,
@@ -116,8 +119,14 @@ internal class NtkBrowserHost(
     private fun installDocumentStartScript(view: WebView, source: String): Boolean {
         removeCaptureScript()
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return false
-        captureScript = WebViewCompat.addDocumentStartJavaScript(view, source, setOf("*"))
-        return true
+        // A still-starting engine rejects document-start registration ("Must be started before we
+        // block!"); degrade to the pre-registration behaviour rather than taking the process down.
+        captureScript = runCatching {
+            WebViewCompat.addDocumentStartJavaScript(view, source, setOf("*"))
+        }.onFailure {
+            Log.w(HOST_TAG, "document-start injection skipped", it)
+        }.getOrNull()
+        return captureScript != null
     }
 
     private fun removeCaptureScript() {

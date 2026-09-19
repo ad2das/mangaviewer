@@ -24,8 +24,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import ml.melun.mangaview.data.network.BrowserTlsRelay
 import ml.melun.mangaview.source.ntk.AndroidBrowserViews
+import ml.melun.mangaview.source.ntk.NtkWebViewStartupOwner
 
 private const val TAG = "NewxtoonClearance"
 
@@ -36,6 +38,7 @@ internal const val REPLAY_DOCUMENT_HTML = "<html><body></body></html>"
 
 private const val POLL_INTERVAL_MILLIS = 400L
 private const val CLEARANCE_CHECK_GUARD_MILLIS = 1_000L
+private const val WEBVIEW_ENGINE_STARTUP_WAIT_MILLIS = 2_000L
 
 internal val EMPTY_RESPONSE = android.webkit.WebResourceResponse(
     "text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
@@ -200,6 +203,7 @@ internal class NewxtoonChallengePage(
     suspend fun awaitClearance(relay: BrowserTlsRelay, window: ChallengeWindow): WebView? =
         coroutineScope {
             val workScope = this
+            awaitWebViewEngineStarted()
             suspendCancellableCoroutine { continuation ->
                 val webView = AndroidBrowserViews.create(window.context)
                 val attempt = Attempt(webView, continuation)
@@ -211,13 +215,19 @@ internal class NewxtoonChallengePage(
                 webView.addJavascriptInterface(fetcher.Bridge(), BRIDGE_NAME)
                 webView.webViewClient = challengeClient(attempt, relay)
                 webView.webChromeClient = challengeConsole(attempt)
-                if (spoofsDeviceIdentity &&
-                    WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-                ) {
-                    WebViewCompat.addDocumentStartJavaScript(webView, FINGERPRINT_SCRIPT, setOf("*"))
-                }
                 webView.resumeTimers()
+                // Attach before registering document-start scripts: addDocumentStartJavaScript on a
+                // never-attached, cold-engine WebView races Chromium startup and can CHECK-abort
+                // the whole process (WebView 150+ / canary tracks). Injection stays ahead of loadUrl.
                 window.attach(webView)
+                if (spoofsDeviceIdentity) {
+                    runCatching {
+                        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                            WebViewCompat.addDocumentStartJavaScript(
+                                webView, FINGERPRINT_SCRIPT, setOf("*"))
+                        }
+                    }.onFailure { Log.w(TAG, "fingerprint injection skipped", it) }
+                }
                 // A persisted clearance that is still valid makes the interstitial resolve at once.
                 cookies.seedWebView()
                 // While the challenge resolves, a verified-clearance fetch may use this view already.
@@ -228,6 +238,24 @@ internal class NewxtoonChallengePage(
                 startPolling(workScope, attempt)
             }
         }
+
+    /**
+     * The challenge owns the main process's first WebView, and WebView 150+ rejects
+     * document-start script registration while the engine is still starting ("Must be started
+     * before we block!"). Wait for the application-owned startup, bounded so a stalled or
+     * unsupported startup degrades to the old behaviour instead of wedging the challenge.
+     */
+    private suspend fun awaitWebViewEngineStarted() {
+        val owner = appContext.applicationContext as? NtkWebViewStartupOwner ?: return
+        withTimeoutOrNull(WEBVIEW_ENGINE_STARTUP_WAIT_MILLIS) {
+            suspendCancellableCoroutine { continuation ->
+                val settle: () -> Unit = {
+                    if (continuation.isActive) continuation.resume(Unit)
+                }
+                owner.ntkWebViewStartup.whenReady(settle) { settle() }
+            }
+        }
+    }
 
     /** Settles the attempt exactly once; a cancelled continuation still tears the view down. */
     private fun finish(attempt: Attempt, cleared: Boolean, reason: String) {

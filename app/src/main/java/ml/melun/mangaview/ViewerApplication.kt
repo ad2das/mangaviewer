@@ -34,6 +34,10 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner,
             ntkWebViewStartup.start(this, network::configure)
             return
         }
+        // The challenge path owns the main process's first WebView; register the provider startup
+        // up front so document-start injection never races a cold engine (WebView 150+ throws
+        // "Must be started before we block!").
+        ntkWebViewStartup.start(this)
         val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         graph = StartupMainThreadPolicy.detectUnexpectedDiskIo(debuggable) {
             AppGraph(this, applicationScope, workDispatchers.source, workDispatchers.io)
