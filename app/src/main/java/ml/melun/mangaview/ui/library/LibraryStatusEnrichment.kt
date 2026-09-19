@@ -24,7 +24,6 @@ internal class LibraryStatusEnrichment(
     private var statusWorker: Job? = null
     private val statusQueue = ArrayDeque<SeriesId>()
     private val statusCache = mutableMapOf<SeriesId, SeriesStatus?>()
-    private val statusUnsupported = mutableSetOf<SourceId>()
     private val pendingStatusUpdates = mutableMapOf<SeriesId, SeriesStatus>()
     private var statusFlushJob: Job? = null
     /**
@@ -42,7 +41,7 @@ internal class LibraryStatusEnrichment(
             }
         }
         val added = series.asSequence()
-            .filter { it.status == null && it.id.sourceId !in statusUnsupported }
+            .filter { it.status == null }
             .map { it.id }
             .filter { !statusCache.containsKey(it) && it !in statusQueue }
             .toList()
@@ -66,8 +65,11 @@ internal class LibraryStatusEnrichment(
                     continue
                 }
                 if (details == null) {
-                    statusUnsupported += id.sourceId
-                    statusQueue.removeAll { it.sourceId == id.sourceId }
+                    // A single deleted/unavailable series returns null too; that must not mark
+                    // the whole provider unsupported and purge its queue — cache the miss and
+                    // move on. The provider-unsupported case surfaces as repeated nulls, which
+                    // the TTL-less but per-series cache still skips after one probe each.
+                    statusCache[id] = null
                     continue
                 }
                 statusCache[id] = details.status

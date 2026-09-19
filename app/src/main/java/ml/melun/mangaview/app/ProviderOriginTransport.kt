@@ -64,12 +64,13 @@ internal class ProviderOriginTransport(
 
     private fun atOrigin(request: SourceRequest, origin: String): SourceRequest {
         val uri = URI(request.url)
-        val target = origin + uri.rawPath + (uri.rawQuery?.let { "?$it" } ?: "")
+        // rawPath is null on opaque URIs; a bare "https:opaque" would stringify as "…hostnull".
+        val target = origin + (uri.rawPath ?: "") + (uri.rawQuery?.let { "?$it" } ?: "")
         val headers = request.headers.mapValues { (key, value) ->
             if ((key.equals("Referer", true) || key.equals("Origin", true)) &&
                 runCatching { URI(value).host == uri.host }.getOrDefault(false)) {
                 val referer = URI(value)
-                origin + referer.rawPath + (referer.rawQuery?.let { "?$it" } ?: "")
+                origin + (referer.rawPath ?: "") + (referer.rawQuery?.let { "?$it" } ?: "")
             } else value
         }
         return request.copy(url = target, headers = headers)

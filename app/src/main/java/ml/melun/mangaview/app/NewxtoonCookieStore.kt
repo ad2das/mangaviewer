@@ -68,7 +68,17 @@ internal class NewxtoonCookieStore(
     fun markStale() {
         verified.set(false)
         prefs?.edit()?.remove(KEY_CLEARANCE)?.remove(KEY_CLEARANCE_EXPIRES_AT)?.apply()
-        synchronized(jarStore) { jarStore[host] = emptyList() }
+        // Only the dead clearance must die: wiping the whole host list drops live session and
+        // affinity cookies that were never the problem.
+        synchronized(jarStore) {
+            jarStore[host] = jarStore[host].orEmpty().filterNot { it.name == CLEARANCE_COOKIE }
+        }
+        // The WebView jar still serves the revoked cookie to clearanceValue()/hasClearance();
+        // expire it there too instead of waiting for the next explicit wipe.
+        runCatching {
+            CookieManager.getInstance().setCookie(origin, "$CLEARANCE_COOKIE=; Max-Age=0")
+            CookieManager.getInstance().flush()
+        }
     }
 
     /** Marks the current clearance as proven so it may be persisted for future processes. */
@@ -128,7 +138,9 @@ internal class NewxtoonCookieStore(
                 .value(value)
                 .hostOnlyDomain(host)
                 .path("/")
-                .expiresAt(now + CLEARANCE_TTL_MILLIS)
+                // The fabricated TTL belongs to cf_clearance only; other harvested cookies are
+                // real session cookies and must not gain a phantom 30-minute persistence.
+                .expiresAt(if (name == CLEARANCE_COOKIE) now + CLEARANCE_TTL_MILLIS else Long.MAX_VALUE)
                 .build()
         }
         if (harvested.isNotEmpty()) cookieJar.saveFromResponse(originUrl, harvested)

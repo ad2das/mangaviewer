@@ -43,7 +43,10 @@ internal class EngineOpeningPixels(
                     .divide(BigInteger.valueOf(viewport.widthPx.toLong() * SourceAnchor.SCREEN_UNITS_PER_PIXEL)).toLongExact()
                 else -> 0L
             }.coerceIn(0, page.dimensions.heightPx - 1L)
-            val first = (((sourceRow + 1) * count - 1) / page.dimensions.heightPx).toInt()
+            // The band containing the anchor row must open the warm list: the old formula probed
+            // one row below the anchor and skipped its band whenever the row landed on the band's
+            // last residue rows, leaving the visible top unwarmed.
+            val first = ((sourceRow * count) / page.dimensions.heightPx).toInt()
             for (band in first until count) {
                 val tile = EngineTileBands.tile(page, band, count, viewport.widthPx)
                 if (tile.byteCount > maximumBytes - bytes || rows >= viewport.heightPx.toLong() * 2) {
