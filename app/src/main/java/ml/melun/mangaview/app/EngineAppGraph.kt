@@ -99,7 +99,8 @@ internal class EngineAppGraph(
         else NewxtoonClearanceTransport(base,
             ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN, newxtoonClearance::solve,
             newxtoonClearance::solveFresh, newxtoonClearance::fetchPage, newxtoonClearance::solvedViewReady,
-            newxtoonClearance::clearanceVerified, newxtoonClearance.documents, newxtoonClearance.refreshScope)
+            newxtoonClearance::clearanceVerified, newxtoonClearance::markReplayRefused,
+            newxtoonClearance.documents, newxtoonClearance.refreshScope)
         ObservedSourceTransport(guarded, "engine", networkEvidenceObserver)
     }
     private val ntkPageTransport = lazy {

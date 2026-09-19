@@ -28,6 +28,7 @@ internal class NewxtoonClearanceTransport(
     private val fetchPage: suspend (String, Map<String, String>) -> FetchedPage? = { _, _ -> null },
     private val solvedViewReady: () -> Boolean = { false },
     private val clearanceVerified: () -> Boolean = { false },
+    private val onReplayRejected: () -> Unit = {},
     private val documents: NewxtoonDocumentCache? = null,
     private val refreshScope: CoroutineScope? = null,
 ) : SourceTransport by inner, Closeable {
@@ -100,9 +101,25 @@ internal class NewxtoonClearanceTransport(
     private suspend fun fetchFresh(request: SourceRequest): SourceResponse {
         val sameOrigin = request.url.startsWith(origin)
         val replayable = sameOrigin && request.method == SourceHttpMethod.GET
+        if (replayable) {
+            val preferred = tryBrowserRoutes(request)
+            if (preferred != null) return preferred
+        }
+        val response = inner.execute(request)
+        if (response.statusCode != 403 || !sameOrigin) return response
+        Log.i(TAG, "challenged ${response.statusCode} ${request.url} mitigated=${response.header("cf-mitigated")}")
+        response.close()
+        return solveThenRetry(request, replayable)
+    }
+
+    /**
+     * Every established browser route, cheapest first: a proven direct route, one probe with a
+     * verified clearance, then the solved WebView itself. Null when none of them can serve.
+     */
+    private suspend fun tryBrowserRoutes(request: SourceRequest): SourceResponse? {
         // Once plain HTTP serves a cleared request it stays the fastest route: a bare round trip
         // with no bridge, no view, no replay. A challenge answer demotes it back below replay.
-        if (replayable && directRoute) {
+        if (directRoute) {
             val direct = inner.execute(request)
             if (!direct.isChallenge()) return direct
             direct.close()
@@ -111,7 +128,7 @@ internal class NewxtoonClearanceTransport(
         }
         // A verified clearance with no solved browser yet probes the direct route once — the
         // cookie alone may already serve it, which is cheaper than standing the view up.
-        if (replayable && clearanceVerified() && !webViewRoute && !solvedViewReady()) {
+        if (clearanceVerified() && !webViewRoute && !solvedViewReady()) {
             val probed = inner.execute(request)
             if (!probed.isChallenge()) {
                 directRoute = true
@@ -121,19 +138,22 @@ internal class NewxtoonClearanceTransport(
         }
         // A live solved WebView — or a clearance already proven to serve — means replaying inside
         // the browser whose identity owns the cookie beats paying another refused request.
-        if (replayable && (webViewRoute || solvedViewReady() || clearanceVerified())) {
+        if (webViewRoute || solvedViewReady() || clearanceVerified()) {
             val replayed = replay(request)
             if (replayed != null) return replayed
             webViewRoute = false
         }
-        val response = inner.execute(request)
-        if (response.statusCode != 403 || !sameOrigin) return response
-        Log.i(TAG, "challenged ${response.statusCode} ${request.url} mitigated=${response.header("cf-mitigated")}")
-        response.close()
+        return null
+    }
+
+    private suspend fun solveThenRetry(request: SourceRequest, replayable: Boolean): SourceResponse {
         val cleared = solve()
         Log.i(TAG, "solve=$cleared retrying ${request.url}")
-        // A solved browser can replay the request in about a second, so one plain retry and the
-        // replay come first; the challenge retry ladder is only the last resort.
+        // The solved browser is the one identity the clearance belongs to, so its replay comes
+        // before any further plain round trip; plain stays as the fallback for loose bindings.
+        if (replayable) {
+            replay(request)?.let { webViewRoute = true; return it }
+        }
         var retried = inner.execute(request)
         if (replayable && retried.statusCode != 403) directRoute = true
         retried = replayInstead(request, retried, replayable)
@@ -179,7 +199,13 @@ internal class NewxtoonClearanceTransport(
 
     private suspend fun replay(request: SourceRequest): SourceResponse? {
         val page = fetchPage(request.url, request.headers) ?: return null
-        if (page.statusCode == 403) return null
+        if (page.statusCode == 403) {
+            // The browser that owns the clearance was refused too: the clearance is dead and
+            // every further replay from it would burn the same round trip for nothing.
+            Log.i(TAG, "replay challenged ${request.url} mitigated=${page.header("cf-mitigated")}")
+            onReplayRejected()
+            return null
+        }
         Log.i(TAG, "served ${request.url} from the clearance webview")
         return SourceResponse(
             statusCode = page.statusCode,

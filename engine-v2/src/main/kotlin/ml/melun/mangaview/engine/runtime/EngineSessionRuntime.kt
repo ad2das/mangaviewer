@@ -95,6 +95,7 @@ class EngineSessionRuntime(
     private val earlyTransfers = EarlyOriginalTransfers()
     private val failedReadAheadPages = linkedSetOf<PageId>()
     private val failedReadAheadEpisodes = linkedSetOf<EpisodeId>()
+    private val failedEpisodeRetryAt = mutableMapOf<EpisodeId, Long>()
     private val launchGeneration = session.snapshot.generation
     private val launchEpisode = initialEpisode
     private var launchManifestAcceptedAtNanos: Long? = null
@@ -161,6 +162,7 @@ class EngineSessionRuntime(
         earlyTransfers.clear()
         failedReadAheadPages.clear()
         failedReadAheadEpisodes.clear()
+        failedEpisodeRetryAt.clear()
         positionResolved = true
         targetEpisode = episodeId
         initialPresented = !awaitInitialPresentation
@@ -183,6 +185,7 @@ class EngineSessionRuntime(
         if (!closed) {
             failedReadAheadPages.clear()
             failedReadAheadEpisodes.clear()
+            failedEpisodeRetryAt.clear()
             work.retryFailures()
             process(SessionUpdate(session.snapshot))
         }
@@ -280,7 +283,17 @@ class EngineSessionRuntime(
      * moves inside the same visible pages reuses the identical request set instead of
      * rebuilding every SessionDemand lambda and rescanning manifest pages on each sample.
      * Mutable sets are copied into the key so in-place mutation invalidates the entry. */
+    /** A transient neighbor failure retries on its own instead of parking the boundary. */
+    private fun releaseRecoveredEpisodeFailures() {
+        if (failedReadAheadEpisodes.isEmpty()) return
+        val now = observationClock()
+        val recovered = failedReadAheadEpisodes.filter { now >= (failedEpisodeRetryAt[it] ?: Long.MAX_VALUE) }
+        if (recovered.isEmpty()) return
+        recovered.forEach { failedReadAheadEpisodes -= it; failedEpisodeRetryAt -= it }
+    }
+
     private fun cachedDemands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
+        releaseRecoveredEpisodeFailures()
         val key = DemandKey(state.generation, state.geometryRevision, positionResolved,
             initialPresented, demandVersion, state.anchor?.pageId,
             state.visibleRegions.mapTo(linkedSetOf()) { it.pageId }, state.requiredDimensions,
@@ -314,6 +327,15 @@ class EngineSessionRuntime(
         wantedEpisodes.forEach { (id, priority) ->
             if (id !in plans) result += episodeDemand(generation, id, priority)
         }
+        // The anchor document's adjacency is the boundary the reader is heading toward; resolving
+        // it as soon as the plan exists gives a slow catalog the whole chapter of headroom instead
+        // of racing the reader at the end.
+        val anchorEpisode = state.anchor?.pageId?.episodeId ?: targetEpisode
+        if (plans[anchorEpisode]?.navigationKnown == false && anchorEpisode !in state.requiredNavigation) {
+            result += SessionDemand(source.navigation(anchorEpisode, WorkPriority.INTERACTIVE)) { navigation ->
+                if (isCurrent(generation)) acceptNavigation(generation, anchorEpisode, navigation)
+            }
+        }
         state.requiredNavigation.forEach { id ->
             if (plans[id]?.navigationKnown == false) {
                 result += SessionDemand(source.navigation(id, WorkPriority.INTERACTIVE)) { navigation ->
@@ -345,6 +367,7 @@ class EngineSessionRuntime(
         return SessionDemand(request, onFailure =
             if (priority == WorkPriority.NEXT_EPISODE || priority == WorkPriority.INTERACTIVE) ({ _: Throwable ->
                 failedReadAheadEpisodes += id
+                failedEpisodeRetryAt[id] = observationClock() + EPISODE_RETRY_DELAY_NANOS
                 process(SessionUpdate(session.snapshot))
             }) else null) { plan ->
             if (isCurrent(generation)) {
@@ -424,6 +447,13 @@ class EngineSessionRuntime(
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
 }
 
+// The next document's first pages are a fixed horizon; near the document end they outrank the
+// remaining bulk so the boundary is already readable when the reader crosses it.
+private const val NEXT_EPISODE_HEAD_PAGES = 4
+private const val BOUNDARY_APPROACH_PAGES = 6
+// A transient neighbor failure retries on its own instead of parking the boundary for the session.
+private const val EPISODE_RETRY_DELAY_NANOS = 3_000_000_000L
+
 // Read-ahead planning lives at file level: pure demand ordering over the caller's maps, so the
 // session runtime stays under the size gate without giving up the prepared/failed context.
 private fun addReadAhead(state: EngineSessionSnapshot, plans: Map<EpisodeId, EpisodeAccessPlan>,
@@ -439,7 +469,7 @@ private fun addReadAhead(state: EngineSessionSnapshot, plans: Map<EpisodeId, Epi
     // Bulk transfer starts as soon as those bytes arrive, independently of rendering.
     if (initialPresented || (state.completeViewport && state.visibleRegions.all { it.pageId in prepared }))
         addRemainingOriginals(manifest, index, prepared, failedReadAheadPages, result)
-    addNextOriginals(state, manifest, plans, prepared, failedReadAheadPages, initialPresented, result)
+    addNextOriginals(state, manifest, index, plans, prepared, failedReadAheadPages, initialPresented, result)
 }
 
 private fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
@@ -477,13 +507,18 @@ private fun addRemainingOriginals(manifest: EpisodeManifest, index: Int, prepare
         .forEach { result.putIfAbsent(it, WorkPriority.NEXT_IMAGE) }
 }
 
-private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest,
+private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
     plans: Map<EpisodeId, EpisodeAccessPlan>, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
     initialPresented: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
 ) {
     val next = manifest.nextEpisodeId?.let { plans[it]?.manifest } ?: return
-    next.pages.take(2).filter { it.id !in failedReadAheadPages }.forEach {
-        result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
+    // The opening horizon is guaranteed: by the time the reader reaches the boundary the first
+    // pages wait on disk, independently of how busy the current document's tail still is. Near the
+    // boundary they stream ahead of the remaining bulk, still inside the background permits.
+    val nearEnd = manifest.pages.size - index <= BOUNDARY_APPROACH_PAGES
+    val headPriority = if (nearEnd) WorkPriority.NEXT_IMAGE else WorkPriority.NEXT_EPISODE
+    next.pages.take(NEXT_EPISODE_HEAD_PAGES).filter { it.id !in failedReadAheadPages }.forEach {
+        result.putIfAbsent(it.id, headPriority)
     }
     // Start before GPU preparation, but leave every queued current body its background slot.
     // Filling all next slots prematurely can strand the current episode's sliding-window tail.

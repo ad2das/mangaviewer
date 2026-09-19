@@ -8,6 +8,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import ml.melun.mangaview.core.EpisodeId
@@ -55,6 +56,8 @@ class NewxtoonContentSource(
     private val config: NewxtoonConfig,
     private val transport: SourceTransport,
     private val clock: () -> Long = System::currentTimeMillis,
+    // Feed speculation outlives a single chapter-list call, so it needs an app-lived scope.
+    private val speculationScope: kotlinx.coroutines.CoroutineScope? = null,
 ) : ContentSource, Closeable {
     override val id = SourceId("newxtoon")
     private val parser = NewxtoonHtmlParser(config.origin)
@@ -227,6 +230,16 @@ class NewxtoonContentSource(
         seriesId: SeriesId,
         onPartial: suspend (List<NewxtoonChapter>) -> Unit = {},
     ): List<NewxtoonChapter> {
+        // The feed endpoint is deterministic, so pages past the embedded list fly while the
+        // series document itself is still on the wire; real requests then coalesce with these
+        // in-flight loads instead of paying a serial round trip per feed page.
+        val feedSpeculation = "$origin${seriesPath(seriesId)}/chapters"
+        speculationScope?.launch {
+            for (page in 2..SPECULATIVE_FEED_PAGES) {
+                val payload = runCatching { fetchChapterPage(feedSpeculation, page) }.getOrElse { return@launch }
+                if (payload.chapters.isEmpty() || payload.nextPage == null) return@launch
+            }
+        }
         val html = fetch(seriesPath(seriesId))
         val details = parser.seriesDetails(html)
         lastSeriesDetails = seriesId to SourceSeriesDetails(
@@ -384,6 +397,9 @@ class NewxtoonContentSource(
         // one refused page must not cost the list. The discovery path speculates at most one page.
         const val CHAPTER_PAGE_WINDOW = 6
         const val CHAPTER_DISCOVERY_WINDOW = 2
+        // Feed pages ahead of the embedded list fly next to the series document; the document
+        // cache coalesces them with the real intake so a speculation never costs a request.
+        const val SPECULATIVE_FEED_PAGES = 8
         const val CHAPTER_PAGE_ATTEMPTS = 3
         const val CHAPTER_PAGE_MAX_WAIT_MILLIS = 3_000L
     }

@@ -16,7 +16,7 @@ import org.junit.Test
 class NewxtoonThrottleRetryTest {
     @Test fun maintenanceResponseIsNotCachedAsASuccessfulSearchDocument() = runTest {
         val transport = StatusTransport(200 to "<html>maintenance</html>", 200 to "<input id='page-search' name='q'>")
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport) { testScheduler.currentTime }
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport, clock = { testScheduler.currentTime })
         assertTrue(runCatching { source.search("생존") }.isFailure)
         assertTrue(source.search("생존").items.isEmpty())
         assertEquals(2, transport.calls)
@@ -32,7 +32,7 @@ class NewxtoonThrottleRetryTest {
                 return success.execute(request)
             }
         }
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport) { testScheduler.currentTime }
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport, clock = { testScheduler.currentTime })
         assertTrue(source.search("생존", "2").items.isEmpty())
         assertEquals(2, urls.size)
         assertEquals(urls.first(), urls.last())
@@ -41,7 +41,7 @@ class NewxtoonThrottleRetryTest {
     @Test fun longRetryAfterIsNotClampedAndBlocksOtherDocumentsUntilItExpires() = runTest {
         val transport = StatusTransport(429 to "", 200 to "<input id='page-search' name='q'>")
         transport.retryAfter = "60"
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport) { testScheduler.currentTime }
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport, clock = { testScheduler.currentTime })
         val limited = runCatching { source.search("생존") }.exceptionOrNull() as SourceThrottledException
         assertEquals(60_000L, limited.retryAfterMillis)
         assertEquals(1, transport.calls)
@@ -63,7 +63,7 @@ class NewxtoonThrottleRetryTest {
 
     @Test fun duplicateSearchRequestsReuseARecentDocumentButDifferentPagesWaitTheirTurn() = runTest {
         val transport = StatusTransport(200 to "<input id='page-search' name='q'>")
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport) { testScheduler.currentTime }
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport, clock = { testScheduler.currentTime })
         source.search("생존"); source.search(" 생존 ")
         assertEquals(1, transport.calls)
         source.search("생존", "2")
@@ -74,7 +74,7 @@ class NewxtoonThrottleRetryTest {
     @Test fun aThrottledAttemptTightensTheFollowingSpacingAboveTheFloor() = runTest {
         val transport = StatusTransport(429 to "", 200 to "<input id='page-search' name='q'>")
         transport.retryAfter = "0"
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport) { testScheduler.currentTime }
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport, clock = { testScheduler.currentTime })
         assertTrue(source.search("생존").items.isEmpty())
         source.search("생존", "2")
         val afterSecond = testScheduler.currentTime

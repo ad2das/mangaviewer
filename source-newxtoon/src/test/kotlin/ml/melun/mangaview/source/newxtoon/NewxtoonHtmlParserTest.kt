@@ -142,4 +142,16 @@ class NewxtoonHtmlParserTest {
         assertEquals("dimensions must be known for the first page", true,
             pages.first().width != null && pages.first().height != null)
     }
+
+    @Test fun readsTheReaderNavigationFromTheChapterPage() {
+        val navigation = checkNotNull(parser.readerNavigation(fixture("chapter.html")))
+        assertEquals("17974", navigation.previous?.seriesKey)
+        assertEquals("1062718", navigation.previous?.chapterKey)
+        assertEquals("17974", navigation.next?.seriesKey)
+        assertEquals("1062721", navigation.next?.chapterKey)
+    }
+
+    @Test fun aChapterPageWithoutReaderControlsReportsNoNavigation() {
+        assertNull(parser.readerNavigation("<html><body><p>no reader controls</p></body></html>"))
+    }
 }

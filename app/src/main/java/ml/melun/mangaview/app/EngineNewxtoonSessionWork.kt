@@ -180,6 +180,6 @@ internal class EngineNewxtoonSessionWork(
         const val MAX_CHAPTER_PAGES = 400
         // The advertised range is fetched in small parallel windows; a wide burst invites the
         // provider's throttle and one refused page must not cost the list.
-        const val CHAPTER_PAGE_WINDOW = 4
+        const val CHAPTER_PAGE_WINDOW = 6
     }
 }

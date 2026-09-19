@@ -22,12 +22,17 @@ data class NewxtoonSeriesDetails(
     val authors: String?,
 )
 
+/** A neighboring chapter the reader page linked through its own previous/next controls. */
+data class NewxtoonReaderChapter(val seriesKey: String, val chapterKey: String)
+data class NewxtoonReaderNavigation(val previous: NewxtoonReaderChapter?, val next: NewxtoonReaderChapter?)
+
 /** Pure HTML parsing for the Newxtoon server-rendered pages. */
 class NewxtoonHtmlParser(private val origin: String) {
     private val seriesLink = Regex("""(?:https?://[^/]+)?/comics/(\d+)(?:[?#].*)?$""")
     // Search pages render follow-up links as `&amp;page=` inside href attributes.
     private val pageLink = Regex("""[?&](?:amp;)?page=(\d+)""")
     private val genreLink = Regex("""[?&]genre=(\d+)""")
+    private val chapterLink = Regex("""/comics/([^/?#]+)/chapters/([^/?#]+)""")
 
     fun genres(html: String): List<SourceGenre> {
         val document = Jsoup.parse(html, origin)
@@ -184,6 +189,29 @@ class NewxtoonHtmlParser(private val origin: String) {
             result += NewxtoonPage(url, image.attr("width").toIntOrNull(), image.attr("height").toIntOrNull())
         }
         return result
+    }
+
+    /**
+     * The reader page links its previous and next chapter directly (`reader-side-previous` /
+     * `reader-side-next`). When rendered, those controls are the document's own adjacency, so a
+     * missing side means the series end rather than an unknown neighbor. Null when the page
+     * renders no reader controls at all.
+     */
+    fun readerNavigation(html: String): NewxtoonReaderNavigation? {
+        val document = Jsoup.parse(html, origin)
+        val previous = document.selectFirst("a.reader-side-previous")?.let(::readerChapter)
+        val next = document.selectFirst("a.reader-side-next")?.let(::readerChapter)
+        if (previous == null && next == null) return null
+        return NewxtoonReaderNavigation(previous, next)
+    }
+
+    private fun readerChapter(anchor: Element): NewxtoonReaderChapter? {
+        val href = anchor.absUrl("href").ifBlank { anchor.attr("href") }
+        val match = chapterLink.find(href) ?: return null
+        val series = match.groupValues[1].trim()
+        val chapter = match.groupValues[2].trim()
+        if (series.isEmpty() || chapter.isEmpty()) return null
+        return NewxtoonReaderChapter(series, chapter)
     }
 
     /** Reads a top-level string field without pulling in a JSON dependency. */

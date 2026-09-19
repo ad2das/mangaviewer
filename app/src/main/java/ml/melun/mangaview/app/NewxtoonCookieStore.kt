@@ -60,6 +60,17 @@ internal class NewxtoonCookieStore(
         restorePersistedClearance()
     }
 
+    /**
+     * The edge refused a request from the browser that owns the clearance, so the cookie is dead
+     * no matter what it claims: trust is withdrawn and the persisted copy is dropped so the next
+     * process pays the challenge instead of trusting a corpse.
+     */
+    fun markStale() {
+        verified.set(false)
+        prefs?.edit()?.remove(KEY_CLEARANCE)?.remove(KEY_CLEARANCE_EXPIRES_AT)?.apply()
+        synchronized(jarStore) { jarStore[host] = emptyList() }
+    }
+
     /** Marks the current clearance as proven so it may be persisted for future processes. */
     fun markVerified() {
         verified.set(true)

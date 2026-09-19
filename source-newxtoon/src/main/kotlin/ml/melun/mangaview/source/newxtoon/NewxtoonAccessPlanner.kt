@@ -43,12 +43,28 @@ class NewxtoonAccessPlanner(private val userAgent: String) : EpisodeDocumentPlan
         val pages = parser.pages(html)
         require(pages.isNotEmpty()) { "Newxtoon chapter contains no page images" }
         val pageIds = pages.mapIndexed { index, _ -> PageId.at(episodeId, index) }
+        // The reader controls state the document's own adjacency, so the viewer can attach the
+        // neighbor without walking the whole chapter feed; a missing side is the series end. A link
+        // that points at another series stays unknown and the catalog remains the authority.
+        val reader = parser.readerNavigation(html)
+        val seriesKey = episodeId.seriesId.remoteKey
+        val readerKnown = reader != null &&
+            (reader.previous == null || reader.previous.seriesKey == seriesKey) &&
+            (reader.next == null || reader.next.seriesKey == seriesKey)
+        val previousEpisodeId = when {
+            readerKnown -> reader?.previous?.let { EpisodeId(episodeId.seriesId, it.chapterKey) }
+            else -> catalogAdjacency?.previous
+        }
+        val nextEpisodeId = when {
+            readerKnown -> reader?.next?.let { EpisodeId(episodeId.seriesId, it.chapterKey) }
+            else -> catalogAdjacency?.next
+        }
         val manifest = EpisodeManifest(
             id = episodeId,
             title = parser.title(html)?.takeIf { it.isNotBlank() } ?: episodeId.remoteKey,
             pages = pageIds.mapIndexed { index, pageId -> PageSpec(pageId, index) },
-            previousEpisodeId = catalogAdjacency?.previous,
-            nextEpisodeId = catalogAdjacency?.next,
+            previousEpisodeId = previousEpisodeId,
+            nextEpisodeId = nextEpisodeId,
         )
         return EpisodeAccessPlan(
             manifest = manifest,
@@ -59,7 +75,7 @@ class NewxtoonAccessPlanner(private val userAgent: String) : EpisodeDocumentPlan
             pages = pages.mapIndexed { index, page ->
                 PageAccessPlan(pageIds[index], "image:${index + 1}", listOf(URI(page.url)))
             },
-            navigationKnown = catalogAdjacency != null,
+            navigationKnown = readerKnown || catalogAdjacency != null,
         )
     }
 
