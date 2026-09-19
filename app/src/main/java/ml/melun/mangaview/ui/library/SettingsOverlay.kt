@@ -3,6 +3,7 @@ package ml.melun.mangaview.ui.library
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -38,7 +40,9 @@ internal fun SettingsOverlay(
                 .shadow(16.dp, RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
                 .clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
                 .background(colors.card)
-                .clickable(enabled = false) {}
+                // A disabled clickable installs no pointer handler at all, so taps on the sheet
+                // body fell through to the scrim and dismissed the overlay. Swallow them.
+                .pointerInput(Unit) { detectTapGestures { } }
                 .padding(start = 22.dp, top = 14.dp, end = 22.dp, bottom = 28.dp),
         ) {
             Box(

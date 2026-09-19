@@ -3,6 +3,7 @@ package ml.melun.mangaview.ui.library
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -39,7 +41,11 @@ internal fun OfflineRemovalConfirmation(
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.padding(28.dp).fillMaxWidth().background(colors.card, RoundedCornerShape(16.dp)).padding(22.dp),
+            Modifier.padding(28.dp).fillMaxWidth().background(colors.card, RoundedCornerShape(16.dp))
+                // Without a consumer, taps on the card propagate to the scrim and silently
+                // cancel the confirmation. Swallow them.
+                .pointerInput(Unit) { detectTapGestures { } }
+                .padding(22.dp),
         ) {
             BasicText("$title 오프라인 저장을 삭제하시겠습니까?", style = bodyStyle(colors, 16))
             Spacer(Modifier.height(20.dp))
