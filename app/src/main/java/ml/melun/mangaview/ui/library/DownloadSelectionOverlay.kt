@@ -3,6 +3,7 @@ package ml.melun.mangaview.ui.library
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -194,11 +196,14 @@ private fun DownloadConfirmation(
     dismiss: () -> Unit,
 ) {
     Box(
-        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)),
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .pointerInput(Unit) { detectTapGestures { dismiss() } },
         contentAlignment = Alignment.Center,
     ) {
         Column(
             Modifier.padding(28.dp).fillMaxWidth()
+                .pointerInput(Unit) { detectTapGestures { } }
                 .shadow(16.dp, RoundedCornerShape(22.dp))
                 .clip(RoundedCornerShape(22.dp))
                 .background(colors.card)
