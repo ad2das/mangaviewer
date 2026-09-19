@@ -100,6 +100,11 @@ class OfflineDownloadManager(
             store.save(series, episode, manifest, pages)
             update(episode.id, EpisodeDownloadState.Complete)
         } catch (cancelled: CancellationException) {
+            // Cancellation (remove, removeSeries, scope teardown) is not a failure, but the state
+            // must not stay Running: the job is gone, so the row would sit on a spinner forever
+            // and download() would be the only way to retry — except the stale Running state
+            // also keeps it listed. Clear it so the episode is fully retryable.
+            update(episode.id, null)
             throw cancelled
         } catch (failure: Throwable) {
             update(episode.id, EpisodeDownloadState.Failed(failure.message ?: "다운로드에 실패했습니다"))
