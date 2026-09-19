@@ -213,7 +213,7 @@ private fun DetailHeader(
     accept: (LibraryIntent) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp)) {
-        Row(Modifier.fillMaxWidth().height(192.dp), verticalAlignment = Alignment.Top) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 192.dp), verticalAlignment = Alignment.Top) {
             Box(
                 Modifier.width(138.dp).height(192.dp)
                     .shadow(10.dp, RoundedCornerShape(20.dp), spotColor = Color.Black.copy(alpha = 0.22f))
@@ -223,9 +223,9 @@ private fun DetailHeader(
                 SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
             }
             Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween) {
+            Column(Modifier.weight(1f).heightIn(min = 192.dp), verticalArrangement = Arrangement.SpaceBetween) {
                 DetailDescription(series, details, colors)
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     LibraryIconView(
                         LibraryIcon.HEART,
                         if (favorite) colors.favoriteActive else colors.muted,
