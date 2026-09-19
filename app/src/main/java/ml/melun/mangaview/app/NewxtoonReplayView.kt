@@ -2,6 +2,7 @@ package ml.melun.mangaview.app
 
 import android.os.Handler
 import android.util.Log
+import android.view.View
 import android.webkit.HttpAuthHandler
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
@@ -89,6 +90,11 @@ internal class NewxtoonReplayView(
                 Log.w(TAG, "proxy override unavailable; replay view stays on the direct route")
             }
             val webView = AndroidBrowserViews.create(window.context)
+            // The replay browser is offscreen and must never ride the app's GPU context: when
+            // HWUI loses that context, Chromium aborts the process on the next functor draw
+            // ("Non owned context lost!", SIGTRAP on RenderThread). A software layer keeps the
+            // replay browser off the functor path entirely.
+            webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             webView.settings.javaScriptEnabled = true
             webView.settings.domStorageEnabled = true
             webView.settings.userAgentString = sourceUserAgent
