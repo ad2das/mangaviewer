@@ -3,19 +3,13 @@ package ml.melun.mangaview.app
 import android.annotation.SuppressLint
 import android.app.Presentation
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
-import android.view.InputDevice
-import android.view.MotionEvent
-import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
 import android.webkit.RenderProcessGoneDetail
@@ -25,16 +19,12 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.webkit.ProxyConfig
-import androidx.webkit.ProxyController
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.Closeable
-import java.io.File
-import java.io.FileOutputStream
 import kotlin.coroutines.resume
-import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -48,13 +38,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import ml.melun.mangaview.data.network.BrowserTlsRelay
-import ml.melun.mangaview.source.SourceRequest
-import ml.melun.mangaview.source.SourceResponse
-import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.ntk.AndroidBrowserViews
 import okhttp3.CookieJar
-import org.json.JSONObject
-import org.json.JSONTokener
 
 private const val TAG = "NewxtoonClearance"
 
@@ -195,17 +180,26 @@ internal class NewxtoonClearance(
     private val mutex = Mutex()
     private val main = Handler(Looper.getMainLooper())
 
-    /** The clearance cookie is bound to this exact string, so every newxtoon route repeats it. */
+    /** The WebView that solved the challenge; its browser identity owns the clearance cookie. */
+    @Volatile
+    private var solvedView: WebView? = null
+    @Volatile
+    private var solvedWindow: ChallengeWindow? = null
+    @Volatile
+    private var solvedRelay: BrowserTlsRelay? = null
+    private val fetcher = NewxtoonFetchBridge(main)
+
+    /**
+     * The engine's own UA is kept byte for byte except for the emulator's model and build id, the
+     * only parts that mark the session as non-phone; the client hints the engine sends stay
+     * Android WebView, so the presented identity remains internally consistent.
+     */
     val sourceUserAgent: String = runCatching { WebSettings.getDefaultUserAgent(appContext) }
         .getOrElse { fallbackUserAgent() }
         .let { engineUserAgent ->
             if (!spoofsDeviceIdentity) engineUserAgent
-            else engineUserAgent
-                .replace(android.os.Build.MODEL, DEVICE_MODEL)
-                .replace(android.os.Build.ID, DEVICE_BUILD)
+            else engineUserAgent.replace(DEVICE_MARKER, "Android 15; $DEVICE_MODEL Build/$DEVICE_BUILD")
         }
-        .replace("; wv", "")
-        .replace(" Version/4.0", "")
 
     /** The client hints the challenge WebView actually sends, replayed on the OkHttp route. */
     val clientHints: String = run {
@@ -244,12 +238,31 @@ internal class NewxtoonClearance(
         }
     }
 
+    /**
+     * Runs a challenged route inside the WebView that solved the challenge, whose identity the
+     * clearance cookie belongs to. Returns null when no solved browser can serve the route.
+     */
+    suspend fun fetchPage(url: String, headers: Map<String, String>): FetchedPage? {
+        val view = ensureSolvedView() ?: return null
+        return fetcher.fetch(view, url, headers, FETCH_TIMEOUT_MILLIS)
+    }
+
+    private suspend fun ensureSolvedView(): WebView? {
+        solvedView?.let { return it }
+        return mutex.withLock {
+            solvedView ?: run {
+                if (runChallengeLocked()) solvedView else null
+            }
+        }
+    }
+
     private suspend fun runChallengeLocked(): Boolean {
         for (attempt in 1..CHALLENGE_ATTEMPTS) {
             Log.i(TAG, "solve: starting webview challenge attempt=$attempt")
             val solved = try {
+                releaseSolvedViewLocked()
                 clearWebViewCookies()
-                withTimeoutOrNull(SOLVE_TIMEOUT_MILLIS) { runChallenge() } == true
+                withTimeoutOrNull(SOLVE_TIMEOUT_MILLIS) { runChallenge() } != null
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -268,10 +281,6 @@ internal class NewxtoonClearance(
         return false
     }
 
-    /** Cloudflare's interstitial title; anything else means the real site has loaded. */
-    private fun isChallengeTitle(title: String?): Boolean =
-        title.isNullOrBlank() || title.contains("Just a moment", ignoreCase = true)
-
     /** A stale cf_clearance poisons the challenge flow, so every attempt starts clean. */
     private suspend fun clearWebViewCookies() {
         withContext(Dispatchers.Main.immediate) {
@@ -288,83 +297,50 @@ internal class NewxtoonClearance(
         }
     }
 
-    private fun captureFrame(webView: WebView, name: String) {
-        runCatching {
-            webView.invalidate()
-            val bitmap = Bitmap.createBitmap(webView.width, webView.height, Bitmap.Config.ARGB_8888)
-            webView.draw(Canvas(bitmap))
-            val dir = File(appContext.getExternalFilesDir(null), "newxtoon-search")
-            dir.mkdirs()
-            FileOutputStream(File(dir, name)).use { bitmap.compress(Bitmap.CompressFormat.PNG, 90, it) }
-            bitmap.recycle()
-            Log.i(TAG, "captured $name")
-        }.onFailure { Log.w(TAG, "capture failed", it) }
-    }
-
     /**
      * Chromium owns TLS, so the network path that resets plain ClientHellos must be relayed:
      * the same authenticated loopback CONNECT relay the NTK browser uses, with the first TLS
      * record fragmented.
      */
-    private suspend fun runChallenge(): Boolean {
+    private suspend fun runChallenge(): WebView? {
         val relay = BrowserTlsRelay()
-        return try {
+        var window: ChallengeWindow? = null
+        var solved: WebView? = null
+        try {
             withContext(Dispatchers.Main.immediate) {
-                if (!installProxyOverride(relay)) {
+                if (!installChallengeProxyOverride(relay, main)) {
                     Log.w(TAG, "proxy override unavailable; loading without relay")
-                    return@withContext false
+                    return@withContext
                 }
-                val window = ChallengeWindow(appContext)
-                try {
-                    awaitClearance(relay, window)
-                } finally {
-                    window.close()
-                }
+                val challengeWindow = ChallengeWindow(appContext)
+                window = challengeWindow
+                solved = awaitClearance(relay, challengeWindow)
             }
         } finally {
-            withContext(NonCancellable) {
-                awaitClearProxyOverride()
-                relay.close()
-            }
-        }
-    }
-
-    private suspend fun installProxyOverride(relay: BrowserTlsRelay): Boolean =
-        suspendCancellableCoroutine { continuation ->
-            if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-                continuation.resume(false)
-                return@suspendCancellableCoroutine
-            }
-            val config = ProxyConfig.Builder()
-                .addProxyRule(relay.proxyUrl, ProxyConfig.MATCH_HTTPS)
-                .build()
-            try {
-                ProxyController.getInstance().setProxyOverride(config, { main.post(it) }) {
-                    if (continuation.isActive) continuation.resume(true)
-                }
-            } catch (failure: Throwable) {
-                Log.w(TAG, "proxy override failed", failure)
-                if (continuation.isActive) continuation.resume(false)
-            }
-        }
-
-    private suspend fun awaitClearProxyOverride() {
-        runCatching {
-            suspendCancellableCoroutine<Unit> { continuation ->
-                ProxyController.getInstance().clearProxyOverride({ main.post(it) }) {
-                    if (continuation.isActive) continuation.resume(Unit)
+            if (solved != null) {
+                // The clearance cookie belongs to this browser, so the solved view and its relay
+                // stay alive and challenged routes are replayed from inside it.
+                solvedView = solved
+                solvedWindow = window
+                solvedRelay = relay
+            } else {
+                withContext(Dispatchers.Main.immediate) { window?.close() }
+                withContext(NonCancellable) {
+                    clearChallengeProxyOverride(main)
+                    relay.close()
                 }
             }
         }
+        return solved
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun awaitClearance(
         relay: BrowserTlsRelay,
         window: ChallengeWindow,
-    ): Boolean = coroutineScope {
+    ): WebView? = coroutineScope {
         val workScope = this
-        suspendCancellableCoroutine { continuation ->
+        suspendCancellableCoroutine { continuation: CancellableContinuation<WebView?> ->
             var settled = false
             var pollJob: Job? = null
             val captures = mutableListOf<Job>()
@@ -376,16 +352,31 @@ internal class NewxtoonClearance(
                     pollJob?.cancel()
                     captures.forEach(Job::cancel)
                     Log.i(TAG, "challenge finished cleared=$cleared reason=$reason")
-                    // Chromium aborts the process when a WebView is stopped or destroyed from
-                    // inside its own callback, so teardown always defers one main-loop turn.
-                    main.post { teardownWebView(webView) }
-                    if (continuation.isActive) continuation.resume(cleared)
+                    if (!cleared) {
+                        // Chromium aborts the process when a WebView is stopped or destroyed from
+                        // inside its own callback, so teardown always defers one main-loop turn.
+                        main.post { teardownChallengeWebView(webView) }
+                    }
+                    if (continuation.isActive) continuation.resume(if (cleared) webView else null)
+                }
+            }
+            var clearanceCheck = false
+            fun checkClearance() {
+                if (clearanceCheck || settled) return
+                clearanceCheck = true
+                webView.evaluateJavascript(CLEARANCE_PROBE_SCRIPT) { value ->
+                    clearanceCheck = false
+                    if (!settled && value?.trim('"') == "clear") {
+                        runCatching { CookieManager.getInstance().flush() }
+                        finish(true, "page-cleared")
+                    }
                 }
             }
             continuation.invokeOnCancellation { main.post { finish(false, "cancelled") } }
             webView.settings.javaScriptEnabled = true
             webView.settings.domStorageEnabled = true
             webView.settings.userAgentString = sourceUserAgent
+            webView.addJavascriptInterface(fetcher.Bridge(), BRIDGE_NAME)
             webView.webViewClient = object : WebViewClient() {
                 override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler,
                                                        host: String, realm: String) {
@@ -401,7 +392,7 @@ internal class NewxtoonClearance(
 
                 override fun onPageFinished(view: WebView, url: String) {
                     Log.i(TAG, "page finished $url title=${view.title} clearancePresent=${cookies.hasClearance()}")
-                    if (cookies.clearanceValue() != null && !isChallengeTitle(view.title)) finish(true, "page-cleared")
+                    if (cookies.clearanceValue() != null) checkClearance()
                 }
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -440,12 +431,8 @@ internal class NewxtoonClearance(
                     delay(POLL_INTERVAL_MILLIS)
                     while (isActive && !settled) {
                         // cf_clearance rotates while the challenge is still pending, so the cookie
-                        // alone proves nothing; the real site loading is the only reliable signal.
-                        if (cookies.clearanceValue() != null && !isChallengeTitle(webView.title)) {
-                            runCatching { CookieManager.getInstance().flush() }
-                            finish(true, "page-cleared")
-                            return@launch
-                        }
+                        // alone proves nothing; only the interstitial's markers disappearing does.
+                        if (cookies.clearanceValue() != null) checkClearance()
                         val elapsed = System.currentTimeMillis() - startedAt
                         if (elapsed - lastProbe > 4_000 && elapsed > 5_000) {
                             lastProbe = elapsed
@@ -455,14 +442,16 @@ internal class NewxtoonClearance(
                                 if (value != null && value != "null" && clicksSent < 3) {
                                     clicksSent++
                                     if (clicksSent == 1) {
-                                        captureFrame(webView, "challenge-pre.png")
+                                        captureChallengeFrame(appContext, webView, "challenge-pre.png")
                                         webView.evaluateJavascript(TAP_PROBE_SCRIPT, null)
                                     }
                                     clickChallengeFrames(webView, value, clicksSent)
                                     val attempt = clicksSent
                                     captures += workScope.launch {
                                         delay(1_500L)
-                                        if (!settled) captureFrame(webView, "challenge-tap$attempt.png")
+                                        if (!settled) {
+                                            captureChallengeFrame(appContext, webView, "challenge-tap$attempt.png")
+                                        }
                                     }
                                 }
                             }
@@ -486,94 +475,28 @@ internal class NewxtoonClearance(
         }
     }
 
-    /** Detach before destroy; a renderer gone view must never be used again. */
-    private fun teardownWebView(webView: WebView) {
-        runCatching { webView.stopLoading() }
-        runCatching { (webView.parent as? ViewGroup)?.removeView(webView) }
-        runCatching { webView.destroy() }
-    }
-
-    /** Managed challenges render a Turnstile checkbox; a trusted tap can clear it. */
-    private fun clickChallengeFrames(webView: WebView, raw: String, attempt: Int) {
-        val json = runCatching { JSONTokener(raw).nextValue() as? String }.getOrNull()
-        val probe = json?.let { runCatching { JSONObject(it) }.getOrNull() }
-        val dpr = (probe?.optDouble("dpr", 2.6) ?: 2.6).toFloat().coerceAtLeast(1f)
-        val viewHeight = webView.height.toFloat().coerceAtLeast(1f)
-        val frames = probe?.optJSONArray("frames")
-        if (frames != null) {
-            for (index in 0 until frames.length()) {
-                val frame = frames.optJSONObject(index) ?: continue
-                if (!frame.optString("src").contains("challenges.cloudflare.com")) continue
-                val x = frame.optDouble("x", 0.0).toFloat() * dpr
-                val y = frame.optDouble("y", 0.0).toFloat() * dpr
-                val width = frame.optDouble("w", 0.0).toFloat() * dpr
-                val height = frame.optDouble("h", 0.0).toFloat() * dpr
-                if (width < 120f || height < 40f || height > viewHeight * 0.25f) continue
-                Log.i(TAG, "tapping turnstile frame $x,$y ${width}x$height")
-                tap(webView, x + minOf(20f * dpr, width / 4f), y + height / 2f)
-                return
-            }
+    /** Replaces the solved browser; its relay and proxy override are torn down with it. */
+    private suspend fun releaseSolvedViewLocked() {
+        val view = solvedView ?: return
+        val window = solvedWindow
+        val relay = solvedRelay
+        solvedView = null
+        solvedWindow = null
+        solvedRelay = null
+        withContext(Dispatchers.Main.immediate) {
+            teardownChallengeWebView(view)
+            window?.close()
         }
-        val hosts = probe?.optJSONArray("hosts")
-        if (hosts != null) {
-            for (index in 0 until hosts.length()) {
-                val host = hosts.optJSONObject(index) ?: continue
-                val x = host.optDouble("x", 0.0).toFloat() * dpr
-                val y = host.optDouble("y", 0.0).toFloat() * dpr
-                val width = host.optDouble("w", 0.0).toFloat() * dpr
-                val height = host.optDouble("h", 0.0).toFloat() * dpr
-                if (width < 120f || height < 40f || height > viewHeight * 0.25f) continue
-                Log.i(TAG, "tapping widget host ${host.optString("sel")} $x,$y ${width}x$height")
-                tap(webView, x + minOf(20f * dpr, width / 4f), y + height / 2f)
-                return
-            }
+        withContext(NonCancellable) {
+            clearChallengeProxyOverride(main)
+            relay?.close()
         }
-        // The widget can hide inside a closed shadow root; fall back to where it renders.
-        val viewWidth = webView.width.toFloat().coerceAtLeast(1f)
-        val fractions = when (attempt % 3) {
-            1 -> 0.083f to 0.400f
-            2 -> 0.083f to 0.406f
-            else -> 0.076f to 0.400f
-        }
-        val x = viewWidth * fractions.first
-        val y = viewHeight * fractions.second
-        Log.i(TAG, "tapping fallback checkbox ${x.roundToInt()},${y.roundToInt()} attempt=$attempt view=${viewWidth.roundToInt()}x${viewHeight.roundToInt()}")
-        tap(webView, x, y)
-    }
-
-    private fun tap(webView: WebView, x: Float, y: Float) {
-        val properties = arrayOf(MotionEvent.PointerProperties().apply {
-            id = 0
-            toolType = MotionEvent.TOOL_TYPE_FINGER
-        })
-        fun event(action: Int, at: Long, px: Float, py: Float, pressed: Boolean): MotionEvent {
-            val coordinates = arrayOf(MotionEvent.PointerCoords().apply {
-                this.x = px
-                this.y = py
-                pressure = if (pressed) 1f else 0f
-                size = 1f
-            })
-            return MotionEvent.obtain(0L, at, action, 1, properties, coordinates, 0, 0,
-                1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
-        }
-        val downTime = SystemClock.uptimeMillis()
-        fun send(action: Int, offset: Long, px: Float, py: Float, pressed: Boolean): Boolean {
-            val motion = event(action, downTime + offset, px, py, pressed)
-            return webView.dispatchTouchEvent(motion).also { motion.recycle() }
-        }
-        // An instant down/up reads as a synthetic click; the challenge also samples the
-        // pointer path, so the touch drifts a pixel or two before it lifts.
-        val down = send(MotionEvent.ACTION_DOWN, 0L, x, y, true)
-        send(MotionEvent.ACTION_MOVE, 60L, x + 1.5f, y + 1f, true)
-        send(MotionEvent.ACTION_MOVE, 130L, x - 1f, y + 1.5f, true)
-        send(MotionEvent.ACTION_MOVE, 200L, x + 0.5f, y, true)
-        val up = send(MotionEvent.ACTION_UP, 280L, x, y, false)
-        Log.i(TAG, "tap ${x.roundToInt()},${y.roundToInt()} down=$down up=$up")
     }
 
     private companion object {
         const val ORIGIN = "https://newxtoon1.com"
         const val SOLVE_TIMEOUT_MILLIS = 25_000L
+        const val FETCH_TIMEOUT_MILLIS = 30_000L
         const val POLL_INTERVAL_MILLIS = 400L
         const val CHALLENGE_ATTEMPTS = 3
         const val CHALLENGE_RETRY_DELAY_MILLIS = 1_000L
@@ -581,6 +504,7 @@ internal class NewxtoonClearance(
         // user agent; a real device identity replaces them (no request header contradicts it).
         const val DEVICE_MODEL = "SM-S918N"
         const val DEVICE_BUILD = "UP1A.231005.007"
+        val DEVICE_MARKER = Regex("Android [0-9]+; [^;)]+ Build/[^;)]+")
     }
 }
 
@@ -622,39 +546,3 @@ private class ChallengeWindow(context: Context) : Closeable {
     }
 }
 
-/** Retries a challenged newxtoon request after the WebView clears the origin. */
-internal class NewxtoonClearanceTransport(
-    private val inner: SourceTransport,
-    private val origin: String,
-    private val solve: suspend () -> Boolean,
-    private val solveFresh: suspend () -> Boolean = solve,
-) : SourceTransport by inner, Closeable {
-    override suspend fun execute(request: SourceRequest): SourceResponse {
-        val response = inner.execute(request)
-        if (response.statusCode != 403 || !request.url.startsWith(origin)) return response
-        Log.i(TAG, "challenged ${response.statusCode} ${request.url} mitigated=${response.header("cf-mitigated")}")
-        response.close()
-        val cleared = solve()
-        Log.i(TAG, "solve=$cleared retrying ${request.url}")
-        var retried = inner.execute(request)
-        // The edge occasionally keeps challenging the first request after a fresh solve; give it a
-        // moment, and if it still refuses, treat the cached clearance as stale and solve again.
-        for (attempt in 1..2) {
-            if (retried.statusCode != 403 || retried.header("cf-mitigated")?.contains("challenge") != true) break
-            Log.i(TAG, "retry still challenged; attempt=$attempt")
-            retried.close()
-            delay(1_500L * attempt)
-            if (attempt == 2) solveFresh()
-            retried = inner.execute(request)
-        }
-        Log.i(TAG, "retry status=${retried.statusCode} mitigated=${retried.header("cf-mitigated")} server=${retried.header("server")} ray=${retried.header("cf-ray")}")
-        return retried
-    }
-
-    private fun SourceResponse.header(name: String): String? =
-        headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value?.joinToString(",")
-
-    override fun close() {
-        (inner as? AutoCloseable)?.close()
-    }
-}

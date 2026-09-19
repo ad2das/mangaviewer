@@ -369,6 +369,7 @@ internal class AppGraph(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN,
                 newxtoonClearance::solve,
                 newxtoonClearance::solveFresh,
+                newxtoonClearance::fetchPage,
             ), "catalog-newxtoon", { networkEvidenceObserver })
     }
 
