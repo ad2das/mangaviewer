@@ -408,75 +408,8 @@ class EngineSessionRuntime(
         }
         reserveDocumentEndOriginal(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, result)
         earlyTransfers.retain(result, prepared, failedReadAheadPages)
-        addReadAhead(state, result)
+        addReadAhead(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, result)
         return result
-    }
-
-    private fun addReadAhead(state: EngineSessionSnapshot, result: LinkedHashMap<PageId, WorkPriority>) {
-        val anchor = readAheadAnchor(state, targetEpisode) ?: return
-        val manifest = plans[anchor.episodeId]?.manifest ?: return
-        val index = manifest.pages.indexOfFirst { it.id == anchor }
-        if (index < 0) return
-        addNearbyOriginals(state, manifest, index, result)
-        // Give every original needed by the opening viewport the first network window.
-        // Bulk transfer starts as soon as those bytes arrive, independently of rendering.
-        if (initialPresented || (state.completeViewport && state.visibleRegions.all { it.pageId in prepared }))
-            addRemainingOriginals(manifest, index, result)
-        addNextOriginals(state, manifest, result)
-    }
-
-    private fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
-        result: LinkedHashMap<PageId, WorkPriority>,
-    ) {
-        // Keep a small prepared neighborhood available to the tile planner. Originals
-        // elsewhere stay in disk storage; never retain an entire episode's textures.
-        for (offset in listOf(1, 2, -1)) {
-            val id = manifest.pages.getOrNull(index + offset)?.id ?: continue
-            if (id in prepared) result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
-        }
-        // Start the nearby pages alongside the focus original under background permits.
-        // Waiting for the first body or a complete scene serializes a multi-page viewport.
-        run {
-            val leadingIndex = state.requiredDimensions.fold(index) { leading, id ->
-                maxOf(leading, manifest.pages.indexOfFirst { it.id == id })
-            }
-            for (offset in 1..2) {
-                val ordinal = leadingIndex + offset
-                val id = manifest.pages.getOrNull(ordinal)?.id ?: manifest.nextEpisodeId?.let { next ->
-                    // The same two-page horizon continues across a known document boundary.
-                    plans[next]?.manifest?.pages?.getOrNull(ordinal - manifest.pages.size)?.id
-                } ?: continue
-                val priority = if (!initialPresented && ordinal <= index + 2) WorkPriority.VISIBLE else WorkPriority.NEXT_IMAGE
-                if (id !in failedReadAheadPages) result.putIfAbsent(id, priority)
-            }
-        }
-    }
-
-    private fun addRemainingOriginals(manifest: EpisodeManifest, index: Int,
-        result: LinkedHashMap<PageId, WorkPriority>,
-    ) {
-        // Stream originals to disk while the app reserves two BODY slots for visible work.
-        val remainingSlots = (12 - result.count { (id, priority) -> priority == WorkPriority.NEXT_IMAGE && id !in prepared }).coerceAtLeast(0)
-        pendingOriginalPages(manifest, index, remainingSlots, prepared, failedReadAheadPages, result)
-            .forEach { result.putIfAbsent(it, WorkPriority.NEXT_IMAGE) }
-    }
-
-    private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest,
-        result: LinkedHashMap<PageId, WorkPriority>,
-    ) {
-        val next = manifest.nextEpisodeId?.let { plans[it]?.manifest } ?: return
-        next.pages.take(2).filter { it.id !in failedReadAheadPages }.forEach {
-            result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
-        }
-        // Start before GPU preparation, but leave every queued current body its background slot.
-        // Filling all next slots prematurely can strand the current episode's sliding-window tail.
-        val openingReady = state.completeViewport && state.visibleRegions.all { it.pageId in prepared }
-        if (!initialPresented && !openingReady && manifest.pages.any { it.id !in prepared }) return
-        val occupied = result.count { (id, priority) -> id !in prepared &&
-            (priority == WorkPriority.NEXT_IMAGE || priority == WorkPriority.NEXT_EPISODE) }
-        val available = (12 - occupied).coerceAtLeast(0)
-        next.pages.asSequence().filter { it.id !in prepared && it.id !in failedReadAheadPages && it.id !in result }
-            .take(available).forEach { result[it.id] = WorkPriority.NEXT_EPISODE }
     }
 
     private fun adjacentPrefetch(state: EngineSessionSnapshot): EpisodeId? {
@@ -489,6 +422,78 @@ class EngineSessionRuntime(
 
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
+}
+
+// Read-ahead planning lives at file level: pure demand ordering over the caller's maps, so the
+// session runtime stays under the size gate without giving up the prepared/failed context.
+private fun addReadAhead(state: EngineSessionSnapshot, plans: Map<EpisodeId, EpisodeAccessPlan>,
+    targetEpisode: EpisodeId, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
+    initialPresented: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
+) {
+    val anchor = readAheadAnchor(state, targetEpisode) ?: return
+    val manifest = plans[anchor.episodeId]?.manifest ?: return
+    val index = manifest.pages.indexOfFirst { it.id == anchor }
+    if (index < 0) return
+    addNearbyOriginals(state, manifest, index, plans, prepared, failedReadAheadPages, initialPresented, result)
+    // Give every original needed by the opening viewport the first network window.
+    // Bulk transfer starts as soon as those bytes arrive, independently of rendering.
+    if (initialPresented || (state.completeViewport && state.visibleRegions.all { it.pageId in prepared }))
+        addRemainingOriginals(manifest, index, prepared, failedReadAheadPages, result)
+    addNextOriginals(state, manifest, plans, prepared, failedReadAheadPages, initialPresented, result)
+}
+
+private fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
+    plans: Map<EpisodeId, EpisodeAccessPlan>, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
+    initialPresented: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
+) {
+    // Keep a small prepared neighborhood available to the tile planner. Originals
+    // elsewhere stay in disk storage; never retain an entire episode's textures.
+    for (offset in listOf(1, 2, -1)) {
+        val id = manifest.pages.getOrNull(index + offset)?.id ?: continue
+        if (id in prepared) result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
+    }
+    // Start the nearby pages alongside the focus original under background permits.
+    // Waiting for the first body or a complete scene serializes a multi-page viewport.
+    val leadingIndex = state.requiredDimensions.fold(index) { leading, id ->
+        maxOf(leading, manifest.pages.indexOfFirst { it.id == id })
+    }
+    for (offset in 1..2) {
+        val ordinal = leadingIndex + offset
+        val id = manifest.pages.getOrNull(ordinal)?.id ?: manifest.nextEpisodeId?.let { next ->
+            // The same two-page horizon continues across a known document boundary.
+            plans[next]?.manifest?.pages?.getOrNull(ordinal - manifest.pages.size)?.id
+        } ?: continue
+        val priority = if (!initialPresented && ordinal <= index + 2) WorkPriority.VISIBLE else WorkPriority.NEXT_IMAGE
+        if (id !in failedReadAheadPages) result.putIfAbsent(id, priority)
+    }
+}
+
+private fun addRemainingOriginals(manifest: EpisodeManifest, index: Int, prepared: Set<PageId>,
+    failedReadAheadPages: Set<PageId>, result: LinkedHashMap<PageId, WorkPriority>,
+) {
+    // Stream originals to disk while the app reserves two BODY slots for visible work.
+    val remainingSlots = (12 - result.count { (id, priority) -> priority == WorkPriority.NEXT_IMAGE && id !in prepared }).coerceAtLeast(0)
+    pendingOriginalPages(manifest, index, remainingSlots, prepared, failedReadAheadPages, result)
+        .forEach { result.putIfAbsent(it, WorkPriority.NEXT_IMAGE) }
+}
+
+private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest,
+    plans: Map<EpisodeId, EpisodeAccessPlan>, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
+    initialPresented: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
+) {
+    val next = manifest.nextEpisodeId?.let { plans[it]?.manifest } ?: return
+    next.pages.take(2).filter { it.id !in failedReadAheadPages }.forEach {
+        result.putIfAbsent(it.id, WorkPriority.NEXT_EPISODE)
+    }
+    // Start before GPU preparation, but leave every queued current body its background slot.
+    // Filling all next slots prematurely can strand the current episode's sliding-window tail.
+    val openingReady = state.completeViewport && state.visibleRegions.all { it.pageId in prepared }
+    if (!initialPresented && !openingReady && manifest.pages.any { it.id !in prepared }) return
+    val occupied = result.count { (id, priority) -> id !in prepared &&
+        (priority == WorkPriority.NEXT_IMAGE || priority == WorkPriority.NEXT_EPISODE) }
+    val available = (12 - occupied).coerceAtLeast(0)
+    next.pages.asSequence().filter { it.id !in prepared && it.id !in failedReadAheadPages && it.id !in result }
+        .take(available).forEach { result[it.id] = WorkPriority.NEXT_EPISODE }
 }
 
 private fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmodifiableMap(LinkedHashMap(source))

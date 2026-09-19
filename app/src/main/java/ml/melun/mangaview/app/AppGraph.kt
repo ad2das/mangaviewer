@@ -345,6 +345,9 @@ internal class AppGraph(
         try {
             val source = NewxtoonContentSource(NewxtoonConfig(userAgent = newxtoonClearance.sourceUserAgent), transport)
             transport.warmConnections(listOf(ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), preferQuic = false)
+            // A persisted clearance resolves this instantly; otherwise the challenge browser warms
+            // while the catalog opens so the first request does not pay the whole solve up front.
+            applicationScope.launch { newxtoonClearance.solve() }
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
             }
@@ -370,6 +373,7 @@ internal class AppGraph(
                 newxtoonClearance::solve,
                 newxtoonClearance::solveFresh,
                 newxtoonClearance::fetchPage,
+                newxtoonClearance::solvedViewReady,
             ), "catalog-newxtoon", { networkEvidenceObserver })
     }
 

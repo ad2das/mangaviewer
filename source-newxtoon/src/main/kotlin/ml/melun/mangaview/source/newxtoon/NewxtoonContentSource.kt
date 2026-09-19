@@ -382,7 +382,7 @@ class NewxtoonContentSource(
         // The whole feed range is known when the header advertises the total, so it is fetched in
         // parallel windows. The window stays small: a wide burst invites the provider's throttle and
         // one refused page must not cost the list. The discovery path speculates at most one page.
-        const val CHAPTER_PAGE_WINDOW = 4
+        const val CHAPTER_PAGE_WINDOW = 6
         const val CHAPTER_DISCOVERY_WINDOW = 2
         const val CHAPTER_PAGE_ATTEMPTS = 3
         const val CHAPTER_PAGE_MAX_WAIT_MILLIS = 3_000L

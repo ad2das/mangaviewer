@@ -22,6 +22,7 @@ internal class NewxtoonClearanceTransport(
     private val solve: suspend () -> Boolean,
     private val solveFresh: suspend () -> Boolean = solve,
     private val fetchPage: suspend (String, Map<String, String>) -> FetchedPage? = { _, _ -> null },
+    private val solvedViewReady: () -> Boolean = { false },
 ) : SourceTransport by inner, Closeable {
     /** Set once the WebView route has proven it serves this origin; phones keep using HTTP. */
     @Volatile
@@ -30,7 +31,9 @@ internal class NewxtoonClearanceTransport(
     override suspend fun execute(request: SourceRequest): SourceResponse {
         val sameOrigin = request.url.startsWith(origin)
         val replayable = sameOrigin && request.method == SourceHttpMethod.GET
-        if (replayable && webViewRoute) {
+        // A live solved WebView means the plain HTTP route is already known to draw the
+        // challenge, so skipping it saves a refused request plus a retry on every document.
+        if (replayable && (webViewRoute || solvedViewReady())) {
             val replayed = replay(request)
             if (replayed != null) return replayed
             webViewRoute = false

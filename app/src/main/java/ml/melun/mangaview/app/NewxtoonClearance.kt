@@ -175,7 +175,7 @@ internal class NewxtoonClearance(
     context: Context,
 ) {
     private val appContext = context.applicationContext
-    private val cookies = NewxtoonCookieStore(ORIGIN)
+    private val cookies = NewxtoonCookieStore(ORIGIN, context)
     val cookieJar: CookieJar get() = cookies.cookieJar
     private val mutex = Mutex()
     private val main = Handler(Looper.getMainLooper())
@@ -239,12 +239,21 @@ internal class NewxtoonClearance(
     }
 
     /**
+     * True while a WebView that already cleared the challenge is alive, so transports can send
+     * challenged routes to it directly instead of paying a refused HTTP request first.
+     */
+    val solvedViewReady: Boolean get() = solvedView != null
+
+    /**
      * Runs a challenged route inside the WebView that solved the challenge, whose identity the
      * clearance cookie belongs to. Returns null when no solved browser can serve the route.
      */
     suspend fun fetchPage(url: String, headers: Map<String, String>): FetchedPage? {
         val view = ensureSolvedView() ?: return null
-        return fetcher.fetch(view, url, headers, FETCH_TIMEOUT_MILLIS)
+        return fetcher.fetch(view, url, headers, FETCH_TIMEOUT_MILLIS)?.also { page ->
+            // A served document proves the clearance works from this browser; a 403 proves nothing.
+            if (page.statusCode in 200..399) cookies.markVerified()
+        }
     }
 
     private suspend fun ensureSolvedView(): WebView? {
@@ -271,6 +280,7 @@ internal class NewxtoonClearance(
             }
             Log.i(TAG, "solve: completed=$solved clearancePresent=${cookies.hasClearance()} attempt=$attempt")
             if (solved) {
+                cookies.markVerified()
                 cookies.harvest()
                 return true
             }
@@ -365,7 +375,9 @@ internal class NewxtoonClearance(
                 if (settled) return
                 val now = System.currentTimeMillis()
                 // A probe callback lost to a navigation must not wedge the guard forever, so the
-                // guard is time-bound instead of sticky.
+                // guard is time-bound instead of sticky. No reload here: the cf_clearance that
+                // appears mid-challenge is still pending, and navigating away aborts the challenge
+                // script that would otherwise finish and promote it.
                 if (now - clearanceCheckAt < CLEARANCE_CHECK_GUARD_MILLIS) return
                 clearanceCheckAt = now
                 webView.evaluateJavascript(CLEARANCE_PROBE_SCRIPT) { value ->
@@ -472,6 +484,8 @@ internal class NewxtoonClearance(
             }
             webView.resumeTimers()
             window.attach(webView)
+            // A persisted clearance that is still valid makes the interstitial resolve at once.
+            cookies.seedWebView()
             Log.i(TAG, "webview created ua=${webView.settings.userAgentString} relay=${relay.proxyUrl} loading $ORIGIN")
             webView.loadUrl(ORIGIN)
             startPolling()
@@ -499,7 +513,7 @@ internal class NewxtoonClearance(
     private companion object {
         const val ORIGIN = "https://newxtoon1.com"
         const val SOLVE_TIMEOUT_MILLIS = 25_000L
-        const val FETCH_TIMEOUT_MILLIS = 30_000L
+        const val FETCH_TIMEOUT_MILLIS = 15_000L
         const val POLL_INTERVAL_MILLIS = 400L
         const val CLEARANCE_CHECK_GUARD_MILLIS = 1_000L
         const val CHALLENGE_ATTEMPTS = 3

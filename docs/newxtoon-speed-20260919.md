@@ -40,6 +40,26 @@ With the app-only Cloudflare path (no host relay, see
 - `NewxtoonClearanceTransport.execute`: after `solve()` one plain retry and a
   WebView replay come first; the challenge retry ladder is the last resort.
 
+## Follow-up: extreme speed pass (same day)
+
+- `NewxtoonCookieStore`: persists `cf_clearance` in SharedPreferences, but only after a
+  verified solve or a served replay marks it (`markVerified`); a *pending* cookie planted
+  mid-challenge is never stored and never counts as clearance. On restart the cookie seeds
+  the OkHttp jar and the challenge WebView (`seedWebView`) so a still-valid clearance skips
+  the ~15 s managed challenge entirely.
+- `NewxtoonClearanceTransport`: when a solved WebView already lives (`solvedViewReady`),
+  replayable same-origin GETs go straight to it — the doomed OkHttp 403 + retry is skipped.
+- `NewxtoonWebFetch`: text/JSON/HTML responses cross the bridge as raw text instead of
+  base64 (binary types still use base64).
+- `NewxtoonContentSource`: chapter feed window 4 -> 6.
+- `AppGraph.initializeNewxtoonSource`: launches `newxtoonClearance.solve()` in the
+  background so the challenge warms while the catalog opens.
+- Note: a `loadUrl(ORIGIN)` "probe reload" while the interstitial is up aborts the
+  challenge script — verified harmful, removed.
+- Emulator caveat: `sdk_gphone64_x86_64` (5554) fails to promote the pending cf_clearance
+  at all (pending cookie 403s on reload/fetch); the 5558 AVD passes. Device flakiness, not
+  a code path issue.
+
 ## Verification (emulator 5558, app-only path, native 1080x2340)
 
 Baseline build 84105a9a2 vs new build, same device, same series

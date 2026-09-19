@@ -45,6 +45,24 @@ internal fun buildFetchScript(id: String, url: String, headers: Map<String, Stri
     headers: $headerObject,
     signal: controller.signal
   }).then(function(response){
+    var headers = [];
+    response.headers.forEach(function(value, name){ headers.push([name, value]); });
+    var meta = function(body, binaryBody){
+      window.$BRIDGE_NAME.post(JSON.stringify({
+        id: requestId,
+        status: response.status,
+        url: response.url,
+        headers: headers,
+        body: body,
+        binary: !!binaryBody
+      }));
+    };
+    var type = response.headers.get("content-type") || "";
+    // Same-origin routes are documents, so text transfer skips the base64 round trip; a binary
+    // type falls back to base64 so nothing is mangled if the route ever serves bytes.
+    if (/(^text\/|json|html|xml|javascript|x-www-form)/i.test(type)) {
+      return response.text().then(function(text){ meta(text, false); });
+    }
     return response.arrayBuffer().then(function(buffer){
       var bytes = new Uint8Array(buffer);
       var binary = "";
@@ -52,15 +70,7 @@ internal fun buildFetchScript(id: String, url: String, headers: Map<String, Stri
       for (var index = 0; index < bytes.length; index += chunk) {
         binary += String.fromCharCode.apply(null, bytes.subarray(index, index + chunk));
       }
-      var headers = [];
-      response.headers.forEach(function(value, name){ headers.push([name, value]); });
-      window.$BRIDGE_NAME.post(JSON.stringify({
-        id: requestId,
-        status: response.status,
-        url: response.url,
-        headers: headers,
-        body: btoa(binary)
-      }));
+      meta(btoa(binary), true);
     });
   }).catch(function(error){
     window.$BRIDGE_NAME.post(JSON.stringify({ id: requestId, error: String(error) }));
@@ -83,8 +93,11 @@ internal fun parseFetchPayload(message: String): FetchedPage? = runCatching {
         if (name.isEmpty()) continue
         headers.getOrPut(name) { mutableListOf() }.add(pair.optString(1))
     }
-    val body = if (json.isNull("body")) ByteArray(0)
-    else Base64.decode(json.optString("body"), Base64.DEFAULT)
+    val body = when {
+        json.isNull("body") -> ByteArray(0)
+        json.optBoolean("binary") -> Base64.decode(json.optString("body"), Base64.DEFAULT)
+        else -> json.optString("body").toByteArray(Charsets.UTF_8)
+    }
     FetchedPage(status, url, headers, body)
 }.getOrNull()
 
