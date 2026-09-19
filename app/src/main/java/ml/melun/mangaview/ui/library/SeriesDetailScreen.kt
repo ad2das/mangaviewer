@@ -520,21 +520,23 @@ private fun DetailDescription(series: SourceSeries, details: SourceSeriesDetails
         )
         (details?.authors?.takeIf(String::isNotBlank) ?: series.subtitle?.takeIf(String::isNotBlank))
             ?.let { subtitle ->
-                Spacer(Modifier.height(6.dp))
-                BasicText(
-                    subtitle,
-                    style = hintStyle(colors, 12),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(8.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    subtitle.split(",", "/", "·").take(2).forEach { tag ->
-                        if (tag.isNotBlank()) TagChip(tag.trim(), colors)
+                val tags = subtitle.split(",", "/", "·").map { it.trim() }.filter { it.isNotBlank() }
+                if (tags.size >= 2) {
+                    Spacer(Modifier.height(8.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        tags.take(4).forEach { tag -> TagChip(tag, colors) }
                     }
+                } else {
+                    Spacer(Modifier.height(6.dp))
+                    BasicText(
+                        subtitle,
+                        style = hintStyle(colors, 12),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
     }
