@@ -1,7 +1,12 @@
 package ml.melun.mangaview.app
 
+import java.io.IOException
 import java.net.URI
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
@@ -80,7 +85,7 @@ internal class EngineNewxtoonSessionWork(
                 val html = value.openBody().use { it.readBytes().toString(Charsets.UTF_8) }
                 val embedded = withContext(parsingDispatcher) { parser.chapters(html) }
                 val pagination = withContext(parsingDispatcher) { parser.chapterPagination(html) }
-                if (pagination == null) embedded else mergeChapterPages(pagination, embedded)
+                if (pagination == null) embedded else mergeChapterPages(pagination, embedded, html)
             }
             // Chapters arrive newest-first, so positional sequence numbers count down and the
             // first chapter ends up with the smallest number.
@@ -95,10 +100,38 @@ internal class EngineNewxtoonSessionWork(
     private suspend fun mergeChapterPages(
         pagination: NewxtoonChapterPagination,
         embedded: List<NewxtoonChapter>,
+        seriesHtml: String,
     ): List<NewxtoonChapter> {
         val merged = LinkedHashMap<String, NewxtoonChapter>()
         embedded.forEach { merged.putIfAbsent(it.id, it) }
-        var page = if (embedded.isEmpty()) 1 else pagination.nextPage
+        val firstPage = if (embedded.isEmpty()) 1 else pagination.nextPage
+        // The header advertises the total chapter count and the feed page size, so the whole feed
+        // range is known and can be fetched in parallel windows instead of one round trip per page.
+        val pageSize = withContext(parsingDispatcher) { parser.chapterPageSize(seriesHtml) }
+        val advertised = withContext(parsingDispatcher) { parser.chapterTotal(seriesHtml) }
+        val lastPage = if (pageSize != null && advertised != null && advertised >= merged.size) {
+            ((advertised + pageSize - 1) / pageSize).coerceAtLeast(1).takeIf { it <= MAX_CHAPTER_PAGES }
+        } else null
+        if (lastPage != null && advertised != null) {
+            try {
+                for (window in (2..lastPage).chunked(CHAPTER_PAGE_WINDOW)) {
+                    val payloads = coroutineScope {
+                        window.map { page -> async { fetchChapterPage(pagination.url, page) } }.awaitAll()
+                    }
+                    payloads.forEach { json ->
+                        withContext(parsingDispatcher) { parser.chapterPage(json) }
+                            .chapters.forEach { merged.putIfAbsent(it.id, it) }
+                    }
+                    if (merged.size >= advertised) return merged.values.toList()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: IOException) {
+                // A refused window must not lose the list; the gentler discovery walk below
+                // remains the authority for whatever the advertised range did not cover.
+            }
+        }
+        var page = firstPage
         val visited = mutableSetOf<Int>()
         while (page != null && visited.size < MAX_CHAPTER_PAGES && visited.add(page)) {
             val json = fetchChapterPage(pagination.url, page)
@@ -145,5 +178,8 @@ internal class EngineNewxtoonSessionWork(
     private companion object {
         const val CHAPTER_FEED_MAX_BYTES = 8 * 1024 * 1024
         const val MAX_CHAPTER_PAGES = 400
+        // The advertised range is fetched in small parallel windows; a wide burst invites the
+        // provider's throttle and one refused page must not cost the list.
+        const val CHAPTER_PAGE_WINDOW = 4
     }
 }

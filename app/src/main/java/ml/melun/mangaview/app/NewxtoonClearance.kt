@@ -360,12 +360,15 @@ internal class NewxtoonClearance(
                     if (continuation.isActive) continuation.resume(if (cleared) webView else null)
                 }
             }
-            var clearanceCheck = false
+            var clearanceCheckAt = 0L
             fun checkClearance() {
-                if (clearanceCheck || settled) return
-                clearanceCheck = true
+                if (settled) return
+                val now = System.currentTimeMillis()
+                // A probe callback lost to a navigation must not wedge the guard forever, so the
+                // guard is time-bound instead of sticky.
+                if (now - clearanceCheckAt < CLEARANCE_CHECK_GUARD_MILLIS) return
+                clearanceCheckAt = now
                 webView.evaluateJavascript(CLEARANCE_PROBE_SCRIPT) { value ->
-                    clearanceCheck = false
                     if (!settled && value?.trim('"') == "clear") {
                         runCatching { CookieManager.getInstance().flush() }
                         finish(true, "page-cleared")
@@ -498,6 +501,7 @@ internal class NewxtoonClearance(
         const val SOLVE_TIMEOUT_MILLIS = 25_000L
         const val FETCH_TIMEOUT_MILLIS = 30_000L
         const val POLL_INTERVAL_MILLIS = 400L
+        const val CLEARANCE_CHECK_GUARD_MILLIS = 1_000L
         const val CHALLENGE_ATTEMPTS = 3
         const val CHALLENGE_RETRY_DELAY_MILLIS = 1_000L
         // The emulator model and build id are the loudest "not a phone" markers left in the

@@ -8,6 +8,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -52,7 +54,7 @@ data class NewxtoonConfig(
 class NewxtoonContentSource(
     private val config: NewxtoonConfig,
     private val transport: SourceTransport,
-    clock: () -> Long = System::currentTimeMillis,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : ContentSource, Closeable {
     override val id = SourceId("newxtoon")
     private val parser = NewxtoonHtmlParser(config.origin)
@@ -60,6 +62,8 @@ class NewxtoonContentSource(
     private val documents = NewxtoonDocumentClient(transport, clock)
     private var cachedGenres: List<SourceGenre>? = null
     private var lastSeriesDetails: Pair<SeriesId, SourceSeriesDetails>? = null
+    private val chapterCache = LinkedHashMap<String, CachedChapters>(8, 0.75f, true)
+    private val chapterCacheLock = Mutex()
 
     override suspend fun genres(kind: SeriesKind): List<SourceGenre> {
         cachedGenres?.let { return it }
@@ -198,6 +202,31 @@ class NewxtoonContentSource(
         onPartial: suspend (List<NewxtoonChapter>) -> Unit = {},
     ): List<NewxtoonChapter> {
         require(seriesId.sourceId == id) { "Series belongs to another source" }
+        val key = seriesId.remoteKey
+        val cached = chapterCacheLock.withLock {
+            chapterCache[key]?.takeIf { clock() - it.savedAt in 0..CHAPTER_CACHE_TTL_MILLIS }?.chapters
+        }
+        if (cached != null) {
+            if (cached.isNotEmpty()) onPartial(cached)
+            return cached
+        }
+        val fresh = fetchChapters(seriesId, onPartial)
+        if (fresh.isNotEmpty()) {
+            chapterCacheLock.withLock {
+                chapterCache[key] = CachedChapters(fresh, clock())
+                while (chapterCache.size > MAX_CACHED_CHAPTER_LISTS) {
+                    chapterCache.remove(chapterCache.keys.first())
+                }
+            }
+        }
+        return fresh
+    }
+
+    /** Fetches the series page and merges every feed page into one chapter list. */
+    private suspend fun fetchChapters(
+        seriesId: SeriesId,
+        onPartial: suspend (List<NewxtoonChapter>) -> Unit = {},
+    ): List<NewxtoonChapter> {
         val html = fetch(seriesPath(seriesId))
         val details = parser.seriesDetails(html)
         lastSeriesDetails = seriesId to SourceSeriesDetails(
@@ -344,8 +373,12 @@ class NewxtoonContentSource(
         SeriesStatus.COMPLETED -> "완결"
     }
 
+    private data class CachedChapters(val chapters: List<NewxtoonChapter>, val savedAt: Long)
+
     private companion object {
         const val MAX_CHAPTER_PAGES = 400
+        const val CHAPTER_CACHE_TTL_MILLIS = 5 * 60_000L
+        const val MAX_CACHED_CHAPTER_LISTS = 4
         // The whole feed range is known when the header advertises the total, so it is fetched in
         // parallel windows. The window stays small: a wide burst invites the provider's throttle and
         // one refused page must not cost the list. The discovery path speculates at most one page.

@@ -31,9 +31,8 @@ internal class NewxtoonClearanceTransport(
         val sameOrigin = request.url.startsWith(origin)
         val replayable = sameOrigin && request.method == SourceHttpMethod.GET
         if (replayable && webViewRoute) {
-            val replayed = webViewResponse(request)
-            if (replayed != null && replayed.statusCode != 403) return replayed
-            replayed?.close()
+            val replayed = replay(request)
+            if (replayed != null) return replayed
             webViewRoute = false
         }
         val response = inner.execute(request)
@@ -42,20 +41,30 @@ internal class NewxtoonClearanceTransport(
         response.close()
         val cleared = solve()
         Log.i(TAG, "solve=$cleared retrying ${request.url}")
-        var retried = retryAfterChallenge(request)
-        if (retried.isChallenge() && replayable) {
-            val replayed = webViewResponse(request)
-            if (replayed != null && replayed.statusCode != 403) {
-                Log.i(TAG, "served ${request.url} from the clearance webview")
-                retried.close()
-                webViewRoute = true
-                retried = replayed
-            } else {
-                replayed?.close()
-            }
+        // A solved browser can replay the request in about a second, so one plain retry and the
+        // replay come first; the challenge retry ladder is only the last resort.
+        var retried = inner.execute(request)
+        retried = replayInstead(request, retried, replayable)
+        if (retried.isChallenge()) {
+            retried.close()
+            retried = retryAfterChallenge(request)
+            retried = replayInstead(request, retried, replayable)
         }
         Log.i(TAG, "retry status=${retried.statusCode} mitigated=${retried.header("cf-mitigated")} server=${retried.header("server")} ray=${retried.header("cf-ray")}")
         return retried
+    }
+
+    /** Swaps a challenged response for one served by the solved browser; unchanged when it cannot. */
+    private suspend fun replayInstead(
+        request: SourceRequest,
+        response: SourceResponse,
+        replayable: Boolean,
+    ): SourceResponse {
+        if (!replayable || !response.isChallenge()) return response
+        val replayed = replay(request) ?: return response
+        response.close()
+        webViewRoute = true
+        return replayed
     }
 
     // The edge occasionally keeps challenging the first request after a fresh solve; give it a
@@ -76,8 +85,10 @@ internal class NewxtoonClearanceTransport(
     private fun SourceResponse.isChallenge(): Boolean =
         statusCode == 403 && header("cf-mitigated")?.contains("challenge") == true
 
-    private suspend fun webViewResponse(request: SourceRequest): SourceResponse? {
+    private suspend fun replay(request: SourceRequest): SourceResponse? {
         val page = fetchPage(request.url, request.headers) ?: return null
+        if (page.statusCode == 403) return null
+        Log.i(TAG, "served ${request.url} from the clearance webview")
         return SourceResponse(
             statusCode = page.statusCode,
             finalUrl = page.finalUrl.ifBlank { request.url },

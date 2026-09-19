@@ -14,12 +14,12 @@ import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 
 /** Floor of the adaptive request spacing. Kept well under the old 2.5s cadence but not aggressive. */
-internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 400L
+internal const val NEWXTOON_MIN_REQUEST_INTERVAL_MILLIS = 200L
 
 /** Ceiling the spacing backs off to after throttling: the previously fixed 2.5s cadence. */
 internal const val NEWXTOON_MAX_REQUEST_INTERVAL_MILLIS = 2_500L
 
-private const val INTERVAL_DECAY_MILLIS = 250L
+private const val INTERVAL_DECAY_MILLIS = 100L
 
 /**
  * One origin-wide document lane: identical loads coalesce onto the first request, the provider's
