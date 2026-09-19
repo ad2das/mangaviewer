@@ -56,7 +56,11 @@ internal class ViewerPinchGesture(
             if (first < 0) first = index else { second = index; break }
         }
         if (first < 0 || second < 0) return 0f
-        return hypot(event.getX(second) - event.getX(first), event.getY(second) - event.getY(first))
+        // Local coordinates arrive pre-divided by the live view scale; multiplying back gives the
+        // on-screen span the fingers actually describe. Without it the measured span shrinks as
+        // magnification grows, so a steady pinch-in can never restore fit-width.
+        return hypot(event.getX(second) - event.getX(first),
+            event.getY(second) - event.getY(first)) * zoom.scale
     }
 
 }

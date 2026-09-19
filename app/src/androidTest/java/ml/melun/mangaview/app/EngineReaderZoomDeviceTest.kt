@@ -147,13 +147,17 @@ class EngineReaderZoomDeviceTest {
                 accept = { it })
             note("pinch start scale=${screen.viewerSurfaceZoomScale()}")
 
-            injectPinch(instrumentation, x, y, startHalfSpan = 240f, endHalfSpan = 720f)
+            // Every pointer has to start inside the window or the dispatcher drops it: on small
+            // displays a 720px half-span is off-screen, so the whole gesture collapses to a drag.
+            val maxHalfSpan = minOf(device.displayHeight, device.displayWidth) / 2f - 48f
+            val smallSpan = maxHalfSpan / 3f
+            injectPinch(instrumentation, x, y, startHalfSpan = smallSpan, endHalfSpan = maxHalfSpan)
             val magnified = await("pinch magnification",
                 read = { screen.viewerSurfaceZoomScale() },
                 accept = { it > 1.5f })
             note("pinched out scale=$magnified")
 
-            injectPinch(instrumentation, x, y, startHalfSpan = 720f, endHalfSpan = 240f)
+            injectPinch(instrumentation, x, y, startHalfSpan = maxHalfSpan, endHalfSpan = smallSpan)
             val restored = await("pinch restore",
                 read = { screen.viewerSurfaceZoomScale() },
                 accept = { it < 1.2f })
