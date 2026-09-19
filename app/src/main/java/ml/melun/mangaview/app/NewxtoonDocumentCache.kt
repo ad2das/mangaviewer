@@ -109,7 +109,9 @@ internal class NewxtoonDocumentCache(context: Context) {
                 if (!iterator.next().value.isLocked) iterator.remove()
             }
         }
-        return locks.getOrPut(url) { Mutex() }
+        // getOrPut is not atomic on ConcurrentHashMap: two threads can build separate mutexes for
+        // one URL and the "single-flight" fetch would run twice, tearing the shared files.
+        return locks.computeIfAbsent(url) { Mutex() }
     }
 
     suspend fun <T> synchronizedOn(url: String, block: suspend () -> T): T = urlLock(url).withLock {
