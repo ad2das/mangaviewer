@@ -86,6 +86,32 @@ class OkHttpTransportFactory(
     }
 
     /**
+     * A client for the newxtoon artwork zone, which is reached on Bunny's edge network instead of
+     * the Cloudflare-fronted public hostname: the address lookup is remapped by [BunnyImageDns]
+     * and the edge's origin certificate is accepted without chain verification. Only
+     * `NewxtoonImageTransport` may hand it a request, so no host outside the artwork zone ever
+     * rides a client that skips verification.
+     */
+    fun createForBunnyImages(
+        cookieJar: CookieJar = CookieJar.NO_COOKIES,
+        headers: Map<String, String> = emptyMap(),
+    ): OkHttpSourceTransport {
+        val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
+        val builder = OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .dns(BunnyImageDns())
+            .cookieJar(cookieJar)
+            .sslSocketFactory(ProviderImageTrust.socketFactory(), ProviderImageTrust.trustManager())
+            .hostnameVerifier { _, _ -> true }
+            .connectionPool(ConnectionPool(parallelism, 5L, TimeUnit.MINUTES))
+            .connectTimeout(10L, TimeUnit.SECONDS)
+            .readTimeout(30L, TimeUnit.SECONDS)
+            .writeTimeout(30L, TimeUnit.SECONDS)
+        builder.addBrowserIdentity(headers)
+        return OkHttpSourceTransport(builder.build(), ioDispatcher)
+    }
+
+    /**
      * A browser-identity client for origins whose clearance cookie is bound to the client hints
      * the solving WebView sent; OkHttp adds none of them on its own.
      */

@@ -142,7 +142,13 @@ internal class EngineAppGraph(
             clearance::solveFresh, clearance::fetchPage, clearance::solvedViewReady,
             clearance::clearanceVerified, clearance::markReplayRefused,
             clearance.documents, clearance.refreshScope)
-        ObservedSourceTransport(guarded, "engine", networkEvidenceObserver)
+        // Artwork is served straight from the Bunny pull zone with the origin as referer, so an
+        // image request never reaches the clearance route and never touches Cloudflare.
+        val routed = if (clearance == null) guarded else NewxtoonImageTransport(guarded,
+            transportFactory.createForBunnyImages(headers = linkedMapOf(
+                "Referer" to ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN + "/",
+                "User-Agent" to newxtoonUserAgent)))
+        ObservedSourceTransport(routed, "engine", networkEvidenceObserver)
     }
     private val ntkPageTransport = lazy {
         // Match NTK's existing Chromium TLS transport for its image CDN hosts.

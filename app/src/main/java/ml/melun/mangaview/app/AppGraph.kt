@@ -486,21 +486,29 @@ private fun newxtoonTransport(
 ): SourceTransport {
     val hints = clearance.clientHints
     val browserHeaders = OkHttpTransportFactory.browserHeaders(hints)
-    return ObservedSourceTransport(
-        NewxtoonClearanceTransport(
-            // The relay shapes the TLS record layer exactly like the challenge browser, so the
-            // edge treats the native request as the same client that owns the clearance instead
-            // of drawing a fresh challenge for a plain ClientHello.
-            transportFactory.createRelayed(clearance.cookieJar, browserHeaders),
-            ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN,
-            clearance::solve,
-            clearance::solveFresh,
-            clearance::fetchPage,
-            clearance::solvedViewReady,
-            clearance::clearanceVerified,
-            clearance::markReplayRefused,
-            clearance.documents,
-            clearance.refreshScope,
-        ), "catalog-newxtoon", observer)
+    val documents = NewxtoonClearanceTransport(
+        // The relay shapes the TLS record layer exactly like the challenge browser, so the
+        // edge treats the native request as the same client that owns the clearance instead
+        // of drawing a fresh challenge for a plain ClientHello.
+        transportFactory.createRelayed(clearance.cookieJar, browserHeaders),
+        ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN,
+        clearance::solve,
+        clearance::solveFresh,
+        clearance::fetchPage,
+        clearance::solvedViewReady,
+        clearance::clearanceVerified,
+        clearance::markReplayRefused,
+        clearance.documents,
+        clearance.refreshScope,
+    )
+    // Artwork never enters the clearance path: the pull zone serves it to the app directly as
+    // long as the origin rides along as the referer, so no Cloudflare hop is involved.
+    val images = transportFactory.createForBunnyImages(
+        headers = linkedMapOf(
+            "Referer" to ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN + "/",
+            "User-Agent" to clearance.sourceUserAgent,
+        ),
+    )
+    return ObservedSourceTransport(NewxtoonImageTransport(documents, images), "catalog-newxtoon", observer)
 }
 

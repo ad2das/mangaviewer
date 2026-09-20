@@ -52,6 +52,34 @@ internal class ProviderImageDns(private val resolver: Dns = Dns.SYSTEM) : Dns {
     }
 }
 
+/**
+ * The newxtoon artwork zone is fronted by Cloudflare under its public hostname, but the same
+ * pull zone is reachable straight through Bunny's edge network. Only the address lookup is
+ * remapped to the pull zone's b-cdn.net hostname; Host and SNI keep the public hostname, so the
+ * edge routes exactly as it would for the fronted name while no Cloudflare hop is involved.
+ */
+internal class BunnyImageDns(
+    private val resolver: Dns = Dns.SYSTEM,
+    private val publicSuffix: String = "quicksharefiles.top",
+    private val edgeSuffix: String = "b-cdn.net",
+) : Dns {
+    override fun lookup(hostname: String): List<InetAddress> {
+        if (hostname.isBlank()) throw UnknownHostException("hostname == null")
+        val publicHost = hostname.lowercase()
+        if (!publicHost.endsWith(".$publicSuffix")) return resolver.lookup(hostname)
+        val zone = publicHost.removeSuffix(".$publicSuffix")
+        // A pull zone whose own edge hostname has no record still shares the edge network with
+        // the apex, so the apex is the fallback address source rather than the fronted host.
+        val resolved = try {
+            resolver.lookup("$zone.$edgeSuffix")
+        } catch (failure: UnknownHostException) {
+            resolver.lookup(edgeSuffix)
+        }
+        val ipv4 = resolved.filterIsInstance<Inet4Address>()
+        return ipv4.ifEmpty { resolved }
+    }
+}
+
 /** Fallback DNS may return both families. Route rotation must retain the IPv4-first contract. */
 internal fun ipv4FirstAddressOrder(addresses: List<InetAddress>, cursor: Int): List<InetAddress> {
     val (ipv4, remaining) = addresses.partition { it is Inet4Address }
