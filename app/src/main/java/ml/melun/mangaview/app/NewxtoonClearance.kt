@@ -252,9 +252,11 @@ internal class NewxtoonClearance(
             // trust is exactly why the replay-view shortcut below is now skipped.
             replayRefused = false
             releaseSolvedViewLocked()
-            // A proven clearance needs no interstitial: the replay browser only hosts fetches,
-            // so it stands up with an inert same-origin document instead of loading the site.
-            if (cookies.hasVerifiedClearance() && runReplayViewLocked()) solvedView
+            // Any clearance cookie stands the replay browser up without another interstitial: a
+            // proven one serves immediately, and one Cloudflare planted while a challenge was
+            // still spinning is proven by the first fetch through it. A refused replay marks the
+            // clearance stale, so a dead cookie costs one round trip instead of a full challenge.
+            if (cookies.hasClearance() && runReplayViewLocked()) solvedView
             else if (runChallengeLocked()) solvedView
             else null
         }
@@ -288,7 +290,10 @@ internal class NewxtoonClearance(
             Log.i(TAG, "solve: starting webview challenge attempt=$attempt")
             val solved = try {
                 releaseSolvedViewLocked()
-                clearWebViewCookies()
+                // A clearance Cloudflare planted while the previous interstitial was still
+                // spinning must survive the next attempt: wiping it is exactly what turns one
+                // stalled verification into a failed ladder. Only a cookie-less start is clean.
+                if (!cookies.hasClearance()) clearWebViewCookies()
                 withTimeoutOrNull(SOLVE_TIMEOUT_MILLIS) { runChallenge() } != null
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -302,6 +307,15 @@ internal class NewxtoonClearance(
                 cookies.harvest()
                 solvedAtMillis = System.currentTimeMillis()
                 replayRefused = false
+                return true
+            }
+            // Cloudflare plants a usable cf_clearance while the interstitial is still spinning,
+            // so an attempt that timed out may already have earned one. Adopt it through the
+            // replay browser — the first fetch proves it — instead of wiping it and re-rolling.
+            if (cookies.hasClearance() && runReplayViewLocked()) {
+                Log.i(TAG, "solve: adopted clearance planted during attempt=$attempt")
+                cookies.markVerified()
+                cookies.harvest()
                 return true
             }
             // A single stalled verification does not mean the next one will stall too; the
