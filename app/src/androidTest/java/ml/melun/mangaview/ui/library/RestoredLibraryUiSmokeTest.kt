@@ -9,6 +9,7 @@ import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import ml.melun.mangaview.activity.MainActivity
+import ml.melun.mangaview.viewer.sourceChipDescription
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -217,13 +218,14 @@ class RestoredLibraryUiSmokeTest {
     }
 
     private fun ensureNtkSelected(device: UiDevice) {
-        if (device.findObject(By.desc("NTK")) != null) return
-        val current = device.findObject(By.desc("WFWF")) ?: device.findObject(By.desc("뉴엑스툰"))
+        if (device.findObject(By.desc(sourceChipDescription("NTK"))) != null) return
+        val current = device.findObject(By.desc(sourceChipDescription("WFWF")))
+            ?: device.findObject(By.desc(sourceChipDescription("뉴엑스툰")))
         assertNotNull("No provider selector is visible", current)
         current.click()
         assertNotNull("Source picker did not open", device.wait(Until.findObject(By.text("사이트 선택")), TIMEOUT))
         assertTrue("NTK row was not present and stable in the open source picker", selectNtkFromPicker(device))
-        assertNotNull("Could not switch to NTK", device.wait(Until.findObject(By.desc("NTK")), TIMEOUT))
+        assertNotNull("Could not switch to NTK", device.wait(Until.findObject(By.desc(sourceChipDescription("NTK"))), TIMEOUT))
     }
 
     /** Bounded within one [TIMEOUT]: fresh lookup, two stationary non-empty bounds, then a coordinate tap. */
@@ -234,7 +236,7 @@ class RestoredLibraryUiSmokeTest {
         while (SystemClock.uptimeMillis() < deadline) {
             try {
                 freshAccessibility()
-                if (device.findObject(By.desc("NTK")) != null) return true
+                if (device.findObject(By.desc(sourceChipDescription("NTK"))) != null) return true
                 if (device.findObject(By.text("사이트 선택")) == null) return false
                 val bounds = device.findObject(By.text("NTK"))?.visibleBounds
                 stationary = if (bounds != null && !bounds.isEmpty && bounds == previous) stationary + 1 else 0
@@ -251,7 +253,7 @@ class RestoredLibraryUiSmokeTest {
             }
             SystemClock.sleep(100)
         }
-        return device.findObject(By.desc("NTK")) != null
+        return device.findObject(By.desc(sourceChipDescription("NTK"))) != null
     }
 
     private fun openGenreTab(device: UiDevice, kind: String) {

@@ -15,6 +15,7 @@ import ml.melun.mangaview.activity.MainActivity
 import ml.melun.mangaview.ui.library.LibraryContent
 import ml.melun.mangaview.ui.library.LibraryState
 import ml.melun.mangaview.ui.library.LibraryViewModel
+import ml.melun.mangaview.viewer.sourceChipDescription
 import org.json.JSONObject
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,9 +41,10 @@ class NewxtoonDetailStatusUiDeviceTest {
             val targetLabel = "뉴엑스툰"
             val deadline = SystemClock.elapsedRealtime() + 30_000
             while (SystemClock.elapsedRealtime() < deadline) {
-                val shown = state().sources.map { it.label }.firstOrNull { device.findObject(By.desc(it)) != null }
+                val shown = state().sources.map { it.label }
+                    .firstOrNull { device.findObject(By.desc(sourceChipDescription(it))) != null }
                 if (shown == targetLabel) break
-                val chip = shown?.let { device.findObject(By.desc(it)) } ?: break
+                val chip = shown?.let { device.findObject(By.desc(sourceChipDescription(it))) } ?: break
                 (clickableAncestor(chip) ?: chip).click()
                 SystemClock.sleep(500)
             }

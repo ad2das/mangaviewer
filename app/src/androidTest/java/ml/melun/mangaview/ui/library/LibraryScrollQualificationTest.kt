@@ -18,6 +18,7 @@ import java.io.File
 import java.security.MessageDigest
 import ml.melun.mangaview.activity.MainActivity
 import ml.melun.mangaview.viewer.ViewerWindowFrameRecorder
+import ml.melun.mangaview.viewer.sourceChipDescription
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Rule
@@ -145,13 +146,13 @@ class LibraryScrollQualificationTest {
             fun currentSelector(): UiObject2? {
                 freshAccessibility()
                 for (label in labels) {
-                    device.findObject(By.desc(label))?.let { return it }
+                    device.findObject(By.desc(sourceChipDescription(label)))?.let { return it }
                 }
                 return null
             }
 
             freshAccessibility()
-            if (device.findObject(By.desc(chip)) != null) return
+            if (device.findObject(By.desc(sourceChipDescription(chip))) != null) return
             val current = currentSelector()
             if (current == null) {
                 failures += "no source selector is visible"
@@ -168,7 +169,7 @@ class LibraryScrollQualificationTest {
                 return
             }
             target.click()
-            if (device.wait(Until.findObject(By.desc(chip)), READY_TIMEOUT) == null) {
+            if (device.wait(Until.findObject(By.desc(sourceChipDescription(chip))), READY_TIMEOUT) == null) {
                 failures += "source $chip was not selected"
                 return
             }
@@ -177,7 +178,7 @@ class LibraryScrollQualificationTest {
                 failures += "source picker overlay remained open after selecting $chip"
             }
             freshAccessibility()
-            val visible = labels.filter { device.findObject(By.desc(it)) != null }
+            val visible = labels.filter { device.findObject(By.desc(sourceChipDescription(it))) != null }
             if (visible != listOf(chip)) {
                 failures += "active selector is $visible instead of [$chip]"
             }

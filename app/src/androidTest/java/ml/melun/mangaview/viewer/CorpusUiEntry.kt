@@ -16,6 +16,7 @@ import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import ml.melun.mangaview.activity.MainActivity
 import ml.melun.mangaview.activity.EngineViewerScreen
+import ml.melun.mangaview.app.SearchMode
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.source.SourceSeries
@@ -67,7 +68,7 @@ internal class CorpusUiEntry(
         val shown = shownChipLabel() ?: failSourceChip("no provider chip visible", targetLabel)
         if (shown != targetLabel) {
             clearUiAutomationCache()
-            val chip = requireNotNull(device.findObject(By.desc(shown)))
+            val chip = requireNotNull(device.findObject(By.desc(sourceChipDescription(shown))))
             (clickableAncestor(chip) ?: chip).click()
             check(device.wait(Until.hasObject(By.text("사이트 선택")), 5_000))
             val choice = requireNotNull(device.wait(Until.findObject(By.text(targetLabel)), 5_000))
@@ -78,19 +79,31 @@ internal class CorpusUiEntry(
         check(state().selectedSourceId == series.id.sourceId) { "UI source selection failed" }
         timing.mark("source-selected")
         requireNotNull(device.wait(Until.findObject(By.desc("하단 검색")), 5_000)).click()
+        val source = state().sources.single { it.id == series.id.sourceId }
         val desiredKind = if (kind == SeriesKind.COMIC) "만화" else "웹툰"
-        if (state().sources.single { it.id == series.id.sourceId }.distinguishesKinds) {
+        if (source.distinguishesKinds) {
             repeat(3) {
+                clearUiAutomationCache()
                 val node = requireNotNull(device.wait(Until.findObject(By.descStartsWith("검색 범위:")), 5_000))
-                if (node.contentDescription != "검색 범위: $desiredKind") node.click()
+                if (node.contentDescription != "검색 범위: $desiredKind") {
+                    node.click()
+                    SystemClock.sleep(120)
+                }
             }
         }
-        val field = requireNotNull(device.wait(Until.findObject(By.descStartsWith("검색 항목:")), 5_000))
-        if (field.contentDescription != "검색 항목: 제목") field.click()
+        // The search form only exposes the 검색 항목 control for FIELDS sources; TITLE/COMBINED
+        // sources always search titles (see SearchScreen and LibrarySearchController).
+        if (source.searchMode == SearchMode.FIELDS) {
+            clearUiAutomationCache()
+            val field = requireNotNull(device.wait(Until.findObject(By.descStartsWith("검색 항목:")), 5_000))
+            if (field.contentDescription != "검색 항목: 제목") field.click()
+        }
         val input = requireNotNull(device.wait(Until.findObject(By.clazz("android.widget.EditText")), 5_000))
-        input.text = series.title
+        val searchQuery = siteSearchQuery(series.title)
+        if (searchQuery != series.title) timing.mark("search-query-normalized")
+        input.text = searchQuery
         timing.mark("search-form-filled")
-        await { it.query == series.title }
+        await { it.query == searchQuery }
         val inputBounds = input.visibleBounds
         val submit = device.findObjects(By.text("검색")).mapNotNull(::clickableAncestor)
             .filter { it.visibleBounds.centerY() in inputBounds.top..inputBounds.bottom }
@@ -107,6 +120,7 @@ internal class CorpusUiEntry(
         val found = (state().content as? LibraryContent.Series)?.items ?: error("UI search failed: ${state().content}")
         check(found.count { it.title == series.title } == 1 && found.any { it.id == series.id }) {
             "UI search cannot uniquely identify sampled series ${series.id}; results=${found.size}; " +
+                "submitted=${state().submittedQuery}; " +
                 "titleMatches=${found.filter { it.title == series.title }.map { it.id }}; " +
                 "identityTitles=${found.filter { it.id == series.id }.map { it.title }}"
         }
@@ -216,7 +230,7 @@ internal class CorpusUiEntry(
     /** The provider chip currently rendered by the library, or null when no known chip is visible. */
     private fun shownChipLabel(): String? = state().sources.map { it.label }.firstOrNull { label ->
         clearUiAutomationCache()
-        device.findObject(By.desc(label)) != null
+        device.findObject(By.desc(sourceChipDescription(label))) != null
     }
 
     private fun clearUiAutomationCache() {
@@ -287,6 +301,15 @@ internal class CorpusUiEntry(
         while (current != null && !current.isClickable) current = current.parent
         return current
     }
+
+    /**
+     * Provider search endpoints evaluate boolean operators ("!", "+", "-", ...). Live probing showed
+     * wfwf returns zero rows for a false operator query such as "마왕의 딸은 너무 착해!!" while the
+     * same title without the operator characters finds its catalog series. The sample title remains
+     * the identity used for verification; only the submitted query is stripped.
+     */
+    private fun siteSearchQuery(title: String): String =
+        title.filterNot { it in "!+-><()~*\"@" }.trim().ifEmpty { title }
 
     private fun awaitStationaryRow(title: String): UiObject2 {
         val exactRow = Regex("(?s)${Regex.escape(title)}(?:\\n.*)?")
