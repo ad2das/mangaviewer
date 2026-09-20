@@ -93,6 +93,93 @@ class ViewerContentPipelineTest {
     }
 
     @Test
+    fun aDemandUpdateThatArrivesBeforeItsManifestIsReplayed() = runTest {
+        val fixture = PipelineFixture()
+        val raw = FakeRawPort(fixture)
+        val pipeline = fixture.pipeline(testScheduler, coroutineContext, raw, FakeDecoder(), FakeUploader())
+        try {
+            // The demand channel is conflated and can be served before the bounded commands
+            // channel delivers the matching register; the update must wait for its generation.
+            pipeline.updateDemand(fixture.demand().copy(generation = 2L), 1080, 2138)
+            runCurrent()
+            assertEquals(0, raw.fetchCount.get())
+            pipeline.registerManifest(2L, fixture.manifest)
+            advanceUntilIdle()
+            assertEquals(1, raw.fetchCount.get())
+        } finally { pipeline.closeAndJoin() }
+    }
+
+    @Test
+    fun aHardDemandPreemptsTheSingleColdFetchSlot() = runTest {
+        val fixture = PipelineFixture(pageCount = 2)
+        val gate = CompletableDeferred<Unit>()
+        val background = fixture.manifest.pages[0].id
+        val visible = fixture.manifest.pages[1].id
+        val raw = object : RawPagePort {
+            val pages = mutableListOf<PageId>()
+            override suspend fun find(pageId: PageId): EncodedPageRef? = null
+            override suspend fun fetch(pageId: PageId, priority: PageFetchPriority,
+                responseStarted: () -> Unit): EncodedPageRef {
+                pages += pageId
+                if (pages.size == 1) { responseStarted(); gate.await() }
+                return fixture.encoded(pageId)
+            }
+        }
+        val pipeline = fixture.pipeline(testScheduler, coroutineContext, raw, FakeDecoder(), FakeUploader())
+        try {
+            pipeline.registerManifest(1L, fixture.manifest)
+            pipeline.updateDemand(
+                fixture.demand().copy(
+                    demands = listOf(
+                        PageDemand(background, DemandClass.BEHIND, FixedPx.fromPixels(10_000), 0, null),
+                    ),
+                ),
+                1080, 2138,
+            )
+            runCurrent()
+            assertEquals(listOf(background), raw.pages)
+            // A hard-lane demand must displace the occupying background fetch even before the
+            // network ramp opens past its single cold slot.
+            pipeline.updateDemand(
+                fixture.demand().copy(
+                    demands = listOf(
+                        PageDemand(background, DemandClass.BEHIND, FixedPx.fromPixels(10_000), 0, null),
+                        PageDemand(visible, DemandClass.VISIBLE, FixedPx.ZERO, 1,
+                            SourceRangeFraction(0, SemanticViewportAnchor.Q32_ONE)),
+                    ),
+                ),
+                1080, 2138,
+            )
+            advanceUntilIdle()
+            assertTrue("visible page never fetched", visible in raw.pages)
+            assertEquals("visible page did not take the freed slot first", visible, raw.pages[1])
+        } finally { gate.complete(Unit); pipeline.closeAndJoin() }
+    }
+
+    @Test
+    fun aWorkerCompletionDuringShutdownIsReleasedNotThrown() = runTest {
+        val fixture = PipelineFixture()
+        val gate = CompletableDeferred<Unit>()
+        val raw = object : RawPagePort {
+            override suspend fun find(pageId: PageId): EncodedPageRef? = null
+            override suspend fun fetch(pageId: PageId, priority: PageFetchPriority,
+                responseStarted: () -> Unit): EncodedPageRef {
+                gate.await()
+                return fixture.encoded(pageId)
+            }
+        }
+        val pipeline = fixture.pipeline(testScheduler, coroutineContext, raw, FakeDecoder(), FakeUploader())
+        pipeline.registerManifest(1L, fixture.manifest)
+        pipeline.updateDemand(fixture.demand(), 1080, 2138)
+        runCurrent()
+        val closing = launch { pipeline.closeAndJoin() }
+        runCurrent()
+        // The fetch resolves after the channel closed; its finish must not surface as a crash.
+        gate.complete(Unit)
+        closing.join()
+    }
+
+    @Test
     fun closeAndJoinWaitsForEveryPhysicallyRunningWorker() = runTest {
         val fixture = PipelineFixture()
         val gate = CompletableDeferred<Unit>()

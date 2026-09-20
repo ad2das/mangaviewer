@@ -43,6 +43,7 @@ internal class SessionWorkSet(
     fun reconcile(demands: List<SessionDemand<*>>) {
         checkOwner()
         if (closed) return
+        reapFinished()
         desired = demands.associateBy { it.request.key }
         entries.values.toList().forEach { entry ->
             val demand = desired[entry.key]
@@ -60,6 +61,7 @@ internal class SessionWorkSet(
 
     fun retryFailures() {
         checkOwner()
+        reapFinished()
         entries.values.filter { it.failed }.forEach {
             if (it.job?.isCompleted == true) entries.remove(it.key) else it.retryRequested = true
         }
@@ -150,8 +152,19 @@ internal class SessionWorkSet(
         }
     }
 
+    // A LAZY job cancelled between the isActive check and start() completes without ever running
+    // run(), so finish() never removes its entry. Any completed job that isn't failed is such a
+    // zombie — completed jobs that ran always removed themselves unless they failed.
+    private fun reapFinished() {
+        entries.values.toList().forEach { entry ->
+            if (entry.job?.isCompleted == true && (!entry.failed || entry.retiring)) {
+                entries.remove(entry.key)
+            }
+        }
+    }
+
     private fun retire(entry: Entry) {
-        if (entry.failed && entry.job?.isCompleted == true) {
+        if (entry.job?.isCompleted == true) {
             entries.remove(entry.key)
             return
         }

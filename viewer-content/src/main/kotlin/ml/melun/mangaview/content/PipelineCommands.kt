@@ -1,6 +1,7 @@
 package ml.melun.mangaview.content
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.channels.SendChannel
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
@@ -63,6 +64,10 @@ internal fun PipelineCommand.releaseUndelivered() {
 internal suspend fun SendChannel<PipelineCommand>.sendCompletion(command: PipelineCommand) {
     try {
         send(command)
+    } catch (_: ClosedSendChannelException) {
+        // The actor already retired every record during joined shutdown; a late worker result is
+        // only released, never delivered.
+        command.releaseUndelivered()
     } catch (failure: Throwable) {
         command.releaseUndelivered()
         throw failure

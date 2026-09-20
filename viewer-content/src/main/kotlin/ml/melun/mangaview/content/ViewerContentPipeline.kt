@@ -60,12 +60,15 @@ class ViewerContentPipeline(
     private var networkRampOpen = false
     private var operationToken = 1L
     private val retryCoordinator = PipelineRetryCoordinator(scope, clock) {
-        commands.send(PipelineCommand.RetryDue)
+        commands.sendCompletion(PipelineCommand.RetryDue)
     }
     private val episodeWork = PipelineEpisodeWork(
         scope, dispatchers.network, commands, episodeManifests, retryCoordinator, clock, sink,
     )
     private var memoryPressure = false
+    // A demand update can cross ahead of its generation's manifest register on the two channels;
+    // stash the newest one instead of dropping the whole demand set for that generation.
+    private var pendingDemand: PipelineCommand.UpdateDemand? = null
     private val pressureRequested = AtomicBoolean(false)
     private val latestSnapshot = AtomicReference(EMPTY_CONTENT_PIPELINE_SNAPSHOT)
     private val actor = scope.launch { commandLoop() }
@@ -181,10 +184,20 @@ class ViewerContentPipeline(
         command.manifest.pages.forEach { page ->
             pages.putIfAbsent(page.id, PageRecord(page))
         }
+        pendingDemand?.takeIf { it.snapshot.generation == generation }?.let(::applyDemand)
+        pendingDemand = null
     }
 
     private fun updateDemand(command: PipelineCommand.UpdateDemand) {
+        if (command.snapshot.generation > generation) {
+            pendingDemand = command
+            return
+        }
         if (command.snapshot.generation != generation) return
+        applyDemand(command)
+    }
+
+    private fun applyDemand(command: PipelineCommand.UpdateDemand) {
         displayWidthPx = command.displayWidthPx
         viewportHeightPx = command.viewportHeightPx
         episodeWork.demand(generation, command.snapshot.nextEpisode)
@@ -270,7 +283,7 @@ class ViewerContentPipeline(
                         ))
                     }
                 } ?: return@launch
-                commands.send(PipelineCommand.FetchFinished(
+                commands.sendCompletion(PipelineCommand.FetchFinished(
                     operationGeneration, pageId, token, result,
                 ))
             }
@@ -284,7 +297,10 @@ class ViewerContentPipeline(
         if (networkCapacity() <= 0 && pages.values.any {
                 it.raw == RawState.Absent && it.demand?.demandClass?.let(::hardLane) == true
             }) episodeWork.cancel()
-        preemptObsoleteFetch(pages.values, networkLimit)
+        // Before the first verified response the lane holds a single slot; a hard demand must
+        // still preempt the occupying background fetch, so the effective limit applies, not the
+        // configured one.
+        preemptObsoleteFetch(pages.values, if (networkRampOpen) networkLimit else 1)
     }
 
     private fun scheduleDecodeLane(hard: Boolean) {
