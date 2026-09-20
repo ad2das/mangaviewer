@@ -31,8 +31,16 @@ internal sealed interface PipelineCommand {
         val token: Long,
     ) : PipelineCommand
     data class FetchStopped(val generation: Long, val pageId: PageId, val token: Long) : PipelineCommand
+    data class FetchTimedOut(val generation: Long, val pageId: PageId, val token: Long) : PipelineCommand
     data class DecodeStopped(val generation: Long, val pageId: PageId, val token: Long,
         val upload: Boolean = false) : PipelineCommand
+    data class DecodeTimedOut(
+        val generation: Long,
+        val pageId: PageId,
+        val token: Long,
+        val phase: PipelineFailurePhase,
+    ) : PipelineCommand
+    data class EpisodeTimedOut(val generation: Long, val token: Long) : PipelineCommand
     data class DecodeFinished(
         val generation: Long,
         val pageId: PageId,

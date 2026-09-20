@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.view.Gravity
+import android.view.MotionEvent
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -41,6 +42,16 @@ internal class ViewerLoadingOverlay(context: Context) : FrameLayout(context) {
             setPadding(0, (12 * density).toInt(), 0, 0)
         })
         addView(content, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+    }
+
+    /**
+     * A new gesture after the first complete frame must reach the reader immediately, while a
+     * gesture that started on the loading UI stays owned here so it cannot join the reader
+     * halfway through. The fade itself is visual only.
+     */
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (completing && event.actionMasked == MotionEvent.ACTION_DOWN) return false
+        return super.dispatchTouchEvent(event)
     }
 
     /** Cross-fades into the first complete frame; touches are released immediately. */

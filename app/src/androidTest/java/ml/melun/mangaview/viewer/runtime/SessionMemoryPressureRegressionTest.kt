@@ -33,6 +33,7 @@ class SessionMemoryPressureRegressionTest {
             "session-memory-${System.nanoTime()}").also { check(it.mkdirs()) }
         val memory = QualificationMemory(instrumentation, directory)
         var testFailure: Throwable? = null
+        var memoryErrors: List<String>? = null
         ActivityScenario.launch(SessionMemoryProbeActivity::class.java).use { scenario ->
             lateinit var probe: SessionMemoryProbeActivity
             scenario.onActivity { probe = it }
@@ -42,6 +43,7 @@ class SessionMemoryPressureRegressionTest {
                 repeat(3) { cycle -> verifyCycle(probe, directory, memory, cycle) }
                 assertEquals(3, probe.fixture.manifestCalls.get())
                 val violations = memory.finish()
+                memoryErrors = violations
                 assertTrue(violations.joinToString("\n"), violations.isEmpty())
             } catch (problem: Throwable) {
                 testFailure = problem
@@ -50,14 +52,18 @@ class SessionMemoryPressureRegressionTest {
                 lateinit var closed: CountDownLatch
                 instrumentation.runOnMainSync { closed = probe.closeCycle() }
                 check(closed.await(15, TimeUnit.SECONDS)) { "Fixture cleanup did not complete" }
-                val memoryErrors = memory.finish()
+                // finish() is single-shot: only drain here when the body did not already finish.
+                val errors = memoryErrors ?: runCatching { memory.finish() }.getOrElse { problem ->
+                    testFailure = testFailure ?: problem
+                    listOf(problem.message ?: problem.toString())
+                }
                 directory.resolve("regression.json").writeText(JSONObject()
                     .put("mode", "FIXTURE_REGRESSION_NO_CORPUS_CREDIT")
                     .put("cycles", cycles).put("fixtureManifestCalls", probe.fixture.manifestCalls.get())
                     .put("fixtureFetchCalls", probe.fixture.fetchCalls.get())
                     .put("memoryBaseline", "First complete close; identical fixture files and empty host in all three cycles")
                     .put("testFailure", testFailure?.stackTraceToString())
-                    .put("memoryViolations", JSONArray(memoryErrors))
+                    .put("memoryViolations", JSONArray(errors))
                     .put("failures", JSONArray(probe.failures.map(Throwable::stackTraceToString))).toString(2))
             }
         }
@@ -103,7 +109,12 @@ class SessionMemoryPressureRegressionTest {
             instrumentation.runOnMainSync { trimmed = requireNotNull(probe.runtime).resourceSnapshot() }
             verifyPreserved(probe, pixels, position, bounds, directory, cycle)
         } finally { pixels.recycle() }
-        if (cycle > 0) memory.capture("active")
+        if (cycle > 0) {
+            memory.capture("active")
+            // Complete the active sample before the close boundary, otherwise it is discarded
+            // as "active-overlaps-close" and the policy reports the stage as unmeasured.
+            memory.awaitActiveForTest()
+        }
         finishCycle(probe, before, trimmed, memory, cycle)
     }
 
@@ -138,10 +149,6 @@ class SessionMemoryPressureRegressionTest {
                 .put("terminal", snapshotJson(terminal)))
         }
         memory.capture(if (cycle == 0) "before-viewer" else "after-viewer")
-        if (cycle > 0) {
-            val violations = memory.finish()
-            assertTrue(violations.joinToString("\n"), violations.isEmpty())
-        }
     }
 
     private fun quiet(value: ContentPipelineSnapshot): Boolean = value.activeFetches == 0 &&

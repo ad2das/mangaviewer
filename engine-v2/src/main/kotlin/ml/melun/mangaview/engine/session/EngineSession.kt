@@ -157,8 +157,17 @@ class EngineSession(
         if (sample.deltaScreenUnits == 0L) {
             return listOf(appliedReceipt(sample, acceptedAt, clockNanos, geometryRevisionValue))
         }
+        // A stalled geometry must not let queued movement grow without bound: the oldest
+        // unapplied samples are cancelled so the newest window of input stays responsive.
+        val receipts = mutableListOf<InputReceipt>()
+        while (pendingInputs.size >= MAX_PENDING_INPUTS) {
+            val dropped = pendingInputs.removeFirst()
+            receipts += cancelledReceipt(
+                dropped.sample, dropped.acceptedAt, dropped.applied, clockNanos, geometryRevisionValue,
+            )
+        }
         pendingInputs.addLast(pending)
-        val receipts = replayPending(setOf(sample.sequence)).toMutableList()
+        receipts += replayPending(setOf(sample.sequence))
         if (pendingInputs.any { it.sample.sequence == sample.sequence } &&
             receipts.none { it.sample.sequence == sample.sequence }
         ) {
@@ -424,6 +433,12 @@ private fun acceptedAt(eventTimeNanos: Long, clockNanos: () -> Long): Long {
     require(eventTimeNanos <= now) { "Input event time cannot be in the future" }
     return now
 }
+
+/**
+ * The queued movement bound. A burst that the geometry can eventually drain (a held opening, a
+ * slow document) keeps its full FIFO contract; beyond this only the newest window is retained.
+ */
+internal const val MAX_PENDING_INPUTS = 1_024
 
 private fun closedSessionSnapshot(
     sessionId: Long, generationValue: Long, geometry: DocumentGeometry, geometryRevisionValue: Long,

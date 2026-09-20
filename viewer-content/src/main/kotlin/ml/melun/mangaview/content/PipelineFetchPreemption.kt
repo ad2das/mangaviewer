@@ -19,10 +19,30 @@ internal fun acceptFetchStopped(
     command: PipelineCommand.FetchStopped,
     generation: Long,
     pages: Map<PageId, PageRecord>,
+    retries: PipelineRetryCoordinator,
+    sink: ContentPipelineSink,
 ) {
     val page = pages[command.pageId] ?: return
-    val active = page.raw as? RawState.Fetching ?: return
-    if (command.generation != generation || active.token != command.token || !active.cancelRequested) return
-    check(active.job.isCompleted) { "Fetch capacity released before worker completion" }
-    page.raw = RawState.Absent
+    if (command.generation != generation) return
+    when (val active = page.raw) {
+        is RawState.Fetching -> {
+            if (active.token != command.token || !active.cancelRequested) return
+            check(active.job.isCompleted) { "Fetch capacity released before worker completion" }
+            page.raw = RawState.Absent
+        }
+        is RawState.Stranded -> {
+            if (active.token != command.token) return
+            check(active.job.isCompleted) { "Stranded fetch released before worker completion" }
+            if (active.cancelRequested) {
+                page.raw = RawState.Absent
+            } else {
+                // The straggler finished after its deadline; the page is back to single-flight.
+                handleFetchFailure(
+                    page, command.pageId, PortSuspensionTimeoutException("fetch"),
+                    generation, retries, sink,
+                )
+            }
+        }
+        else -> Unit
+    }
 }

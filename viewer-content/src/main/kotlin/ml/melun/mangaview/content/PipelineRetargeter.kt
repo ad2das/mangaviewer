@@ -22,10 +22,21 @@ internal fun reviveFailedOperationOnPromotion(
     page: PageRecord,
     previous: DemandTarget?,
     current: DemandTarget,
+    retries: PipelineRetryCoordinator,
 ) {
     if (previous != null && current.demandClass.ordinal >= previous.demandClass.ordinal) return
     if (page.raw == RawState.Failed) page.raw = RawState.Absent
+    if (page.raw is RawState.WaitingRetry) {
+        retries.remove(page.page.id)
+        page.raw = RawState.Absent
+    }
     if (page.decode == DecodeState.Failed) page.decode = DecodeState.Idle
+    if (page.decode is DecodeState.WaitingRetry) {
+        retries.remove(page.page.id)
+        page.decode = DecodeState.Idle
+    }
+    page.fetchFailureReported = false
+    page.decodeFailureReported = false
 }
 
 private fun shouldRetarget(activeHardLane: Boolean, target: DemandTarget?): Boolean =

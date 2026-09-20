@@ -13,6 +13,8 @@ internal data class PageRecord(
     var demand: DemandTarget? = null,
     var fetchFailures: Int = 0,
     var decodeFailures: Int = 0,
+    var fetchFailureReported: Boolean = false,
+    var decodeFailureReported: Boolean = false,
     var residents: List<TextureRef> = emptyList(),
 )
 
@@ -26,6 +28,11 @@ internal sealed interface RawState {
     data object Absent : RawState
     data class Fetching(val token: Long, val job: Job, val cancelRequested: Boolean = false) : RawState
     data class Verified(val encoded: EncodedPageRef) : RawState
+    /**
+     * A fetch that outlived its deadline. The lane slot is released, but the physical call keeps
+     * the page's single-flight ownership until it completes, so a retry can never overlap it.
+     */
+    data class Stranded(val token: Long, val job: Job, val cancelRequested: Boolean) : RawState
     data class WaitingRetry(val retryAtMillis: Long) : RawState
     data object Failed : RawState
 }

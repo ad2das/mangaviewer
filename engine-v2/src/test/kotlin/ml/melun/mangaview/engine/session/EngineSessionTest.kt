@@ -574,6 +574,21 @@ class EngineSessionTest {
         assertTrue(duplicate.receipts.isEmpty())
     }
 
+    @Test
+    fun stalledGeometryCannotGrowThePendingInputQueueWithoutBound() {
+        val session = EngineSession(21L, episode, EngineViewport(100, 100)) { 100L }
+        var update = session.dispatch(SessionEvent.Input(sample(1L, 10L)))
+        val cancelled = mutableListOf<Long>()
+        for (sequence in 2L..MAX_PENDING_INPUTS + 1L) {
+            update = session.dispatch(SessionEvent.Input(sample(sequence, 10L)))
+            update.receipts.filter { it.outcome == InputOutcome.CANCELLED }
+                .forEach { cancelled += it.sample.sequence }
+        }
+
+        assertEquals(MAX_PENDING_INPUTS, update.snapshot.pendingInputCount)
+        assertEquals("only the oldest queued sample is dropped", listOf(1L), cancelled)
+    }
+
     private fun sample(sequence: Long, delta: Long): InputSample = InputSample(
         sequence = sequence,
         gestureId = sequence,

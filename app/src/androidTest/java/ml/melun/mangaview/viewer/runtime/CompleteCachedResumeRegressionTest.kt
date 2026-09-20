@@ -66,11 +66,17 @@ class CompleteCachedResumeRegressionTest {
                 assertPinnedBodySurvivesReplacement(probe)
                 instrumentation.runOnMainSync { probe.recreateSurface() }
                 awaitReadable(probe, requireSnapshot = false)
-                val resumed = capture(bounds(probe))
+                val resumedCapture = captureDisplayedSourcePixels(bounds(probe), initial, directory)
+                val resumed = resumedCapture.image
                 try {
                     assertSourcePixels(resumed, initial, bounds)
-                    assertTrue("Cached resume changed actual viewport pixels", first.sameAs(resumed))
                     save(resumed, directory.resolve("second-complete-cache-session.png"))
+                    // The edge-to-edge surface draws under the system gesture bar, whose home indicator
+                    // animates; compare app content only, not the system UI overlay band.
+                    val systemBottom = probe.systemUiBottomInset()
+                    val diff = pixelDiffSummary(first, resumed, systemBottom)
+                    assertTrue("Cached resume changed actual viewport pixels (ignoredBottom=$systemBottom): $diff",
+                        diff.isEmpty())
                 } finally { resumed.recycle() }
                 assertEquals("Cached resume called prepare", 1, probe.fixture.prepareCalls.get())
                 assertEquals("Cached resume called manifest", 1, probe.fixture.images.manifestCalls.get())
@@ -81,6 +87,7 @@ class CompleteCachedResumeRegressionTest {
                     .put("mode", "FIXTURE_REGRESSION_NO_CORPUS_CREDIT")
                     .put("position", initial.toString()).put("exactPixelsEqual", true)
                     .put("fixtureCacheEvictionReplacementAndSurfaceRecreation", true)
+                    .put("resumedDisplayAttempts", resumedCapture.attempts)
                     .put("sourcePrepareCalls", probe.fixture.prepareCalls.get())
                     .put("sourceManifestCalls", probe.fixture.images.manifestCalls.get())
                     .put("sourceFetchCalls", probe.fixture.images.fetchCalls.get())
@@ -162,14 +169,51 @@ class CompleteCachedResumeRegressionTest {
 
     private fun assertSourcePixels(image: Bitmap, position: ReadingPosition, bounds: Rect) {
         assertTrue(137 + bounds.height() < bounds.width() * 4)
-        for (y in listOf(image.height / 4, image.height / 2, image.height * 3 / 4)) {
-            val row = ((position.offsetInPageUnits.toDouble() / FixedPx.UNITS_PER_PIXEL + y) *
-                256 / bounds.width()).toInt()
+        sourceSampleRows(image, position, bounds).forEach { (y, row) ->
             assertTrue(row % 128 in 2..125)
             assertEquals("Wrong source page or row at y=$y", SessionMemoryFixture.color(2, row),
                 image.getPixel(image.width / 2, y))
         }
     }
+
+    private fun sourceSampleRows(image: Bitmap, position: ReadingPosition, bounds: Rect): List<Pair<Int, Int>> =
+        listOf(image.height / 4, image.height / 2, image.height * 3 / 4).map { y ->
+            y to ((position.offsetInPageUnits.toDouble() / FixedPx.UNITS_PER_PIXEL + y) *
+                256 / bounds.width()).toInt()
+        }
+
+    private fun sourcePixelsMatch(image: Bitmap, position: ReadingPosition, bounds: Rect): Boolean =
+        sourceSampleRows(image, position, bounds).all { (y, row) ->
+            row % 128 in 2..125 && SessionMemoryFixture.color(2, row) == image.getPixel(image.width / 2, y)
+        }
+
+    /**
+     * Frame evidence can outrun the compositor right after the surface is re-attached, so keep
+     * sampling the real display until the recreated surface shows source pixels. A timeout saves the
+     * last capture for diagnosis and hands it to the assertions unchanged.
+     */
+    private fun captureDisplayedSourcePixels(
+        bounds: Rect,
+        position: ReadingPosition,
+        directory: File,
+    ): DisplayedCapture {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        var attempts = 1
+        var image = capture(bounds)
+        while (!sourcePixelsMatch(image, position, bounds)) {
+            if (System.nanoTime() >= deadline) {
+                save(image, directory.resolve("second-complete-cache-session-timeout.png"))
+                return DisplayedCapture(image, attempts)
+            }
+            image.recycle()
+            Thread.sleep(32)
+            image = capture(bounds)
+            attempts++
+        }
+        return DisplayedCapture(image, attempts)
+    }
+
+    private data class DisplayedCapture(val image: Bitmap, val attempts: Int)
 
     private fun capture(bounds: Rect): Bitmap {
         val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
@@ -181,6 +225,36 @@ class CompleteCachedResumeRegressionTest {
 
     private fun save(image: Bitmap, file: File) = file.outputStream().use {
         check(image.compress(Bitmap.CompressFormat.PNG, 100, it))
+    }
+
+    private fun pixelDiffSummary(expected: Bitmap, actual: Bitmap, ignoreBottom: Int = 0): String {
+        if (expected.width != actual.width || expected.height != actual.height) {
+            return "size ${expected.width}x${expected.height} vs ${actual.width}x${actual.height}"
+        }
+        val comparableHeight = (expected.height - ignoreBottom).coerceAtLeast(0)
+        var count = 0
+        var firstX = -1
+        var firstY = -1
+        var firstExpected = 0
+        var firstActual = 0
+        for (y in 0 until comparableHeight) {
+            for (x in 0 until expected.width) {
+                val wanted = expected.getPixel(x, y)
+                val shown = actual.getPixel(x, y)
+                if (wanted != shown) {
+                    if (count == 0) {
+                        firstX = x
+                        firstY = y
+                        firstExpected = wanted
+                        firstActual = shown
+                    }
+                    count++
+                }
+            }
+        }
+        if (count == 0) return ""
+        return "diffPixels=$count firstAt=($firstX,$firstY) expected=${Integer.toHexString(firstExpected)}" +
+            " actual=${Integer.toHexString(firstActual)}"
     }
 
     private fun awaitMain(description: String, condition: () -> Boolean) {

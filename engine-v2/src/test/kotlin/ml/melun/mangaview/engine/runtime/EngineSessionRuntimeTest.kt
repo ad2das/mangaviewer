@@ -1043,6 +1043,37 @@ class EngineSessionRuntimeTest {
         assertEquals(0, coordinator.snapshot().subscribers)
     }
 
+    @Test fun preparedPageMarkersArePrunedWithTheirDocumentMetadata() = runTest {
+        val second = episode.copy(remoteKey = "2")
+        val third = episode.copy(remoteKey = "3")
+        val fourth = episode.copy(remoteKey = "4")
+        val source = Source().apply {
+            pageCount = 6
+            nextEpisode = second
+            followingEpisode = third
+            thirdEpisode = fourth
+        }
+        val (runtime, coordinator) = runtime(source)
+        try {
+            runtime.open()
+            runCurrent()
+            var sequence = 1L
+            repeat(80) {
+                runtime.input(InputSample(sequence++, 1, 0, 400L * 1024L))
+                runCurrent()
+            }
+            val snapshot = runtime.snapshot
+            assertEquals(fourth, snapshot.session.anchor?.pageId?.episodeId)
+            assertTrue("old document metadata must be dropped",
+                snapshot.pages.keys.none { it.episodeId == episode })
+            val prepared = runtime.diagnosticSnapshot().preparedPages
+            assertTrue("prepared markers must follow retained metadata: $prepared vs ${snapshot.pages.size}",
+                prepared <= snapshot.pages.size)
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
     private fun TestScope.runtime(source: Source, receipts: MutableList<InputReceipt> = mutableListOf(),
         failures: MutableList<Throwable> = mutableListOf()): Pair<EngineSessionRuntime, WorkCoordinator> {
         val coordinator = WorkCoordinator(this)
@@ -1062,14 +1093,25 @@ class EngineSessionRuntimeTest {
         var legacyPosition: ReadingPosition? = null
         var nextEpisode: EpisodeId? = null
         var followingEpisode: EpisodeId? = null
+        var thirdEpisode: EpisodeId? = null
         val requestedEpisodes = mutableListOf<EpisodeId>()
         val startedPriorities = mutableMapOf<PageId, WorkPriority>()
 
         fun plan(id: EpisodeId): EpisodeAccessPlan {
             val pages = (0 until pageCount).map { PageSpec(PageId.at(id, it), it) }
             val manifest = EpisodeManifest(id, id.remoteKey, pages,
-                previousEpisodeId = when (id) { nextEpisode -> episode; followingEpisode -> nextEpisode; else -> null },
-                nextEpisodeId = when (id) { episode -> nextEpisode; nextEpisode -> followingEpisode; else -> null })
+                previousEpisodeId = when (id) {
+                    nextEpisode -> episode
+                    followingEpisode -> nextEpisode
+                    thirdEpisode -> followingEpisode
+                    else -> null
+                },
+                nextEpisodeId = when (id) {
+                    episode -> nextEpisode
+                    nextEpisode -> followingEpisode
+                    followingEpisode -> thirdEpisode
+                    else -> null
+                })
             return EpisodeAccessPlan(manifest, "revision", "0".repeat(64), URI("https://test.example/read"), 0,
                 pages.map { PageAccessPlan(it.id, it.ordinal.toString(), listOf(URI("https://test.example/page.png"))) })
         }

@@ -35,11 +35,14 @@ class ViewerLoadingOverlayTest {
         assertEquals(3, fixture.actions.size)
     }
 
-    @Test fun failedInitialLoadKeepsTheUnpreparedReaderDisabled() = onMain {
+    @Test fun failedInitialLoadReleasesTheOverlayAndRetryRearmsIt() = onMain {
         val fixture = Fixture()
         fixture.loading.failed()
-        fixture.gesture()
+        // The failure card lives outside this overlay, so the overlay must get out of the way.
+        assertFalse(fixture.loading.active)
+        fixture.loading.restart()
         assertTrue(fixture.loading.active)
+        fixture.gesture()
         assertTrue(fixture.actions.isEmpty())
         assertEquals(0, fixture.taps)
     }

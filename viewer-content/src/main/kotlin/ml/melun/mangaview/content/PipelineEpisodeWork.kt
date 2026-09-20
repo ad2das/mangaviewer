@@ -18,6 +18,7 @@ internal class PipelineEpisodeWork(
     private val retries: PipelineRetryCoordinator,
     private val clock: PipelineClock,
     private val sink: ContentPipelineSink,
+    private val timeouts: PortTimeouts = PortTimeouts(),
 ) {
     private var generation = 0L
     private var target: EpisodeId? = null
@@ -59,6 +60,9 @@ internal class PipelineEpisodeWork(
         job.invokeOnCompletion {
             scope.launch { sendIfOpen(PipelineCommand.EpisodeStopped(token)) }
         }
+        scope.launchPortWatchdog(job, timeouts.manifestMillis) {
+            sendIfOpen(PipelineCommand.EpisodeTimedOut(generation, token))
+        }
     }
 
     private suspend fun sendIfOpen(command: PipelineCommand) {
@@ -81,12 +85,28 @@ internal class PipelineEpisodeWork(
             completed = true
             sink.emit(ContentPipelineEvent.ManifestReady(generation, it))
         }, onFailure = {
-            failures += 1
-            if (failures <= MAX_FETCH_RETRIES) {
-                retryAt = clock.nowMillis() + retryDelay(failures)
-                retries.episodeRetry(retryAt)
-            } else sink.emit(ContentPipelineEvent.ManifestFailed(generation, old.episode, it))
+            scheduleRetryOrFail(old, it)
         })
+    }
+
+    /** Releases manifest capacity when the port outlives its deadline; the call may still run. */
+    fun timedOut(command: PipelineCommand.EpisodeTimedOut) {
+        val old = active?.takeIf { it.token == command.token } ?: return
+        if (old.cancelRequested || old.result != null ||
+            old.generation != generation || command.generation != generation
+        ) return
+        active = null
+        scheduleRetryOrFail(old, PortSuspensionTimeoutException("manifest"))
+    }
+
+    private fun scheduleRetryOrFail(old: Active, failure: Throwable) {
+        failures += 1
+        if (failures <= MAX_FETCH_RETRIES) {
+            retryAt = clock.nowMillis() + retryDelay(failures)
+            retries.episodeRetry(retryAt)
+        } else {
+            sink.emit(ContentPipelineEvent.ManifestFailed(generation, old.episode, failure))
+        }
     }
 
     private data class Active(

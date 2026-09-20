@@ -18,6 +18,8 @@ internal class RetryQueue {
         entries += entry
     }
 
+    fun remove(pageId: PageId): Boolean = entries.removeAll { it.pageId == pageId }
+
     fun firstAt(): Long? = entries.peek()?.atMillis
 
     fun removeDue(nowMillis: Long): List<PageId> = buildList {

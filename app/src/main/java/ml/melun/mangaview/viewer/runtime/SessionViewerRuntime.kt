@@ -334,6 +334,7 @@ internal class SessionViewerRuntime(
                 event.demandClass == DemandClass.RESUME_ANCHOR ||
                 event.demandClass == DemandClass.VISIBLE
             ) fail(event.cause)
+            is ContentPipelineEvent.PipelineFaulted -> fail(event.cause)
         }
     }
 
@@ -387,6 +388,7 @@ internal class SessionViewerRuntime(
         is ContentPipelineEvent.TextureReady -> generation
         is ContentPipelineEvent.TextureEvicted -> generation
         is ContentPipelineEvent.PageFailed -> generation
+        is ContentPipelineEvent.PipelineFaulted -> generation
     }
 
     private fun persistCurrentPosition() {

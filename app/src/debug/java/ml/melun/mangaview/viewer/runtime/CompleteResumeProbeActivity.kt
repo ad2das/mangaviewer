@@ -3,6 +3,7 @@ package ml.melun.mangaview.viewer.runtime
 import android.app.Activity
 import android.graphics.Rect
 import android.os.Bundle
+import android.view.WindowInsets
 import android.widget.FrameLayout
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -72,6 +73,14 @@ internal class CompleteResumeProbeActivity : Activity() {
         frames.clear()
         host.removeView(surface)
         host.addView(surface, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    /** Screen-space bottom inset covered by system bars/gesture UI (the edge-to-edge surface draws under it). */
+    fun systemUiBottomInset(): Int {
+        val insets = host.rootWindowInsets ?: return 0
+        val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+        val gestures = insets.getInsets(WindowInsets.Type.systemGestures())
+        return maxOf(bars.bottom, gestures.bottom)
     }
 
     fun closeCycle(): CountDownLatch {

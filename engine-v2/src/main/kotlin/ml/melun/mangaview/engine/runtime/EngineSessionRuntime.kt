@@ -29,6 +29,7 @@ data class EngineSessionRuntimeDiagnosticSnapshot(
     val runtime: EngineRuntimeSnapshot,
     val work: SessionWorkOwnership,
     val launchPreparation: EngineLaunchPreparationSnapshot,
+    val preparedPages: Int = 0,
 )
 
 data class EngineVerifiedPageObservation(
@@ -205,7 +206,7 @@ class EngineSessionRuntime(
         return EngineSessionRuntimeDiagnosticSnapshot(snapshot, work.ownership(), EngineLaunchPreparationSnapshot(
             launchGeneration, launchEpisode, launchManifestAcceptedAtNanos,
             Collections.unmodifiableList(launchManifestPageIds.toList()),
-            immutableMap(launchVerifiedPages), launchAllPreparedAtNanos))
+            immutableMap(launchVerifiedPages), launchAllPreparedAtNanos), prepared.size)
     }
 
     fun releaseStartupInput() {
@@ -317,6 +318,9 @@ class EngineSessionRuntime(
         }
         val wantedPages = pagePriorities(state)
         pages = retainPreparedMetadata(state, wantedPages.keys, plans, pages)
+        // Prepared markers only matter while their page metadata is retained; without this the
+        // set keeps growing across a long read that walks past many documents.
+        prepared.retainAll(pages.keys)
         val wantedEpisodes = linkedMapOf<EpisodeId, WorkPriority>()
         state.requiredEpisodes.forEach { wantedEpisodes[it] = WorkPriority.FOCUS }
         wantedPages.forEach { (id, priority) ->

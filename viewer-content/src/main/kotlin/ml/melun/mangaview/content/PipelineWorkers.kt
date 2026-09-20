@@ -13,6 +13,7 @@ internal class PipelineWorkers(
     private val commands: SendChannel<PipelineCommand>,
     private val decoder: ImageDecodePort,
     private val uploader: TextureUploadPort,
+    private val timeouts: PortTimeouts = PortTimeouts(),
 ) {
     fun decode(plan: PipelineDecodePlan, generation: Long, width: Int, token: Long): DecodeState.Decoding {
         val pageId = plan.page.page.id
@@ -26,6 +27,11 @@ internal class PipelineWorkers(
             commands.sendCompletion(PipelineCommand.DecodeFinished(generation, pageId, token, plan.range, result))
         }
         scope.notifyCancellation(job, commands, PipelineCommand.DecodeStopped(generation, pageId, token))
+        scope.launchPortWatchdog(job, timeouts.decodeMillis) {
+            commands.sendCompletion(PipelineCommand.DecodeTimedOut(
+                generation, pageId, token, PipelineFailurePhase.DECODE,
+            ))
+        }
         return DecodeState.Decoding(token, plan.range, plan.hard, job,
             reservedByteCount = decodeReservationBytes(plan, width))
     }
@@ -54,6 +60,11 @@ internal class PipelineWorkers(
             }
         }
         scope.notifyCancellation(job, commands, PipelineCommand.DecodeStopped(generation, pageId, token, upload = true))
+        scope.launchPortWatchdog(job, timeouts.uploadMillis) {
+            commands.sendCompletion(PipelineCommand.DecodeTimedOut(
+                generation, pageId, token, PipelineFailurePhase.UPLOAD,
+            ))
+        }
         return DecodeState.Uploading(token, range, hard, job, reservedByteCount = reservation)
     }
 }

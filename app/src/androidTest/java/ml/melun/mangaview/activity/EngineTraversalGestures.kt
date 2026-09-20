@@ -13,6 +13,10 @@ internal enum class EngineTraversalGestureSpeed(val moveSteps: Int, val sampleDe
     FAST(8, 2),
 }
 
+/** A cold-started viewer can reject the first platform touch before its window gains focus. */
+private const val INJECTION_RETRY_LIMIT = 8
+private const val INJECTION_RETRY_DELAY_MILLIS = 25L
+
 /** Platform-dispatched touchscreen gestures, including ordinary fractional pointer coordinates. */
 internal fun injectEngineTraversalGesture(
     instrumentation: Instrumentation,
@@ -30,17 +34,25 @@ internal fun injectEngineTraversalGesture(
     val records = StringBuilder()
     var primary: Throwable? = null
     var finished = false
-    fun send(action: Int, y: Float) {
+    fun send(action: Int, y: Float, attempt: Int = 0) {
         val at = SystemClock.uptimeMillis()
         val event = MotionEvent.obtain(downTime, at, action, x, y, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
         val accepted = try { instrumentation.uiAutomation.injectInputEvent(event, true) } finally { event.recycle() }
         records.append(JSONObject().apply {
-            put("gestureOrdinal", number); put("action", action); put("downTimeMillis", downTime); put("eventTimeMillis", at)
+            put("gestureOrdinal", number); put("action", action); put("attempt", attempt)
+            put("downTimeMillis", downTime); put("eventTimeMillis", at)
             put("speed", speed.name); put("moveSteps", speed.moveSteps); put("sampleDelayMillis", speed.sampleDelayMillis)
             put("xBits", x.toRawBits()); put("yBits", y.toRawBits()); put("x", x); put("y", y)
             put("source", InputDevice.SOURCE_TOUCHSCREEN); put("dispatchAccepted", accepted)
             put("dispatchReturnedMonotonicNs", System.nanoTime()); put("receivedByViewerVerified", false)
         }).append('\n')
+        if (!accepted && attempt < INJECTION_RETRY_LIMIT) {
+            // The rejected event never entered the input pipeline; re-send it while the viewer
+            // window is still gaining focus instead of flaking the whole capture.
+            SystemClock.sleep(INJECTION_RETRY_DELAY_MILLIS)
+            send(action, y, attempt + 1)
+            return
+        }
         check(accepted) { "Platform touchscreen injection was rejected" }
     }
     try {

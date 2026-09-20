@@ -680,6 +680,186 @@ class ViewerContentPipelineTest {
         assertEquals(5, uploader.liveTextures.size)
         pipeline.closeAndJoin()
     }
+
+    @Test
+    fun aStalledFetchReleasesItsLaneAndRecoversWhenThePortReturns() = runTest {
+        val fixture = PipelineFixture()
+        val gate = CompletableDeferred<Unit>()
+        var fetches = 0
+        val raw = object : RawPagePort {
+            override suspend fun find(pageId: PageId): EncodedPageRef? = null
+            override suspend fun fetch(pageId: PageId, priority: PageFetchPriority,
+                responseStarted: () -> Unit): EncodedPageRef {
+                fetches++
+                withContext(NonCancellable) { gate.await() }
+                return fixture.encoded(pageId)
+            }
+        }
+        val pipeline = fixture.pipeline(testScheduler, coroutineContext, raw, FakeDecoder(), FakeUploader(),
+            PortTimeouts(fetchMillis = 1_000L))
+        try {
+            pipeline.registerManifest(1L, fixture.manifest)
+            pipeline.updateDemand(fixture.demand(), 1_080, 2_138)
+            runCurrent()
+            assertEquals(1, pipeline.snapshot().activeFetches)
+
+            advanceTimeBy(1_001L)
+            runCurrent()
+            assertEquals("a stalled fetch must release its network slot", 0, pipeline.snapshot().activeFetches)
+            // The stalled page still owns its single physical fetch; no retry may overlap it.
+            assertEquals(1, fetches)
+
+            gate.complete(Unit)
+            advanceUntilIdle()
+            assertTrue("the page must be refetched after the straggler returns", fetches >= 2)
+            assertEquals(0, pipeline.snapshot().activeFetches)
+        } finally { gate.complete(Unit); pipeline.closeAndJoin() }
+    }
+
+    @Test
+    fun aStalledDecodeReleasesItsLaneAndRetries() = runTest {
+        val fixture = PipelineFixture()
+        val gate = CompletableDeferred<Unit>()
+        var decodes = 0
+        val decoder = ImageDecodePort { request ->
+            decodes++
+            if (decodes == 1) withContext(NonCancellable) { gate.await() }
+            FakeCpuTile(request.page.id, 0, request.dimensions.heightPx, request.dimensions.heightPx)
+        }
+        val uploader = FakeUploader()
+        val pipeline = fixture.pipeline(testScheduler, coroutineContext, FakeRawPort(fixture), decoder, uploader,
+            PortTimeouts(decodeMillis = 1_000L))
+        try {
+            pipeline.registerManifest(1L, fixture.manifest)
+            pipeline.setRendererEpoch(1L)
+            pipeline.updateDemand(fixture.demand(), 1_080, 2_138)
+            runCurrent()
+            assertEquals(1, pipeline.snapshot().activeDecodes)
+
+            advanceTimeBy(1_001L)
+            runCurrent()
+            assertEquals("a stalled decode must release its lane slot", 0, pipeline.snapshot().activeDecodes)
+
+            gate.complete(Unit)
+            advanceUntilIdle()
+            assertEquals(2, decodes)
+            assertEquals(1, uploader.uploadCount.get())
+        } finally { gate.complete(Unit); pipeline.closeAndJoin() }
+    }
+
+    @Test
+    fun aDemandedPageAutoRetriesAfterFastRetriesAndReportsFailureOnce() = runTest {
+        val fixture = PipelineFixture()
+        val raw = FakeRawPort(fixture, failure = IllegalStateException("network"))
+        val events = mutableListOf<ContentPipelineEvent>()
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val pipeline = ViewerContentPipeline(
+            coroutineContext,
+            ContentPipelineDispatchers(dispatcher, dispatcher, dispatcher, dispatcher),
+            raw,
+            FakeDecoder(),
+            FakeUploader(),
+            ContentPipelineSink(events::add),
+            PipelineClock { testScheduler.currentTime },
+        )
+        try {
+            pipeline.registerManifest(1L, fixture.manifest)
+            pipeline.updateDemand(fixture.demand(), 1_080, 2_138)
+            advanceUntilIdle()
+
+            val attempts = MAX_FETCH_RETRIES + MAX_AUTO_RETRIES
+            assertEquals("demanded pages must keep retrying in the background", attempts, raw.fetchCount.get())
+            assertEquals(1, events.count { it is ContentPipelineEvent.PageFailed })
+
+            pipeline.updateDemand(fixture.demand(), 1_080, 2_138)
+            advanceUntilIdle()
+            assertEquals("a terminal page must not retry again without a promotion",
+                attempts, raw.fetchCount.get())
+        } finally { pipeline.closeAndJoin() }
+    }
+
+    @Test
+    fun aContractViolatingFetchResultIsIsolatedAndThePipelineContinues() = runTest {
+        val fixture = PipelineFixture()
+        val events = mutableListOf<ContentPipelineEvent>()
+        var fetches = 0
+        var violated = false
+        val raw = object : RawPagePort {
+            override suspend fun find(pageId: PageId): EncodedPageRef? = null
+            override suspend fun fetch(pageId: PageId, priority: PageFetchPriority,
+                responseStarted: () -> Unit): EncodedPageRef {
+                fetches++
+                responseStarted()
+                if (!violated) {
+                    violated = true
+                    // Wrong page identity for the requested fetch; the actor must isolate the fault.
+                    return fixture.encoded(PageId.at(fixture.manifest.id, 99))
+                }
+                return fixture.encoded(pageId)
+            }
+        }
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val pipeline = ViewerContentPipeline(
+            coroutineContext,
+            ContentPipelineDispatchers(dispatcher, dispatcher, dispatcher, dispatcher),
+            raw,
+            FakeDecoder(),
+            FakeUploader(),
+            ContentPipelineSink(events::add),
+            PipelineClock { testScheduler.currentTime },
+        )
+        try {
+            pipeline.registerManifest(1L, fixture.manifest)
+            pipeline.updateDemand(fixture.demand(), 1_080, 2_138)
+            advanceUntilIdle()
+
+            assertTrue(events.any { it is ContentPipelineEvent.PipelineFaulted })
+            assertEquals("the isolated page must be refetched", 2, fetches)
+            assertEquals(0, pipeline.snapshot().activeFetches)
+        } finally { pipeline.closeAndJoin() }
+    }
+
+    @Test
+    fun memoryPressureSuppressesWarmDecodeUntilItsCooldownExpires() = runTest {
+        val fixture = PipelineFixture(pageCount = 2, dimensions = PageDimensions(1_080, 10_000))
+        val hard = fixture.manifest.pages[0].id
+        val warm = fixture.manifest.pages[1].id
+        val warmDecodes = AtomicInteger()
+        val decoder = ImageDecodePort { request ->
+            if (request.page.id == warm) warmDecodes.incrementAndGet()
+            FakeCpuTile(request.page.id, request.sourceRange.top, request.sourceRange.bottomExclusive,
+                request.dimensions.heightPx)
+        }
+        val pipeline = fixture.pipeline(testScheduler, coroutineContext, FakeRawPort(fixture), decoder, FakeUploader())
+        try {
+            pipeline.registerManifest(1L, fixture.manifest)
+            pipeline.setRendererEpoch(1L)
+            val demand = DemandSnapshot(1L, 1L, listOf(
+                PageDemand(hard, DemandClass.VISIBLE, FixedPx.ZERO, 0,
+                    SourceRangeFraction(0, SemanticViewportAnchor.Q32_ONE)),
+                PageDemand(warm, DemandClass.CURRENT_FORWARD_NEAR, FixedPx.ZERO, 1,
+                    SourceRangeFraction(0, SemanticViewportAnchor.Q32_ONE)),
+            ))
+            pipeline.updateDemand(demand, 1_080, 2_138)
+            advanceUntilIdle()
+            val warmBefore = warmDecodes.get()
+            assertEquals(5, warmBefore)
+
+            pipeline.onMemoryPressure()
+            runCurrent()
+            pipeline.setRendererEpoch(2L)
+            runCurrent()
+            advanceTimeBy(1L)
+            runCurrent()
+            assertEquals("warm decode must stay suppressed during the cooldown", warmBefore, warmDecodes.get())
+
+            advanceTimeBy(MEMORY_PRESSURE_COOLDOWN_MILLIS)
+            runCurrent()
+            advanceUntilIdle()
+            assertTrue("warm decode must resume once the cooldown expires",
+                warmDecodes.get() > warmBefore)
+        } finally { pipeline.closeAndJoin() }
+    }
 }
 
 private fun texture(pageId: PageId, key: Long, bytes: Long) = TextureRef(
@@ -729,6 +909,7 @@ internal class PipelineFixture(
         raw: RawPagePort,
         decoder: ImageDecodePort,
         uploader: TextureUploadPort,
+        timeouts: PortTimeouts = PortTimeouts(),
     ): ViewerContentPipeline {
         val dispatcher = StandardTestDispatcher(scheduler)
         return ViewerContentPipeline(
@@ -739,6 +920,7 @@ internal class PipelineFixture(
             uploader,
             ContentPipelineSink {},
             PipelineClock { scheduler.currentTime },
+            portTimeouts = timeouts,
         )
     }
 }

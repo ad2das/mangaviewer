@@ -3,6 +3,7 @@ package ml.melun.mangaview.viewer.runtime
 import android.app.Activity
 import android.graphics.Rect
 import android.os.Bundle
+import android.view.WindowInsets
 import android.widget.FrameLayout
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -62,7 +63,18 @@ internal class SessionMemoryProbeActivity : Activity() {
         val surface = requireNotNull(runtime).surface
         val point = IntArray(2)
         surface.getLocationOnScreen(point)
-        return Rect(point[0], point[1], point[0] + surface.width, point[1] + surface.height)
+        val bounds = Rect(point[0], point[1], point[0] + surface.width, point[1] + surface.height)
+        // System chrome (gesture handle, status bar) is not app viewport content; keeping it in
+        // the compared region makes pixel equality depend on SystemUI animation state.
+        val insets = window.decorView.rootWindowInsets
+            ?.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+        if (insets != null) {
+            bounds.left += insets.left
+            bounds.top += insets.top
+            bounds.right -= insets.right
+            bounds.bottom -= insets.bottom
+        }
+        return bounds
     }
 
     fun closeCycle(): CountDownLatch {

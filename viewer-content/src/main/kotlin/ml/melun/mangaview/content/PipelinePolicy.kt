@@ -10,7 +10,15 @@ import ml.melun.mangaview.viewer.session.SourceRangeFraction
 
 internal const val MAX_FETCH_RETRIES = 2
 internal const val MAX_DECODE_RETRIES = 2
+
+/** Extra background attempts while a failed page is still demanded. */
+internal const val MAX_AUTO_RETRIES = 6
+
+/** Suppress warm decode for this long after a system memory-pressure signal. */
+internal const val MEMORY_PRESSURE_COOLDOWN_MILLIS = 5_000L
+
 private const val TARGET_BAND_HEIGHT_PX = 2_048L
+private const val AUTO_RETRY_MAX_DELAY_MILLIS = 30_000L
 
 internal fun hardLane(demandClass: DemandClass): Boolean =
     demandClass == DemandClass.RESUME_ANCHOR || demandClass == DemandClass.VISIBLE
@@ -62,7 +70,11 @@ private fun multiplyDivide(value: Long, multiplier: Long, divisor: Long): Long =
     BigInteger.valueOf(value).multiply(BigInteger.valueOf(multiplier))
         .divide(BigInteger.valueOf(divisor)).toLongExact()
 
-internal fun retryDelay(attempt: Int): Long = if (attempt <= 1) 250L else 1_000L
+internal fun retryDelay(attempt: Int): Long = when {
+    attempt <= 1 -> 250L
+    attempt <= 3 -> 1_000L
+    else -> (1_000L shl (attempt - 3).coerceAtMost(5)).coerceAtMost(AUTO_RETRY_MAX_DELAY_MILLIS)
+}
 
 fun adaptiveResidentBudgetBytes(totalPhysicalMemoryBytes: Long?): Long =
     totalPhysicalMemoryBytes?.takeIf { it > 0L }?.let {

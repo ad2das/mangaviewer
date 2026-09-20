@@ -114,6 +114,9 @@ sealed interface ContentPipelineEvent {
         val demandClass: DemandClass,
         val cause: Throwable,
     ) : ContentPipelineEvent
+
+    /** A command handler faulted; the actor isolated it and kept serving the remaining work. */
+    data class PipelineFaulted(val generation: Long, val cause: Throwable) : ContentPipelineEvent
 }
 
 enum class PipelineFailurePhase {
