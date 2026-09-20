@@ -142,9 +142,13 @@ internal class EngineAppGraph(
             clearance::solveFresh, clearance::fetchPage, clearance::solvedViewReady,
             clearance::clearanceVerified, clearance::markReplayRefused,
             clearance.documents, clearance.refreshScope)
+        // Documents ride the worker first, whose subrequests are not challenged, so the engine
+        // opens catalog and chapter pages without any clearance; the clearance route stays behind
+        // it as fallback.
+        val documents = NewxtoonWorkerTransport(transportFactory.create(), guarded)
         // Artwork is served straight from the Bunny pull zone with the origin as referer, so an
         // image request never reaches the clearance route and never touches Cloudflare.
-        val routed = if (clearance == null) guarded else NewxtoonImageTransport(guarded,
+        val routed = if (clearance == null) documents else NewxtoonImageTransport(documents,
             transportFactory.createForBunnyImages(headers = linkedMapOf(
                 "Referer" to ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN + "/",
                 "User-Agent" to newxtoonUserAgent)))

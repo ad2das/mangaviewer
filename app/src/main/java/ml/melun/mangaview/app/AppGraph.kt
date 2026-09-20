@@ -486,7 +486,7 @@ private fun newxtoonTransport(
 ): SourceTransport {
     val hints = clearance.clientHints
     val browserHeaders = OkHttpTransportFactory.browserHeaders(hints)
-    val documents = NewxtoonClearanceTransport(
+    val clearanceDocuments = NewxtoonClearanceTransport(
         // The relay shapes the TLS record layer exactly like the challenge browser, so the
         // edge treats the native request as the same client that owns the clearance instead
         // of drawing a fresh challenge for a plain ClientHello.
@@ -501,6 +501,9 @@ private fun newxtoonTransport(
         clearance.documents,
         clearance.refreshScope,
     )
+    // Documents ride the worker first, whose subrequests are not challenged, so the catalog and
+    // chapter pages open without any clearance; the clearance route stays behind it as fallback.
+    val documents = NewxtoonWorkerTransport(transportFactory.create(), clearanceDocuments)
     // Artwork never enters the clearance path: the pull zone serves it to the app directly as
     // long as the origin rides along as the referer, so no Cloudflare hop is involved.
     val images = transportFactory.createForBunnyImages(
