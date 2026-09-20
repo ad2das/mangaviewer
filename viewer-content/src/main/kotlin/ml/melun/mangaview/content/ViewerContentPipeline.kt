@@ -182,7 +182,10 @@ class ViewerContentPipeline(
         if (command.generation < generation) return
         if (command.generation > generation) beginGeneration(command.generation)
         command.manifest.pages.forEach { page ->
-            pages.putIfAbsent(page.id, PageRecord(page))
+            val record = pages.putIfAbsent(page.id, PageRecord(page))
+            // A same-generation re-register carries the corrected spec; decode geometry must
+            // follow the newest dimensions or the source-range invariant crashes the decoder.
+            if (record != null && record.page != page) record.page = page
         }
         pendingDemand?.takeIf { it.snapshot.generation == generation }?.let(::applyDemand)
         pendingDemand = null
@@ -234,6 +237,8 @@ class ViewerContentPipeline(
             page.residents.forEach(uploader::release)
             page.residents = emptyList()
             if (!cancelActiveDecode(page)) page.decode = DecodeState.Idle
+            // The epoch resets the lane; its failure history belongs to the old renderer too.
+            page.decodeFailures = 0
         }
         rendererEpoch = epoch
     }

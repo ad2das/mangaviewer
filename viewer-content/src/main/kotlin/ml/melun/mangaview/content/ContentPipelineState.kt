@@ -7,7 +7,7 @@ import ml.melun.mangaview.viewer.session.DemandClass
 import ml.melun.mangaview.viewer.session.SourceRangeFraction
 
 internal data class PageRecord(
-    val page: PageSpec,
+    var page: PageSpec,
     var raw: RawState = RawState.Absent,
     var decode: DecodeState = DecodeState.Idle,
     var demand: DemandTarget? = null,
