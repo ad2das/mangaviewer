@@ -95,6 +95,7 @@ internal class AppGraph(
     private val wfwfSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createWfwfSource)
     private val newxtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNewxtoonSource)
     private val newxtoonClearance by lazy { NewxtoonClearance(appContext) }
+    internal val newxtoonClearanceState: NewxtoonClearance get() = newxtoonClearance
     private val goodtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createGoodtoonSource)
     val sources = SourceRegistry(
         registrations = listOf(
@@ -356,19 +357,25 @@ internal class AppGraph(
             // A reader session for another source owns the main thread; defer the speculative
             // challenge browser and catalog prefetch instead of stalling that reader.
             ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
-            val ready = if (newxtoonClearance.persistedClearancePresent) {
-                runCatching { newxtoonClearance.warmSolvedView(); true }.getOrDefault(false)
+            val ready = if (newxtoonClearance.ensureDeviceClearance()) {
+                // The jar already holds the newest clearance the device has, so the catalog is
+                // fetched natively and no replay browser is stood up at all. A refused request
+                // still falls back to the challenge through the transport.
+                true
             } else {
                 runCatching { newxtoonClearance.solve() }.getOrDefault(false)
             }
             if (!ready) return@launch
             val source = runCatching { newxtoonSource.value }.getOrNull() ?: return@launch
             ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
+            val latestStarted = System.nanoTime()
             runCatching {
                 source.catalog(ml.melun.mangaview.source.CatalogQuery(
                     ml.melun.mangaview.source.SeriesKind.COMIC,
                     ml.melun.mangaview.source.CatalogOrder.LATEST))
             }
+            android.util.Log.i("NewxtoonWarm", "catalog latest ms=${(System.nanoTime() - latestStarted) / 1_000_000} " +
+                "native=${!newxtoonClearance.solvedViewReady}")
             ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
             runCatching {
                 source.catalog(ml.melun.mangaview.source.CatalogQuery(
@@ -385,17 +392,20 @@ internal class AppGraph(
             val source = NewxtoonContentSource(NewxtoonConfig(userAgent = newxtoonClearance.sourceUserAgent), transport,
                 speculationScope = applicationScope)
             transport.warmConnections(listOf(ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), preferQuic = false)
-            // A persisted clearance resolves this instantly; otherwise the challenge browser warms
-            // while the catalog opens so the first request does not pay the whole solve up front.
-            applicationScope.launch {
-                // Speculative only: never stand a challenge browser up while a reader session for
-                // another source is scrolling.
-                ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
-                newxtoonClearance.solve()
-                // A persisted clearance resolves instantly, so the replay browser is ready before
-                // the first uncached document instead of spinning up behind a refused request.
-                ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
-                newxtoonClearance.warmSolvedView()
+            // A device clearance already in hand is served natively, so neither a challenge nor a
+            // replay browser is stood up. Without one the challenge browser warms while the
+            // catalog opens.
+            if (!newxtoonClearance.persistedClearancePresent && !newxtoonClearance.clearanceVerified) {
+                applicationScope.launch {
+                    // Speculative only: never stand a challenge browser up while a reader session for
+                    // another source is scrolling.
+                    ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
+                    newxtoonClearance.solve()
+                    // A persisted clearance resolves instantly, so the replay browser is ready before
+                    // the first uncached document instead of spinning up behind a refused request.
+                    ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
+                    newxtoonClearance.warmSolvedView()
+                }
             }
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
@@ -478,11 +488,10 @@ private fun newxtoonTransport(
     val browserHeaders = OkHttpTransportFactory.browserHeaders(hints)
     return ObservedSourceTransport(
         NewxtoonClearanceTransport(
-            transportFactory.protect(
-                transportFactory.createBrowserLike(clearance.cookieJar, hints),
-                clearance.cookieJar,
-                browserHeaders,
-            ),
+            // The relay shapes the TLS record layer exactly like the challenge browser, so the
+            // edge treats the native request as the same client that owns the clearance instead
+            // of drawing a fresh challenge for a plain ClientHello.
+            transportFactory.createRelayed(clearance.cookieJar, browserHeaders),
             ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN,
             clearance::solve,
             clearance::solveFresh,

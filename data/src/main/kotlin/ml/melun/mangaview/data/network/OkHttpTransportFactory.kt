@@ -28,6 +28,17 @@ class OkHttpTransportFactory(
             sharedRecovery = true,
         )
 
+    /**
+     * A client whose TLS record layer is shaped by the loopback relay — the same first-record
+     * fragmentation the challenge browser uses. An origin that challenges or resets a plain
+     * ClientHello serves natively through this route once the browser identity headers and the
+     * clearance cookie ride along.
+     */
+    fun createRelayed(
+        cookieJar: CookieJar = CookieJar.NO_COOKIES,
+        headers: Map<String, String> = emptyMap(),
+    ): ml.melun.mangaview.source.SourceTransport = createRecovery(cookieJar, headers)
+
     private fun createRecovery(
         cookieJar: CookieJar,
         headers: Map<String, String> = emptyMap(),

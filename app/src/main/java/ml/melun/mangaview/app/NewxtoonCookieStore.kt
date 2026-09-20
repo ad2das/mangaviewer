@@ -34,15 +34,26 @@ internal class NewxtoonCookieStore(
         override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
             if (cookies.isEmpty()) return
             synchronized(jarStore) {
-                val existing = jarStore[url.host].orEmpty().filterNot { stored ->
-                    cookies.any { it.name == stored.name && it.path == stored.path }
+                // Cloudflare can leave a dead cf_clearance beside the fresh one in the same
+                // header. Only the newest value may ride in the jar: sending the corpse first
+                // gets the whole request challenged even though the live cookie is right there.
+                val clearances = cookies.filter { it.name == CLEARANCE_COOKIE }
+                val newestClearance = clearances.maxByOrNull { clearanceIssuedAt(it.value) }
+                val incoming = if (clearances.isEmpty()) cookies
+                else cookies.filter { it.name != CLEARANCE_COOKIE || it === newestClearance }
+                var existing = jarStore[url.host].orEmpty().filterNot { stored ->
+                    incoming.any { it.name == stored.name && it.path == stored.path }
                 }
-                jarStore[url.host] = existing + cookies
+                if (clearances.isNotEmpty()) {
+                    existing = existing.filterNot { it.name == CLEARANCE_COOKIE }
+                }
+                jarStore[url.host] = existing + incoming
             }
             if (verified.get()) {
-                cookies.firstOrNull { it.name == CLEARANCE_COOKIE && url.host == host }?.let {
-                    persistClearance(it.value, it.expiresAt)
-                }
+                cookies.filter { it.name == CLEARANCE_COOKIE && url.host == host }
+                    .maxByOrNull { clearanceIssuedAt(it.value) }?.let {
+                        persistClearance(it.value, it.expiresAt)
+                    }
             }
         }
 
@@ -95,11 +106,52 @@ internal class NewxtoonCookieStore(
     fun clearanceValue(): String? {
         val header = runCatching { CookieManager.getInstance().getCookie(origin) }.getOrNull()
             ?: return null
-        return header.split(';').firstNotNullOfOrNull { pair ->
+        // Cloudflare can leave the refused clearance beside the live one; only the newest value
+        // is ever adopted, or the dead cookie would be sent first and get the request challenged.
+        return header.split(';').mapNotNull { pair ->
             if (pair.substringBefore('=').trim() != CLEARANCE_COOKIE) null
             else pair.substringAfter('=', "").trim().ifEmpty { null }
-        }
+        }.maxByOrNull { clearanceIssuedAt(it) }
     }
+
+    /**
+     * True when the device already holds a clearance the native route can try. The persisted copy
+     * and the WebView jar are both consulted and the newest issuance wins, so a cold start probes
+     * with the live cookie instead of a refused one — even when the persisted TTL already lapsed
+     * but the browser cookie is still valid. A dead pick only costs one probe before the fallback.
+     */
+    fun ensureDeviceClearance(): Boolean {
+        val webValue = clearanceValue()
+        val persistedValue = prefs?.getString(KEY_CLEARANCE, null)?.takeIf { it.isNotEmpty() }
+        val value = when {
+            webValue == null && persistedValue == null -> return false
+            webValue == null -> persistedValue!!
+            persistedValue == null -> webValue
+            clearanceIssuedAt(webValue) > clearanceIssuedAt(persistedValue) -> webValue
+            else -> persistedValue
+        }
+        verified.set(true)
+        // Mirror every cookie the WebView jar still holds — the app session cookies ride on the
+        // same requests, and the edge expects the same client that cleared the challenge, not a
+        // bare clearance. Then the chosen clearance wins over whatever harvest picked.
+        harvest()
+        val expiresAt = System.currentTimeMillis() + CLEARANCE_TTL_MILLIS
+        synchronized(jarStore) {
+            jarStore[host] = jarStore[host].orEmpty().filterNot { it.name == CLEARANCE_COOKIE } + Cookie.Builder()
+                .name(CLEARANCE_COOKIE)
+                .value(value)
+                .hostOnlyDomain(host)
+                .path("/")
+                .expiresAt(expiresAt)
+                .build()
+        }
+        persistClearance(value, expiresAt)
+        return true
+    }
+
+    /** Cloudflare stamps cf_clearance with its issuance time; newer wins over the refused corpse. */
+    private fun clearanceIssuedAt(value: String): Long =
+        Regex("-([0-9]{10})-").find(value)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
 
     /**
      * True only when a clearance was actually proven to serve requests — a persisted cookie or a

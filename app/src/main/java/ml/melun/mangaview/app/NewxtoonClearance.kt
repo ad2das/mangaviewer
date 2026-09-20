@@ -215,6 +215,14 @@ internal class NewxtoonClearance(
     val persistedClearancePresent: Boolean get() = cookies.hasPersistedClearance()
 
     /**
+     * Reconciles the persisted copy with the WebView jar and makes the newest clearance available
+     * to the native route. A cold process then probes directly with the live cookie instead of a
+     * refused corpse, and no replay browser is stood up for the first fetch. False means the
+     * device holds no clearance at all and the challenge must run.
+     */
+    fun ensureDeviceClearance(): Boolean = cookies.ensureDeviceClearance()
+
+    /**
      * Pre-creates the replay browser while the catalog opens so the first uncached document does
      * not pay a refused HTTP round trip plus a view spin-up. A verified clearance takes the
      * instant replay-view path; anything else resolves through the regular challenge.

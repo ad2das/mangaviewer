@@ -91,7 +91,8 @@ internal class EngineAppGraph(
     private fun resilient(
         transport: ml.melun.mangaview.source.SourceTransport,
         cookieJar: okhttp3.CookieJar = okhttp3.CookieJar.NO_COOKIES,
-    ) = ProviderOriginTransport(transportFactory.protect(transport, cookieJar), origins)
+        headers: Map<String, String> = emptyMap(),
+    ) = ProviderOriginTransport(transportFactory.protect(transport, cookieJar, headers), origins)
     private val transport = ObservedSourceTransport(resilient(transportFactory.create()), "engine", networkEvidenceObserver)
     // The engine transport exists for the reader, so nothing warms it while the home screen is up.
     // Open one bodyless exchange per disk-resolved document origin during startup so the first
@@ -126,14 +127,21 @@ internal class EngineAppGraph(
         }
     }
     private val newxtoonTransport = lazy {
-        val jar = newxtoonClearance?.cookieJar ?: okhttp3.CookieJar.NO_COOKIES
-        val base = resilient(transportFactory.create(jar), jar)
-        val guarded = if (newxtoonClearance == null) base
+        val clearance = newxtoonClearance
+        val jar = clearance?.cookieJar ?: okhttp3.CookieJar.NO_COOKIES
+        // Cloudflare binds cf_clearance to the client hints the solving WebView sent, so the
+        // engine repeats that browser identity on every native request just like the catalog.
+        val headers = clearance?.let { OkHttpTransportFactory.browserHeaders(it.clientHints) }.orEmpty()
+        val base = if (clearance == null) resilient(transportFactory.create(jar), jar)
+        // The relay shapes the TLS record layer exactly like the challenge browser, so the edge
+        // treats the engine's native requests as the same client that owns the clearance.
+        else ProviderOriginTransport(transportFactory.createRelayed(jar, headers), origins)
+        val guarded = if (clearance == null) base
         else NewxtoonClearanceTransport(base,
-            ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN, newxtoonClearance::solve,
-            newxtoonClearance::solveFresh, newxtoonClearance::fetchPage, newxtoonClearance::solvedViewReady,
-            newxtoonClearance::clearanceVerified, newxtoonClearance::markReplayRefused,
-            newxtoonClearance.documents, newxtoonClearance.refreshScope)
+            ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN, clearance::solve,
+            clearance::solveFresh, clearance::fetchPage, clearance::solvedViewReady,
+            clearance::clearanceVerified, clearance::markReplayRefused,
+            clearance.documents, clearance.refreshScope)
         ObservedSourceTransport(guarded, "engine", networkEvidenceObserver)
     }
     private val ntkPageTransport = lazy {

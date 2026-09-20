@@ -121,7 +121,10 @@ internal class NewxtoonClearanceTransport(
         // with no bridge, no view, no replay. A challenge answer demotes it back below replay.
         if (directRoute) {
             val direct = inner.execute(request)
-            if (!direct.isChallenge()) return direct
+            if (!direct.isChallenge()) {
+                Log.i(TAG, "served ${request.url} natively status=${direct.statusCode} (direct route)")
+                return direct
+            }
             direct.close()
             directRoute = false
             replay(request)?.let { webViewRoute = true; return it }
@@ -132,6 +135,7 @@ internal class NewxtoonClearanceTransport(
             val probed = inner.execute(request)
             if (!probed.isChallenge()) {
                 directRoute = true
+                Log.i(TAG, "served ${request.url} natively status=${probed.statusCode} (direct probe)")
                 return probed
             }
             probed.close()
