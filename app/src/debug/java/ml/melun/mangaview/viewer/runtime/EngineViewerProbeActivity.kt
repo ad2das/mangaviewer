@@ -31,18 +31,29 @@ class EngineViewerProbeActivity : Activity() {
     @Volatile internal var lastFrame: EngineSurfacePresentation? = null
     @Volatile internal var firstImageAtNanos: Long = 0
     @Volatile internal var firstViewportAtNanos: Long = 0
+    private val diagnostics = EngineViewerDiagnostics()
     private lateinit var runtime: EngineViewerRuntime
+
+    /** One logcat line per transport phase so request timings are attributable per site. */
+    private val networkObserver = ml.melun.mangaview.source.SourceExchangeObserver { evidence ->
+        android.util.Log.i("ViewerProbeNet", "id=${evidence.requestId} phase=${evidence.phase} at=${evidence.atNanos} " +
+            "status=${evidence.statusCode ?: 0} bytes=${evidence.bodyBytes} url=${evidence.requestUrl}")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val spec = ViewerLaunchSpec.from(intent)
-        val graph = (application as ViewerApplication).graph.engine
+        val appGraph = (application as ViewerApplication).graph
+        appGraph.networkEvidenceObserver = networkObserver
+        val graph = appGraph.engine
         val metrics = resources.displayMetrics
         val error = TextView(this).apply { setTextColor(Color.WHITE); setBackgroundColor(Color.BLACK) }
+        diagnostics.opened(System.nanoTime())
         runtime = EngineViewerRuntime(this, scope, graph.coordinator, graph.session(spec), graph.positions,
             spec.episodeId, EngineViewport(metrics.widthPixels, metrics.heightPixels), decode.coroutineDispatcher,
-            { latest = it }, { frame ->
+            { latest = it; diagnostics.snapshot(it, System.nanoTime()) }, { frame ->
                 lastFrame = frame
+                diagnostics.presented(frame)
                 if (frame.swapSucceeded && frame.scene.placements.isNotEmpty() && firstImageAtNanos == 0L) {
                     firstImageAtNanos = frame.submittedAtNanos
                     image.countDown()
@@ -56,6 +67,8 @@ class EngineViewerProbeActivity : Activity() {
                 error.text = problem.stackTraceToString()
                 image.countDown()
                 viewport.countDown()
+            }, reportRendererClosed = { rendererId, submittedCount, atNanos ->
+                diagnostics.rendererClosed(rendererId, submittedCount, atNanos)
             })
         setContentView(FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -70,9 +83,25 @@ class EngineViewerProbeActivity : Activity() {
     override fun onDestroy() {
         scope.launch(NonCancellable) {
             try { runtime.close() } catch (problem: Throwable) { failure.compareAndSet(null, problem) }
-            finally { decode.close(); scope.cancel(); ended.countDown() }
+            finally {
+                logStartupTiming()
+                decode.close(); scope.cancel(); ended.countDown()
+            }
         }
         super.onDestroy()
+    }
+
+    /** One logcat line per run: milestone nanos for manifest / page / decode / present attribution. */
+    private fun logStartupTiming() {
+        val timing = diagnostics.startup() ?: return
+        android.util.Log.i("ViewerProbeTiming", listOf(
+            "page=${timing.presentedPageKey}",
+            "opened=${timing.openStartedAtNanos}",
+            "manifest=${timing.manifestReadyAtNanos ?: 0}",
+            "submitted=${timing.firstActualSubmittedAtNanos ?: 0}",
+            "presented=${timing.firstActualPresentedAtNanos ?: 0}",
+            "viewport=${timing.firstCompleteViewportSubmittedAtNanos ?: 0}",
+        ).joinToString(" "))
     }
 
     fun awaitImage(seconds: Long): Boolean = image.await(seconds, TimeUnit.SECONDS)

@@ -6,6 +6,7 @@ import java.io.File
 import java.net.URI
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import ml.melun.mangaview.data.db.DeferredViewerDatabase
 import ml.melun.mangaview.data.engine.EnginePositionStore
 import ml.melun.mangaview.data.engine.EngineRawStorage
@@ -92,6 +93,38 @@ internal class EngineAppGraph(
         cookieJar: okhttp3.CookieJar = okhttp3.CookieJar.NO_COOKIES,
     ) = ProviderOriginTransport(transportFactory.protect(transport, cookieJar), origins)
     private val transport = ObservedSourceTransport(resilient(transportFactory.create()), "engine", networkEvidenceObserver)
+    // The engine transport exists for the reader, so nothing warms it while the home screen is up.
+    // Open one bodyless exchange per disk-resolved document origin during startup so the first
+    // chapter fetch reuses a pooled connection instead of paying DNS and TLS on the open path.
+    init {
+        listOf("wfwf" to DEFAULT_WFWF_ORIGIN, "goodtoon" to DEFAULT_GOODTOON_ORIGIN).forEach { (provider, fallback) ->
+            scope.launch(ioDispatcher) {
+                val origin = try {
+                    origins.current(provider, fallback)
+                } catch (failure: Throwable) {
+                    fallback
+                }
+                val started = System.nanoTime()
+                val warmed = try {
+                    transport.execute(ml.melun.mangaview.source.SourceRequest(
+                        url = origin,
+                        method = ml.melun.mangaview.source.SourceHttpMethod.HEAD,
+                        headers = mapOf("Accept" to "text/html,*/*;q=0.1"),
+                        totalTimeoutMillis = ENGINE_ORIGIN_PRECONNECT_TIMEOUT_MILLIS,
+                        preferQuic = false,
+                        priority = ml.melun.mangaview.source.PageFetchPriority.BACKGROUND,
+                    )).close()
+                    true
+                } catch (cancellation: kotlinx.coroutines.CancellationException) {
+                    throw cancellation
+                } catch (failure: Throwable) {
+                    false
+                }
+                android.util.Log.i("EngineWarm", "$provider origin=$origin ok=$warmed " +
+                    "ms=${(System.nanoTime() - started) / 1_000_000}")
+            }
+        }
+    }
     private val newxtoonTransport = lazy {
         val jar = newxtoonClearance?.cookieJar ?: okhttp3.CookieJar.NO_COOKIES
         val base = resilient(transportFactory.create(jar), jar)
@@ -177,4 +210,8 @@ internal class EngineAppGraph(
         }
     }
     suspend fun storageOwnership() = storage.ownership()
+
+    private companion object {
+        const val ENGINE_ORIGIN_PRECONNECT_TIMEOUT_MILLIS = 4_000L
+    }
 }
