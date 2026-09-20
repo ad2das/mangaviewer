@@ -82,7 +82,12 @@ internal class EngineViewerScreen(
     }
     private var episodeListJob: Job? = null
     @Volatile private var episodePickerFailure: Throwable? = null
+    private var sessionGateEntered = false
     fun create(): FrameLayout {
+        if (!sessionGateEntered) {
+            sessionGateEntered = true
+            ml.melun.mangaview.app.ViewerSessionActivity.enter(launchSpec.sourceId.value)
+        }
         activity.configureViewerWindowInsets()
         val spec = launchSpec
         engine = (activity.application as ViewerApplication).graph.engine
@@ -272,6 +277,10 @@ internal class EngineViewerScreen(
     fun close() {
         if (closing) return
         closing = true
+        if (sessionGateEntered) {
+            sessionGateEntered = false
+            ml.melun.mangaview.app.ViewerSessionActivity.exit(launchSpec.sourceId.value)
+        }
         episodeListJob?.cancel()
         val activeRuntime = runtime
         runtime = null

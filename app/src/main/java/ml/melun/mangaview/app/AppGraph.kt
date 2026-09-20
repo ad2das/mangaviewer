@@ -353,6 +353,9 @@ internal class AppGraph(
      */
     fun warmProtectedSources() {
         applicationScope.launch {
+            // A reader session for another source owns the main thread; defer the speculative
+            // challenge browser and catalog prefetch instead of stalling that reader.
+            ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
             val ready = if (newxtoonClearance.persistedClearancePresent) {
                 runCatching { newxtoonClearance.warmSolvedView(); true }.getOrDefault(false)
             } else {
@@ -360,11 +363,13 @@ internal class AppGraph(
             }
             if (!ready) return@launch
             val source = runCatching { newxtoonSource.value }.getOrNull() ?: return@launch
+            ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
             runCatching {
                 source.catalog(ml.melun.mangaview.source.CatalogQuery(
                     ml.melun.mangaview.source.SeriesKind.COMIC,
                     ml.melun.mangaview.source.CatalogOrder.LATEST))
             }
+            ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
             runCatching {
                 source.catalog(ml.melun.mangaview.source.CatalogQuery(
                     ml.melun.mangaview.source.SeriesKind.COMIC,
@@ -383,9 +388,13 @@ internal class AppGraph(
             // A persisted clearance resolves this instantly; otherwise the challenge browser warms
             // while the catalog opens so the first request does not pay the whole solve up front.
             applicationScope.launch {
+                // Speculative only: never stand a challenge browser up while a reader session for
+                // another source is scrolling.
+                ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
                 newxtoonClearance.solve()
                 // A persisted clearance resolves instantly, so the replay browser is ready before
                 // the first uncached document instead of spinning up behind a refused request.
+                ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
                 newxtoonClearance.warmSolvedView()
             }
             return DeferredSourceResource(source) {

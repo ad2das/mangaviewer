@@ -14,7 +14,7 @@ from typing import Any
 
 
 SERIAL = "emulator-5554"
-EXPECTED_AVD = "MangaViewerApi35"
+EXPECTED_AVD = "MangaViewerPs16k"
 PACKAGE = "ml.melun.mangaview"
 TEST_PACKAGE = "ml.melun.mangaview.test"
 REMOTE_FIXTURE_ROOT = "/sdcard/Android/data/ml.melun.mangaview/files/engine-readback-fixtures"

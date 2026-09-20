@@ -8,7 +8,6 @@ import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
-import android.view.View
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -207,11 +206,6 @@ internal class NewxtoonChallengePage(
             awaitWebViewEngineStarted()
             suspendCancellableCoroutine { continuation ->
                 val webView = AndroidBrowserViews.create(window.context)
-                // This browser is offscreen and must never ride the app's GPU context: when HWUI
-                // loses that context, Chromium aborts the process on the next functor draw
-                // ("Non owned context lost!", SIGTRAP on RenderThread). A software layer keeps the
-                // clearance browser off the functor path entirely.
-                webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
                 val attempt = Attempt(webView, continuation)
                 attempt.startedAt = System.currentTimeMillis()
                 continuation.invokeOnCancellation { main.post { finish(attempt, false, "cancelled") } }

@@ -45,6 +45,9 @@ import okhttp3.CookieJar
 
 private const val TAG = "NewxtoonClearance"
 
+/** Reader-session key for this source; the clearance gate is keyed by source id. */
+private const val NEWXTOON_SOURCE_KEY = "newxtoon"
+
 /** The emulator's model and build id mark the session as non-phone; only there they are rewritten. */
 private val spoofsDeviceIdentity: Boolean = run {
     val fingerprint = android.os.Build.FINGERPRINT
@@ -142,15 +145,25 @@ internal class NewxtoonClearance(
      * so a view that solved moments ago is reused: a second challenge would tear down the browser
      * its siblings are about to replay through and restart the whole storm.
      */
-    suspend fun solveFresh(): Boolean = mutex.withLock {
-        val age = System.currentTimeMillis() - solvedAtMillis
-        if (solvedView != null && !replayRefused && age in 0..RE_SOLVE_GRACE_MILLIS) {
-            Log.i(TAG, "solveFresh: reusing view solved ${age}ms ago")
-            return@withLock true
+    suspend fun solveFresh(): Boolean {
+        awaitForeignReaderIdle()
+        return mutex.withLock {
+            val age = System.currentTimeMillis() - solvedAtMillis
+            if (solvedView != null && !replayRefused && age in 0..RE_SOLVE_GRACE_MILLIS) {
+                Log.i(TAG, "solveFresh: reusing view solved ${age}ms ago")
+                return@withLock true
+            }
+            Log.i(TAG, "solveFresh: starting webview challenge despite cached clearance")
+            runChallengeLocked()
         }
-        Log.i(TAG, "solveFresh: starting webview challenge despite cached clearance")
-        runChallengeLocked()
     }
+
+    /**
+     * A challenge or replay browser may only be stood up while no reader session for another
+     * source is scrolling: its software WebView draw otherwise stalls that reader's frames.
+     */
+    private suspend fun awaitForeignReaderIdle() =
+        ViewerSessionActivity.awaitForeignIdle(NEWXTOON_SOURCE_KEY)
 
     /**
      * The edge challenged a request replayed by the solved browser, so the clearance that browser
@@ -169,6 +182,7 @@ internal class NewxtoonClearance(
      * the cookie — instantly for a verified clearance, through the challenge otherwise.
      */
     suspend fun solve(): Boolean {
+        awaitForeignReaderIdle()
         if (!cookies.hasClearance()) {
             return mutex.withLock {
                 if (cookies.hasClearance()) {
@@ -206,6 +220,7 @@ internal class NewxtoonClearance(
      * instant replay-view path; anything else resolves through the regular challenge.
      */
     suspend fun warmSolvedView() {
+        awaitForeignReaderIdle()
         ensureSolvedView()
     }
 
@@ -404,7 +419,7 @@ internal class NewxtoonClearance(
     }
 
     private companion object {
-        const val SOLVE_TIMEOUT_MILLIS = 25_000L
+        const val SOLVE_TIMEOUT_MILLIS = 75_000L
         const val FETCH_TIMEOUT_MILLIS = 15_000L
         const val RE_SOLVE_GRACE_MILLIS = 20_000L
         const val SOLVE_FAILURE_COOLDOWN_MILLIS = 60_000L
