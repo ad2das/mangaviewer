@@ -85,9 +85,14 @@ internal class NewxtoonCookieStore(
             jarStore[host] = jarStore[host].orEmpty().filterNot { it.name == CLEARANCE_COOKIE }
         }
         // The WebView jar still serves the revoked cookie to clearanceValue()/hasClearance();
-        // expire it there too instead of waiting for the next explicit wipe.
+        // expire it there too instead of waiting for the next explicit wipe. Cloudflare plants
+        // cf_clearance as a domain cookie (.newxtoon1.com), so the expiry must carry the same
+        // Domain attribute — a bare host-only expiry leaves the dead cookie in the jar and the
+        // next challenge spins against a refused value. The host-only variant is expired too in
+        // case an older build planted one.
         runCatching {
-            CookieManager.getInstance().setCookie(origin, "$CLEARANCE_COOKIE=; Max-Age=0")
+            CookieManager.getInstance().setCookie(origin, "$CLEARANCE_COOKIE=; Max-Age=0; Domain=.$host; Path=/")
+            CookieManager.getInstance().setCookie(origin, "$CLEARANCE_COOKIE=; Max-Age=0; Path=/")
             CookieManager.getInstance().flush()
         }
     }
