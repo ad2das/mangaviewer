@@ -87,17 +87,10 @@ internal fun clickChallengeFrames(webView: WebView, raw: String, attempt: Int) {
             return
         }
     }
-    // The widget can hide inside a closed shadow root; fall back to where it renders.
-    val viewWidth = webView.width.toFloat().coerceAtLeast(1f)
-    val fractions = when (attempt % 3) {
-        1 -> 0.083f to 0.400f
-        2 -> 0.083f to 0.406f
-        else -> 0.076f to 0.400f
-    }
-    val x = viewWidth * fractions.first
-    val y = viewHeight * fractions.second
-    Log.i(TAG, "tapping fallback checkbox ${x.roundToInt()},${y.roundToInt()} attempt=$attempt view=${viewWidth.roundToInt()}x${viewHeight.roundToInt()}")
-    tap(webView, x, y)
+    // No widget was found in the light DOM: the managed challenge is running its non-interactive
+    // verification, which needs no input. Tapping a guessed coordinate would inject synthetic
+    // touches into a page that never asked for them, so the ladder leaves the page alone.
+    Log.i(TAG, "no turnstile widget visible; leaving the verification alone attempt=$attempt")
 }
 
 private fun tap(webView: WebView, x: Float, y: Float) {

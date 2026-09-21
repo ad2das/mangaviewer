@@ -26,6 +26,8 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner,
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        // Worker origins are read once here so the document transport needs no Context.
+        ml.melun.mangaview.app.NewxtoonWorkerOrigins.attach(this)
         // Exit-history scanning hits the binder and the filesystem; keep it off the startup path.
         applicationScope.launch(workDispatchers.io) { CrashLog.scanLastExit(this@ViewerApplication) }
         if (NtkBrowserProcess.isCurrent(this)) {

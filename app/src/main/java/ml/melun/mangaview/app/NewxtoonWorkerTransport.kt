@@ -19,9 +19,10 @@ internal class NewxtoonWorkerTransport(
     private val worker: SourceTransport,
     private val fallback: SourceTransport,
     private val origin: String = ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN,
-    private val workerOrigin: String = DEFAULT_WORKER_ORIGIN,
+    private val workerOrigins: () -> List<String> = NewxtoonWorkerOrigins::current,
 ) : SourceTransport, Closeable {
     private val originHost = URI(origin).host.lowercase()
+    @Volatile private var preferred: String? = null
 
     override suspend fun execute(request: SourceRequest): SourceResponse =
         route(request, worker::execute, fallback::execute)
@@ -34,7 +35,7 @@ internal class NewxtoonWorkerTransport(
 
     override fun warmConnections(urls: List<String>, preferQuic: Boolean) {
         val (documents, rest) = urls.partition(::isOriginDocument)
-        if (documents.isNotEmpty()) worker.warmConnections(listOf(workerOrigin), false)
+        if (documents.isNotEmpty()) worker.warmConnections(candidates().take(1), false)
         if (rest.isNotEmpty()) fallback.warmConnections(rest, preferQuic)
     }
 
@@ -56,34 +57,50 @@ internal class NewxtoonWorkerTransport(
         if (request.method != SourceHttpMethod.GET || !isOriginDocument(request.url)) {
             return fallbackRoute(request)
         }
-        val relayed = request.copy(url = workerUrl(request.url))
-        val response = try {
-            workerRoute(relayed)
-        } catch (failure: IOException) {
-            return fallbackRoute(request)
+        for (candidate in candidates()) {
+            val relayed = request.copy(url = workerUrl(candidate, request.url))
+            val response = try {
+                workerRoute(relayed)
+            } catch (failure: IOException) {
+                continue
+            }
+            if (response.statusCode in 200..299) {
+                preferred = candidate
+                // The worker answers under its own URL with a plain-text type; the payload is still
+                // the origin's HTML, so downstream sees the requested URL and an HTML content type.
+                return response.copy(
+                    finalUrl = request.url,
+                    contentType = response.contentType?.takeUnless { it.startsWith("text/plain") }
+                        ?: "text/html; charset=utf-8",
+                )
+            }
+            response.close()
         }
-        if (response.statusCode in 200..299) {
-            // The worker answers under its own URL with a plain-text type; the payload is still the
-            // origin's HTML, so downstream sees the requested URL and an HTML content type again.
-            return response.copy(
-                finalUrl = request.url,
-                contentType = response.contentType?.takeUnless { it.startsWith("text/plain") }
-                    ?: "text/html; charset=utf-8",
-            )
-        }
-        response.close()
         return fallbackRoute(request)
     }
 
-    private fun workerUrl(target: String): String =
+    /**
+     * The worker that answered last goes first, so a healthy private deployment never pays the
+     * public relay's latency; every other origin stays behind it as failover.
+     */
+    private fun candidates(): List<String> {
+        val configured = workerOrigins().ifEmpty { listOf(DEFAULT_WORKER_ORIGIN) }
+        val sticky = preferred
+        return if (sticky != null && configured.contains(sticky)) {
+            listOf(sticky) + configured.filter { it != sticky }
+        } else {
+            configured
+        }
+    }
+
+    private fun workerUrl(workerOrigin: String, target: String): String =
         workerOrigin + "/?url=" + URLEncoder.encode(target, "UTF-8")
 
     private fun isOriginDocument(url: String): Boolean =
         runCatching { URI(url).host?.lowercase() }.getOrNull() == originHost
 
     internal companion object {
-        // A public CORS relay that subrequests the origin from Cloudflare's network, where the zone
-        // challenge is not applied. Swap for a dedicated deployment when one exists.
-        const val DEFAULT_WORKER_ORIGIN = "https://cors-get-proxy.sirjosh.workers.dev"
+        // Subrequests the origin from Cloudflare's network, where the zone challenge is not applied.
+        const val DEFAULT_WORKER_ORIGIN = "https://newxtoon-relay.ad2das.workers.dev"
     }
 }

@@ -103,8 +103,36 @@ internal class NewxtoonCookieStore(
         // Pull the cookie out of the browser jar first — saveFromResponse only persists while
         // verified, and the WebView is where the final cf_clearance actually lands.
         harvest()
+        // A dead clearance can sit beside the fresh one Cloudflare just planted, and the browser
+        // sends the older value first, so the edge refuses the new cookie. Collapse the jar to the
+        // newest value only, leaving every other session cookie untouched.
+        val newest = clearanceValue()
+        if (newest != null) {
+            expireWebViewClearance()
+            runCatching {
+                CookieManager.getInstance().setCookie(
+                    origin,
+                    "$CLEARANCE_COOKIE=$newest; Domain=.$host; Path=/; Secure; SameSite=None",
+                )
+                CookieManager.getInstance().flush()
+            }
+        }
         jarStore[host]?.firstOrNull { it.name == CLEARANCE_COOKIE }?.let {
             persistClearance(it.value, it.expiresAt)
+        }
+    }
+
+    /**
+     * Drops the clearance from the browser jar without touching the rest of the session. Cloudflare
+     * plants a fresh cf_clearance while the challenge runs; a stale copy left beside it is sent
+     * first, and the edge then refuses the fresh cookie — the solve-then-403 loop. `__cf_bm` and the
+     * `cf_chl_*` continuity cookies survive, which a blanket wipe would destroy.
+     */
+    fun expireWebViewClearance() {
+        runCatching {
+            CookieManager.getInstance().setCookie(origin, "$CLEARANCE_COOKIE=; Max-Age=0; Domain=.$host; Path=/")
+            CookieManager.getInstance().setCookie(origin, "$CLEARANCE_COOKIE=; Max-Age=0; Path=/")
+            CookieManager.getInstance().flush()
         }
     }
 
@@ -213,7 +241,7 @@ internal class NewxtoonCookieStore(
         runCatching {
             CookieManager.getInstance().setCookie(
                 origin,
-                "$CLEARANCE_COOKIE=$value; Domain=$host; Path=/; Secure",
+                "$CLEARANCE_COOKIE=$value; Domain=.$host; Path=/; Secure; SameSite=None",
             )
             CookieManager.getInstance().flush()
         }

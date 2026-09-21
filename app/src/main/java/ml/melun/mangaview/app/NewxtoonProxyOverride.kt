@@ -16,13 +16,16 @@ private const val TAG = "NewxtoonClearance"
  * without it the SNI filter resets the connection before Cloudflare ever answers.
  */
 internal suspend fun installChallengeProxyOverride(relay: BrowserTlsRelay, main: Handler): Boolean =
+    installChallengeProxyOverride(relay.proxyUrl, main)
+
+internal suspend fun installChallengeProxyOverride(proxyUrl: String, main: Handler): Boolean =
     suspendCancellableCoroutine { continuation ->
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
             continuation.resume(false)
             return@suspendCancellableCoroutine
         }
         val config = ProxyConfig.Builder()
-            .addProxyRule(relay.proxyUrl, ProxyConfig.MATCH_HTTPS)
+            .addProxyRule(proxyUrl, ProxyConfig.MATCH_HTTPS)
             .build()
         try {
             ProxyController.getInstance().setProxyOverride(config, { main.post(it) }) {

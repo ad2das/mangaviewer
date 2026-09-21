@@ -78,7 +78,23 @@ private const val PROBE_SCRIPT = """
     var r=e.getBoundingClientRect();
     if(r.width>=60&&r.height>=20){hosts.push({sel:selectors[s],x:r.left,y:r.top,w:r.width,h:r.height});}
   }
-  return JSON.stringify({frames:frames,hosts:hosts,dpr:window.devicePixelRatio,title:document.title,taps:window.__taps|0});
+  var meta={};
+  try{
+    meta.vis=document.visibilityState;
+    meta.hidden=document.hidden;
+    meta.focus=document.hasFocus();
+    meta.turnstile=typeof window.turnstile;
+    meta.opt=!!window.__cf_chl_opt;
+    meta.optKeys=window.__cf_chl_opt?Object.keys(window.__cf_chl_opt).slice(0,12):[];
+    meta.toStr=String(Function.prototype.toString.call(document.hasFocus)).slice(0,70);
+    meta.stage=!!document.querySelector("#challenge-stage");
+    meta.body=((document.body&&document.body.innerHTML)||"").replace(/\s+/g," ").slice(0,220);
+    var scripts=document.scripts||[];
+    var srcs=[];
+    for(var s=0;s<scripts.length;s++){if(scripts[s].src){srcs.push(String(scripts[s].src).slice(0,110));}}
+    meta.scripts=srcs.slice(0,6);
+  }catch(error){meta.error=String(error);}
+  return JSON.stringify({frames:frames,hosts:hosts,dpr:window.devicePixelRatio,title:document.title,taps:window.__taps|0,meta:meta});
 })()
 """
 
@@ -95,14 +111,179 @@ private const val TAP_PROBE_SCRIPT = """
 /**
  * Chrome for Android exposes `window.chrome` with `loadTimes`/`csi` and reports the reduced
  * platform string "Linux armv81"; the engine exposes neither, and Cloudflare's challenge
- * cross-checks the user agent against both. Only JavaScript-visible values change.
+ * cross-checks the user agent against both. The same document surface also carries the small
+ * identity marks Chrome for Android leaves behind — a writable, enumerable `chrome` property, a
+ * `Notification.permission` of "default" (the engine ships no Notification API at all), the base
+ * language appended to the accept list, and a `navigator.share` function — so every value the
+ * challenge can read agrees with the user agent. Only JavaScript-visible values change.
  */
 private const val FINGERPRINT_SCRIPT = """
 (function(){
+  // Every patched surface must still stringify as native code: the challenge cross-checks the
+  // identity of the functions it calls, and a rewritten `toString` is the cheapest tell there is.
+  var nativeToString=Function.prototype.toString;
+  var nativeNames=new WeakMap();
+  function nativeize(fn,text){
+    if(typeof fn!=="function"){return;}
+    try{nativeNames.set(fn,text);}catch(error){}
+  }
+  function nativeizeAccessor(owner,name){
+    try{
+      var descriptor=Object.getOwnPropertyDescriptor(owner,name);
+      if(descriptor&&descriptor.get){nativeize(descriptor.get,"function get "+name+"() { [native code] }");}
+    }catch(error){}
+  }
+  function nativeizeMember(owner,name,text){
+    try{
+      if(owner&&typeof owner[name]==="function"){nativeize(owner[name],text);}
+    }catch(error){}
+  }
+  try{
+    var nativeToStringShim=function toString(){
+      if(typeof this!=="function"){return nativeToString.call(this);}
+      if(nativeNames.has(this)){return nativeNames.get(this);}
+      return nativeToString.call(this);
+    };
+    nativeNames.set(nativeToStringShim,"function toString() { [native code] }");
+    Object.defineProperty(Function.prototype,"toString",{
+      value:nativeToStringShim,writable:true,enumerable:false,configurable:true
+    });
+  }catch(error){}
   try{
     Object.defineProperty(Navigator.prototype,"platform",{
       get:function(){return "Linux armv81";},configurable:true
     });
+  }catch(error){}
+  try{
+    var languages=navigator.languages;
+    if(languages&&languages.length){
+      var base=String(languages[0]).split("-")[0];
+      var list=[];
+      for(var i=0;i<languages.length;i++){list.push(languages[i]);}
+      if(base&&list.indexOf(base)<0){list.push(base);}
+      Object.defineProperty(Navigator.prototype,"languages",{
+        get:function(){return list.slice();},configurable:true
+      });
+    }
+  }catch(error){}
+  try{
+    if(typeof window.Notification==="undefined"){
+      var NotificationStub=function Notification(){};
+      try{
+        Object.defineProperty(NotificationStub,"permission",{
+          get:function(){return "default";},configurable:true
+        });
+      }catch(error){}
+      NotificationStub.requestPermission=function(){return Promise.resolve("default");};
+      Object.defineProperty(window,"Notification",{
+        value:NotificationStub,writable:true,enumerable:false,configurable:true
+      });
+    }
+  }catch(error){}
+  try{
+    if(typeof navigator.share==="undefined"){
+      Object.defineProperty(Navigator.prototype,"share",{
+        value:function share(){return Promise.resolve();},
+        writable:true,enumerable:true,configurable:true
+      });
+    }
+  }catch(error){}
+  try{
+    function nativeFunction(name,arity,body){
+      var fn=function(){return body.apply(this,arguments);};
+      try{Object.defineProperty(fn,"name",{value:name,configurable:true});}catch(error){}
+      try{Object.defineProperty(fn,"length",{value:arity,configurable:true});}catch(error){}
+      nativeize(fn,"function "+name+"() { [native code] }");
+      return fn;
+    }
+    function rejected(name){
+      return function(){return Promise.reject(new DOMException("Permission denied.","NotAllowedError"));};
+    }
+    if(typeof navigator.usb==="undefined"){
+      var USBStub=function USB(){};
+      USBStub.prototype.getDevices=nativeFunction("getDevices",0,function(){return Promise.resolve([]);});
+      USBStub.prototype.requestDevice=nativeFunction("requestDevice",0,rejected("requestDevice"));
+      USBStub.prototype.addEventListener=nativeFunction("addEventListener",2,function(){});
+      USBStub.prototype.removeEventListener=nativeFunction("removeEventListener",2,function(){});
+      USBStub.prototype.dispatchEvent=nativeFunction("dispatchEvent",1,function(){return true;});
+      Object.defineProperty(USBStub.prototype,Symbol.toStringTag,{value:"USB",configurable:true});
+      var usbInstance=new USBStub();
+      Object.defineProperty(Navigator.prototype,"usb",{get:function(){return usbInstance;},configurable:true});
+    }
+    if(typeof navigator.bluetooth==="undefined"){
+      var BluetoothStub=function Bluetooth(){};
+      BluetoothStub.prototype.getAvailability=nativeFunction("getAvailability",0,function(){return Promise.resolve(false);});
+      BluetoothStub.prototype.requestDevice=nativeFunction("requestDevice",0,rejected("requestDevice"));
+      BluetoothStub.prototype.addEventListener=nativeFunction("addEventListener",2,function(){});
+      BluetoothStub.prototype.removeEventListener=nativeFunction("removeEventListener",2,function(){});
+      BluetoothStub.prototype.dispatchEvent=nativeFunction("dispatchEvent",1,function(){return true;});
+      Object.defineProperty(BluetoothStub.prototype,Symbol.toStringTag,{value:"Bluetooth",configurable:true});
+      var bluetoothInstance=new BluetoothStub();
+      Object.defineProperty(Navigator.prototype,"bluetooth",{get:function(){return bluetoothInstance;},configurable:true});
+    }
+    if(typeof navigator.xr==="undefined"){
+      var XRStub=function XRSystem(){};
+      XRStub.prototype.isSessionSupported=nativeFunction("isSessionSupported",1,function(){return Promise.resolve(false);});
+      XRStub.prototype.requestSession=nativeFunction("requestSession",1,rejected("requestSession"));
+      XRStub.prototype.addEventListener=nativeFunction("addEventListener",2,function(){});
+      XRStub.prototype.removeEventListener=nativeFunction("removeEventListener",2,function(){});
+      XRStub.prototype.dispatchEvent=nativeFunction("dispatchEvent",1,function(){return true;});
+      Object.defineProperty(XRStub.prototype,Symbol.toStringTag,{value:"XRSystem",configurable:true});
+      var xrInstance=new XRStub();
+      Object.defineProperty(Navigator.prototype,"xr",{get:function(){return xrInstance;},configurable:true});
+    }
+    if(typeof navigator.mediaSession==="undefined"){
+      var MediaSessionStub=function MediaSession(){};
+      MediaSessionStub.prototype.setActionHandler=nativeFunction("setActionHandler",2,function(){});
+      MediaSessionStub.prototype.setPositionState=nativeFunction("setPositionState",1,function(){});
+      MediaSessionStub.prototype.setCameraActive=nativeFunction("setCameraActive",1,function(){});
+      MediaSessionStub.prototype.setMicrophoneActive=nativeFunction("setMicrophoneActive",1,function(){});
+      Object.defineProperty(MediaSessionStub.prototype,Symbol.toStringTag,{value:"MediaSession",configurable:true});
+      Object.defineProperty(MediaSessionStub.prototype,"metadata",{get:function(){return null;},configurable:true});
+      Object.defineProperty(MediaSessionStub.prototype,"playbackState",{get:function(){return "none";},configurable:true});
+      var mediaSessionInstance=new MediaSessionStub();
+      Object.defineProperty(Navigator.prototype,"mediaSession",{get:function(){return mediaSessionInstance;},configurable:true});
+    }
+    if(typeof navigator.getInstalledRelatedApps==="undefined"){
+      Object.defineProperty(Navigator.prototype,"getInstalledRelatedApps",{
+        value:nativeFunction("getInstalledRelatedApps",0,function(){return Promise.resolve([]);}),
+        writable:true,enumerable:true,configurable:true
+      });
+    }
+    if(typeof navigator.canShare==="undefined"){
+      Object.defineProperty(Navigator.prototype,"canShare",{
+        value:nativeFunction("canShare",0,function(){return false;}),
+        writable:true,enumerable:true,configurable:true
+      });
+    }
+    if(typeof window.PaymentRequest==="undefined"){
+      var PaymentRequestStub=function PaymentRequest(){
+        throw new DOMException("Not implemented.","NotSupportedError");
+      };
+      PaymentRequestStub.prototype.canMakePayment=nativeFunction("canMakePayment",0,function(){return Promise.resolve(null);});
+      PaymentRequestStub.prototype.show=nativeFunction("show",0,rejected("show"));
+      PaymentRequestStub.prototype.abort=nativeFunction("abort",0,function(){});
+      Object.defineProperty(PaymentRequestStub.prototype,Symbol.toStringTag,{value:"PaymentRequest",configurable:true});
+      Object.defineProperty(window,"PaymentRequest",{
+        value:PaymentRequestStub,writable:true,enumerable:false,configurable:true
+      });
+    }
+    if(typeof window.speechSynthesis==="undefined"){
+      var SpeechSynthesisStub=function SpeechSynthesis(){};
+      SpeechSynthesisStub.prototype.speak=nativeFunction("speak",1,function(){});
+      SpeechSynthesisStub.prototype.cancel=nativeFunction("cancel",0,function(){});
+      SpeechSynthesisStub.prototype.pause=nativeFunction("pause",0,function(){});
+      SpeechSynthesisStub.prototype.resume=nativeFunction("resume",0,function(){});
+      SpeechSynthesisStub.prototype.getVoices=nativeFunction("getVoices",0,function(){return [];});
+      Object.defineProperty(SpeechSynthesisStub.prototype,Symbol.toStringTag,{value:"SpeechSynthesis",configurable:true});
+      Object.defineProperty(SpeechSynthesisStub.prototype,"pending",{get:function(){return false;},configurable:true});
+      Object.defineProperty(SpeechSynthesisStub.prototype,"speaking",{get:function(){return false;},configurable:true});
+      Object.defineProperty(SpeechSynthesisStub.prototype,"paused",{get:function(){return false;},configurable:true});
+      var speechSynthesisInstance=new SpeechSynthesisStub();
+      Object.defineProperty(window,"speechSynthesis",{
+        value:speechSynthesisInstance,writable:true,enumerable:false,configurable:true
+      });
+    }
   }catch(error){}
   try{
     if(typeof window.chrome==="undefined"){
@@ -129,10 +310,55 @@ private const val FINGERPRINT_SCRIPT = """
         var t=performance.timing||{};
         return {onloadT:(t.loadEventEnd||navStart),pageT:performance.now(),startE:navStart,transport:"h2"};
       };
-      loadTimes.toString=function(){return "function loadTimes() { [native code] }";};
-      csi.toString=function(){return "function csi() { [native code] }";};
+      nativeize(loadTimes,"function loadTimes() { [native code] }");
+      nativeize(csi,"function csi() { [native code] }");
+      // Chrome's own `chrome` property is writable and enumerable but not configurable.
       Object.defineProperty(window,"chrome",{
-        value:{loadTimes:loadTimes,csi:csi},configurable:true
+        value:{loadTimes:loadTimes,csi:csi},
+        writable:true,enumerable:true,configurable:false
+      });
+    }
+  }catch(error){}
+  try{
+    // The challenge browser lives on a virtual display and never owns the real input focus, so
+    // document.hasFocus() reads false where Chrome reads true; the managed challenge weighs that.
+    var focused=function hasFocus(){return true;};
+    Object.defineProperty(Document.prototype,"hasFocus",{
+      value:focused,writable:true,enumerable:true,configurable:true
+    });
+    Object.defineProperty(document,"hasFocus",{
+      value:focused,writable:true,enumerable:true,configurable:true
+    });
+  }catch(error){}
+  try{
+    // Re-register every surface the blocks above patched, including the ones they created inside
+    // their own scope, so the challenge never sees a rewritten `toString` anywhere it looks.
+    var navigatorPrototype=Navigator.prototype;
+    ["platform","languages","usb","bluetooth","xr","mediaSession"].forEach(function(key){
+      nativeizeAccessor(navigatorPrototype,key);
+    });
+    ["share","getInstalledRelatedApps","canShare"].forEach(function(key){
+      var descriptor=Object.getOwnPropertyDescriptor(navigatorPrototype,key);
+      if(descriptor&&typeof descriptor.value==="function"){
+        nativeize(descriptor.value,"function "+key+"() { [native code] }");
+      }
+    });
+    nativeizeAccessor(window.Notification,"permission");
+    nativeizeMember(window.Notification,"requestPermission","function requestPermission() { [native code] }");
+    nativeize(document.hasFocus,"function hasFocus() { [native code] }");
+    var documentHasFocus=Object.getOwnPropertyDescriptor(Document.prototype,"hasFocus");
+    if(documentHasFocus&&typeof documentHasFocus.value==="function"){
+      nativeize(documentHasFocus.value,"function hasFocus() { [native code] }");
+    }
+    nativeizeMember(window.chrome,"loadTimes","function loadTimes() { [native code] }");
+    nativeizeMember(window.chrome,"csi","function csi() { [native code] }");
+    var speech=window.speechSynthesis;
+    if(speech){
+      ["speak","cancel","pause","resume","getVoices"].forEach(function(key){
+        nativeizeMember(speech,key,"function "+key+"() { [native code] }");
+      });
+      ["pending","speaking","paused"].forEach(function(key){
+        nativeizeAccessor(Object.getPrototypeOf(speech),key);
       });
     }
   }catch(error){}
@@ -204,8 +430,12 @@ internal class NewxtoonChallengePage(
                     }.onFailure { Log.w(TAG, "fingerprint injection skipped", it) }
                     applySpoofedUserAgentMetadata(webView, engineChromeVersion)
                 }
-                // A persisted clearance that is still valid makes the interstitial resolve at once.
-                cookies.seedWebView()
+                // A clearance from a previous process is deliberately NOT seeded into this view:
+                // Cloudflare plants its own cf_clearance while the challenge runs, and a seeded copy
+                // survives beside it, so the browser sends the stale value first and the edge
+                // refuses the freshly issued one — the solve-then-403 loop. The replay browser still
+                // seeds, and it only ever runs once a clearance has been proven.
+                Log.i(TAG, "challenge view starts without a seeded clearance present=${cookies.hasClearance()}")
                 // While the challenge resolves, a verified-clearance fetch may use this view already.
                 if (cookies.hasVerifiedClearance()) onSettlingView(webView)
                 Log.i(TAG, "webview created ua=${webView.settings.userAgentString} " +

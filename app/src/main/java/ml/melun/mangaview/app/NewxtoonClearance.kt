@@ -19,6 +19,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
@@ -50,6 +51,11 @@ private const val TAG = "NewxtoonClearance"
 /** Reader-session key for this source; the clearance gate is keyed by source id. */
 private const val NEWXTOON_SOURCE_KEY = "newxtoon"
 
+/** Chrome randomizes its GREASE brand every session; the same pick feeds sec-ch-ua and the metadata. */
+private val greaseBrand: String = listOf(
+    "Not A;Brand", "Not_A Brand", "Not-A.Brand", "Not)A;Brand", "Not;A Brand", "Not/A)Brand",
+).random()
+
 /** The emulator's model and build id mark the session as non-phone; only there they are rewritten. */
 private val spoofsDeviceIdentity: Boolean = run {
     val fingerprint = android.os.Build.FINGERPRINT
@@ -73,21 +79,21 @@ internal fun applySpoofedUserAgentMetadata(webView: WebView, fullVersion: String
     val major = fullVersion.substringBefore('.')
     val brands = listOf(
         UserAgentMetadata.BrandVersion.Builder()
-            .setBrand("Not(A:Brand").setMajorVersion("99").setFullVersion("99.0.0.0").build(),
+            .setBrand(greaseBrand).setMajorVersion("99").setFullVersion("99.0.0.0").build(),
         UserAgentMetadata.BrandVersion.Builder()
             .setBrand("Google Chrome").setMajorVersion(major).setFullVersion(fullVersion).build(),
         UserAgentMetadata.BrandVersion.Builder()
             .setBrand("Chromium").setMajorVersion(major).setFullVersion(fullVersion).build(),
     )
+    // Chrome for Android reports neither architecture nor bitness, so neither is claimed here;
+    // a hint the browser would not send is a lie the challenge can compare against the GPU.
     val metadata = UserAgentMetadata.Builder()
         .setBrandVersionList(brands)
         .setFullVersion(fullVersion)
         .setPlatform("Android")
         .setPlatformVersion("${android.os.Build.VERSION.RELEASE}.0.0")
-        .setArchitecture("arm")
         .setModel(android.os.Build.MODEL)
         .setMobile(true)
-        .setBitness(64)
         .setWow64(false)
         .build()
     runCatching { WebSettingsCompat.setUserAgentMetadata(webView.settings, metadata) }
@@ -163,7 +169,7 @@ internal class NewxtoonClearance(
     /** The client hints the challenge WebView actually sends, replayed on the OkHttp route. */
     val clientHints: String = run {
         val version = engineChromeVersion.substringBefore('.')
-        "\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"$version\", \"Chromium\";v=\"$version\""
+        "\"$greaseBrand\";v=\"99\", \"Google Chrome\";v=\"$version\", \"Chromium\";v=\"$version\""
     }
 
     /** Builds the inert replay browser that hosts fetches under the proven browser identity. */
@@ -371,7 +377,8 @@ internal class NewxtoonClearance(
                 // A clearance Cloudflare planted while the previous interstitial was still
                 // spinning must survive the next attempt: wiping it is exactly what turns one
                 // stalled verification into a failed ladder. Only a cookie-less start is clean.
-                if (!cookies.hasClearance()) clearWebViewCookies()
+                // Only a cookie-less start is clean, so the wipe stays behind the clearance check.
+                cookies.expireWebViewClearance()
                 withTimeoutOrNull(SOLVE_TIMEOUT_MILLIS) { runChallenge() } != null
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -503,19 +510,40 @@ internal class NewxtoonClearance(
 internal class ChallengeWindow(context: Context) : Closeable {
     private val manager = requireNotNull(context.getSystemService(DisplayManager::class.java))
     private val frames = HandlerThread("newxtoon-clearance-frames").apply { start() }
-    private val surface = ImageReader.newInstance(WIDTH, HEIGHT, PixelFormat.RGBA_8888, 2).apply {
+    // Chrome for Android renders a page inside a tab, not across the whole panel, and the challenge
+    // weighs window metrics: a viewport that exactly equals the display is a kiosk marker, and a
+    // density other than the panel's is a virtual-display marker. The virtual display mirrors the
+    // real panel and the browser view is inset like a tab, so screen, outer, inner, and
+    // devicePixelRatio read what Chrome reports on the same device.
+    private val metrics = context.resources.displayMetrics
+    private val width = metrics.widthPixels
+    private val height = metrics.heightPixels
+    private val density = metrics.densityDpi
+    private val topInset = dimenPx(context, "status_bar_height") +
+        (TOOLBAR_DP * metrics.density).toInt()
+    private val bottomInset = dimenPx(context, "navigation_bar_height")
+    private val contentHeight = (height - topInset - bottomInset).coerceAtLeast(MIN_CONTENT_HEIGHT)
+    private val surface = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2).apply {
         setOnImageAvailableListener({ reader -> reader.acquireLatestImage()?.close() },
             Handler(frames.looper))
     }
-    private val display = manager.createVirtualDisplay("newxtoon-clearance", WIDTH, HEIGHT, DENSITY,
+    private val display = manager.createVirtualDisplay("newxtoon-clearance", width, height, density,
         surface.surface, DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY)
     private val presentation = Presentation(
         context.createDisplayContext(display.display), display.display)
 
     val context: Context = presentation.context
 
+    init {
+        Log.i(TAG, "challenge window ${width}x$height density=$density " +
+            "top=$topInset bottom=$bottomInset content=$contentHeight")
+    }
+
     fun attach(webView: WebView) {
-        presentation.setContentView(webView)
+        val frame = FrameLayout(presentation.context)
+        frame.addView(webView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, contentHeight).apply { topMargin = topInset })
+        presentation.setContentView(frame)
         presentation.show()
     }
 
@@ -527,9 +555,15 @@ internal class ChallengeWindow(context: Context) : Closeable {
     }
 
     private companion object {
-        const val WIDTH = 1080
-        const val HEIGHT = 2340
-        const val DENSITY = 420
+        /** Chrome's toolbar height, the piece of the tab chrome the system bars do not supply. */
+        const val TOOLBAR_DP = 56
+        const val MIN_CONTENT_HEIGHT = 240
     }
+}
+
+/** Resolves a framework dimension, returning 0 when the platform does not define it. */
+private fun dimenPx(context: Context, name: String): Int {
+    val id = context.resources.getIdentifier(name, "dimen", "android")
+    return if (id > 0) context.resources.getDimensionPixelSize(id) else 0
 }
 

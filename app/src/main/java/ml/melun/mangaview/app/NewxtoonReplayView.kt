@@ -3,6 +3,7 @@ package ml.melun.mangaview.app
 import android.os.Handler
 import android.util.Log
 import android.view.View
+import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
@@ -121,6 +122,10 @@ internal class NewxtoonReplayView(
             webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             webView.settings.javaScriptEnabled = true
             webView.settings.domStorageEnabled = true
+            // The challenge view already accepts third-party cookies because Turnstile renders in
+            // a cross-site iframe; a loadData document is not guaranteed to share the origin's
+            // site-for-cookies, so without this the replayed cf_clearance is dropped as third-party.
+            CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
             webView.settings.userAgentString = sourceUserAgent
             if (spoofsDeviceIdentity) applySpoofedUserAgentMetadata(webView, engineChromeVersion)
             webView.addJavascriptInterface(fetcher.Bridge(), BRIDGE_NAME)
