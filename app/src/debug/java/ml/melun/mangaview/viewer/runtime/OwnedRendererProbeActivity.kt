@@ -83,7 +83,7 @@ internal class OwnedRendererProbeActivity : Activity(), SurfaceHolder.Callback {
             }
         }
         setContentView(root)
-        frameScheduler.post()
+        frameScheduler.post(0L)
     }
 
     fun awaitSurface(): Boolean = ready.await(10L, TimeUnit.SECONDS) &&
@@ -270,7 +270,7 @@ internal class OwnedRendererProbeActivity : Activity(), SurfaceHolder.Callback {
             frameOffers += 1L
             frame += 1L
         }
-        frameScheduler.post()
+        frameScheduler.post(0L)
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) = attach(holder)

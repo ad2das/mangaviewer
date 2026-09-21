@@ -76,6 +76,16 @@ internal class EngineSurfaceOwner(
     private var configured = false
     private var choreographer: Choreographer? = null
     private var pollPosted = false
+    @Volatile private var interactionActive = false
+
+    /**
+     * Owner-thread hint that a real drag or fling owns the frame. This drain submits a frame on the
+     * owner thread, so while a gesture is pacing the display it must be delivered *after* the motion
+     * callback that requests the next display slot, not before it: a frame callback sorts by due time
+     * and the motion callback registers with no delay.
+     */
+    fun interactionActive(active: Boolean) { interactionActive = active }
+
     private val poll = Choreographer.FrameCallback {
         pollPosted = false
         pollPresentations()
@@ -371,7 +381,14 @@ internal class EngineSurfaceOwner(
         }
         val choreographer = choreographer ?: Choreographer.getInstance().also { choreographer = it }
         pollPosted = true
-        choreographer.postFrameCallback(poll)
+        if (interactionActive) {
+            // Half a refresh period is always inside the frame this drain belongs to, yet behind the
+            // zero-delay motion callback that owns the display slot for the gesture.
+            val halfPeriodMillis = (500.0 / refreshRate).toLong().coerceIn(1L, 8L)
+            choreographer.postFrameCallbackDelayed(poll, halfPeriodMillis)
+        } else {
+            choreographer.postFrameCallback(poll)
+        }
     }
 
     private fun terminatePending(kind: PresentationTimestampKind) {

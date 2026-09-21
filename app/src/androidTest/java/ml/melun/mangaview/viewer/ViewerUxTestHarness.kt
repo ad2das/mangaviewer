@@ -6,6 +6,8 @@ import android.content.Intent
 import android.graphics.Rect
 import android.os.Build
 import android.os.SystemClock
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.WindowInsets
 import androidx.test.core.app.ActivityScenario
 import androidx.test.uiautomator.By
@@ -267,7 +269,9 @@ internal class ViewerUxTestHarness(
         check(requestedDistance in 1..safe.height()) {
             "Actual $name swipe distance is not nonzero and bounded: $requestedDistance"
         }
-        val dispatched = device.swipe(centerX, startY, centerX, endY, steps)
+        val dispatched = injectTouchscreenSwipe(
+            centerX.toFloat(), startY.toFloat(), centerX.toFloat(), endY.toFloat(), steps,
+        )
         val completedNanos = System.nanoTime()
         gestures += GestureMeasurement(
             name = name,
@@ -280,6 +284,71 @@ internal class ViewerUxTestHarness(
         )
         check(dispatched) { "Actual $name swipe could not be dispatched" }
         return gestures.lastIndex
+    }
+
+    /**
+     * Platform-dispatched touchscreen drag. [UiDevice.swipe] builds events without an explicit
+     * touchscreen source, so the viewer's SurfaceView routes them away from `onTouchEvent` and the
+     * gesture never reaches the engine. A real finger arrives as SOURCE_TOUCHSCREEN, so the strict
+     * gate has to inject the same shape the viewer actually accepts.
+     */
+    private fun injectTouchscreenSwipe(
+        startX: Float,
+        startY: Float,
+        endX: Float,
+        endY: Float,
+        steps: Int,
+    ): Boolean {
+        val automation = instrumentation.uiAutomation
+        val downTime = SystemClock.uptimeMillis()
+        val records = StringBuilder()
+        fun send(action: Int, x: Float, y: Float): Boolean {
+            var attempt = 0
+            while (true) {
+                val eventTime = SystemClock.uptimeMillis()
+                val event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0).apply {
+                    source = InputDevice.SOURCE_TOUCHSCREEN
+                }
+                val accepted = try {
+                    automation.injectInputEvent(event, true)
+                } finally {
+                    event.recycle()
+                }
+                records.append("{\"action\":").append(action)
+                    .append(",\"x\":").append(x).append(",\"y\":").append(y)
+                    .append(",\"attempt\":").append(attempt)
+                    .append(",\"accepted\":").append(accepted)
+                    .append(",\"atNanos\":").append(System.nanoTime()).append("}\n")
+                if (accepted) return true
+                if (attempt >= INJECTION_RETRY_LIMIT) return false
+                attempt += 1
+                SystemClock.sleep(INJECTION_RETRY_DELAY_MILLIS)
+            }
+        }
+        val total = steps.coerceAtLeast(1)
+        var dispatched = send(MotionEvent.ACTION_DOWN, startX, startY)
+        if (dispatched) {
+            for (step in 1..total) {
+                SystemClock.sleep(SWIPE_SAMPLE_DELAY_MILLIS)
+                val fraction = step / total.toFloat()
+                val moved = send(
+                    MotionEvent.ACTION_MOVE,
+                    startX + (endX - startX) * fraction,
+                    startY + (endY - startY) * fraction,
+                )
+                if (!moved) {
+                    dispatched = false
+                    break
+                }
+            }
+        }
+        if (dispatched) {
+            dispatched = send(MotionEvent.ACTION_UP, endX, endY)
+        } else {
+            runCatching { send(MotionEvent.ACTION_CANCEL, endX, endY) }
+        }
+        runCatching { artifacts.directory.resolve("injected-touch.jsonl").appendText(records.toString()) }
+        return dispatched
     }
 
     private fun exerciseVerifiedGesture(
@@ -785,6 +854,9 @@ internal class ViewerUxTestHarness(
         const val GESTURE_SETTLE_TIMEOUT_MILLIS = 4_000L
         const val IDLE_OBSERVATION_MILLIS = 500L
         const val CONDITION_SLACK_MILLIS = 1_000L
+        const val SWIPE_SAMPLE_DELAY_MILLIS = 8L
+        const val INJECTION_RETRY_LIMIT = 8
+        const val INJECTION_RETRY_DELAY_MILLIS = 25L
         const val MAXIMUM_PSS_INCREASE_KIB = 192 * 1_024
         const val MAXIMUM_PSS_CHECKPOINT_RANGE_KIB = 64 * 1_024
         const val MAXIMUM_MISSED_FRAME_RATIO = 0.01

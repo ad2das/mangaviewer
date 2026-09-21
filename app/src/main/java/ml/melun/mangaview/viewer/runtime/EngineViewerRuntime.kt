@@ -35,6 +35,7 @@ import ml.melun.mangaview.engine.runtime.EngineRenderRuntimeDiagnosticSnapshot
 import ml.melun.mangaview.engine.runtime.EngineSessionRuntime
 import ml.melun.mangaview.engine.runtime.EngineSessionRuntimeDiagnosticSnapshot
 import ml.melun.mangaview.engine.runtime.EngineTilePlanner
+import ml.melun.mangaview.engine.runtime.NoopEngineWorkTracer
 import ml.melun.mangaview.engine.session.EngineSession
 import ml.melun.mangaview.viewer.FixedPx
 import ml.melun.mangaview.viewer.Viewport
@@ -87,15 +88,16 @@ internal class EngineViewerRuntime(
     private val content: EngineSessionRuntime = EngineSessionRuntime(scope, coordinator, reducer, source, episodeId,
         { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },
         { _, failure -> reportFailure(failure) }, awaitInitialPresentation = true)
-    private val refreshScheduler = HandlerRefreshScheduler(
-        HandlerRefreshMessageQueue(Handler.createAsync(Looper.getMainLooper()))) { onGraphicsRefreshFrame() }
+    private val refreshQueue = HandlerRefreshMessageQueue(Handler.createAsync(Looper.getMainLooper()))
+    private val refreshScheduler = HandlerRefreshScheduler(refreshQueue) { onGraphicsRefreshFrame() }
     private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator,
-        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 12),
+        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 12, tracer = NoopEngineWorkTracer),
         EngineTileWork(NativeEngineImageDecoder(), decodeDispatcher, renderer), renderer, content::pageRequest,
         { scene -> renderer.offer(frameProvenance.attachTicket(scene)) }, renderer::clearScene, { _, failure -> reportFailure(failure) },
         waitForCompleteViewport = false, reportSceneFailure = reportFailure,
         frameWorkObserver = FrameWorkObserver { kind, atNanos -> frameProvenance.noteWorkTrigger(kind, atNanos) },
-        refreshScheduler = refreshScheduler)
+        refreshScheduler = refreshScheduler,
+        tracer = NoopEngineWorkTracer)
     val surface = ViewerSurfaceHost(context, this)
 
     init { disableGraphics() }
@@ -222,6 +224,13 @@ internal class EngineViewerRuntime(
     override fun userScroll(delta: FixedPx, velocityPixelsPerSecond: Float, frameTimeNanos: Long,
         frameTimelineVsyncId: Long, expectedPresentationTimeNanos: Long): Boolean {
         if (closing) return false
+        return userScrollStep(delta, velocityPixelsPerSecond, frameTimeNanos, frameTimelineVsyncId,
+            expectedPresentationTimeNanos)
+    }
+
+    private fun userScrollStep(delta: FixedPx, velocityPixelsPerSecond: Float, frameTimeNanos: Long,
+        frameTimelineVsyncId: Long, expectedPresentationTimeNanos: Long): Boolean {
+        if (closing) return false
         val sequence = ++inputSequence
         if (frameProvenance.isTracking) {
             val before = content.snapshot.session
@@ -230,6 +239,8 @@ internal class EngineViewerRuntime(
         }
         val sample = InputSample(sequence, gesture, frameTimeNanos, delta.units)
         val update = content.input(sample)
+        // The gesture step just revealed its pixels; rebuild the scene exactly once for this step.
+        graphics.refreshInteractionFrame()
         frameProvenance.finishInputFrame(update.receipts.any { it.outcome == InputOutcome.DEFERRED })
         val after = update.snapshot
         viewerInputTrace({
@@ -253,6 +264,16 @@ internal class EngineViewerRuntime(
 
     override fun interactionChanged(active: Boolean, atNanos: Long) {
         if (active) gesture++
+        // A drag or fling owns every frame until its tail ends; the render owner can then keep its
+        // speculative horizon instead of re-walking the same neighbours on each moved viewport.
+        // The inline flag is set before the render owner sees the boundary: on release the owner
+        // delivers any work result it deferred during the gesture through the ordinary queue, and
+        // that message must not run inline inside this boundary call.
+        refreshQueue.inlineWhileInteracting = active
+        if (!closing) graphics.interactionActive(active)
+        // The owner-thread drain submits frames itself, so while a gesture paces the display it must
+        // be delivered behind the motion callback rather than ahead of it.
+        renderer.interactionActive(active)
         reportGestureBoundary(active, atNanos)
     }
     override fun motionFrame(sequence: Long, atNanos: Long) = reportMotionFrame(sequence, atNanos)
@@ -267,8 +288,9 @@ internal class EngineViewerRuntime(
 
     /** Queued engine drain for one main-looper refresh message, not a vsync callback; the
      * coalesced scene work happens inside. */
-    private fun onGraphicsRefreshFrame() =
+    private fun onGraphicsRefreshFrame() {
         traceEngineWork("engine_graphics_frame") { graphics.refreshOnFrame() }
+    }
 
     /** Inline drain that retires pixels before detach; a queued frame would arrive too late. */
     private fun disableGraphics() =

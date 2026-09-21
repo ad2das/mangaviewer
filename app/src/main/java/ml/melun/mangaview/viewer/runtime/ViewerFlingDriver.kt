@@ -9,6 +9,7 @@ internal fun interface ViewerFrameSchedulerFactory {
 
 internal class ViewerFlingDriver(
     schedulerFactory: ViewerFrameSchedulerFactory,
+    private val periodNanos: Long,
     private val emit: (
         deltaPixels: Double,
         velocityPixelsPerSecond: Double,
@@ -18,14 +19,20 @@ internal class ViewerFlingDriver(
     ) -> Boolean,
     private val frameObserved: (sequence: Long, frameTimeNanos: Long) -> Unit,
     private val finished: () -> Unit,
+    private val dispatch: ((Runnable) -> Unit)? = null,
 ) {
     constructor(
         choreographer: Choreographer,
+        periodNanos: Long,
         emit: (Double, Double, Long, Long, Long) -> Boolean,
         frameObserved: (sequence: Long, frameTimeNanos: Long) -> Unit,
         finished: () -> Unit,
     ) : this(ViewerFrameSchedulerFactory { callback -> ViewerVsyncScheduler(choreographer, callback) },
-        emit, frameObserved, finished)
+        periodNanos, emit, frameObserved, finished, null)
+
+    init {
+        require(periodNanos > 0L) { "Fling pacing period must be positive" }
+    }
 
     private val frameScheduler = schedulerFactory.create(::doFrame)
     private var velocity = 0.0
@@ -33,21 +40,27 @@ internal class ViewerFlingDriver(
     private var motionSequence = 0L
     private var running = false
 
+    /** Whether this velocity can sustain a fling, decided on the caller's thread. */
+    fun canFling(initialVelocityPixelsPerSecond: Double): Boolean =
+        abs(initialVelocityPixelsPerSecond) >= MINIMUM_VELOCITY
+
     fun start(
         initialVelocityPixelsPerSecond: Double,
         precedingFrameNanos: Long,
         sequence: Long,
     ): Boolean {
-        stop()
-        if (abs(initialVelocityPixelsPerSecond) < MINIMUM_VELOCITY) return false
+        if (!canFling(initialVelocityPixelsPerSecond)) return false
         require(precedingFrameNanos > 0L) { "Fling must continue from a real frame" }
         require(sequence > 0L) { "Fling motion sequence must be positive" }
-        velocity = initialVelocityPixelsPerSecond.coerceIn(-MAXIMUM_VELOCITY, MAXIMUM_VELOCITY)
-        // Integrate from the supplied monotonic origin; starting does not consume a frame.
-        previousFrameNanos = precedingFrameNanos
-        motionSequence = sequence
-        running = true
-        frameScheduler.post()
+        onAnimationThread {
+            stopInternal()
+            velocity = initialVelocityPixelsPerSecond.coerceIn(-MAXIMUM_VELOCITY, MAXIMUM_VELOCITY)
+            // Integrate from the supplied monotonic origin; starting does not consume a frame.
+            previousFrameNanos = precedingFrameNanos
+            motionSequence = sequence
+            running = true
+            frameScheduler.post(precedingFrameNanos + periodNanos)
+        }
         return true
     }
 
@@ -59,17 +72,30 @@ internal class ViewerFlingDriver(
         frameTimelineVsyncId: Long,
         expectedPresentationTimeNanos: Long,
     ): Boolean {
-        if (!start(initialVelocityPixelsPerSecond, releasedAtNanos, sequence)) return false
-        // An UP with unchanged pointer coordinates still has elapsed momentum by this
-        // frame. Waiting for another callback would leave the release frame empty.
-        // Input delivered after this VSYNC instead starts on the next available frame.
-        if (frameTimeNanos > releasedAtNanos) {
-            doFrame(frameTimeNanos, frameTimelineVsyncId, expectedPresentationTimeNanos)
+        if (!canFling(initialVelocityPixelsPerSecond)) return false
+        require(releasedAtNanos > 0L) { "Fling must continue from a real frame" }
+        require(sequence > 0L) { "Fling motion sequence must be positive" }
+        onAnimationThread {
+            stopInternal()
+            velocity = initialVelocityPixelsPerSecond.coerceIn(-MAXIMUM_VELOCITY, MAXIMUM_VELOCITY)
+            previousFrameNanos = releasedAtNanos
+            motionSequence = sequence
+            running = true
+            // An UP with unchanged pointer coordinates still has elapsed momentum by this
+            // frame. Waiting for another deadline would leave the release frame empty.
+            // Input delivered after this frame instead starts on the next one.
+            if (frameTimeNanos > releasedAtNanos) {
+                doFrame(frameTimeNanos, frameTimelineVsyncId, expectedPresentationTimeNanos)
+            } else {
+                frameScheduler.post(releasedAtNanos + periodNanos)
+            }
         }
-        return running
+        return true
     }
 
-    fun stop() {
+    fun stop() = onAnimationThread { stopInternal() }
+
+    private fun stopInternal() {
         if (!running) return
         running = false
         previousFrameNanos = 0L
@@ -78,15 +104,28 @@ internal class ViewerFlingDriver(
         finished()
     }
 
+    private fun onAnimationThread(block: () -> Unit) {
+        val target = dispatch
+        if (target == null) block() else target(Runnable { block() })
+    }
+
     private fun doFrame(
         frameTimeNanos: Long,
         frameTimelineVsyncId: Long,
         expectedPresentationTimeNanos: Long,
     ) {
         if (!running) return
+        doFrameBody(frameTimeNanos, frameTimelineVsyncId, expectedPresentationTimeNanos)
+    }
+
+    private fun doFrameBody(
+        frameTimeNanos: Long,
+        frameTimelineVsyncId: Long,
+        expectedPresentationTimeNanos: Long,
+    ) {
         // Re-arm before synchronous input/content/graphics work so that work cannot
-        // delay requesting the next display slot. Every stop path cancels this arm.
-        frameScheduler.post()
+        // delay the next deadline. Every stop path cancels this arm.
+        frameScheduler.post(frameTimeNanos + periodNanos)
         val previous = previousFrameNanos
         if (frameTimeNanos <= previous) return
         previousFrameNanos = frameTimeNanos
@@ -101,7 +140,7 @@ internal class ViewerFlingDriver(
                         expectedPresentationTimeNanos,
                         frameTimelineVsyncId,
                     )) {
-                    stop()
+                    stopInternal()
                     return
                 }
                 frameObserved(motionSequence, frameTimeNanos)

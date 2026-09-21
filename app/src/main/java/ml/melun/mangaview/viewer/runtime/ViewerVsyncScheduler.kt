@@ -4,9 +4,13 @@ import android.os.Build
 import android.view.Choreographer
 import androidx.annotation.RequiresApi
 
-/** Delivers the SurfaceFlinger frame timeline that produced a UI motion step. */
+/**
+ * Paces a UI motion step. [post] arms the next step; [dueNanos] is the monotonic time the step is
+ * due on the display grid, which a deadline-driven implementation honours and a vsync-driven one
+ * may treat as a hint only.
+ */
 internal interface ViewerFrameScheduler {
-    fun post()
+    fun post(dueNanos: Long)
     fun cancel()
 }
 
@@ -28,7 +32,7 @@ internal class ViewerVsyncScheduler(
         deliver(frameData.frameTimeNanos, timeline.vsyncId, timeline.expectedPresentationTimeNanos)
     }
 
-    override fun post() {
+    override fun post(dueNanos: Long) {
         if (scheduled) return
         scheduled = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

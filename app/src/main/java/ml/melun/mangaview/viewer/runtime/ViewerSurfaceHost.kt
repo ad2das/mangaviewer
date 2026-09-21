@@ -45,12 +45,39 @@ internal class ViewerSurfaceHost(
     private val dragQuantizer = PointerDeltaQuantizer()
     private val inputTrace = ViewerInputTraceLedger()
     private val dragFrame = ViewerVsyncScheduler(android.view.Choreographer.getInstance(), ::drawDrag)
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    // The fling's motion steps are paced by a deadline on ViewerAnimationLooper, not by a display
+    // slot callback: the platform can withhold a whole vsync event from an idle client, and a fling
+    // that waits for that event never produces the step for that display period. Only the engine
+    // step the deadline reveals is handed back to the main thread, in order.
+    private val refreshPeriodNanos = (1_000_000_000.0 / (context.display?.refreshRate ?: 60f)).toLong()
     private val fling = ViewerFlingDriver(
-        android.view.Choreographer.getInstance(),
-        ::emitFlingScroll,
+        ViewerFrameSchedulerFactory { callback -> ViewerAnimationScheduler(callback) },
+        refreshPeriodNanos,
+        ::dispatchFlingScroll,
         sink::motionFrame,
-        ::finishInteraction,
+        ::dispatchFlingFinished,
+        ViewerAnimationLooper::dispatch,
     )
+    // A motion step is handed to the main thread through this queue. The animation looper only
+    // appends under a private lock; it must never call Handler.post while the main looper is busy,
+    // because that call blocks on the main MessageQueue monitor and would delay the very vsync the
+    // step exists to consume. The pump, which runs on main, keeps itself armed for the whole fling.
+    private val flingSteps = java.util.ArrayDeque<FlingStep>()
+    private val flingStepsLock = Any()
+    private var flingPumpArmed = false
+    private var flingStepsLive = false
+    private var flingLastStepNanos = 0L
+    private val flingPump = object : Runnable {
+        override fun run() {
+            drainFlingSteps()
+            val rearm = synchronized(flingStepsLock) {
+                val live = flingStepsLive && System.nanoTime() - flingLastStepNanos < FLING_PUMP_TIMEOUT_NANOS
+                if (live) true else { flingPumpArmed = false; false }
+            }
+            if (rearm) mainHandler.postDelayed(this, FLING_PUMP_DELAY_MILLIS)
+        }
+    }
     private val zoom = ViewerZoomState()
     private val pinch = ViewerPinchGesture(zoom, ::applyZoom, ::emitSyntheticScroll)
     private var velocityTracker: VelocityTracker? = null
@@ -304,7 +331,7 @@ internal class ViewerSurfaceHost(
         if (dragScheduled) return
         if (motionSequence == 0L) motionSequence = issueMotionSequence()
         dragScheduled = true
-        dragFrame.post()
+        dragFrame.post(0L)
     }
 
     private fun drawDrag(frameTime: Long, vsyncId: Long, expectedPresentation: Long) {
@@ -396,6 +423,67 @@ internal class ViewerSurfaceHost(
             expectedPresentationTimeNanos, frameTimelineVsyncId,
             if (Trace.isEnabled()) inputTrace.synthetic(deltaPixels) else null)
 
+    /**
+     * Motion steps are computed on [ViewerAnimationLooper]; the engine work each step reveals is
+     * applied on the main thread, in submission order, so the two never share a display slot. This
+     * only appends under a private lock: posting here would block the animation looper on the main
+     * looper's message queue monitor, which is exactly the stall that loses the next vsync.
+     */
+    private fun dispatchFlingScroll(deltaPixels: Double, velocityPixelsPerSecond: Double,
+        frameTimeNanos: Long, expectedPresentationTimeNanos: Long, frameTimelineVsyncId: Long): Boolean {
+        val step = FlingStep(deltaPixels, velocityPixelsPerSecond, frameTimeNanos,
+            expectedPresentationTimeNanos, frameTimelineVsyncId)
+        val arm = synchronized(flingStepsLock) {
+            flingStepsLive = true
+            flingLastStepNanos = System.nanoTime()
+            flingSteps.addLast(step)
+            if (flingPumpArmed) false else { flingPumpArmed = true; true }
+        }
+        if (arm) mainHandler.post(flingPump)
+        return true
+    }
+
+    /**
+     * The fling is already over here, so a direct post cannot delay a vsync the app still needs. It
+     * drains the queued steps first, which preserves their order ahead of the interaction boundary.
+     */
+    private fun dispatchFlingFinished() {
+        // The fling ends here, on the animation looper, next to the last motion step. The boundary
+        // must carry this instant rather than the main-thread time the queued drain finally runs.
+        val finishedAtNanos = System.nanoTime()
+        synchronized(flingStepsLock) { flingStepsLive = false }
+        mainHandler.post {
+            drainFlingSteps()
+            finishInteraction(finishedAtNanos)
+        }
+    }
+
+    private fun drainFlingSteps() {
+        while (true) {
+            val step = synchronized(flingStepsLock) { flingSteps.pollFirst() } ?: break
+            emitFlingScroll(step.deltaPixels, step.velocityPixelsPerSecond, step.frameTimeNanos,
+                step.expectedPresentationTimeNanos, step.frameTimelineVsyncId)
+        }
+    }
+
+    /** Arms the pump from the main thread before the first step, so the animation looper never posts. */
+    private fun armFlingPump() {
+        val arm = synchronized(flingStepsLock) {
+            flingStepsLive = true
+            flingLastStepNanos = System.nanoTime()
+            if (flingPumpArmed) false else { flingPumpArmed = true; true }
+        }
+        if (arm) mainHandler.post(flingPump)
+    }
+
+    private data class FlingStep(
+        val deltaPixels: Double,
+        val velocityPixelsPerSecond: Double,
+        val frameTimeNanos: Long,
+        val expectedPresentationTimeNanos: Long,
+        val frameTimelineVsyncId: Long,
+    )
+
     private fun flushDrag() {
         if (dragScheduled) dragFrame.cancel()
         dragScheduled = false
@@ -419,10 +507,15 @@ internal class ViewerSurfaceHost(
         sink.interactionChanged(true, System.nanoTime())
     }
 
-    private fun finishInteraction() {
+    /**
+     * [atNanos] is when the interaction truly ended, which is not always when this runs: the fling
+     * finish is handed to the main thread, and stamping the boundary there would charge the main
+     * loop's dispatch latency to the gesture tail. Callers that know the real end pass it.
+     */
+    private fun finishInteraction(atNanos: Long = System.nanoTime()) {
         if (!interaction) return
         interaction = false
-        sink.interactionChanged(false, System.nanoTime())
+        sink.interactionChanged(false, atNanos)
     }
 
     private fun issueMotionSequence(): Long = nextMotionSequence.also {
@@ -432,6 +525,12 @@ internal class ViewerSurfaceHost(
     private companion object {
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val NANOS_PER_SECOND = 1_000_000_000.0
+
+        /** How often the armed pump re-checks while a fling is live; well inside one refresh period. */
+        const val FLING_PUMP_DELAY_MILLIS = 4L
+
+        /** A live fling that produced no motion step for this long has ended without its finish call. */
+        const val FLING_PUMP_TIMEOUT_NANOS = 500_000_000L
     }
 }
 

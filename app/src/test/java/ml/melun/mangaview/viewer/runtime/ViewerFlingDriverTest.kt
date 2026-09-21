@@ -9,12 +9,14 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+private const val FRAME_PERIOD_NANOS = 16_666_667L
+
 class ViewerFlingDriverTest {
     @Test fun releaseAdvancesInTheFirstAvailableFrameWithoutDuplicatingElapsedDistance() {
         val scheduler = SchedulerHarness()
         val emissions = mutableListOf<Emission>()
         val observations = mutableListOf<Pair<Long, Long>>()
-        val driver = ViewerFlingDriver(scheduler, { displacement, velocity, frameTime, expected, vsync ->
+        val driver = ViewerFlingDriver(scheduler, FRAME_PERIOD_NANOS, { displacement, velocity, frameTime, expected, vsync ->
             emissions += Emission(displacement, velocity, frameTime, expected, vsync)
             true
         }, { sequence, frameTime -> observations += sequence to frameTime }, {})
@@ -40,7 +42,7 @@ class ViewerFlingDriverTest {
     @Test fun releaseAfterTheVsyncKeepsItsOriginUntilAFutureFrame() {
         val scheduler = SchedulerHarness()
         val emissions = mutableListOf<Double>()
-        val driver = ViewerFlingDriver(scheduler, { displacement, _, _, _, _ ->
+        val driver = ViewerFlingDriver(scheduler, FRAME_PERIOD_NANOS, { displacement, _, _, _, _ ->
             emissions += displacement; true
         }, { _, _ -> }, {})
         val released = 1_020_000_000L
@@ -57,9 +59,12 @@ class ViewerFlingDriverTest {
     @Test fun boundaryAtReleaseCancelsThePendingFlingWithoutReportingMotion() {
         val scheduler = SchedulerHarness()
         var finished = 0
-        val driver = ViewerFlingDriver(scheduler, { _, _, _, _, _ -> false },
+        val driver = ViewerFlingDriver(scheduler, FRAME_PERIOD_NANOS, { _, _, _, _, _ -> false },
             { _, _ -> throw AssertionError("Boundary hold is not movement") }, { finished++ })
-        assertFalse(driver.startFromRelease(6_000.0, 1_000_000_000L, 1_016_666_667L, 1, 71, 1_025_000_000L))
+        // A release start only reports that the velocity qualified: the state transition runs on
+        // the animation looper, so the caller cannot observe the first frame's outcome. The rejected
+        // frame still cancels the arm and reports the fling finished, which the rest asserts.
+        assertTrue(driver.startFromRelease(6_000.0, 1_000_000_000L, 1_016_666_667L, 1, 71, 1_025_000_000L))
         assertEquals(1, finished)
         assertFalse(scheduler.scheduled)
         assertFalse(scheduler.deliverIfScheduled(1_033_333_334L))
@@ -71,7 +76,7 @@ class ViewerFlingDriverTest {
         val observations = mutableListOf<Pair<Long, Long>>()
         val emissionEntered = CountDownLatch(1)
         val releaseEmission = CountDownLatch(1)
-        val driver = ViewerFlingDriver(scheduler, { displacement, velocity, frameTime, expected, vsync ->
+        val driver = ViewerFlingDriver(scheduler, FRAME_PERIOD_NANOS, { displacement, velocity, frameTime, expected, vsync ->
             emissions += Emission(displacement, velocity, frameTime, expected, vsync)
             emissionEntered.countDown()
             check(releaseEmission.await(5, TimeUnit.SECONDS))
@@ -113,7 +118,7 @@ class ViewerFlingDriverTest {
         val scheduler = SchedulerHarness()
         var emissions = 0
         var finished = 0
-        val driver = ViewerFlingDriver(scheduler, { _, _, _, _, _ -> emissions++; false },
+        val driver = ViewerFlingDriver(scheduler, FRAME_PERIOD_NANOS, { _, _, _, _, _ -> emissions++; false },
             { _, _ -> throw AssertionError("Rejected emission must not be observed") }, { finished++ })
 
         assertTrue(driver.start(6_000.0, 1_000_000_000L, 1))
@@ -132,7 +137,7 @@ class ViewerFlingDriverTest {
         val emissions = mutableListOf<Emission>()
         var observations = 0
         var finished = 0
-        val driver = ViewerFlingDriver(scheduler, { displacement, velocity, frameTime, expected, vsync ->
+        val driver = ViewerFlingDriver(scheduler, FRAME_PERIOD_NANOS, { displacement, velocity, frameTime, expected, vsync ->
             emissions += Emission(displacement, velocity, frameTime, expected, vsync)
             true
         }, { _, _ -> observations++ }, { finished++ })
@@ -175,7 +180,7 @@ class ViewerFlingDriverTest {
             this.callback = callback
         }
 
-        override fun post() {
+        override fun post(dueNanos: Long) {
             if (scheduled) return
             scheduled = true
             postCount++
@@ -206,3 +211,4 @@ class ViewerFlingDriverTest {
         }
     }
 }
+
