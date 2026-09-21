@@ -29,10 +29,12 @@ internal class AppUpdateViewModel(application: Application, private val reposito
     private var automaticChecked = false
     private var checkGeneration = 0L
     private var pendingAutomaticInstall = false
+    // The release check is the only consumer of the installed package metadata, so the package
+    // manager binder call waits for it instead of running inside the activity's launch frames.
     @Suppress("DEPRECATION")
-    private val installedPackage = application.packageManager.getPackageInfo(application.packageName, 0)
-    private val installedVersion = installedPackage.longVersionCode
-    private val installedLabel = UpdateRelease.formatLabel(installedPackage.versionName, installedVersion)
+    private val installedPackage by lazy { application.packageManager.getPackageInfo(application.packageName, 0) }
+    private val installedVersion by lazy { installedPackage.longVersionCode }
+    private val installedLabel by lazy { UpdateRelease.formatLabel(installedPackage.versionName, installedVersion) }
 
     fun check() {
         if (operation?.isActive == true) { mutable.update { it.copy(visible = true) }; return }

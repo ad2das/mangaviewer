@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import ml.melun.mangaview.data.network.BrowserTlsRelay
 import ml.melun.mangaview.source.ntk.AndroidBrowserViews
@@ -247,6 +248,11 @@ internal class NewxtoonChallengePage(
      */
     private suspend fun awaitWebViewEngineStarted() {
         val owner = appContext.applicationContext as? NtkWebViewStartupOwner ?: return
+        // The app no longer starts Chromium on the launch path; the challenge that actually needs
+        // a main-process WebView starts it here, before the first view is created.
+        withContext(Dispatchers.Main.immediate) {
+            owner.ntkWebViewStartup.start(appContext.applicationContext)
+        }
         withTimeoutOrNull(WEBVIEW_ENGINE_STARTUP_WAIT_MILLIS) {
             suspendCancellableCoroutine { continuation ->
                 val settle: () -> Unit = {

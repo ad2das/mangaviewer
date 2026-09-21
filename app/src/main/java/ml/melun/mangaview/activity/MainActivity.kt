@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewTreeObserver
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -57,10 +58,11 @@ import ml.melun.mangaview.update.AppUpdateDialog
 import ml.melun.mangaview.update.AppUpdateViewModel
 import java.io.File
 
+private const val STARTUP_PRIME_DELAY_MILLIS = 400L
+
 class MainActivity : ComponentActivity() {
     private lateinit var updates: AppUpdateViewModel
     private lateinit var reader: MainReaderHost
-    private var pendingCrashReport: String? = null
     internal fun readerScreen(): EngineViewerScreen? = if (::reader.isInitialized) reader.current else null
     private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val file = updates.state.value.file ?: return@registerForActivityResult
@@ -85,18 +87,36 @@ class MainActivity : ComponentActivity() {
                 graph.episodeCatalogCache,
             ),
         )[LibraryViewModel::class.java]
-        pendingCrashReport = CrashLog.pending(this)
         showLibrary(graph, viewModel)
+        // The library's first composition spans several frames on a cold start; prime the reader
+        // engine and catalog caches only after the view tree has actually drawn, so renderer
+        // preparation and prefetch never compete with the launch frames.
+        val decor = window.decorView
+        decor.viewTreeObserver.addOnDrawListener(object : ViewTreeObserver.OnDrawListener {
+            override fun onDraw() {
+                decor.post {
+                    decor.viewTreeObserver.removeOnDrawListener(this)
+                    decor.postDelayed({
+                        graph.primeAfterFirstFrame()
+                        viewModel.activateEpisodeWarmer()
+                    }, STARTUP_PRIME_DELAY_MILLIS)
+                }
+            }
+        })
         reader = MainReaderHost(this)
         reader.restore(savedInstanceState)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                // The flow emits its initial false on collection; the renderer is only re-warmed
+                // when a reader actually closes, so startup never builds the engine graph early.
+                var wasReading = false
                 reader.visible.collectLatest { reading ->
                     if (!reading) {
                         applySystemBars(viewModel.state.value.saved.settings.darkTheme)
-                        graph.engine.renderers.warm()
+                        if (wasReading) graph.engine.renderers.warm()
                         viewModel.foreground(true)
                     }
+                    wasReading = reading
                     try { kotlinx.coroutines.awaitCancellation() } finally { viewModel.foreground(false) }
                 }
             }
@@ -137,7 +157,7 @@ class MainActivity : ComponentActivity() {
             val updateState by updates.state.collectAsStateWithLifecycle()
             val reading by reader.visible.collectAsStateWithLifecycle()
             val scannedReport by CrashLog.pendingReport.collectAsStateWithLifecycle()
-            var crashReport by remember { mutableStateOf(pendingCrashReport) }
+            var crashReport by remember { mutableStateOf<String?>(null) }
             LaunchedEffect(scannedReport) {
                 if (scannedReport != null && crashReport == null) crashReport = scannedReport
             }

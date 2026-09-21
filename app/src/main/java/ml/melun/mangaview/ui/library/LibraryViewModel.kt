@@ -89,6 +89,8 @@ internal class LibraryViewModel(
         catalogs.loadHome()
     }
     fun foreground(value: Boolean) = episodeWarmer.foreground(value, state.value)
+    /** Lets the continuation warmer run once the library has drawn its first frame. */
+    fun activateEpisodeWarmer() = episodeWarmer.activate(state.value)
     fun accept(intent: LibraryIntent) {
         when (intent) {
             is LibraryIntent.QueryChanged,

@@ -45,8 +45,16 @@ internal class AccountSync(
             auth.addAuthStateListener { sessions.value = it.currentUser }
         }
     }
+    private val activationLock = Any()
+    private var activated = false
 
-    init {
+    /**
+     * Starts session restore and cloud sync. The library calls this after its first frame so
+     * Firebase initialization never competes with the launch frames; any user action that needs
+     * the session also activates it on demand.
+     */
+    fun activate() {
+        synchronized(activationLock) { if (activated) return; activated = true }
         scope.launch(io) {
             try {
                 val auth = initialized.await()
@@ -61,6 +69,7 @@ internal class AccountSync(
 
     suspend fun signIn(activity: Activity) {
         if (state.value.busy) return
+        activate()
         mutableState.value = state.value.copy(busy = true, message = "Google 계정 연결 중")
         try {
             val auth = initialized.await()
@@ -81,6 +90,7 @@ internal class AccountSync(
     }
 
     fun signOut() {
+        activate()
         scope.launch(io) {
             initialized.await().signOut()
             runCatching { CredentialManager.create(context).clearCredentialState(ClearCredentialStateRequest()) }

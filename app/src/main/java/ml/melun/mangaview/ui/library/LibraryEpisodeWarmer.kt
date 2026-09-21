@@ -6,6 +6,7 @@ import ml.melun.mangaview.core.EpisodeId
 internal class LibraryEpisodeWarmer(private val openings: () -> EngineOpeningPreparations) {
     private var episodeId: EpisodeId? = null
     private var foreground = false
+    private var primed = false
 
     fun foreground(value: Boolean, state: LibraryState) {
         foreground = value
@@ -13,8 +14,17 @@ internal class LibraryEpisodeWarmer(private val openings: () -> EngineOpeningPre
         if (value) continuation(state)
     }
 
+    /**
+     * Enables continuation warming once the library has drawn its first frame. State emitted
+     * before that is ignored so the reader engine graph is not built on the launch path.
+     */
+    fun activate(state: LibraryState) {
+        primed = true
+        continuation(state)
+    }
+
     fun continuation(state: LibraryState) {
-        if (foreground) mostLikelyContinuation(state)?.let(::warm)
+        if (foreground && primed) mostLikelyContinuation(state)?.let(::warm)
     }
 
     fun warm(target: EpisodeId) {

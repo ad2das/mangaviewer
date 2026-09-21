@@ -26,7 +26,7 @@ import ml.melun.mangaview.source.PreparationIntent
 class NtkWebViewAccessGateway(
     context: Context,
     private val userAgent: String,
-    private val identity: NtkBrowserIdentity? = null,
+    private val identity: () -> NtkBrowserIdentity? = { null },
     private val serviceClass: Class<out android.app.Service> = NtkBrowserService::class.java,
 ) : NtkAccessGateway {
     private val appContext = context.applicationContext
@@ -246,7 +246,7 @@ class NtkWebViewAccessGateway(
     private fun sendRequestLocked(pending: BrowserRequest) {
         val target = remote ?: return
         if (pending.sent) return
-        val request = NtkBrowserIpcMessages.resolve(pending, callback, userAgent, identity)
+        val request = NtkBrowserIpcMessages.resolve(pending, callback, userAgent, identity())
         try {
             target.send(request)
             pending.sent = true
@@ -265,7 +265,7 @@ class NtkWebViewAccessGateway(
             callback,
             userAgent,
             requireNotNull(warmOrigin),
-            identity,
+            identity(),
         )
         try {
             target.send(request)

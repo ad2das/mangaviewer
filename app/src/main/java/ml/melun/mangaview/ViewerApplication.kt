@@ -34,20 +34,16 @@ class ViewerApplication : Application(), NtkWebViewStartupOwner,
             ntkWebViewStartup.start(this, network::configure)
             return
         }
-        // The challenge path owns the main process's first WebView; register the provider startup
-        // up front so document-start injection never races a cold engine (WebView 150+ throws
-        // "Must be started before we block!").
-        ntkWebViewStartup.start(this)
+        // Chromium startup is deferred to the challenge path that actually needs a main-process
+        // WebView (NewxtoonChallengePage starts it before its first view), so app start never pays
+        // the cold engine load for a fallback the worker document route normally avoids.
         val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         graph = StartupMainThreadPolicy.detectUnexpectedDiskIo(debuggable) {
             AppGraph(this, applicationScope, workDispatchers.source, workDispatchers.io)
         }
-        // Construct the engine graph (and its warmed renderer owner) before any reader launch so a
-        // direct-entry startup does not pay graph construction inside the first-image window.
-        graph.engine
-        // The newxtoon replay browser takes seconds to spin up, so a proven user gets it for free
-        // instead of behind the first catalog tap.
-        graph.warmProtectedSources()
+        // The engine graph (warmed renderer, provider preconnects) and the catalog prefetch are
+        // primed from the library's first frame on (MainActivity), so launch frames never compete
+        // with renderer preparation or network work.
     }
 
     override fun onTerminate() {

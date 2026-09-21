@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.content.RawPagePort
@@ -84,11 +85,11 @@ internal class AppGraph(
     private val transportFactory = OkHttpTransportFactory(ioDispatcher)
     private val origins by lazy { ProviderOriginDirectory(appContext, ioDispatcher, userAgent()) }
     private fun resilient(transport: SourceTransport) = ProviderOriginTransport(transportFactory.protect(transport), origins)
-    private val ntkBrowserIdentity = NtkBrowserIdentity.forDevice(appContext, "primary")
+    private val ntkBrowserIdentity by lazy { NtkBrowserIdentity.forDevice(appContext, "primary") }
     private val ntkGateway = NtkWebViewAccessGateway(
         appContext,
         userAgent(),
-        ntkBrowserIdentity,
+        { ntkBrowserIdentity },
         NtkBrowserService::class.java,
     )
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
@@ -129,13 +130,14 @@ internal class AppGraph(
         File(appContext.applicationInfo.dataDir, "app_complete_resume_v1"), pageStore, ioDispatcher,
     )
     val offlineDownloads = OfflineDownloadManager(applicationScope, sources::require, repository, offlineStore)
+    private val settingsStore = ViewerSettingsStoreFactory().open(
+        appContext,
+        applicationScope,
+        ioDispatcher,
+    )
     val userLibrary = UserLibraryRepository(
         dao = database.viewer,
-        settingsStore = ViewerSettingsStoreFactory().open(
-            appContext,
-            applicationScope,
-            ioDispatcher,
-        ),
+        settingsStore = settingsStore,
     )
     val artworkLoader = SeriesArtworkLoader(sources, ioDispatcher, applicationScope)
     val account = ml.melun.mangaview.account.AccountSync(appContext, applicationScope, ioDispatcher,
@@ -221,7 +223,9 @@ internal class AppGraph(
         preInitializationPrepare = { episodeId, intent ->
             ntkGateway.prepare(DEFAULT_NTK_ORIGIN, episodeId.remoteKey, intent)
         },
-        beforeFirstStart = { ntkGateway.warm(DEFAULT_NTK_ORIGIN) },
+        // The browser warm runs from [primeAfterFirstFrame] instead of the first source
+        // activation: a home refresh must not spawn the isolated WebView process inside the
+        // launch frames, and the viewer's resolve path starts the browser on demand anyway.
         initialize = ::initializeNtkSource,
     )
 
@@ -341,33 +345,35 @@ internal class AppGraph(
     )
 
     /**
-     * Pre-builds the newxtoon replay browser while the app starts for a user whose clearance
-     * already proved itself, then preloads the catalog landing documents into the disk cache so
-     * the first catalog paint never waits on the fetch bridge. Without a persisted clearance
-     * nothing is spawned — a fresh user pays the real challenge exactly once on first use.
+     * Runs once the library's first frame is on screen: starts account restore, forces the reader
+     * engine graph, whose construction warms the GL renderer and preconnects the provider origins,
+     * then warms only the provider the reader is most likely to open next — the newxtoon catalog or
+     * the NTK browser process — when that was the source selected last session. Everything here is
+     * deferred past the launch frames; a user who never opens that provider pays nothing for it.
      */
+    fun primeAfterFirstFrame() {
+        account.activate()
+        engine
+        applicationScope.launch {
+            val lastSource = runCatching { settingsStore.settings.first() }.getOrNull()?.sourceKey
+            when (lastSource) {
+                NEWXTOON_ID.value -> prefetchNewxtoonCatalog()
+                NTK_ID.value -> ntkGateway.warm(DEFAULT_NTK_ORIGIN)
+            }
+        }
+    }
+
     /**
-     * Stands the newxtoon replay browser up at app start so the first catalog tap never waits on
-     * a challenge: a verified clearance takes the instant replay-view path, otherwise the real
-     * challenge resolves in the background while the home screen is up. Once a route exists the
-     * catalog landing documents are pulled into the disk cache ahead of the user.
+     * Preloads the catalog landing documents into the disk cache so the first catalog paint never
+     * waits on the fetch bridge. Documents ride the worker route, so no clearance work happens
+     * here; the clearance fallback solves on demand only if the worker refuses a document.
      */
-    fun warmProtectedSources() {
+    fun prefetchNewxtoonCatalog() {
         applicationScope.launch {
             // A reader session for another source owns the main thread; defer the speculative
-            // challenge browser and catalog prefetch instead of stalling that reader.
+            // catalog prefetch instead of stalling that reader.
             ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
-            val ready = if (newxtoonClearance.ensureDeviceClearance()) {
-                // The jar already holds the newest clearance the device has, so the catalog is
-                // fetched natively and no replay browser is stood up at all. A refused request
-                // still falls back to the challenge through the transport.
-                true
-            } else {
-                runCatching { newxtoonClearance.solve() }.getOrDefault(false)
-            }
-            if (!ready) return@launch
             val source = runCatching { newxtoonSource.value }.getOrNull() ?: return@launch
-            ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
             val latestStarted = System.nanoTime()
             runCatching {
                 source.catalog(ml.melun.mangaview.source.CatalogQuery(
@@ -392,21 +398,9 @@ internal class AppGraph(
             val source = NewxtoonContentSource(NewxtoonConfig(userAgent = newxtoonClearance.sourceUserAgent), transport,
                 speculationScope = applicationScope)
             transport.warmConnections(listOf(ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), preferQuic = false)
-            // A device clearance already in hand is served natively, so neither a challenge nor a
-            // replay browser is stood up. Without one the challenge browser warms while the
-            // catalog opens.
-            if (!newxtoonClearance.persistedClearancePresent && !newxtoonClearance.clearanceVerified) {
-                applicationScope.launch {
-                    // Speculative only: never stand a challenge browser up while a reader session for
-                    // another source is scrolling.
-                    ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
-                    newxtoonClearance.solve()
-                    // A persisted clearance resolves instantly, so the replay browser is ready before
-                    // the first uncached document instead of spinning up behind a refused request.
-                    ViewerSessionActivity.awaitForeignIdle(NEWXTOON_ID.value)
-                    newxtoonClearance.warmSolvedView()
-                }
-            }
+            // No speculative challenge or replay browser is stood up: documents ride the worker
+            // route without clearance, and the clearance fallback solves on demand if the worker
+            // ever refuses a document.
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
             }
