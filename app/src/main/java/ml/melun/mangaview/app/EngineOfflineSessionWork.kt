@@ -123,8 +123,16 @@ internal object OfflineEnginePlans {
                     spec.dimensions?.let { "${it.widthPx}x${it.heightPx}" }.orEmpty()).joinToString(":"))
             }
         }
-        val bytes = fields.joinToString("") { "${it.length}:$it" }.toByteArray(Charsets.UTF_8)
-        return MessageDigest.getInstance("SHA-256").digest(bytes).lowerHex()
+        // Same digest as hashing the joined `"${length}:$field"` text, fed incrementally. The
+        // manifest contributes one field per page, so the joined form allocated a large String
+        // and an equally large byte array on every plan build.
+        val digest = MessageDigest.getInstance("SHA-256")
+        for (field in fields) {
+            digest.update(field.length.toString().toByteArray(Charsets.UTF_8))
+            digest.update(':'.code.toByte())
+            digest.update(field.toByteArray(Charsets.UTF_8))
+        }
+        return digest.digest().lowerHex()
     }
 
     /** Never dereferenced: local-only plans must not reactivate source addresses. */

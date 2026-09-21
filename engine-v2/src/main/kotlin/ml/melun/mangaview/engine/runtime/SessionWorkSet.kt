@@ -37,12 +37,20 @@ internal class SessionWorkSet(
     private val owner = Thread.currentThread()
     private val entries = linkedMapOf<WorkKey<*>, Entry>()
     private var desired = emptyMap<WorkKey<*>, SessionDemand<*>>()
+    /** The demand list whose keys are already reflected in [desired] and [entries]. */
+    private var reconciled: List<SessionDemand<*>>? = null
     private var closed = false
     private var cleanupFailure: Throwable? = null
 
     fun reconcile(demands: List<SessionDemand<*>>) {
         checkOwner()
         if (closed) return
+        // Both owners hand back the identical list instance while their versioned demand key is
+        // unchanged, and every demand a completed entry needs is restarted by finish(). Reconciling
+        // that same list again would rebuild the desired map and rescan every entry without changing
+        // any state, so the owner thread spends nothing on a frame that only moved the viewport.
+        if (reconciled === demands) return
+        reconciled = demands
         reapFinished()
         desired = demands.associateBy { it.request.key }
         entries.values.toList().forEach { entry ->
@@ -55,12 +63,14 @@ internal class SessionWorkSet(
 
     fun clear() {
         checkOwner()
+        reconciled = null
         desired = emptyMap()
         entries.values.toList().forEach(::retire)
     }
 
     fun retryFailures() {
         checkOwner()
+        reconciled = null
         reapFinished()
         entries.values.filter { it.failed }.forEach {
             if (it.job?.isCompleted == true) entries.remove(it.key) else it.retryRequested = true

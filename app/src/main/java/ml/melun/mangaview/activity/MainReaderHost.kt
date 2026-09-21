@@ -19,9 +19,12 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 
 /** Retains the library's window and composition while a reader occupies its content area. */
@@ -79,6 +82,10 @@ internal class MainReaderHost(private val activity: ComponentActivity) {
                 return@launch
             }
             if (retiring === previous) retiring = null
+            // The reader's engine graph builds the OkHttp clients, the decode threads and the GL
+            // renderer. Force it off the main thread so attaching the reader never pays that
+            // construction inside a frame; a graph the startup prime already built returns at once.
+            withContext(Dispatchers.IO) { (activity.application as ViewerApplication).graph.engine }
             if (ticket == generation && !destroyed) attach(spec)
         }
     }

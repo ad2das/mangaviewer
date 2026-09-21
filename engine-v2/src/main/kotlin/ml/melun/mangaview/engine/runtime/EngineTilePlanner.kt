@@ -26,6 +26,8 @@ data class EngineTilePlan(
 /** Pure original-resolution demand and placement; speculative tiles never displace visible tiles. */
 class EngineTilePlanner(private val textureBudgetBytes: Long, private val targetTileHeightPx: Int = 2048,
     private val preparationViewports: Int = 0,
+    /** Optional owner-thread section timing; the default records nothing. */
+    private val tracer: EngineWorkTracer = NoopEngineWorkTracer,
 ) {
     init { require(textureBudgetBytes > 0 && targetTileHeightPx > 2 && preparationViewports in 0..12) }
 
@@ -37,6 +39,7 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         var previousRegion: VisiblePageRegion? = null
         var previousComplete = false
         var previousLastPlacement: Int? = null
+        tracer.section("plan_regions") {
         for (region in snapshot.session.visibleRegions) {
             val page = snapshot.pages[region.pageId]
             if (page == null) {
@@ -67,7 +70,8 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
             previousLastPlacement = placements.lastIndex
             bands += HorizonBand(region.pageId, first, last)
         }
-        val speculative = speculativeHorizon(snapshot, bands)
+        }
+        val speculative = tracer.section("plan_horizon") { speculativeHorizon(snapshot, bands) }
         var bytes = visible.keys.fold(0L) { total, tile -> Math.addExact(total, tile.byteCount) }
         require(bytes <= textureBudgetBytes) { "Visible original-resolution tiles exceed the texture budget" }
         val demands = visible.map { EngineTileDemand(it.key, it.value) }.toMutableList()
@@ -82,19 +86,31 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
 
     private var horizonKey: HorizonKey? = null
     private var horizonTiles: List<EngineTileSpec> = emptyList()
+    private var horizonBuiltAtNanos = 0L
+    private var interactionActive = false
+
+    /**
+     * Owner-thread interaction hint. The horizon only ever prefetches viewports *ahead* of the
+     * reading position, so while a real drag or fling owns the frame it keeps its last walk instead
+     * of rebuilding the same neighbour set on every frame the viewport moves. A long interaction
+     * still re-derives it once, so a stuck flag cannot starve preparation.
+     */
+    internal fun interactionActive(active: Boolean) { interactionActive = active }
 
     /**
      * Preparation horizon of the visible bands. It changes only when the ordered bands, verified
      * bytes, plans, or reading geometry change; a single-entry cache keeps the exact walk order.
      */
     internal fun speculativeHorizon(snapshot: EngineRuntimeSnapshot, bands: List<HorizonBand>): List<EngineTileSpec> {
+        if (interactionActive && horizonKey != null &&
+            System.nanoTime() - horizonBuiltAtNanos < INTERACTION_HORIZON_LIMIT_NANOS) return horizonTiles
         val key = HorizonKey(bands, snapshot.pages, snapshot.plans,
             snapshot.session.viewport.widthPx, snapshot.session.viewport.heightPx,
             snapshot.session.splitMode, snapshot.session.anchor?.pageId,
             snapshot.session.requiredDimensions, snapshot.session.completeViewport)
         val cached = horizonKey
         if (cached != null && cached.matches(key)) return horizonTiles
-        val tiles = buildHorizon(snapshot, bands)
+        val tiles = tracer.section("plan_build_horizon") { buildHorizon(snapshot, bands) }
         horizonKey = key
         horizonTiles = tiles
         return tiles
@@ -344,6 +360,9 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
 
 /** One visible document band range in the order the planner walks visible regions. */
 internal data class HorizonBand(val pageId: PageId, val first: Int, val last: Int)
+
+/** Longest a single interaction may keep the speculative horizon at its last walk. */
+private const val INTERACTION_HORIZON_LIMIT_NANOS = 600_000_000L
 
 /**
  * The horizon walk depends only on the ordered bands, verified bytes, plans, and reading geometry.

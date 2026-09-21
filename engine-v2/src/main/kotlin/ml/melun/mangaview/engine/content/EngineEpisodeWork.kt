@@ -26,6 +26,12 @@ class EngineEpisodeWork(
     private val parsingDispatcher: CoroutineDispatcher,
     private val maxDocumentBytes: Int = 16 * 1_024 * 1_024,
     private val observer: EpisodePlanObserver? = null,
+    /**
+     * Runs on the parsing dispatcher the instant a plan exists, which is the earliest moment its
+     * concrete page URLs are known. Sources use it to open the network legs an adjacent document
+     * will need; it must not suspend, block, or fetch a body.
+     */
+    private val onPlan: ((EpisodeAccessPlan) -> Unit)? = null,
 ) {
     init { require(principal.isNotBlank() && maxDocumentBytes > 0) }
 
@@ -46,6 +52,7 @@ class EngineEpisodeWork(
                         require(plan.manifest.id == episodeId && plan.authEpoch == authEpoch)
                         require(plan.documentSha256 == document.sha256 && plan.finalDocumentUrl == document.finalUrl)
                         observer?.observed(episodeId, document, plan)
+                        onPlan?.invoke(plan)
                     }
                 }
             }
@@ -93,9 +100,15 @@ class EngineEpisodeWork(
     ): WorkKey<T> {
         val fields = listOf(episode.seriesId.sourceId.value, episode.seriesId.remoteKey, episode.remoteKey,
             origin.toString(), adjacency?.toString() ?: "unknown")
-        val bytes = fields.joinToString("") { "${it.length}:$it" }.toByteArray(Charsets.UTF_8)
-        val resource = MessageDigest.getInstance("SHA-256").digest(bytes)
-            .lowerHex()
+        // Same digest as hashing the joined `"${length}:$field"` text, fed incrementally so no
+        // joined String or intermediate byte array is allocated on this per-request path.
+        val digest = MessageDigest.getInstance("SHA-256")
+        for (field in fields) {
+            digest.update(field.length.toString().toByteArray(Charsets.UTF_8))
+            digest.update(':'.code.toByte())
+            digest.update(field.toByteArray(Charsets.UTF_8))
+        }
+        val resource = digest.digest().lowerHex()
         return WorkKey(principal, resource, "content.$operation", epoch.toString(), type)
     }
 }

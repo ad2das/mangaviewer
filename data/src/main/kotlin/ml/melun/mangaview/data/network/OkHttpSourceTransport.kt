@@ -51,6 +51,41 @@ class OkHttpSourceTransport(
         fastestRoutes.clear()
     }
 
+    /**
+     * Opens the TCP+TLS leg for every distinct host among [urls] and parks it in the pool the
+     * caller's own request will use. The probe asks for one byte of the first object named for that
+     * host: an edge answers a ranged read without closing the connection, so the handshake is paid
+     * once here instead of on the first body the reader actually waits for, and no image is
+     * transferred. A warm is a hint — it never blocks, throws, or displaces real work.
+     */
+    override fun warmConnections(urls: List<String>, preferQuic: Boolean) {
+        val warmed = HashSet<String>()
+        urls.forEach { url ->
+            val httpUrl = runCatching { url.toHttpUrl() }.getOrNull() ?: return@forEach
+            val authority = httpUrl.scheme + "://" + httpUrl.host + ":" + httpUrl.port
+            if (!warmed.add(authority)) return@forEach
+            val index = fastestRoutes[httpUrl.host]?.index?.coerceIn(routeClients.indices)
+                ?: Math.floorMod(url.hashCode(), routeClients.size)
+            val probe = Request.Builder().url(httpUrl)
+                .header("Range", "bytes=0-0")
+                .get()
+                .build()
+            val call = routeClients[index].newCall(probe)
+            call.timeout().timeout(WARM_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+            runCatching {
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, failure: IOException) = Unit
+                    override fun onResponse(call: Call, response: Response) {
+                        response.close()
+                    }
+                })
+            }
+        }
+        if (warmed.isNotEmpty()) {
+            android.util.Log.i("SourceWarm", "hosts=${warmed.size} urls=${urls.size} first=${warmed.first()}")
+        }
+    }
+
     override fun close() {
         retireIdleConnections()
         client.dispatcher.executorService.shutdown()
@@ -221,3 +256,6 @@ private fun routeClients(
 }
 
 private const val ROUTE_POOL_COUNT = 3
+
+/** A warm that outlives this budget is abandoned; the real request would have opened its own leg. */
+private const val WARM_TIMEOUT_MILLIS = 8_000L

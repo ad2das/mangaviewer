@@ -455,6 +455,8 @@ class EngineSessionRuntime(
 // remaining bulk so the boundary is already readable when the reader crosses it.
 private const val NEXT_EPISODE_HEAD_PAGES = 4
 private const val BOUNDARY_APPROACH_PAGES = 6
+/** Guaranteed next-episode pages once the boundary is within [BOUNDARY_APPROACH_PAGES]. */
+private const val BOUNDARY_HEAD_PAGES = 10
 // A transient neighbor failure retries on its own instead of parking the boundary for the session.
 private const val EPISODE_RETRY_DELAY_NANOS = 3_000_000_000L
 
@@ -521,7 +523,11 @@ private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeMani
     // boundary they stream ahead of the remaining bulk, still inside the background permits.
     val nearEnd = manifest.pages.size - index <= BOUNDARY_APPROACH_PAGES
     val headPriority = if (nearEnd) WorkPriority.NEXT_IMAGE else WorkPriority.NEXT_EPISODE
-    next.pages.take(NEXT_EPISODE_HEAD_PAGES).filter { it.id !in failedReadAheadPages }.forEach {
+    // The guaranteed head deepens once the boundary is in sight: a reader arriving there should
+    // find more than the opening pages already on disk. The extra pages keep the same background
+    // priority, so they still yield to every visible and interactive request.
+    val head = if (nearEnd) BOUNDARY_HEAD_PAGES else NEXT_EPISODE_HEAD_PAGES
+    next.pages.take(head).filter { it.id !in failedReadAheadPages }.forEach {
         result.putIfAbsent(it.id, headPriority)
     }
     // Start before GPU preparation, but leave every queued current body its background slot.

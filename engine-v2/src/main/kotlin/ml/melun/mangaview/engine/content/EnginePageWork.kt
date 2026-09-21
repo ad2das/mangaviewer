@@ -193,12 +193,22 @@ private class PageWorkIdentity(
     ) = WorkRequest(WorkKey(principal, resource, "content.$operation", revision, type), domain, priority,
         authEpoch = plan.authEpoch, execute = execute, dispose = dispose)
 
+    /**
+     * Identical digest to hashing the concatenated `"${length}:$field"` sequence, but each field
+     * is fed straight into the digest so no large joined String or intermediate byte array is
+     * materialised. This path runs per work request, so the temporaries are pure young-gen churn.
+     */
     private fun hashFields(fields: List<String>): String {
-        val bytes = fields.joinToString("") { "${it.length}:$it" }.toByteArray(Charsets.UTF_8)
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        val digest = MessageDigest.getInstance("SHA-256")
+        for (field in fields) {
+            digest.update(field.length.toString().toByteArray(Charsets.UTF_8))
+            digest.update(':'.code.toByte())
+            digest.update(field.toByteArray(Charsets.UTF_8))
+        }
+        val bytes = digest.digest()
         val alphabet = "0123456789abcdef"
-        return buildString(digest.size * 2) {
-            for (byte in digest) {
+        return buildString(bytes.size * 2) {
+            for (byte in bytes) {
                 val value = byte.toInt() and 255
                 append(alphabet[value ushr 4])
                 append(alphabet[value and 15])

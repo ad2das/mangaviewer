@@ -43,9 +43,30 @@ internal class EngineNewxtoonSessionWork(
     private val principal = "newxtoon:public"
     private val planner = NewxtoonAccessPlanner(userAgent)
     private val parser = NewxtoonHtmlParser(DEFAULT_NEWXTOON_ORIGIN)
-    private val episodes = EngineEpisodeWork(principal, planner, transport, parsingDispatcher, observer = observer)
+    private val episodes = EngineEpisodeWork(principal, planner, transport, parsingDispatcher, observer = observer,
+        onPlan = ::warmArtwork)
     private val pages = EnginePageWork(principal, planner, transport, storage) { _, _, _ ->
         error("NEWXTOON returned an unsupported access prerequisite")
+    }
+
+    /** Episodes whose artwork legs were already opened; one warm per document is enough. */
+    private val warmedArtwork = HashSet<EpisodeId>()
+
+    /**
+     * The plan is the first place the chapter's artwork URLs exist, so the legs for its opening
+     * pages are opened here: the first body the reader waits for then skips DNS, TCP and TLS. The
+     * warm is a hint on the transport, never a body fetch, so it takes no transfer permit and
+     * cannot displace a visible page. Only the head is offered — the transport opens one leg per
+     * distinct artwork host, and a whole chapter would repeat the same few hosts.
+     */
+    private fun warmArtwork(plan: EpisodeAccessPlan) {
+        if (!synchronized(warmedArtwork) { warmedArtwork.add(plan.manifest.id) }) return
+        val head = plan.pages.take(ARTWORK_WARM_PAGES).flatMap { it.candidates }
+        if (head.isEmpty()) return
+        val started = System.nanoTime()
+        transport.warmConnections(head.map(URI::toString), preferQuic = false)
+        android.util.Log.i("NtkArtworkWarm", "episode=${plan.manifest.id} pages=${plan.pages.size} " +
+            "urls=${head.size} ms=${(System.nanoTime() - started) / 1_000_000}")
     }
 
     override fun position(episodeId: EpisodeId): WorkRequest<SessionPosition> {
@@ -189,5 +210,7 @@ internal class EngineNewxtoonSessionWork(
         // The advertised range is fetched in small parallel windows; a wide burst invites the
         // provider's throttle and one refused page must not cost the list.
         const val CHAPTER_PAGE_WINDOW = 6
+        // Opening pages of a document whose legs are worth opening before the reader arrives.
+        const val ARTWORK_WARM_PAGES = 6
     }
 }

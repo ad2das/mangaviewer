@@ -53,6 +53,8 @@ class EngineRenderRuntime(
     private val frameWorkObserver: FrameWorkObserver? = null,
     /** Optional owner-thread refresh port; null keeps the legacy immediate drain. */
     private val refreshScheduler: EngineRefreshScheduler? = null,
+    /** Optional owner-thread section timing; the default records nothing. */
+    private val tracer: EngineWorkTracer = NoopEngineWorkTracer,
 ) {
     private val owner = Thread.currentThread()
     private val work = SessionWorkSet(scope, coordinator, reportFailure)
@@ -72,6 +74,71 @@ class EngineRenderRuntime(
     private var sceneClearJob: Job? = null
     private var sceneClearFailed = false
     private var scheduled = false
+    /** True while a real drag or fling owns the display slots; see [refreshWorkResult]. */
+    private var interactionActive = false
+    /** Snapshot whose plan is already in [plannedPlan]; the planner is a pure function of it. */
+    private var plannedSnapshot: EngineRuntimeSnapshot? = null
+    private var plannedPlan: EngineTilePlan? = null
+    /** Plan whose demand list is already in [plannedDemands]. */
+    private var demandedPlan: EngineTilePlan? = null
+    private var demandedFailed: Int = -1
+    private var plannedDemands: List<SessionDemand<*>> = emptyList()
+
+    /**
+     * One snapshot always plans identically, so a drain that runs again for the same snapshot (a
+     * work result set [dirty] mid-drain, or the queued delivery follows an inline one) reuses the
+     * plan instead of re-walking every visible band and the preparation horizon on the owner thread.
+     */
+    private fun planFor(snapshot: EngineRuntimeSnapshot): EngineTilePlan {
+        val cached = plannedPlan
+        if (cached != null && plannedSnapshot === snapshot) return cached
+        val plan = planner.plan(snapshot)
+        plannedSnapshot = snapshot
+        plannedPlan = plan
+        return plan
+    }
+
+    /**
+     * The same plan yields the same render demands: [demand] hands back its cached value whenever
+     * the priority and access plan are unchanged. Reusing the list keeps the work set's reconcile a
+     * no-op on frames that only moved the viewport. The failed read-ahead set is part of the filter,
+     * so its size is part of the key.
+     */
+    private fun renderDemands(snapshot: EngineRuntimeSnapshot, plan: EngineTilePlan): List<SessionDemand<*>> {
+        if (demandedPlan === plan && demandedFailed == failedReadAhead.size) return plannedDemands
+        val list = plan.demands.filter {
+            it.priority != WorkPriority.NEXT_IMAGE || it.tile !in failedReadAhead
+        }.map { demand(snapshot, it) }
+        demandedPlan = plan
+        demandedFailed = failedReadAhead.size
+        // A frame that only moved the viewport re-derives the same demand instances in the same
+        // order, so keep the previous list: the work set then recognises its own identity and skips
+        // rebuilding its registry instead of re-scanning every subscription on the owner thread.
+        val previous = plannedDemands
+        if (list.size != previous.size || list.indices.any { list[it] !== previous[it] }) plannedDemands = list
+        return plannedDemands
+    }
+
+    /** Owner-thread hint that a real drag or fling owns the frame; see [EngineTilePlanner]. */
+    fun interactionActive(active: Boolean) {
+        checkOwner()
+        if (closed) return
+        planner.interactionActive(active)
+        if (interactionActive == active) return
+        interactionActive = active
+        // Work results that landed during the gesture were only marked dirty: the gesture's own
+        // frame callback drains once per display slot. A gesture that ends without another frame
+        // still owes those pixels, so deliver exactly one drain through the ordinary scheduler.
+        if (!active && dirty && !processing && !clearingScene && !sceneClearFailed) refresh(0)
+    }
+
+    private fun forgetPlans() {
+        plannedSnapshot = null
+        plannedPlan = null
+        demandedPlan = null
+        demandedFailed = -1
+        plannedDemands = emptyList()
+    }
 
     fun update(snapshot: EngineRuntimeSnapshot) {
         checkOwner()
@@ -84,6 +151,7 @@ class EngineRenderRuntime(
             textures.clear()
             tileDemands.clear()
             failedReadAhead.clear()
+            forgetPlans()
             epoch = uploader.rendererEpoch
         }
         current = snapshot
@@ -111,7 +179,7 @@ class EngineRenderRuntime(
             sceneClearFailed = false
             failedReadAhead.clear()
             work.retryFailures()
-            refresh(FrameWorkObserver.WORK_RESULT)
+            refreshWorkResult()
         }
     }
 
@@ -165,7 +233,15 @@ class EngineRenderRuntime(
         if (kind != 0) frameWorkObserver?.workScheduled(kind, System.nanoTime())
         dirty = true
         if (processing || clearingScene || sceneClearFailed || closed) return
-        if (refreshScheduler == null) drainImmediate() else scheduleRefresh()
+        when {
+            refreshScheduler == null -> drainImmediate()
+            // While a drag or fling owns the display slots, only its own frame step drains (see
+            // refreshInteractionFrame). Draining here would rebuild the scene once per finished tile
+            // inside whatever message delivered the result, and every one of those messages can push
+            // the next vsync past its display slot.
+            interactionActive -> Unit
+            else -> scheduleRefresh()
+        }
     }
 
     /** Cancels any queued delivery and drains the newest state inline on the owner thread. */
@@ -173,6 +249,34 @@ class EngineRenderRuntime(
         checkOwner()
         if (closed) return
         refreshImmediately(0)
+    }
+
+    /**
+     * The single drain for one applied gesture step. A drag or fling frame owns its display slot and
+     * every pixel that step revealed, so the scene is rebuilt exactly once per step instead of once
+     * per finished tile.
+     */
+    fun refreshInteractionFrame() {
+        checkOwner()
+        if (closed || !interactionActive) return
+        refreshImmediately(0)
+    }
+
+    /**
+     * A work result changed the pixels, not the frame's schedule. During a real drag or fling the
+     * frame callback already drains once per display slot, so queueing a second message here would
+     * both lengthen the completion continuation that owns the main looper and put a long message in
+     * front of the next vsync. The result is only marked dirty then; [interactionActive] delivers it
+     * if the gesture ends without another frame.
+     */
+    private fun refreshWorkResult() {
+        frameWorkObserver?.workScheduled(FrameWorkObserver.WORK_RESULT, System.nanoTime())
+        dirty = true
+        if (processing || clearingScene || sceneClearFailed || closed) return
+        when {
+            refreshScheduler == null -> drainImmediate()
+            !interactionActive -> scheduleRefresh()
+        }
     }
 
     /** Called once per delivery; applies at most one pass and re-arms when work arrived. */
@@ -185,7 +289,11 @@ class EngineRenderRuntime(
         dirty = false
         processing = true
         try {
-            if (refreshSnapshot(snapshot) && dirty) scheduleRefresh()
+            // A pass that leaves [dirty] set has more to do, but during a gesture the frame callback
+            // is already the only drain: queueing a second message would put a full drain in front of
+            // the next vsync and cost it a display slot. The next frame drains again, and
+            // [interactionActive] delivers the leftovers if the gesture ends first.
+            if (refreshSnapshot(snapshot) && dirty && !interactionActive) scheduleRefresh()
         } finally { processing = false }
     }
 
@@ -222,10 +330,12 @@ class EngineRenderRuntime(
     }
 
     private fun refreshSnapshot(snapshot: EngineRuntimeSnapshot): Boolean {
-        val candidatePlan = if (enabled) planner.plan(snapshot) else EngineTilePlan(emptyList(), emptyList(), false, 0)
+        val candidatePlan = if (enabled) tracer.section("engine_plan") { planFor(snapshot) }
+        else EngineTilePlan(emptyList(), emptyList(), false, 0)
         val waiting = enabled && waitForCompleteViewport && !scene(snapshot, candidatePlan).completeCoverage
-        val visiblePlan = if (waiting) planner.retainDisplayed(candidatePlan,
-            displayed?.quads?.map { it.texture.tile }.orEmpty()) else candidatePlan
+        val visiblePlan = if (waiting) tracer.section("engine_retain") {
+            planner.retainDisplayed(candidatePlan, displayed?.quads?.map { it.texture.tile }.orEmpty())
+        } else candidatePlan
         if (visiblePlan == null) {
             releaseDisplayedReferences()
             return !clearingScene && !sceneClearFailed
@@ -234,25 +344,26 @@ class EngineRenderRuntime(
         visiblePlan.placements.forEach { placement ->
             textures.remove(placement.tile)?.let { textures[placement.tile] = it }
         }
-        val plan = if (enabled) planner.retainReady(visiblePlan, snapshot, textures.keys.toList().asReversed())
-            else visiblePlan
+        val plan = if (enabled) tracer.section("engine_retain") {
+            planner.retainReady(visiblePlan, snapshot, textures.keys.toList().asReversed())
+        } else visiblePlan
         val wantedTiles = plan.demands.mapTo(linkedSetOf()) { it.tile }
         textures.keys.retainAll(wantedTiles)
         tileDemands.keys.retainAll(wantedTiles)
         if (!waiting) {
-            val next = scene(snapshot, plan)
+            val next = tracer.section("engine_scene") { scene(snapshot, plan) }
             // Far-away original dimensions advance geometry revision without changing the
             // viewport. Preserve input revisions and every changed pixel, but avoid that swap.
             if (shouldSubmit(next)) {
-                submitScene(next)
+                tracer.section("engine_submit") { submitScene(next) }
                 hasSubmittedScene = true
             }
             displayed = next.takeIf { enabled && it.completeCoverage }
             if (enabled && next.completeCoverage) reportViewportReady(next.session)
         }
-        if (!dirty) work.reconcile(plan.demands.filter {
-            it.priority != WorkPriority.NEXT_IMAGE || it.tile !in failedReadAhead
-        }.map { demand(snapshot, it) })
+        if (!dirty) tracer.section("engine_reconcile") {
+            work.reconcile(renderDemands(snapshot, plan))
+        }
         return true
     }
 
@@ -283,7 +394,7 @@ class EngineRenderRuntime(
                 reportSceneFailure(failure)
                 return@launch
             } finally { clearingScene = false }
-            refresh(FrameWorkObserver.WORK_RESULT)
+            refreshWorkResult()
         }
     }
 
@@ -296,14 +407,14 @@ class EngineRenderRuntime(
         val generation = snapshot.session.generation
         return SessionDemand(request, onFailure = if (demand.priority == WorkPriority.NEXT_IMAGE) ({ _: Throwable ->
             failedReadAhead += demand.tile
-            refresh(FrameWorkObserver.WORK_RESULT)
+            refreshWorkResult()
         }) else null) { texture ->
             if (!closed && current?.session?.generation == generation &&
                 texture.rendererEpoch == uploader.rendererEpoch) {
                 require(texture.tile == demand.tile && texture.rendererId == uploader.rendererId)
                 failedReadAhead -= demand.tile
                 textures[demand.tile] = texture
-                refresh(FrameWorkObserver.WORK_RESULT)
+                refreshWorkResult()
             }
         }.also { tileDemands[demand.tile] = CachedTileDemand(accessPlan, demand.priority, it) }
     }

@@ -1,6 +1,7 @@
 package ml.melun.mangaview.viewer.runtime
 
 import android.os.Handler
+import android.os.Looper
 import ml.melun.mangaview.engine.runtime.EngineRefreshScheduler
 
 /** Owner-thread message queue that carries at most one pending engine refresh drain. */
@@ -14,7 +15,32 @@ internal interface RefreshMessageQueue {
 
 /** Handler-backed queue; the app passes an async main handler so vsync sync barriers cannot defer the drain. */
 internal class HandlerRefreshMessageQueue(private val handler: Handler) : RefreshMessageQueue {
-    override fun post(message: Runnable): Boolean = handler.post(message)
+    /**
+     * While a real drag or fling owns the frames, the drain must not be queued behind the next vsync
+     * message: a pending message is delivered before the vsync that arrives after it, so the frame
+     * callback would start late and lose its display slot. The owner thread is already inside a frame
+     * callback then, so the drain runs inline instead and the looper stays empty for the vsync.
+     *
+     * A drain that re-arms while already running inline would recurse, so the nested request is
+     * queued normally; that bounds inline delivery to one level.
+     */
+    var inlineWhileInteracting = false
+
+    private var inlineRunning = false
+
+    override fun post(message: Runnable): Boolean {
+        if (inlineWhileInteracting && !inlineRunning && Looper.myLooper() === handler.looper) {
+            inlineRunning = true
+            try {
+                message.run()
+            } finally {
+                inlineRunning = false
+            }
+            return true
+        }
+        return handler.post(message)
+    }
+
     override fun remove(message: Runnable) = handler.removeCallbacks(message)
 }
 

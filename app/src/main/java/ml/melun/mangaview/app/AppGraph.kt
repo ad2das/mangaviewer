@@ -353,8 +353,13 @@ internal class AppGraph(
      */
     fun primeAfterFirstFrame() {
         account.activate()
-        engine
-        applicationScope.launch {
+        // Building the engine graph creates the work coordinator, the OkHttp clients, a decode
+        // thread and the native decoder before it can warm the GL renderer. That is warming work,
+        // not launch work, so it is built off the main thread: the launch frames and the first
+        // scroll never wait behind it, and a reader that opens later claims the same graph once
+        // construction has long finished.
+        applicationScope.launch(ioDispatcher) {
+            engine
             val lastSource = runCatching { settingsStore.settings.first() }.getOrNull()?.sourceKey
             when (lastSource) {
                 NEWXTOON_ID.value -> prefetchNewxtoonCatalog()
