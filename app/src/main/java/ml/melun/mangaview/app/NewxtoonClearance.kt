@@ -19,6 +19,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.Closeable
@@ -55,6 +57,41 @@ private val spoofsDeviceIdentity: Boolean = run {
     fingerprint.startsWith("generic") || fingerprint.contains("emulator") ||
         hardware.contains("goldfish") || hardware.contains("ranchu") ||
         android.os.Build.MODEL.startsWith("sdk_")
+}
+
+/**
+ * Rewrites the engine's client hints so they describe Chrome for Android, the same identity the
+ * user agent claims to be. Left alone, the hints say "Android WebView" while the user agent says
+ * "Google Chrome", and Cloudflare's challenge cross-checks the two; the version and platform
+ * stay the engine's own, so only the WebView brand changes.
+ */
+internal fun applySpoofedUserAgentMetadata(webView: WebView, fullVersion: String) {
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+        Log.w(TAG, "user agent metadata unsupported; client hints stay empty")
+        return
+    }
+    val major = fullVersion.substringBefore('.')
+    val brands = listOf(
+        UserAgentMetadata.BrandVersion.Builder()
+            .setBrand("Not(A:Brand").setMajorVersion("99").setFullVersion("99.0.0.0").build(),
+        UserAgentMetadata.BrandVersion.Builder()
+            .setBrand("Google Chrome").setMajorVersion(major).setFullVersion(fullVersion).build(),
+        UserAgentMetadata.BrandVersion.Builder()
+            .setBrand("Chromium").setMajorVersion(major).setFullVersion(fullVersion).build(),
+    )
+    val metadata = UserAgentMetadata.Builder()
+        .setBrandVersionList(brands)
+        .setFullVersion(fullVersion)
+        .setPlatform("Android")
+        .setPlatformVersion("${android.os.Build.VERSION.RELEASE}.0.0")
+        .setArchitecture("arm")
+        .setModel(android.os.Build.MODEL)
+        .setMobile(true)
+        .setBitness(64)
+        .setWow64(false)
+        .build()
+    runCatching { WebSettingsCompat.setUserAgentMetadata(webView.settings, metadata) }
+        .onFailure { Log.w(TAG, "user agent metadata rejected", it) }
 }
 
 /**
@@ -103,33 +140,51 @@ internal class NewxtoonClearance(
     private var solvedRelay: BrowserTlsRelay? = null
     private val fetcher = NewxtoonFetchBridge(main)
 
-    /**
-     * The engine's own UA is kept byte for byte except for the emulator's model and build id, the
-     * only parts that mark the session as non-phone; the client hints the engine sends stay
-     * Android WebView, so the presented identity remains internally consistent.
-     */
-    val sourceUserAgent: String = runCatching { WebSettings.getDefaultUserAgent(appContext) }
+    /** The engine's own user agent; only the emulator's identity markers are rewritten from it. */
+    private val engineUserAgent: String = runCatching { WebSettings.getDefaultUserAgent(appContext) }
         .getOrElse { fallbackUserAgent() }
-        .let { engineUserAgent ->
-            if (!spoofsDeviceIdentity) engineUserAgent
-            else engineUserAgent.replace(DEVICE_MARKER, "Android 15; $DEVICE_MODEL Build/$DEVICE_BUILD")
-        }
+
+    /**
+     * The full Chrome build the engine reports. Only the high-entropy client hints carry it: the
+     * user agent is reduced to the major version, and a full version there matches no real Chrome.
+     */
+    val engineChromeVersion: String = Regex("Chrome/([0-9.]+)").find(engineUserAgent)
+        ?.groupValues?.get(1) ?: "124.0.0.0"
+
+    /**
+     * On the emulator the engine's UA is replaced with the reduced user agent Chrome for Android
+     * ships: the engine's own UA names the device and carries the WebView marker, and Cloudflare
+     * answers that with an interactive check this browser never finishes. Everywhere else the
+     * engine's UA is kept byte for byte.
+     */
+    val sourceUserAgent: String =
+        if (!spoofsDeviceIdentity) engineUserAgent else chromeUserAgent(engineChromeVersion)
 
     /** The client hints the challenge WebView actually sends, replayed on the OkHttp route. */
     val clientHints: String = run {
-        val version = Regex("Chrome/([0-9]+)").find(sourceUserAgent)?.groupValues?.get(1) ?: "124"
-        "\"Chromium\";v=\"$version\", \"Not?A_Brand\";v=\"24\", \"Android WebView\";v=\"$version\""
+        val version = engineChromeVersion.substringBefore('.')
+        "\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"$version\", \"Chromium\";v=\"$version\""
     }
 
     /** Builds the inert replay browser that hosts fetches under the proven browser identity. */
-    private val replayViews = NewxtoonReplayView(appContext, cookies, fetcher, main, sourceUserAgent)
+    private val replayViews = NewxtoonReplayView(
+        appContext, cookies, fetcher, main, sourceUserAgent, spoofsDeviceIdentity, engineChromeVersion)
 
     /** Challenge/replay browser machinery; only this class promotes a settled view. */
     private val challengePage = NewxtoonChallengePage(
-        appContext, cookies, fetcher, main, sourceUserAgent, spoofsDeviceIdentity,
+        appContext, cookies, fetcher, main, sourceUserAgent, spoofsDeviceIdentity, engineChromeVersion,
         onSettlingView = { settlingView = it },
         onSettlingUsable = { settlingViewUsable = it },
     )
+
+    /**
+     * Chrome for Android freezes its user agent at Android 10 with a "K" model placeholder and
+     * reduces the Chrome version to its major component, so the emulator's model, build id, and
+     * engine build never appear; the full version only rides the high-entropy client hints.
+     */
+    private fun chromeUserAgent(fullVersion: String): String =
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/${fullVersion.substringBefore('.')}.0.0.0 Mobile Safari/537.36"
 
     private fun fallbackUserAgent(): String {
         val version = runCatching {
@@ -434,10 +489,9 @@ internal class NewxtoonClearance(
         const val CHALLENGE_ATTEMPTS = 3
         const val CHALLENGE_RETRY_DELAY_MILLIS = 1_000L
         // The emulator model and build id are the loudest "not a phone" markers left in the
-        // user agent; a real device identity replaces them (no request header contradicts it).
+        // user agent; the Chrome identity replaces the whole UA, so only the fallback needs them.
         const val DEVICE_MODEL = "SM-S918N"
         const val DEVICE_BUILD = "UP1A.231005.007"
-        val DEVICE_MARKER = Regex("Android [0-9]+; [^;)]+ Build/[^;)]+")
     }
 }
 

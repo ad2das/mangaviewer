@@ -41,6 +41,8 @@ internal class NewxtoonReplayView(
     private val fetcher: NewxtoonFetchBridge,
     private val main: Handler,
     private val sourceUserAgent: String,
+    private val spoofsDeviceIdentity: Boolean,
+    private val engineChromeVersion: String,
 ) {
     /** Builds and commits the replay view; every failure path tears its browser down again. */
     suspend fun create(): ReplayBrowser? {
@@ -120,6 +122,7 @@ internal class NewxtoonReplayView(
             webView.settings.javaScriptEnabled = true
             webView.settings.domStorageEnabled = true
             webView.settings.userAgentString = sourceUserAgent
+            if (spoofsDeviceIdentity) applySpoofedUserAgentMetadata(webView, engineChromeVersion)
             webView.addJavascriptInterface(fetcher.Bridge(), BRIDGE_NAME)
             webView.webViewClient = client(relay)
             window.attach(webView)

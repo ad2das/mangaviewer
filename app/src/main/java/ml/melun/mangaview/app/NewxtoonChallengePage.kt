@@ -51,11 +51,6 @@ internal val TRACKER_HOSTS = setOf(
     "google-analytics.com",
 )
 
-internal val COSMETIC_EXTENSIONS = listOf(
-    ".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif", ".svg", ".ico",
-    ".mp4", ".webm", ".woff", ".woff2", ".ttf", ".otf",
-)
-
 private const val PROBE_SCRIPT = """
 (function(){
   function deepFrames(){
@@ -98,75 +93,48 @@ private const val TAP_PROBE_SCRIPT = """
 """
 
 /**
- * The emulator renders through a translated software GL stack ("Android Emulator OpenGL ES
- * Translator") and reports an x86_64 platform, both of which mark the session as non-phone
- * before Cloudflare even looks at the interaction. These are JavaScript-visible only, so they
- * are patched at document start in every frame; nothing here contradicts a real request header.
+ * Chrome for Android exposes `window.chrome` with `loadTimes`/`csi` and reports the reduced
+ * platform string "Linux armv81"; the engine exposes neither, and Cloudflare's challenge
+ * cross-checks the user agent against both. Only JavaScript-visible values change.
  */
 private const val FINGERPRINT_SCRIPT = """
 (function(){
   try{
-    var vendor="Qualcomm";
-    var renderer="Adreno (TM) 740";
-    var patch=function(proto){
-      if(!proto||!proto.getParameter){return;}
-      var original=proto.getParameter;
-      var patched=function(parameter){
-        if(parameter===37445){return vendor;}
-        if(parameter===37446){return renderer;}
-        return original.call(this,parameter);
-      };
-      patched.toString=function(){return "function getParameter() { [native code] }";};
-      proto.getParameter=patched;
-    };
-    patch(window.WebGLRenderingContext&&window.WebGLRenderingContext.prototype);
-    patch(window.WebGL2RenderingContext&&window.WebGL2RenderingContext.prototype);
-  }catch(error){}
-  try{
     Object.defineProperty(Navigator.prototype,"platform",{
-      get:function(){return "Linux aarch64";},configurable:true
+      get:function(){return "Linux armv81";},configurable:true
     });
   }catch(error){}
   try{
-    Object.defineProperty(Navigator.prototype,"hardwareConcurrency",{
-      get:function(){return 8;},configurable:true
-    });
-  }catch(error){}
-  try{
-    var chromeVersion=/Chrome\/([0-9]+)/.exec(navigator.userAgent);
-    var major=chromeVersion?chromeVersion[1]:"152";
-    var fullMatch=/Chrome\/([0-9.]+)/.exec(navigator.userAgent);
-    var full=fullMatch?fullMatch[1]:major+".0.0.0";
-    var brands=[
-      {brand:"Chromium",version:major},
-      {brand:"Not?A_Brand",version:"24"},
-      {brand:"Android WebView",version:major}
-    ];
-    var entropy={
-      architecture:"arm",bitness:"64",brands:brands,formFactors:["Mobile"],
-      fullVersionList:[
-        {brand:"Chromium",version:full},
-        {brand:"Not?A_Brand",version:"24.0.0.0"},
-        {brand:"Android WebView",version:full}
-      ],
-      mobile:true,model:"SM-S918N",platform:"Android",platformVersion:"15.0.0",
-      uaFullVersion:full,wow64:false
-    };
-    var hints={
-      brands:brands,mobile:true,platform:"Android",
-      getHighEntropyValues:function(names){
-        var out={};
-        for(var index=0;index<names.length;index++){
-          var name=names[index];
-          if(entropy[name]!==undefined){out[name]=entropy[name];}
-        }
-        return Promise.resolve(out);
-      },
-      toJSON:function(){return {brands:brands,mobile:true,platform:"Android"};}
-    };
-    Object.defineProperty(Navigator.prototype,"userAgentData",{
-      get:function(){return hints;},configurable:true
-    });
+    if(typeof window.chrome==="undefined"){
+      var navStart=(window.performance&&performance.timing)?performance.timing.navigationStart:Date.now();
+      var loadTimes=function(){
+        var t=performance.timing||{};
+        return {
+          requestTime:navStart/1000,
+          startLoadTime:navStart/1000,
+          commitLoadTime:(t.responseStart||navStart)/1000,
+          finishDocumentLoadTime:(t.domContentLoadedEventEnd||navStart)/1000,
+          finishLoadTime:(t.loadEventEnd||navStart)/1000,
+          firstPaintTime:(t.responseStart||navStart)/1000,
+          firstPaintAfterLoadTime:0,
+          navigationType:"Other",
+          wasFetchedViaSpdy:true,
+          wasNpnNegotiated:true,
+          npnNegotiatedProtocol:"h2",
+          wasAlternateProtocolAvailable:false,
+          connectionInfo:"h2"
+        };
+      };
+      var csi=function(){
+        var t=performance.timing||{};
+        return {onloadT:(t.loadEventEnd||navStart),pageT:performance.now(),startE:navStart,transport:"h2"};
+      };
+      loadTimes.toString=function(){return "function loadTimes() { [native code] }";};
+      csi.toString=function(){return "function csi() { [native code] }";};
+      Object.defineProperty(window,"chrome",{
+        value:{loadTimes:loadTimes,csi:csi},configurable:true
+      });
+    }
   }catch(error){}
 })();
 """
@@ -182,6 +150,7 @@ internal class NewxtoonChallengePage(
     private val main: Handler,
     private val sourceUserAgent: String,
     private val spoofsDeviceIdentity: Boolean,
+    private val engineChromeVersion: String,
     private val onSettlingView: (WebView?) -> Unit,
     private val onSettlingUsable: (Boolean) -> Unit,
 ) {
@@ -213,6 +182,9 @@ internal class NewxtoonChallengePage(
                 webView.settings.javaScriptEnabled = true
                 webView.settings.domStorageEnabled = true
                 webView.settings.userAgentString = sourceUserAgent
+                // Turnstile renders in a cross-site iframe; WebView drops third-party cookies by
+                // default, which leaves the widget verifying forever instead of settling.
+                CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
                 webView.addJavascriptInterface(fetcher.Bridge(), BRIDGE_NAME)
                 webView.webViewClient = challengeClient(attempt, relay)
                 webView.webChromeClient = challengeConsole(attempt)
@@ -226,8 +198,11 @@ internal class NewxtoonChallengePage(
                         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                             WebViewCompat.addDocumentStartJavaScript(
                                 webView, FINGERPRINT_SCRIPT, setOf("*"))
+                        } else {
+                            Log.w(TAG, "document start scripts unsupported; identity applied per commit")
                         }
                     }.onFailure { Log.w(TAG, "fingerprint injection skipped", it) }
+                    applySpoofedUserAgentMetadata(webView, engineChromeVersion)
                 }
                 // A persisted clearance that is still valid makes the interstitial resolve at once.
                 cookies.seedWebView()
@@ -316,11 +291,17 @@ internal class NewxtoonChallengePage(
                 // Once the origin's document commits, evaluated fetch code runs inside it —
                 // a verified-clearance replay no longer needs to wait for the full challenge.
                 if (view === attempt.webView) onSettlingUsable(true)
+                if (view === attempt.webView && spoofsDeviceIdentity) {
+                    // The challenge rewrites its document mid-flight, which drops document-start
+                    // patches; the identity is re-applied at every commit as a backstop.
+                    view.evaluateJavascript(FINGERPRINT_SCRIPT, null)
+                }
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 Log.i(TAG, "page finished $url title=${view.title} " +
                     "clearancePresent=${cookies.hasClearance()}")
+                if (spoofsDeviceIdentity) view.evaluateJavascript(FINGERPRINT_SCRIPT, null)
                 if (cookies.clearanceValue() != null) checkClearance(attempt)
             }
 
@@ -340,15 +321,12 @@ internal class NewxtoonChallengePage(
             override fun shouldInterceptRequest(
                 view: WebView, request: WebResourceRequest,
             ): android.webkit.WebResourceResponse? {
-                // Only cosmetic bytes are cut: third-party images/media/fonts and known
-                // trackers cost seconds of page load, while every script and XHR stays
-                // untouched so the challenge flow keeps full fidelity.
+                // Only known trackers are cut: fonts and images stay untouched, because the
+                // challenge samples its own rendering and a substituted font breaks the
+                // Turnstile widget's layout. Scripts and XHR were never blocked.
                 if (request.isForMainFrame) return null
                 val host = request.url.host?.lowercase() ?: return null
-                val path = request.url.path?.lowercase() ?: ""
-                val cosmetic = TRACKER_HOSTS.any { host == it || host.endsWith(".$it") } ||
-                    COSMETIC_EXTENSIONS.any { path.endsWith(it) }
-                if (cosmetic) {
+                if (TRACKER_HOSTS.any { host == it || host.endsWith(".$it") }) {
                     Log.i(TAG, "blocked ${request.method} ${request.url.host}")
                     return EMPTY_RESPONSE
                 }
