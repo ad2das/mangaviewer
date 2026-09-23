@@ -574,6 +574,11 @@ private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeMani
     next.pages.take(head).filter { it.id !in failedReadAheadPages }.forEach {
         result.putIfAbsent(it.id, headPriority)
     }
+    // While a gesture owns the frame the bulk stays parked: these twelve slots are page transfers
+    // whose lookups and publishes otherwise ride the same background lanes the reader's own
+    // read-ahead has to share (measured on wfwf's fling median). The four-page head above keeps
+    // the boundary warm, and the slots re-fill on the first update after the gesture ends.
+    if (interactionActive) return
     // Start before GPU preparation, but leave every queued current body its background slot.
     // Filling all next slots prematurely can strand the current episode's sliding-window tail.
     val openingReady = state.completeViewport && state.visibleRegions.all { it.pageId in prepared }

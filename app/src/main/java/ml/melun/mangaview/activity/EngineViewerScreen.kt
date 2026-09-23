@@ -19,6 +19,7 @@ import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.app.AndroidWorkDispatcher
 import ml.melun.mangaview.app.EngineAppGraph
 import ml.melun.mangaview.app.EngineViewerWork
+import ml.melun.mangaview.app.InlineBackgroundWorkDispatcher
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.WorkPriority
@@ -52,15 +53,14 @@ internal class EngineViewerScreen(
     fun finish() = finishReader()
     private val sessionJob = SupervisorJob()
     private val sessionScope = CoroutineScope(sessionJob + Dispatchers.Main.immediate)
+    // The speculative decode used to run on this dedicated background-priority pool. It now runs
+    // inline on the tile record's own worker with an equivalent priority wrap, which removed the
+    // lane's two dispatcher hops (~0.3-0.5ms of a ~5.9ms read-ahead budget on the GPU AVD). The
+    // pool stays as the decoder lane's close witness: the capture device test reads
+    // engineDecodeWorkersTerminated() after the viewer closes, and closeDecodeWorkers() drains it.
     private val hardDecodeWork = AndroidWorkDispatcher(
         name = "viewer-engine-decode",
         threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4),
-        // Native decode is latency-sensitive but still must yield to input, UI and RenderThread.
-        // A dedicated background-priority lane keeps it independent from warm decode without
-        // stealing VSYNC CPU time on lower-core emulators and phones. Measured on the GPU AVD:
-        // raising this lane to default priority let the speculative decode pool contend with the
-        // owner/render threads during the opening viewport, and ntk d2r p95 45 -> 114ms and ntk
-        // FOCUS/VISIBLE p50 29 -> 112ms regressed. It stays background.
         linuxPriority = Process.THREAD_PRIORITY_BACKGROUND,
     )
     // The lanes are split by work priority instead of running the whole decoder at one priority.
@@ -75,9 +75,15 @@ internal class EngineViewerScreen(
         threads = 2,
         linuxPriority = Process.THREAD_PRIORITY_DEFAULT,
     )
+    // The horizon's decode no longer pays a lane dispatch: it runs inline on the tile record's own
+    // worker under the old lane's background-priority wrap. Measured on the GPU AVD: raising this
+    // inline decode's priority to default with the record's worker made it contend — ntk F/V p50
+    // 19.8 -> 30.8 and wfwf d2r p50 5.95 -> 6.23 — so the wrap stays background; the display
+    // threads (main -10, owner/render -4) preempt it, and admission bounds how many workers park.
+    private val inlineBackgroundDecode = InlineBackgroundWorkDispatcher()
     private val decodeDispatchers: (ml.melun.mangaview.engine.api.WorkPriority) ->
         kotlinx.coroutines.CoroutineDispatcher = { priority ->
-        if (priority.background) hardDecodeWork.coroutineDispatcher else visibleDecodeWork.coroutineDispatcher
+        if (priority.background) inlineBackgroundDecode.coroutineDispatcher else visibleDecodeWork.coroutineDispatcher
     }
     private var runtime: EngineViewerRuntime? = null
     private lateinit var ui: ViewerScreenUi

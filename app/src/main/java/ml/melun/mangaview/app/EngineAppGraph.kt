@@ -54,18 +54,20 @@ internal class EngineAppGraph(
     // One body beyond the twelve background transfers and two visible reserves is kept for the
     // document-end original so a fast reader cannot outrun a displayable episode end.
     // The read-ahead horizon is background priority, and its decodes never overlap a visible or
-    // interactive decode: speculation must not reach residency ahead of blocked visible work. Within
-    // that rule the horizon's decodes are not throttled against each other, so a horizon burst still
-    // runs concurrently. decodes therefore caps only concurrent visible/interactive decodes; 3 keeps
-    // three of those in flight. That reservation previously had to be paid out of the horizon's own
-    // budget (a background decode limit of decodes-1), which serialized every horizon burst to two
-    // tiles and cost ~1.5ms on wfwf's read-ahead median.
+    // interactive decode: speculation must not reach residency ahead of blocked visible work.
+    // Speculation no longer runs on a dedicated lane — the tile record's own worker runs it inline
+    // under a background-priority wrap — so concurrent horizon decodes are bounded by admission
+    // instead of by lane threads. On this AVD (four cores) the lane held two, and parking more
+    // plumbing workers in a raster conversion starves the completion handoffs that carry every
+    // record, so backgroundDecodes stays 2. decodes caps visible/interactive decodes; 3 keeps three
+    // of those in flight.
     // storage stays at 1: the horizon's repeated cached lookups are cheap individually and letting them
     // run concurrently measurably degraded latency (measured ntk d2r p50 61.6 -> 128-175ms, and again
     // on the GPU AVD with the whole horizon in flight: ntk d2r p95 45 -> 114ms and ntk FOCUS/VISIBLE
     // p50 29 -> 112ms, i.e. the extra permit let the horizon's lookups run alongside the visible
     // tile's own opening lookup on the same lane and delayed it).
-    private val workLimits = WorkLimits(network = 16, bodies = 15, backgroundNetwork = 12, decodes = 3)
+    private val workLimits = WorkLimits(network = 16, bodies = 15, backgroundNetwork = 12, decodes = 3,
+        backgroundDecodes = 2)
     // The coordinator's own plumbing — record admission, the dependency handoffs that join a tile's
     // page/decode/upload records, the scheduler wakeups and the completion fan-out back to
     // subscribers — used to run on the application's shared source pool at BACKGROUND priority:
@@ -110,8 +112,11 @@ internal class EngineAppGraph(
     // registers a tile first owns the decode lane for it. The prediction can register the opening
     // viewport's own band before the plan demands it, so its lane choice must honour priority too;
     // otherwise a promoted prediction would pin the visible tile's decode to the throttled lane.
+    // The opening band's tiles are visible work now, so they land on this lane; two threads let
+    // the band's three or four decodes overlap instead of queueing end to end behind the first
+    // demand (measured: the band's decode stage alone was 12.4-16.6ms of a 44-55ms cold opening).
     private val openingVisibleDecode = AndroidWorkDispatcher(
-        "viewer-opening-decode-visible", 1, android.os.Process.THREAD_PRIORITY_DEFAULT)
+        "viewer-opening-decode-visible", 2, android.os.Process.THREAD_PRIORITY_DEFAULT)
     private val openingPixels = EngineOpeningPixels(
         ml.melun.mangaview.engine.content.EnginePixelWork(
             ml.melun.mangaview.viewer.runtime.NativeEngineImageDecoder(),

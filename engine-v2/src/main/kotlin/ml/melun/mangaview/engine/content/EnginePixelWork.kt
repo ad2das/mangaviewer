@@ -34,6 +34,19 @@ class EnginePixelWork(
         })
     }
 
+    /**
+     * Runs one tile's decode on the caller's own record, without registering a record of its own.
+     * The caller has already claimed the operation and holds the decode domain's permit around this
+     * call; validation and cleanup of a raster that cannot be returned stay identical to [request].
+     */
+    suspend fun decodeInline(stored: StoredPage, tile: EngineTileSpec, priority: WorkPriority): EnginePixels {
+        require(stored.pageId == tile.pageId && stored.contentRevision == tile.contentRevision &&
+            stored.sha256 == tile.sha256 && stored.dimensions == tile.dimensions) {
+            "Tile does not match immutable page bytes"
+        }
+        return decode(stored, tile, priority)
+    }
+
     private suspend fun decode(page: StoredPage, tile: EngineTileSpec, priority: WorkPriority): EnginePixels {
         var owned: EnginePixels? = null
         // The lane is chosen when the decode actually runs, so a page first registered by the opening

@@ -46,6 +46,9 @@ public:
         DecodeTrace trace("decode_buffer_reuse");
         std::vector<std::uint8_t> result;
         result.swap(buffers_[selected]);
+        // Decoded rasters overwrite their storage completely, so keep the buffer sized to capacity:
+        // an acquire that fits then never pays the value-initialization a vector growth would do.
+        if (result.size() < result.capacity()) result.resize(result.capacity());
         return result;
     }
 
@@ -76,6 +79,9 @@ PixelBufferPool& pixelBufferPool() {
 
 struct CpuTile final {
     std::vector<std::uint8_t> pixels;
+    // The vector keeps its storage at capacity so reuse never pays growth's zero fill; this is the
+    // raster's real byte count (rasterWidth * decodedHeight * 4) the callers must see.
+    std::size_t byteCount = 0;
     ~CpuTile() { pixelBufferPool().release(pixels); }
 };
 
@@ -184,12 +190,16 @@ std::unique_ptr<CpuTile> decode(
     const std::size_t rowBytes = static_cast<std::size_t>(rasterWidth) * 4U;
     const std::size_t rowCount = static_cast<std::size_t>(displayBottom - displayTop);
     if (rowCount > std::numeric_limits<std::size_t>::max() / rowBytes) return nullptr;
+    const std::size_t byteCount = rowBytes * rowCount;
     auto tile = std::unique_ptr<CpuTile>(new (std::nothrow) CpuTile());
     if (tile == nullptr) return nullptr;
     {
         DecodeTrace trace("decode_allocate");
-        tile->pixels = pixelBufferPool().acquire(rowBytes * rowCount);
-        tile->pixels.resize(rowBytes * rowCount);
+        tile->pixels = pixelBufferPool().acquire(byteCount);
+        // Only a fresh or grown buffer allocates here; its size stays at capacity so a later reuse of
+        // the same raster size never re-runs vector growth's zero fill.
+        if (tile->pixels.capacity() < byteCount) tile->pixels.resize(byteCount);
+        tile->byteCount = byteCount;
     }
     DecodeTrace trace("decode_pixels");
     if (AImageDecoder_decodeImage(
@@ -206,9 +216,9 @@ CpuTile* fromHandle(jlong handle) noexcept {
 
 bool viewerDescribeCpuTile(std::uint64_t handle, ViewerCpuTileView* output) noexcept {
     const CpuTile* tile = reinterpret_cast<const CpuTile*>(static_cast<std::uintptr_t>(handle));
-    if (tile == nullptr || output == nullptr || tile->pixels.empty()) return false;
+    if (tile == nullptr || output == nullptr || tile->byteCount == 0) return false;
     output->pixels = tile->pixels.data();
-    output->byteCount = tile->pixels.size();
+    output->byteCount = tile->byteCount;
     return true;
 }
 
@@ -237,9 +247,9 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_ml_melun_mangaview_viewer_runtime_NativeCpuDecodeBridge_nativeByteCount(
     JNIEnv*, jobject, jlong handle) {
     const CpuTile* tile = fromHandle(handle);
-    if (tile == nullptr || tile->pixels.size() >
+    if (tile == nullptr || tile->byteCount >
             static_cast<std::size_t>(std::numeric_limits<jlong>::max())) return 0;
-    return static_cast<jlong>(tile->pixels.size());
+    return static_cast<jlong>(tile->byteCount);
 }
 
 extern "C" JNIEXPORT void JNICALL

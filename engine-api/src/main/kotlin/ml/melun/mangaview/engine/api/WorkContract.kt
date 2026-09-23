@@ -35,10 +35,16 @@ data class WorkLimits(
     val storage: Int = 1,
     val uploads: Int = 1,
     val queued: Int = 256,
+    /**
+     * How many speculative decodes may hold a raster conversion at once. The horizon's decodes run
+     * on the worker threads that own their tile records, so this is also the bound on pool threads
+     * parked in a decode; the previous dedicated decode lane made the bound its thread count.
+     */
+    val backgroundDecodes: Int = 2,
 ) {
     init {
         require(network > 0 && bodies in 1..network && backgroundNetwork in 1..network)
-        require(decodes > 0 && storage > 0 && uploads == 1 && queued > 0)
+        require(decodes > 0 && backgroundDecodes > 0 && storage > 0 && uploads == 1 && queued > 0)
     }
 }
 
@@ -78,6 +84,17 @@ interface WorkContext {
         disposeAbandoned: suspend (R) -> Unit = {},
         block: suspend (T) -> R,
     ): R
+
+    /**
+     * Borrows a dependency only when a record for its key is already registered, so a caller can run
+     * the same operation inline when nobody else has claimed the key yet. Returns null when no live
+     * record exists. When one does, ownership, disposal and release match [useDependency] exactly.
+     */
+    suspend fun <T : Any, R : Any> useRegisteredDependency(
+        request: WorkRequest<T>,
+        disposeAbandoned: suspend (R) -> Unit = {},
+        block: suspend (T) -> R,
+    ): R? = null
 }
 
 /** Only immutable results or reference-counted immutable-file handles may be shared. */

@@ -39,7 +39,8 @@ internal class DependencyWorkContext(
     }
 
     override suspend fun <T : Any> dependency(request: WorkRequest<T>): T {
-        val (_, subscription) = register(request)
+        val registered = register(request, onlyIfRegistered = false) ?: error("A plain dependency is always registered")
+        val (_, subscription) = registered
         try {
             return subscription.await()
         } finally {
@@ -51,8 +52,27 @@ internal class DependencyWorkContext(
         request: WorkRequest<T>,
         disposeAbandoned: suspend (R) -> Unit,
         block: suspend (T) -> R,
-    ): R {
-        val (subscriber, subscription) = register(request)
+    ): R = checkNotNull(borrow(request, disposeAbandoned, block, onlyIfRegistered = false))
+
+    override suspend fun <T : Any, R : Any> useRegisteredDependency(
+        request: WorkRequest<T>,
+        disposeAbandoned: suspend (R) -> Unit,
+        block: suspend (T) -> R,
+    ): R? = borrow(request, disposeAbandoned, block, onlyIfRegistered = true)
+
+    /**
+     * One borrow path for both dependency flavours. [onlyIfRegistered] turns the registration into a
+     * lookup: when no live record owns the key the caller gets null and runs the operation itself,
+     * which is what lets a folded operation skip a child record it would have been the only user of.
+     */
+    private suspend fun <T : Any, R : Any> borrow(
+        request: WorkRequest<T>,
+        disposeAbandoned: suspend (R) -> Unit,
+        block: suspend (T) -> R,
+        onlyIfRegistered: Boolean,
+    ): R? {
+        val registered = register(request, onlyIfRegistered) ?: return null
+        val (subscriber, subscription) = registered
         var result: R? = null
         var failure: Throwable? = null
         try {
@@ -121,8 +141,20 @@ internal class DependencyWorkContext(
         }
     }
 
-    private suspend fun <T : Any> register(request: WorkRequest<T>): Pair<WorkSubscriber, CoordinatorSubscription<T>> {
-        state.mutex.withLock { validateLocked(request); pending += 1 }
+    private suspend fun <T : Any> register(
+        request: WorkRequest<T>,
+        onlyIfRegistered: Boolean,
+    ): Pair<WorkSubscriber, CoordinatorSubscription<T>>? {
+        val claimed = state.mutex.withLock {
+            validateLocked(request)
+            // A lookup registers nothing: no claim to own the operation, so the caller runs it itself.
+            if (onlyIfRegistered && !ownedLocked(request.key)) false
+            else {
+                pending += 1
+                true
+            }
+        }
+        if (!claimed) return null
         var registered = false
         try {
             while (true) {
@@ -151,6 +183,11 @@ internal class DependencyWorkContext(
         } finally {
             if (!registered) finishCall()
         }
+    }
+
+    private fun ownedLocked(key: WorkKey<*>): Boolean {
+        val existing = state.records[key] ?: return false
+        return !existing.cancelRequested && existing.state != WorkRecordState.RETIRING
     }
 
     private fun <T : Any> registerChildLocked(request: WorkRequest<T>): Pair<WorkSubscriber, CoordinatorSubscription<T>> {

@@ -2,6 +2,7 @@ package ml.melun.mangaview.app
 
 import android.os.Process
 import java.io.Closeable
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
@@ -43,6 +44,30 @@ internal class AndroidWorkDispatcher(
             }
         }
     }
+}
+
+/**
+ * A lane whose dispatches run on the calling thread, wrapped in [linuxPriority]. The read-ahead
+ * decode used to hop onto a dedicated background-priority pool and back: measured on the GPU AVD
+ * that was two real dispatcher hops (~0.14-0.29ms plus ~0.16-0.20ms of a ~5.9ms read-ahead budget).
+ * The caller's worker already owns the tile record whose decode this is, and the executor below runs
+ * each dispatched block inline, so nothing changes threads; the priority wrap is what keeps the
+ * horizon from contending with the visible decode and the owner/render threads. Admission bounds
+ * how many workers may sit in a decode at once.
+ */
+internal class InlineBackgroundWorkDispatcher(
+    private val linuxPriority: Int = Process.THREAD_PRIORITY_BACKGROUND,
+) {
+    private val executor = Executor { command ->
+        val previous = Process.getThreadPriority(Process.myTid())
+        Process.setThreadPriority(linuxPriority)
+        try {
+            command.run()
+        } finally {
+            Process.setThreadPriority(previous)
+        }
+    }
+    val coroutineDispatcher: CoroutineDispatcher = executor.asCoroutineDispatcher()
 }
 
 internal class AppWorkDispatchers : Closeable {

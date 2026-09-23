@@ -53,7 +53,11 @@ internal class EngineOpeningPixels(
                     exhausted = true
                     return requests
                 }
-                requests += pixels.request(work.page(plan, page.pageId, WorkPriority.NEXT_IMAGE), tile, WorkPriority.NEXT_IMAGE)
+                // The band is the opening demand: register it as visible work so its decodes start
+                // on the visible opening lane at default priority instead of serializing on the
+                // throttled background lane (measured: the band's three or four decodes queued
+                // there for ~42ms in bad cold-boot runs before the viewer's first demand).
+                requests += pixels.request(work.page(plan, page.pageId, WorkPriority.VISIBLE), tile, WorkPriority.VISIBLE)
                 bytes += tile.byteCount
                 val openingRasterRow = sourceRow * tile.rasterHeight / page.dimensions.heightPx
                 rows += if (band == first) tile.rasterBottom - openingRasterRow else tile.decodedHeight.toLong()

@@ -15,6 +15,7 @@ internal class WorkAdmission(private val limits: WorkLimits) {
     private var backgroundNetworkUsed = 0
     private var decodeUsed = 0
     private var foregroundDecodeUsed = 0
+    private var backgroundDecodeUsed = 0
     private var storageUsed = 0
     private var uploadUsed = 0
     private var browserUsed = 0
@@ -46,7 +47,9 @@ internal class WorkAdmission(private val limits: WorkLimits) {
                 bodiesUsed -= 1
                 if (claim.background) backgroundNetworkUsed -= 1
             }
-            WorkDomain.DECODE -> if (!claim.background) {
+            WorkDomain.DECODE -> if (claim.background) {
+                backgroundDecodeUsed -= 1
+            } else {
                 decodeUsed -= 1
                 foregroundDecodeUsed -= 1
             }
@@ -55,7 +58,7 @@ internal class WorkAdmission(private val limits: WorkLimits) {
             WorkDomain.BROWSER -> browserUsed -= 1
         }
         check(networkUsed >= 0 && bodiesUsed >= 0 && backgroundNetworkUsed >= 0)
-        check(decodeUsed >= 0 && storageUsed >= 0 && uploadUsed >= 0 && browserUsed >= 0)
+        check(decodeUsed >= 0 && backgroundDecodeUsed >= 0 && storageUsed >= 0 && uploadUsed >= 0 && browserUsed >= 0)
     }
 
     private fun acquireNetwork(domain: WorkDomain, background: Boolean): PermitClaim? {
@@ -76,13 +79,18 @@ internal class WorkAdmission(private val limits: WorkLimits) {
     }
 
     private fun acquireDecode(domain: WorkDomain, background: Boolean): PermitClaim? {
-        // A speculative (read-ahead) decode takes no permit: the decode lane and the tile's own record
-        // already bound it, and throttling it here cost ~1.5ms on wfwf's read-ahead median (the median
-        // tile there is a horizon tile). What the boundary contract needs is not decode ordering but
-        // that speculation never reaches residency ahead of visible work, and that is enforced where
-        // residency is created — at the upload, below. Visible/interactive decodes stay capped so a
-        // demand burst cannot overcommit the CPU.
-        if (background) return PermitClaim(domain, background = true)
+        // A speculative (read-ahead) decode runs on the worker thread that owns its tile record now,
+        // not on a dedicated lane, so its concurrency is bounded here instead: a burst of horizon
+        // tiles may park [backgroundDecodes] plumbing threads in a raster conversion at most, and
+        // the rest stay free for the completion handoffs that carry every record. A visible decode
+        // stays capped by [decodes]; the boundary that matters — speculation never reaching
+        // residency ahead of visible work — is still enforced where residency is created, the
+        // upload below.
+        if (background) {
+            if (backgroundDecodeUsed >= limits.backgroundDecodes) return null
+            backgroundDecodeUsed += 1
+            return PermitClaim(domain, background = true)
+        }
         if (foregroundDecodeUsed >= limits.decodes) return null
         foregroundDecodeUsed += 1
         decodeUsed += 1

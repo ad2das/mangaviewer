@@ -8,7 +8,9 @@ import android.view.Choreographer
 import android.view.Surface
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -57,6 +59,17 @@ internal class EngineSurfaceOwner(
     private val thread = HandlerThread("engine-gl-$rendererId", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
     private val handler = Handler(thread.looper)
     private val dispatcher = handler.asCoroutineDispatcher("engine-gl-$rendererId")
+    // The tile that just decoded waits on this round trip, so the upload goes to the front of the
+    // owner's queue instead of behind whatever frame work is already posted: measured on the GPU AVD,
+    // that wait was 0.28-0.49ms of a ~5.9ms read-ahead budget. The single upload permit already
+    // serialises transfers, so at most one of these can ever be queued.
+    private val uploadDispatcher = object : CoroutineDispatcher() {
+        override fun isDispatchNeeded(context: CoroutineContext): Boolean = Thread.currentThread() !== thread
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            if (Thread.currentThread() === thread) block.run()
+            else check(handler.postAtFrontOfQueue(block)) { "GL owner queue rejected an upload" }
+        }
+    }
     private val pending = linkedMapOf<Long, Pending>()
     private val readbacks = EngineSurfaceReadbacks(native)
     private val nextCapture = EngineNextFrameCapture()
@@ -253,11 +266,11 @@ internal class EngineSurfaceOwner(
             uploadPacer.acquire(pixels.byteCount)
             EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_POST, System.nanoTime())
             while (acquired == 0L) {
-                val wait = onOwner("engine_owner_upload") {
+                val wait = onUploadOwner("engine_owner_upload") {
                     caller?.ensureActive()
                     check(!closing.get() && configured && expectedEpoch == rendererEpoch && !pixels.isClosed)
                     val used = OwnedRendererBridge.nativeTextureCounts(native)[1]
-                    if (pixels.byteCount > textureAllocationLimit - used) return@onOwner capacityChanged
+                    if (pixels.byteCount > textureAllocationLimit - used) return@onUploadOwner capacityChanged
                     val tile = pixels.tile
                     acquired = OwnedRendererBridge.nativeUpload(native, transfer, tile.rasterWidth,
                         tile.decodedHeight, tile.sourceTop, tile.sourceBottom, tile.dimensions.heightPx)
@@ -440,6 +453,10 @@ internal class EngineSurfaceOwner(
 
     private suspend fun <T> onOwner(trace: String = "engine_owner_task", block: () -> T): T =
         withContext(NonCancellable + dispatcher) { traceEngineWork(trace, block) }
+
+    /** [onOwner] with the upload's front-of-queue placement; see [uploadDispatcher]. */
+    private suspend fun <T> onUploadOwner(trace: String = "engine_owner_upload", block: () -> T): T =
+        withContext(NonCancellable + uploadDispatcher) { traceEngineWork(trace, block) }
 
     private companion object { val nextRenderer = AtomicLong() }
 }
