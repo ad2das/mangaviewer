@@ -98,15 +98,22 @@ internal object CrashLog {
      * The uncaught-exception handler never sees native crashes or low-memory kills, so the last
      * abnormal exit reason is captured on startup. It is the only evidence a silent, stack-less
      * process death leaves on a phone without adb, and it is offered to the user exactly once.
+     * A cached process the system reclaimed for memory is normal cleanup rather than an abnormal
+     * death, so only reportable exits are offered while the scan marker still advances past the rest.
      */
     private fun recordLastExit(app: Context) {
         val manager = app.getSystemService(ActivityManager::class.java) ?: return
-        val exit = manager.getHistoricalProcessExitReasons(app.packageName, 0, 16)
-            .firstOrNull { it.reason in EXIT_REASONS && it.processName == app.packageName } ?: return
+        val exits = manager.getHistoricalProcessExitReasons(app.packageName, 0, 16)
+            .filter { it.reason in EXIT_REASONS && it.processName == app.packageName }
+        val newest = exits.firstOrNull() ?: return
         val scan = File(File(app.filesDir, DIR).apply { mkdirs() }, EXIT_SCAN)
         val scanned = scan.takeIf { it.isFile }
             ?.let { runCatching { it.readText().trim().toLong() }.getOrNull() } ?: 0L
-        if (exit.timestamp <= scanned) return
+        if (newest.timestamp <= scanned) return
+        runCatching { scan.writeText(newest.timestamp.toString()) }
+        val exit = exits.firstOrNull {
+            it.timestamp > scanned && CrashExitPolicy.abnormal(it.reason, it.importance)
+        } ?: return
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(exit.timestamp))
         val reason = EXIT_REASONS[exit.reason] ?: exit.reason.toString()
         val trace = runCatching {
