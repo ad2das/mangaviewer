@@ -29,6 +29,7 @@ import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.ReadingPosition
 import ml.melun.mangaview.core.toLongExact
 import ml.melun.mangaview.engine.api.*
+import ml.melun.mangaview.engine.content.DecodeLane
 import ml.melun.mangaview.engine.content.EngineTileWork
 import ml.melun.mangaview.engine.runtime.EngineRenderRuntime
 import ml.melun.mangaview.engine.runtime.EngineRenderRuntimeDiagnosticSnapshot
@@ -56,7 +57,7 @@ internal class EngineViewerRuntime(
     private val positions: EnginePositionPort,
     episodeId: EpisodeId,
     initialViewport: EngineViewport,
-    decodeDispatchers: (WorkPriority) -> CoroutineDispatcher,
+    decodeLanes: (WorkPriority) -> DecodeLane,
     private val reportSnapshot: (EngineRuntimeSnapshot) -> Unit,
     private val reportPresented: (EngineSurfacePresentation) -> Unit,
     private val reportFailure: (Throwable) -> Unit,
@@ -99,7 +100,7 @@ internal class EngineViewerRuntime(
         // queue they sit behind. Tile rows scale 29 (0) -> 40 (2) -> 76 (12) and ntk d2r p50 7.6 -> 8.8
         // -> 168.1ms, so the reader keeps zero preparation viewports.
         EngineTilePlanner(budget.glResidentBytes, preparationViewports = 0, tracer = NoopEngineWorkTracer),
-        EngineTileWork(NativeEngineImageDecoder(), decodeDispatchers, renderer), renderer, content::pageRequest,
+        EngineTileWork(NativeEngineImageDecoder(), decodeLanes, renderer), renderer, content::pageRequest,
         { scene -> renderer.offer(frameProvenance.attachTicket(scene)) }, renderer::clearScene, { _, failure -> reportFailure(failure) },
         waitForCompleteViewport = false, reportSceneFailure = reportFailure,
         frameWorkObserver = FrameWorkObserver { kind, atNanos -> frameProvenance.noteWorkTrigger(kind, atNanos) },

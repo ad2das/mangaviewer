@@ -120,8 +120,9 @@ internal class EngineAppGraph(
     private val openingPixels = EngineOpeningPixels(
         ml.melun.mangaview.engine.content.EnginePixelWork(
             ml.melun.mangaview.viewer.runtime.NativeEngineImageDecoder(),
-            { priority -> if (priority.background) openingDecode.coroutineDispatcher
-                else openingVisibleDecode.coroutineDispatcher }),
+            { priority -> ml.melun.mangaview.engine.content.DispatcherDecodeLane(
+                if (priority.background) openingDecode.coroutineDispatcher
+                else openingVisibleDecode.coroutineDispatcher) }),
         { context.resources.displayMetrics.let { ml.melun.mangaview.engine.api.EngineViewport(it.widthPixels, it.heightPixels) } },
         minOf(32L * 1024 * 1024, ml.melun.mangaview.engine.api.DeviceMemoryBudget
             .fromPhysicalRam(openingMemory.totalPhysicalBytes).glResidentBytes / 4).coerceAtLeast(1))

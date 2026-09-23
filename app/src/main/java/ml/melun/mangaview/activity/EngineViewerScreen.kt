@@ -19,10 +19,12 @@ import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.app.AndroidWorkDispatcher
 import ml.melun.mangaview.app.EngineAppGraph
 import ml.melun.mangaview.app.EngineViewerWork
-import ml.melun.mangaview.app.InlineBackgroundWorkDispatcher
+import ml.melun.mangaview.app.InlinePriorityLane
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.WorkPriority
+import ml.melun.mangaview.engine.content.DecodeLane
+import ml.melun.mangaview.engine.content.DispatcherDecodeLane
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.source.SourceEpisode
 import ml.melun.mangaview.viewer.FixedPx
@@ -80,10 +82,10 @@ internal class EngineViewerScreen(
     // inline decode's priority to default with the record's worker made it contend — ntk F/V p50
     // 19.8 -> 30.8 and wfwf d2r p50 5.95 -> 6.23 — so the wrap stays background; the display
     // threads (main -10, owner/render -4) preempt it, and admission bounds how many workers park.
-    private val inlineBackgroundDecode = InlineBackgroundWorkDispatcher()
-    private val decodeDispatchers: (ml.melun.mangaview.engine.api.WorkPriority) ->
-        kotlinx.coroutines.CoroutineDispatcher = { priority ->
-        if (priority.background) inlineBackgroundDecode.coroutineDispatcher else visibleDecodeWork.coroutineDispatcher
+    private val inlineBackgroundDecode = InlinePriorityLane()
+    private val visibleDecodeLane = DispatcherDecodeLane(visibleDecodeWork.coroutineDispatcher)
+    private val decodeLanes: (WorkPriority) -> DecodeLane = { priority ->
+        if (priority.background) inlineBackgroundDecode else visibleDecodeLane
     }
     private var runtime: EngineViewerRuntime? = null
     private lateinit var ui: ViewerScreenUi
@@ -146,7 +148,7 @@ internal class EngineViewerScreen(
             coordinator = engine.coordinator,
             source = source,
             positions = engine.positions,
-            decodeDispatchers = decodeDispatchers,
+            decodeLanes = decodeLanes,
             episodeId = spec.episodeId,
             initialViewport = EngineViewport(Math.toIntExact(viewport.width.units / 1024),
                 Math.toIntExact(viewport.height.units / 1024)),

@@ -12,6 +12,7 @@ import ml.melun.mangaview.engine.api.WorkDomain
 import ml.melun.mangaview.engine.api.WorkKey
 import ml.melun.mangaview.engine.api.WorkRequest
 import ml.melun.mangaview.engine.api.WorkMetadata
+import ml.melun.mangaview.engine.runtime.EngineStageProbe
 
 /** One execution attempt owns these edges; the registry mutex protects their entire lifetime. */
 internal class DependencyWorkContext(
@@ -24,7 +25,7 @@ internal class DependencyWorkContext(
     override val priority get() = parent.priority
     private val state get() = coordinator.registry
     private var open = true
-    private var pending = 0
+    private val pending = java.util.concurrent.atomic.AtomicInteger(0)
     private val subscriptions = linkedMapOf<WorkSubscriber, CoordinatorSubscription<*>>()
 
     override suspend fun publishMetadata(value: WorkMetadata) {
@@ -135,7 +136,12 @@ internal class DependencyWorkContext(
                 claim = state.admission.tryAcquire(domain, parent.priority.value)
                 if (claim == null) notification = state.wakeup
             }
-            claim?.let { return it }
+            claim?.let {
+                if (domain == WorkDomain.UPLOAD) parent.request.probe?.let { probe ->
+                    EngineStageProbe.record(probe, EngineStageProbe.PERMIT_UPLOAD, System.nanoTime())
+                }
+                return it
+            }
             // No registry lock is held while waiting; a release signals this exact notification.
             notification?.await()
         }
@@ -150,7 +156,7 @@ internal class DependencyWorkContext(
             // A lookup registers nothing: no claim to own the operation, so the caller runs it itself.
             if (onlyIfRegistered && !ownedLocked(request.key)) false
             else {
-                pending += 1
+                pending.incrementAndGet()
                 true
             }
         }
@@ -199,13 +205,13 @@ internal class DependencyWorkContext(
         return subscriber to subscription
     }
 
-    private suspend fun finishCall() = withContext(NonCancellable) {
-        state.mutex.withLock { pending -= 1 }
-    }
+    // The count is atomic and the decrement is not suspending: every finishCall and the seal run on
+    // the record's own coroutine, so the registry lock added only a handoff to a hot path.
+    private fun finishCall() { pending.decrementAndGet() }
 
-    suspend fun seal() = state.mutex.withLock {
+    fun seal() {
         open = false
-        check(pending == 0) { "Dependency calls must finish before their parent execution returns" }
+        check(pending.get() == 0) { "Dependency calls must finish before their parent execution returns" }
     }
 
     suspend fun disposeWithDependencies(disposeParent: suspend () -> Unit) = withContext(NonCancellable) {

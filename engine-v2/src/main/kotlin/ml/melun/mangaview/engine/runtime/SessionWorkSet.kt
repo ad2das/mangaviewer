@@ -115,10 +115,12 @@ internal class SessionWorkSet(
         try {
             val subscription = demand.subscribe(coordinator)
             entry.subscription = subscription
+            demand.request.probe?.let { EngineStageProbe.record(it, EngineStageProbe.SUBMIT_DONE, System.nanoTime()) }
             desired[entry.key]?.let { subscription.promote(it.request.priority) }
             val result = awaitResult(entry, demand, subscription)
             if (entry.retiring || !desired.containsKey(entry.key) || closed) return
             entry.ready = true
+            demand.request.probe?.let { EngineStageProbe.record(it, EngineStageProbe.ACCEPT_ENTER, System.nanoTime()) }
             demand.accept(result)
             awaitCancellation()
         } catch (cancelled: CancellationException) {

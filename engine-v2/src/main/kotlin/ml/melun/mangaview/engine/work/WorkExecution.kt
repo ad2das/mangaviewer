@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.engine.api.WorkContext
+import ml.melun.mangaview.engine.runtime.EngineStageProbe
 
 internal class WorkExecution(
     private val coordinator: WorkCoordinator,
@@ -250,6 +251,9 @@ internal class WorkExecution(
         }
         mismatch?.let { error -> waiters.forEach { it.ready.completeExceptionally(error) } }
         disposal?.let { disposeRecord(it) }
+        record.request.probe?.let { probe ->
+            EngineStageProbe.record(probe, EngineStageProbe.DELIVERY_POSTED, System.nanoTime())
+        }
         if (mismatch == null) waiters.forEach { it.ready.complete(result.value) }
     }
 

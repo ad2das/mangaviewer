@@ -6,13 +6,28 @@ import kotlinx.coroutines.withContext
 import ml.melun.mangaview.engine.runtime.EngineStageProbe
 import ml.melun.mangaview.engine.api.*
 
+/**
+ * One decode lane: the scheduling and thread priority a decode of a given priority runs under.
+ * A lane may run its block inline — the caller's worker already owns the tile record whose decode
+ * this is, so a dispatcher hop would only add a handoff — or dispatch it to its own pool.
+ */
+interface DecodeLane {
+    suspend fun <R> run(block: suspend () -> R): R
+}
+
+/** A lane that dispatches its block to [dispatcher]. */
+class DispatcherDecodeLane(private val dispatcher: CoroutineDispatcher) : DecodeLane {
+    override suspend fun <R> run(block: suspend () -> R): R = withContext(dispatcher) { block() }
+}
+
 /** Renderer-independent pixels can be prepared before a window exists and borrowed at opening. */
 class EnginePixelWork(
     private val decoder: EngineImageDecoder,
-    private val dispatcherFor: (WorkPriority) -> CoroutineDispatcher,
+    private val lanesFor: (WorkPriority) -> DecodeLane,
 ) {
     /** Single-lane construction: every priority decodes on the same dispatcher. */
-    constructor(decoder: EngineImageDecoder, dispatcher: CoroutineDispatcher) : this(decoder, { dispatcher })
+    constructor(decoder: EngineImageDecoder, dispatcher: CoroutineDispatcher)
+        : this(decoder, { DispatcherDecodeLane(dispatcher) })
 
     fun request(page: WorkRequest<StoredPage>, tile: EngineTileSpec, priority: WorkPriority): WorkRequest<EnginePixels> {
         val revision = revision(page, tile)
@@ -51,18 +66,19 @@ class EnginePixelWork(
         var owned: EnginePixels? = null
         // The lane is chosen when the decode actually runs, so a page first registered by the opening
         // prediction still follows whatever priority its demand carries now.
-        val lane = dispatcherFor(priority)
+        val lane = lanesFor(priority)
         try {
-            withContext(lane) {
+            return lane.run {
                 EngineStageProbe.record(tile as Any, EngineStageProbe.DECODE_ENTER, System.nanoTime())
-                owned = decoder.decode(page, tile)
+                val decoded = decoder.decode(page, tile)
+                owned = decoded
                 EngineStageProbe.record(tile as Any, EngineStageProbe.DECODE_DONE, System.nanoTime())
-                require(owned!!.tile == tile && owned!!.byteCount == tile.byteCount)
+                require(decoded.tile == tile && decoded.byteCount == tile.byteCount)
+                decoded
             }
-            return checkNotNull(owned)
         } catch (failure: Throwable) {
-            withContext(NonCancellable + lane) {
-                try { owned?.close() } catch (cleanup: Throwable) {
+            withContext(NonCancellable) {
+                try { lane.run { owned?.close() } } catch (cleanup: Throwable) {
                     if (cleanup !== failure) failure.addSuppressed(cleanup)
                 }
             }

@@ -1,13 +1,13 @@
 package ml.melun.mangaview.engine.runtime
 
-import java.util.concurrent.ConcurrentHashMap
-
 /**
- * TEMPORARY per-tile stage probe used to attribute the demand->resident latency to a pipeline stage.
+ * Retired per-tile stage probe.
  *
- * Diagnostic only: it never blocks, never throws, and never reorders work. Every stage keeps its
- * first observation for a tile, so retries and re-demands cannot overwrite the latency under test.
- * This file is removed before the final measured gate run.
+ * It attributed demand->resident to pipeline stages while the tile chain was being folded; the
+ * remaining measured metric is the tile ledger's own demand-to-resident interval, so this hook is
+ * kept only as the call-site contract and records nothing. Every record() is a no-op: the tile
+ * object was a strong key in a concurrent map, and its data-class hashCode ran on every stage of
+ * the hot path.
  */
 object EngineStageProbe {
     const val DEMAND = 0
@@ -20,7 +20,12 @@ object EngineStageProbe {
     const val UPLOAD_DONE = 7
     const val RESIDENT = 8
     const val UPLOAD_ENTER = 9
-    const val STAGES = 10
+    const val SUBMIT_DONE = 10
+    const val UPLOAD_EXIT = 11
+    const val DELIVERY_POSTED = 12
+    const val ACCEPT_ENTER = 13
+    const val PERMIT_UPLOAD = 14
+    const val STAGES = 15
 
     class Row internal constructor(val identity: Int) {
         val at = LongArray(STAGES)
@@ -28,20 +33,9 @@ object EngineStageProbe {
         @Volatile var priority: String = ""
     }
 
-    // Keyed by the tile object itself, not its identity hash: identity hashes are reused after a
-    // tile is collected, and a reused hash merged two different tiles' stages into one row, which
-    // attributed a later tile's WORK_ENTER to an earlier tile's PAGE_READY (pageReady then measured
-    // milliseconds for two adjacent statements).
-    private val rows = ConcurrentHashMap<Any, Row>()
+    fun record(identity: Any, stage: Int, nanos: Long, pageId: String? = null, priority: String? = null) = Unit
 
-    fun record(identity: Any, stage: Int, nanos: Long, pageId: String? = null, priority: String? = null) {
-        val row = rows[identity] ?: rows.computeIfAbsent(identity) { Row(System.identityHashCode(identity)) }
-        if (pageId != null && row.pageId.isEmpty()) row.pageId = pageId
-        if (priority != null && row.priority.isEmpty()) row.priority = priority
-        if (stage in 0 until STAGES && row.at[stage] == 0L) row.at[stage] = nanos
-    }
+    fun snapshot(): List<Row> = emptyList()
 
-    fun snapshot(): List<Row> = rows.values.toList()
-
-    fun reset() = rows.clear()
+    fun reset() = Unit
 }

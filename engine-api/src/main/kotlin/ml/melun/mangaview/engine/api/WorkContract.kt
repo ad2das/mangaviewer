@@ -107,6 +107,8 @@ class WorkRequest<T : Any>(
     val retryable: (Throwable) -> Boolean = { false },
     val execute: suspend (WorkContext) -> T,
     val dispose: suspend (T) -> Unit = {},
+    /** Diagnostic identity for the temporary stage probe; never affects scheduling. */
+    val probe: Any? = null,
 ) {
     val retryDelaysMillis: List<Long> = retryDelaysMillis.toList()
 

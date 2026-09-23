@@ -21,14 +21,14 @@ import ml.melun.mangaview.engine.runtime.EngineStageProbe
 /** Short-lived file/pixel borrows feed a separately owned GPU result. */
 class EngineTileWork(
     decoder: EngineImageDecoder,
-    decodingDispatchers: (WorkPriority) -> CoroutineDispatcher,
+    decodingLanes: (WorkPriority) -> DecodeLane,
     private val uploader: EngineTextureUploader,
 ) {
     /** Single-lane construction: every priority decodes on the same dispatcher. */
     constructor(decoder: EngineImageDecoder, decodingDispatcher: CoroutineDispatcher, uploader: EngineTextureUploader)
-        : this(decoder, { decodingDispatcher }, uploader)
+        : this(decoder, { DispatcherDecodeLane(decodingDispatcher) }, uploader)
 
-    private val pixels = EnginePixelWork(decoder, decodingDispatchers)
+    private val pixels = EnginePixelWork(decoder, decodingLanes)
 
     fun request(page: WorkRequest<StoredPage>, tile: EngineTileSpec, priority: WorkPriority): WorkRequest<EngineTexture> {
         val epoch = uploader.rendererEpoch
@@ -45,6 +45,7 @@ class EngineTileWork(
         // finished, and removing the decode record was worth ~1.5ms on wfwf's read-ahead median.
         return WorkRequest(resultKey, WorkDomain.CONTROL, priority, authEpoch = page.authEpoch,
             dispose = { uploader.release(it) },
+            probe = tile,
             execute = { parent ->
                 val startedAtNanos = System.nanoTime()
                 EngineStageProbe.record(tile as Any, EngineStageProbe.WORK_ENTER, startedAtNanos)
@@ -81,8 +82,9 @@ class EngineTileWork(
                         throw error
                     } finally {
                         // The inline path owns its raster: the upload has copied it, and the record's
-                        // own result owns the texture from here.
-                        withContext(NonCancellable) { owned.close() }
+                        // own result owns the texture from here. Close never suspends, so the
+                        // non-cancellable wrapper added a coroutine handoff to a hot path.
+                        owned.close()
                     }
                     checkNotNull(uploaded)
                 }
@@ -107,10 +109,12 @@ class EngineTileWork(
         val transfer = uploader.prepareTexture(source)
         try {
             val uploaded = parent.withDomainPermit(WorkDomain.UPLOAD) { transfer.upload(epoch) }
+            EngineStageProbe.record(tile as Any, EngineStageProbe.UPLOAD_EXIT, System.nanoTime())
             EnginePageWork.observer?.invoke("upload-done elapsedMs=${elapsed(startedAtNanos)}")
             return uploaded
         } finally {
-            withContext(NonCancellable) { transfer.close() }
+            // Close never suspends on any uploader: the wrapper only added a coroutine handoff.
+            transfer.close()
         }
     }
 

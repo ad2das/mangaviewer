@@ -206,7 +206,8 @@ class ViewerFourSourceFrameTimingGateTest {
         run.resolve("stage-timings.tsv").writeText(buildString {
             appendLine(
                 "pageId\tpriority\tidentity\tdemandNanos\tworkEnterMs\tpageReadyMs\tdecodeWaitMs\t" +
-                    "decodeMs\tpixelsReadyMs\tuploadPacerMs\tuploadPostMs\tuploadWaitMs\ttotalMs\tresidentNanos",
+                    "decodeMs\tpixelsReadyMs\tuploadPacerMs\tuploadPostMs\tuploadWaitMs\ttotalMs\tresidentNanos\t" +
+                    "submitMs\tworkStartMs\tpermitUploadMs\tuploadExitMs\tdeliveryMs\tacceptWaitMs\tacceptMs",
             )
             stages.forEach { row ->
                 fun ms(from: Long, to: Long): String =
@@ -225,7 +226,14 @@ class ViewerFourSourceFrameTimingGateTest {
                     .append(ms(at[EngineStageProbe.PIXELS_READY], at[EngineStageProbe.UPLOAD_ENTER])).append('\t')
                     .append(ms(at[EngineStageProbe.UPLOAD_POST], at[EngineStageProbe.UPLOAD_DONE])).append('\t')
                     .append(ms(at[EngineStageProbe.DEMAND], at[EngineStageProbe.RESIDENT])).append('\t')
-                    .append(at[EngineStageProbe.RESIDENT]).appendLine()
+                    .append(at[EngineStageProbe.RESIDENT]).append('\t')
+                    .append(ms(at[EngineStageProbe.DEMAND], at[EngineStageProbe.SUBMIT_DONE])).append('\t')
+                    .append(ms(at[EngineStageProbe.SUBMIT_DONE], at[EngineStageProbe.WORK_ENTER])).append('\t')
+                    .append(ms(at[EngineStageProbe.PIXELS_READY], at[EngineStageProbe.PERMIT_UPLOAD])).append('\t')
+                    .append(ms(at[EngineStageProbe.UPLOAD_DONE], at[EngineStageProbe.UPLOAD_EXIT])).append('\t')
+                    .append(ms(at[EngineStageProbe.UPLOAD_EXIT], at[EngineStageProbe.DELIVERY_POSTED])).append('\t')
+                    .append(ms(at[EngineStageProbe.DELIVERY_POSTED], at[EngineStageProbe.ACCEPT_ENTER])).append('\t')
+                    .append(ms(at[EngineStageProbe.ACCEPT_ENTER], at[EngineStageProbe.RESIDENT])).appendLine()
             }
         })
     }
