@@ -13,6 +13,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <ctime>
 #include <deque>
 #include <dlfcn.h>
 #include <mutex>
@@ -192,9 +193,19 @@ FenceState observeFence(FenceKind kind, int fd, std::int64_t latch, std::int64_t
     return observePresentFence(fd, latch, signal);
 }
 
+// An unresolved present fence waits at most this long for a real display-present signal before it is
+// reported on the composition latch, so no token can remain unresolved.
+constexpr std::int64_t kRetainedFenceDeadlineNanos = 100'000'000;
+
+std::int64_t steadyNowNanos() noexcept {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000 + now.tv_nsec;
+}
+
 struct RetainedFenceList {
     static constexpr std::size_t limit = 4;
-    struct Entry { std::int64_t token, latch; std::uint64_t bufferId; std::int32_t generation; int fd; };
+    struct Entry { std::int64_t token, latch, observed; std::uint64_t bufferId; std::int32_t generation; int fd; };
     std::vector<Entry> entries;
     std::uint32_t overflow = 0, unresolved = 0, invalid = 0;
     std::int32_t generation = 0;
@@ -252,26 +263,91 @@ void retainFence(RetainedFenceList& list, FenceKind kind, std::int32_t generatio
         ++list.overflow;
         list.entries.erase(list.entries.begin());
     }
-    list.entries.push_back({token, latch, bufferId, generation, fd});
+    list.entries.push_back({token, latch, steadyNowNanos(), bufferId, generation, fd});
 }
 
-void sweepRetainedFences(RetainedFenceList& list, FenceKind kind) noexcept {
+// Present fences are retained unconditionally (not trace-gated): reporting the real display-present
+// instead of the composition latch is a correctness property the presented() contract depends on.
+// The list is bounded and every entry resolves within kRetainedFenceDeadlineNanos, so an unresolved
+// fence can never accumulate in the list or keep its token pending forever.
+bool retainPresentFence(RetainedFenceList& list, std::int32_t generation, std::int64_t token,
+    std::int64_t latch, std::uint64_t bufferId, int fd, std::unordered_set<std::int64_t>& pending,
+    const std::shared_ptr<GlPresentationCallback>& callback) noexcept {
+    if (fd < 0) return false;
+    if (list.entries.size() >= RetainedFenceList::limit) {
+        const auto oldest = list.entries.front();
+        traceFenceSignal(FenceKind::Present, "overflow", oldest.generation, oldest.token, oldest.bufferId, oldest.latch, 0);
+        close(oldest.fd);
+        ++list.overflow;
+        list.entries.erase(list.entries.begin());
+        // The evicted fence can never be swept, so its token is reported on the latch here; every
+        // token in pending must leave it exactly once.
+        if (pending.erase(oldest.token))
+            callback->presented(oldest.token, oldest.latch, EGL_COMPOSITION_LATCH_TIME_ANDROID, 0);
+    }
+    list.entries.push_back({token, latch, steadyNowNanos(), bufferId, generation, fd});
+    return true;
+}
+
+// GPU-only diagnostics: these fds never gate a presented() callback, so they stay trace-gated and
+// are resolved at the next sweep without any deadline.
+void sweepGpuRetainedFences(RetainedFenceList& list) noexcept {
     for (auto current = list.entries.begin(); current != list.entries.end();) {
         std::int64_t signal = 0;
-        const FenceState state = observeFence(kind, current->fd, current->latch, signal);
+        const FenceState state = observeFence(FenceKind::Gpu, current->fd, current->latch, signal);
         if (state == FenceState::Pending) { ++current; continue; }
         if (state == FenceState::Signaled) {
-            traceFenceSignal(kind, "late", current->generation, current->token, current->bufferId, current->latch, signal);
+            traceFenceSignal(FenceKind::Gpu, "late", current->generation, current->token, current->bufferId, current->latch, signal);
         } else {
             ++list.invalid;
-            traceFenceSignal(kind, "invalid", current->generation, current->token, current->bufferId, current->latch, 0);
+            traceFenceSignal(FenceKind::Gpu, "invalid", current->generation, current->token, current->bufferId, current->latch, 0);
         }
         close(current->fd);
         current = list.entries.erase(current);
     }
 }
 
-void finalizeRetainedFences(RetainedFenceList& list, FenceKind kind) noexcept {
+// Promote a retained present fence: a signaled fence reports the display-present timestamp, an
+// unusable or deadline-expired one falls back to the composition latch exactly like the immediate
+// path. Either way the token leaves pending exactly once.
+void sweepPresentRetainedFences(RetainedFenceList& list, std::unordered_set<std::int64_t>& pending,
+    const std::shared_ptr<GlPresentationCallback>& callback) noexcept {
+    const std::int64_t now = steadyNowNanos();
+    for (auto current = list.entries.begin(); current != list.entries.end();) {
+        std::int64_t signal = 0;
+        const FenceState state = observeFence(FenceKind::Present, current->fd, current->latch, signal);
+        if (state == FenceState::Pending && now - current->observed < kRetainedFenceDeadlineNanos) {
+            ++current; continue;
+        }
+        std::int64_t timestamp = 0;
+        int reported = -1;
+        if (state == FenceState::Signaled) {
+            timestamp = signal;
+            reported = EGL_DISPLAY_PRESENT_TIME_ANDROID;
+            traceFenceSignal(FenceKind::Present, "late", current->generation, current->token, current->bufferId, current->latch, signal);
+        } else if (state == FenceState::Invalid) {
+            ++list.invalid;
+            traceFenceSignal(FenceKind::Present, "invalid", current->generation, current->token, current->bufferId, current->latch, 0);
+        } else {
+            ++list.unresolved;
+            traceFenceSignal(FenceKind::Present, "expired", current->generation, current->token, current->bufferId, current->latch, 0);
+        }
+        if (reported != EGL_DISPLAY_PRESENT_TIME_ANDROID && current->latch > 0) {
+            timestamp = current->latch;
+            reported = EGL_COMPOSITION_LATCH_TIME_ANDROID;
+        }
+        if (pending.erase(current->token)) callback->presented(current->token, timestamp, reported, 0);
+        close(current->fd);
+        current = list.entries.erase(current);
+    }
+}
+
+// Every retained fd is closed here. A retained present fence resolves its token on the latch so the
+// pending set cannot outlive the attachment; a dead session still reports any completion-less token
+// as CANCELLED afterwards because such a token was never retained.
+void finalizeRetainedFences(RetainedFenceList& list, FenceKind kind,
+    std::unordered_set<std::int64_t>* pending,
+    const std::shared_ptr<GlPresentationCallback>& callback) noexcept {
     for (const auto& entry : list.entries) {
         std::int64_t signal = 0;
         const FenceState state = observeFence(kind, entry.fd, entry.latch, signal);
@@ -284,6 +360,18 @@ void finalizeRetainedFences(RetainedFenceList& list, FenceKind kind) noexcept {
             ++list.unresolved;
             traceFenceSignal(kind, "unresolved", entry.generation, entry.token, entry.bufferId, entry.latch, 0);
         }
+        if (kind == FenceKind::Present && pending != nullptr) {
+            std::int64_t timestamp = 0;
+            int reported = -1;
+            if (state == FenceState::Signaled && signal > 0) {
+                timestamp = signal;
+                reported = EGL_DISPLAY_PRESENT_TIME_ANDROID;
+            } else if (entry.latch > 0) {
+                timestamp = entry.latch;
+                reported = EGL_COMPOSITION_LATCH_TIME_ANDROID;
+            }
+            if (pending->erase(entry.token)) callback->presented(entry.token, timestamp, reported, 0);
+        }
         close(entry.fd);
     }
     list.entries.clear();
@@ -295,7 +383,11 @@ void reportCompletion(const Completion& item, std::unordered_set<std::int64_t>& 
     std::int64_t signal = 0;
     const FenceState state = observePresentFence(item.presentFence, item.latch, signal);
     if (state == FenceState::Pending) {
-        retainFence(retained, FenceKind::Present, item.generation, item.token, item.latch, item.bufferId, item.presentFence);
+        // The present fence signals just after the latch. Retain it and keep the token pending so a
+        // later sweep can report the real display-present; finalizing on the latch here is what left
+        // most frames without a physical timestamp.
+        if (retainPresentFence(retained, item.generation, item.token, item.latch, item.bufferId,
+                item.presentFence, pending, callback)) return;
     } else {
         if (item.presentFence >= 0) close(item.presentFence);
         if (state == FenceState::Signaled)
@@ -496,8 +588,8 @@ bool BufferedFrameCompositor::attach(ANativeWindow* window, int width, int heigh
 void BufferedFrameCompositor::detach() noexcept {
     auto& state = *state_;
     state.transactions.flush();
-    finalizeRetainedFences(state.retained, FenceKind::Present);
-    finalizeRetainedFences(state.gpuRetained, FenceKind::Gpu);
+    finalizeRetainedFences(state.retained, FenceKind::Present, &state.pending, state.callback);
+    finalizeRetainedFences(state.gpuRetained, FenceKind::Gpu, nullptr, state.callback);
     if (state.layer) {
         auto* transaction = ASurfaceTransaction_create();
         ASurfaceTransaction_setVisibility(transaction, state.layer, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
@@ -526,8 +618,8 @@ void BufferedFrameCompositor::poll() noexcept {
     auto& state = *state_;
     std::vector<Completion> items;
     { std::lock_guard lock(state.completions->mutex); items.swap(state.completions->items); }
-    sweepRetainedFences(state.retained, FenceKind::Present);
-    sweepRetainedFences(state.gpuRetained, FenceKind::Gpu);
+    sweepPresentRetainedFences(state.retained, state.pending, state.callback);
+    sweepGpuRetainedFences(state.gpuRetained);
     for (const auto& item : items) {
         if (item.previous >= 0) {
             auto& frame = state.frames[item.previous];
@@ -646,8 +738,8 @@ unsigned int BufferedFrameCompositor::drawingFramebuffer() const noexcept {
 void BufferedFrameCompositor::hide() noexcept {
     if (!state_->layer) return;
     state_->transactions.flush();
-    finalizeRetainedFences(state_->retained, FenceKind::Present);
-    finalizeRetainedFences(state_->gpuRetained, FenceKind::Gpu);
+    finalizeRetainedFences(state_->retained, FenceKind::Present, &state_->pending, state_->callback);
+    finalizeRetainedFences(state_->gpuRetained, FenceKind::Gpu, nullptr, state_->callback);
     auto* transaction = ASurfaceTransaction_create();
     ASurfaceTransaction_setVisibility(transaction, state_->layer, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
     ASurfaceTransaction_apply(transaction);

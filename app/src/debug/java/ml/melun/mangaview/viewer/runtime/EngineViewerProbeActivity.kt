@@ -50,7 +50,7 @@ class EngineViewerProbeActivity : Activity() {
         val error = TextView(this).apply { setTextColor(Color.WHITE); setBackgroundColor(Color.BLACK) }
         diagnostics.opened(System.nanoTime())
         runtime = EngineViewerRuntime(this, scope, graph.coordinator, graph.session(spec), graph.positions,
-            spec.episodeId, EngineViewport(metrics.widthPixels, metrics.heightPixels), decode.coroutineDispatcher,
+            spec.episodeId, EngineViewport(metrics.widthPixels, metrics.heightPixels), { decode.coroutineDispatcher },
             { latest = it; diagnostics.snapshot(it, System.nanoTime()) }, { frame ->
                 lastFrame = frame
                 diagnostics.presented(frame)

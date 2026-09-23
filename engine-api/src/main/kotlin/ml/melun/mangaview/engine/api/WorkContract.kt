@@ -60,6 +60,14 @@ interface WorkContext {
     suspend fun <T : Any> dependency(request: WorkRequest<T>): T
 
     /**
+     * Borrows a physical-work permit for [domain] for this block only, under the same admission
+     * limits and background rule a record of that domain would face. Work folded into a CONTROL
+     * record still has to consume its domain's permit, or a speculative operation would overtake a
+     * blocked visible one. The default takes no permit, so contexts that fold nothing are unaffected.
+     */
+    suspend fun <R : Any> withDomainPermit(domain: WorkDomain, block: suspend () -> R): R = block()
+
+    /**
      * Borrows a dependency only for this block, awaiting release on every exit. The block
      * must finish all use of the borrowed value; its result must own independent resources.
      * Supply disposeAbandoned when the block creates a resource: cleanup failure or cancellation

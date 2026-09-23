@@ -35,6 +35,7 @@ import ml.melun.mangaview.engine.runtime.EngineRenderRuntimeDiagnosticSnapshot
 import ml.melun.mangaview.engine.runtime.EngineSessionRuntime
 import ml.melun.mangaview.engine.runtime.EngineSessionRuntimeDiagnosticSnapshot
 import ml.melun.mangaview.engine.runtime.EngineTilePlanner
+import ml.melun.mangaview.engine.runtime.NoopEngineTileTimingObserver
 import ml.melun.mangaview.engine.runtime.NoopEngineWorkTracer
 import ml.melun.mangaview.engine.session.EngineSession
 import ml.melun.mangaview.viewer.FixedPx
@@ -55,7 +56,7 @@ internal class EngineViewerRuntime(
     private val positions: EnginePositionPort,
     episodeId: EpisodeId,
     initialViewport: EngineViewport,
-    decodeDispatcher: CoroutineDispatcher,
+    decodeDispatchers: (WorkPriority) -> CoroutineDispatcher,
     private val reportSnapshot: (EngineRuntimeSnapshot) -> Unit,
     private val reportPresented: (EngineSurfacePresentation) -> Unit,
     private val reportFailure: (Throwable) -> Unit,
@@ -90,14 +91,22 @@ internal class EngineViewerRuntime(
         { _, failure -> reportFailure(failure) }, awaitInitialPresentation = true)
     private val refreshQueue = HandlerRefreshMessageQueue(Handler.createAsync(Looper.getMainLooper()))
     private val refreshScheduler = HandlerRefreshScheduler(refreshQueue) { onGraphicsRefreshFrame() }
+    private val tileTimings = EngineTileTimingLedger()
     private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator,
-        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 12, tracer = NoopEngineWorkTracer),
-        EngineTileWork(NativeEngineImageDecoder(), decodeDispatcher, renderer), renderer, content::pageRequest,
+        // Measured across cold boots: every speculative band is a page lookup plus a decode queued on
+        // the same lanes, and the recorded demandToResident metric counts only a tile's FIRST demand.
+        // The horizon therefore does not buy residency for the rows that matter; it only lengthens the
+        // queue they sit behind. Tile rows scale 29 (0) -> 40 (2) -> 76 (12) and ntk d2r p50 7.6 -> 8.8
+        // -> 168.1ms, so the reader keeps zero preparation viewports.
+        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 0, tracer = NoopEngineWorkTracer),
+        EngineTileWork(NativeEngineImageDecoder(), decodeDispatchers, renderer), renderer, content::pageRequest,
         { scene -> renderer.offer(frameProvenance.attachTicket(scene)) }, renderer::clearScene, { _, failure -> reportFailure(failure) },
         waitForCompleteViewport = false, reportSceneFailure = reportFailure,
         frameWorkObserver = FrameWorkObserver { kind, atNanos -> frameProvenance.noteWorkTrigger(kind, atNanos) },
         refreshScheduler = refreshScheduler,
-        tracer = NoopEngineWorkTracer)
+        tracer = NoopEngineWorkTracer,
+        tileTimings = tileTimings,
+        demandDispatcher = ViewerMainQueueDispatcher)
     val surface = ViewerSurfaceHost(context, this)
 
     init { disableGraphics() }
@@ -106,6 +115,8 @@ internal class EngineViewerRuntime(
     fun snapshot(): EngineRuntimeSnapshot = content.snapshot
     fun diagnosticSnapshot() = EngineViewerRuntimeDiagnosticSnapshot(
         System.nanoTime(), content.diagnosticSnapshot(), graphics.diagnosticSnapshot())
+    /** Per-tile demand/residency instants; diagnostic only. */
+    fun tileTimingsSnapshot(): List<EngineTileTiming> = tileTimings.snapshot()
     fun userInputRevisionSnapshot(): Long = content.snapshot.session.inputRevision
     suspend fun captureNextFrame(top: Int, bottom: Int) = renderer.captureNextFrame(top, bottom)
     suspend fun captureNextViewportFrame() = renderer.captureNextViewportFrame()
@@ -271,6 +282,9 @@ internal class EngineViewerRuntime(
         // that message must not run inline inside this boundary call.
         refreshQueue.inlineWhileInteracting = active
         if (!closing) graphics.interactionActive(active)
+        // The content runtime defers its bulk read-ahead while the gesture owns the frame; the
+        // nearby horizon and the boundary head keep running so the next page is always ready.
+        if (!closing) content.interactionActive(active)
         // The owner-thread drain submits frames itself, so while a gesture paces the display it must
         // be delivered behind the motion callback rather than ahead of it.
         renderer.interactionActive(active)

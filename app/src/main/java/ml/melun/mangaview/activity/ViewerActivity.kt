@@ -90,6 +90,7 @@ class ViewerActivity : ComponentActivity() {
     internal fun engineInputCloseProof() = screen.engineInputCloseProof()
     internal fun engineFramesSince(ordinal: Long) = screen.engineFramesSince(ordinal)
     internal fun engineFrameCloseProof() = screen.engineFrameCloseProof()
+    internal fun engineTileTimingsSnapshot() = screen.engineTileTimingsSnapshot()
     internal fun viewerTelemetrySnapshot() = screen.viewerTelemetrySnapshot()
     internal fun viewerStartupTimingSnapshot() = screen.viewerStartupTimingSnapshot()
     internal fun viewerCachedResumeSnapshot() = screen.viewerCachedResumeSnapshot()

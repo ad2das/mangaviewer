@@ -123,7 +123,9 @@ class EngineTileWorkTest {
         assertEquals(0, files)
         assertEquals(1, pixels.closes)
         assertEquals(0, uploader.releases)
-        assertEquals(2, coordinator.snapshot().retainedResults)
+        // The tile owns its texture (and releases it through its own dispose), so the upload is no
+        // longer a second retained record behind it.
+        assertEquals(1, coordinator.snapshot().retainedResults)
         lease.awaitReleased()
         assertEquals(1, uploader.releases)
         coordinator.close()

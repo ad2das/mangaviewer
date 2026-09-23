@@ -2,6 +2,7 @@ package ml.melun.mangaview.engine.runtime
 
 import java.util.Collections
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -55,9 +56,13 @@ class EngineRenderRuntime(
     private val refreshScheduler: EngineRefreshScheduler? = null,
     /** Optional owner-thread section timing; the default records nothing. */
     private val tracer: EngineWorkTracer = NoopEngineWorkTracer,
+    /** Optional per-tile demand/residency timing; the default records nothing. */
+    private val tileTimings: EngineTileTimingObserver = NoopEngineTileTimingObserver,
+    /** Optional dispatch for a demand's await/accept coroutine; null keeps the scope's. */
+    private val demandDispatcher: CoroutineDispatcher? = null,
 ) {
     private val owner = Thread.currentThread()
-    private val work = SessionWorkSet(scope, coordinator, reportFailure)
+    private val work = SessionWorkSet(scope, coordinator, reportFailure, demandDispatcher)
     private val textures = linkedMapOf<EngineTileSpec, EngineTexture>()
     private val tileDemands = linkedMapOf<EngineTileSpec, CachedTileDemand>()
     private val failedReadAhead = linkedSetOf<EngineTileSpec>()
@@ -404,6 +409,11 @@ class EngineRenderRuntime(
             if (cached.priority == demand.priority && cached.accessPlan === accessPlan) return cached.value
         }
         val request = tiles.request(pageRequest(demand.tile.pageId, demand.priority), demand.tile, demand.priority)
+        // The cache miss is the one moment this tile was newly asked for, so it is the start of the
+        // latency a reader would feel if the tile were needed on screen right now.
+        tileTimings.tileDemanded(demand.tile, demand.priority, System.nanoTime())
+        EngineStageProbe.record(demand.tile as Any, EngineStageProbe.DEMAND, System.nanoTime(),
+            demand.tile.pageId.remoteKey, demand.priority.name)
         val generation = snapshot.session.generation
         return SessionDemand(request, onFailure = if (demand.priority == WorkPriority.NEXT_IMAGE) ({ _: Throwable ->
             failedReadAhead += demand.tile
@@ -414,6 +424,8 @@ class EngineRenderRuntime(
                 require(texture.tile == demand.tile && texture.rendererId == uploader.rendererId)
                 failedReadAhead -= demand.tile
                 textures[demand.tile] = texture
+                tileTimings.tileResident(demand.tile, System.nanoTime())
+                EngineStageProbe.record(demand.tile as Any, EngineStageProbe.RESIDENT, System.nanoTime())
                 refreshWorkResult()
             }
         }.also { tileDemands[demand.tile] = CachedTileDemand(accessPlan, demand.priority, it) }

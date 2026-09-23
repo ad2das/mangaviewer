@@ -95,7 +95,8 @@ internal class AppGraph(
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
     private val wfwfSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createWfwfSource)
     private val newxtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNewxtoonSource)
-    private val newxtoonClearance by lazy { NewxtoonClearance(appContext) }
+    private val newxtoonClearanceLazy = lazy { NewxtoonClearance(appContext) }
+    private val newxtoonClearance by newxtoonClearanceLazy
     internal val newxtoonClearanceState: NewxtoonClearance get() = newxtoonClearance
     private val goodtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createGoodtoonSource)
     val sources = SourceRegistry(
@@ -146,8 +147,8 @@ internal class AppGraph(
         }
     val engine: EngineAppGraph by lazy {
         EngineAppGraph(appContext, applicationScope, sourceDispatcher, ioDispatcher, database, userLibrary, userAgent(),
-            java.net.URI(DEFAULT_NTK_ORIGIN), offlineStore, { networkEvidenceObserver }, origins, newxtoonClearance,
-            newxtoonClearance.sourceUserAgent)
+            java.net.URI(DEFAULT_NTK_ORIGIN), offlineStore, { networkEvidenceObserver }, origins, newxtoonClearanceLazy,
+            { newxtoonClearance.sourceUserAgent })
     }
 
     init {

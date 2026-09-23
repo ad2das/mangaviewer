@@ -13,6 +13,7 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.data.cache.PageCacheKey
+import ml.melun.mangaview.data.db.EnginePageEntity
 import ml.melun.mangaview.data.db.EnginePublicationEntity
 import ml.melun.mangaview.engine.api.EnginePositionPort
 import ml.melun.mangaview.engine.api.EngineStoragePort
@@ -41,7 +42,7 @@ class EngineRawStorage(
     private val mutex = Mutex()
     private val files = EnginePageFiles(root, fileOps)
     private val ownership = EngineStorageOwnership(this)
-    private var initialized = false
+    @Volatile private var initialized = false
 
     override suspend fun prepare(pageId: PageId, contentRevision: String, opened: OpenedPage): PreparedPage =
         prepareWithGeometry(pageId, contentRevision, opened) {}
@@ -90,27 +91,34 @@ class EngineRawStorage(
     }
 
     override suspend fun find(pageId: PageId, contentRevision: String): StoredPageLease? = deliver {
-        val lease = mutex.withLock {
-            initializeLocked()
-            val entity = index.page(PageCacheKey.of(pageId), contentRevision) ?: return@withLock null
-            val page = entity.stored(files)
-            check(page.pageId == pageId && page.contentRevision == contentRevision)
-            ownership.acquire(page)
-        } ?: return@deliver null
+        ensureInitialized()
+        // The read path deliberately runs outside [mutex]: publication only exposes a row after its
+        // bytes are renamed into place, and a lease pins the file against trimming, so a concurrent
+        // find cannot observe a half-published page. Serializing every lookup on one lock turned the
+        // read-ahead's hundreds of cache hits into a multi-second queue behind the single writer.
+        val entity = index.page(PageCacheKey.of(pageId), contentRevision) ?: return@deliver null
+        val page = entity.stored(files)
+        check(page.pageId == pageId && page.contentRevision == contentRevision)
+        val lease = ownership.acquire(page)
         try {
             if (!files.valid(lease.page)) {
                 lease.close()
                 return@deliver null
             }
-            mutex.withLock {
-                val entity = index.page(PageCacheKey.of(pageId), contentRevision)
-                if (entity != null) index.touch(entity, nowMillis())
-            }
+            // Skip the write while the recorded access is still fresh: reconcile re-runs cached page
+            // work several times per session and every redundant UPDATE is pure write amplification.
+            val now = nowMillis()
+            if (now - entity.lastAccessEpochMillis >= TOUCH_INTERVAL_MILLIS) index.touch(entity, now)
             lease
         } catch (error: Throwable) {
             lease.close()
             throw error
         }
+    }
+
+    private suspend fun ensureInitialized() {
+        if (initialized) return
+        mutex.withLock { initializeLocked() }
     }
 
     override suspend fun pin(page: StoredPage): StoredPageLease {
@@ -265,6 +273,11 @@ class EngineRawStorage(
         var lease: StoredPageLease? = null
         try { return withContext(ioDispatcher) { block().also { lease = it } } }
         catch (error: Throwable) { lease?.close(); throw error }
+    }
+
+    private companion object {
+        /** LRU write granularity; hot pages keep a timestamp younger than this without a row write. */
+        const val TOUCH_INTERVAL_MILLIS = 30_000L
     }
 }
 

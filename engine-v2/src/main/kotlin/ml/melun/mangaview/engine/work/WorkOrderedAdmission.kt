@@ -57,7 +57,9 @@ internal class WorkOrderedAdmission(
             if (retryContinuation) {
                 state.signalLocked()
             } else {
-                record.worker = coordinator.workerScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                record.worker = coordinator.workerScope.launch(
+                    start = coordinator.startMode(record.priority.value),
+                ) {
                     execution.runRecord(record)
                 }
             }

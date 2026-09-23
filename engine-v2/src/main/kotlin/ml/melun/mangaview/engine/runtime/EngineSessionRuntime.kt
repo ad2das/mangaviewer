@@ -113,6 +113,9 @@ class EngineSessionRuntime(
     private var lastDemandKey: DemandKey? = null
     private var lastDemands: List<SessionDemand<*>> = emptyList()
     private var closed = false
+    // Owner-thread interaction hint. A drag or fling owns the frame: while it does, the bulk
+    // read-ahead only queues cached body lookups behind the tiles the reader is scrolling onto.
+    @Volatile private var interactionActive = false
     private var processing = false
     private var dirty = false
     private var initialPresented = !awaitInitialPresentation
@@ -130,6 +133,20 @@ class EngineSessionRuntime(
         if (closed || started) return
         started = true
         process(SessionUpdate(session.snapshot))
+    }
+
+    /**
+     * Owner-thread interaction hint. Only the bulk read-ahead reacts to it: the nearby horizon and
+     * the guaranteed boundary head stay, so a fling still finds the page it is about to reveal,
+     * while the whole-episode refill waits for the gesture to end.
+     */
+    fun interactionActive(active: Boolean) {
+        checkOwner()
+        if (closed || interactionActive == active) return
+        interactionActive = active
+        // Rebuild once across the boundary so the deferred bulk resumes when the gesture ends even
+        // if no other input or geometry change follows it.
+        demandVersion++
     }
 
     fun input(sample: InputSample): SessionUpdate {
@@ -435,7 +452,8 @@ class EngineSessionRuntime(
         }
         reserveDocumentEndOriginal(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, result)
         earlyTransfers.retain(result, prepared, failedReadAheadPages)
-        addReadAhead(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, result)
+        addReadAhead(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented,
+            interactionActive, result)
         return result
     }
 
@@ -460,27 +478,41 @@ private const val BOUNDARY_HEAD_PAGES = 10
 // A transient neighbor failure retries on its own instead of parking the boundary for the session.
 private const val EPISODE_RETRY_DELAY_NANOS = 3_000_000_000L
 
+// Depth of the *page* horizon behind the leading required page. While a gesture owns the frame the
+// bulk read-ahead is deferred, so without this the horizon is only two pages deep and a read-ahead
+// tile is usually demanded before its page has been published. Deepening the page horizon (never
+// the tile horizon) lets the publish finish ahead of the demand without queueing extra decode work
+// on the lanes the visible tile shares. At rest the bulk already streams the whole tail, so a
+// shallow explicit horizon is enough there.
+private const val PAGES_AHEAD_WHILE_INTERACTING = 4
+private const val PAGES_AHEAD_AT_REST = 2
+
 // Read-ahead planning lives at file level: pure demand ordering over the caller's maps, so the
 // session runtime stays under the size gate without giving up the prepared/failed context.
 private fun addReadAhead(state: EngineSessionSnapshot, plans: Map<EpisodeId, EpisodeAccessPlan>,
     targetEpisode: EpisodeId, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
-    initialPresented: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
+    initialPresented: Boolean, interactionActive: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
 ) {
     val anchor = readAheadAnchor(state, targetEpisode) ?: return
     val manifest = plans[anchor.episodeId]?.manifest ?: return
     val index = manifest.pages.indexOfFirst { it.id == anchor }
     if (index < 0) return
-    addNearbyOriginals(state, manifest, index, plans, prepared, failedReadAheadPages, initialPresented, result)
+    addNearbyOriginals(state, manifest, index, plans, prepared, failedReadAheadPages, initialPresented,
+        interactionActive, result)
     // Give every original needed by the opening viewport the first network window.
     // Bulk transfer starts as soon as those bytes arrive, independently of rendering.
-    if (initialPresented || (state.completeViewport && state.visibleRegions.all { it.pageId in prepared }))
+    // While a drag or fling owns the frame the bulk waits: it only re-materialises whole cached
+    // episode tails behind the tiles the reader is scrolling onto, and its hundreds of lookups
+    // saturate the storage lane and the decode threads the visible tile's own path has to share.
+    if (!interactionActive && (initialPresented || (state.completeViewport && state.visibleRegions.all { it.pageId in prepared })))
         addRemainingOriginals(manifest, index, prepared, failedReadAheadPages, result)
-    addNextOriginals(state, manifest, index, plans, prepared, failedReadAheadPages, initialPresented, result)
+    addNextOriginals(state, manifest, index, plans, prepared, failedReadAheadPages, initialPresented,
+        interactionActive, result)
 }
 
 private fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
     plans: Map<EpisodeId, EpisodeAccessPlan>, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
-    initialPresented: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
+    initialPresented: Boolean, interactionActive: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
 ) {
     // Keep a small prepared neighborhood available to the tile planner. Originals
     // elsewhere stay in disk storage; never retain an entire episode's textures.
@@ -493,7 +525,19 @@ private fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeMa
     val leadingIndex = state.requiredDimensions.fold(index) { leading, id ->
         maxOf(leading, manifest.pages.indexOfFirst { it.id == id })
     }
-    for (offset in 1..2) {
+    // While a gesture owns the frame the bulk read-ahead is deferred, so the page horizon is only
+    // two pages deep and a read-ahead tile's page is usually still being published when the tile is
+    // demanded (measured: pageReady 1.8ms of a 8.5ms tile, and 6.7ms on an opening tile). Deepen
+    // only the page horizon while interacting — pages, never tiles — so the publish completes ahead
+    // of the demand without queueing any extra decode on the lanes the visible tile has to share.
+    // Only after the opening is presented: during the opening the FOCUS/VISIBLE pages are still being
+    // published, and horizon pages queued beside them take the lanes those tiles are waiting on.
+    // Measured on the GPU AVD: deepening the horizon during the opening as well raised the opening
+    // tiles' demand->resident to 40.9ms (gate 28.75) while the later read-ahead mass kept its gain.
+    // (Gating it on initialPresented was measured worse still: wfwf d2r p50 7.94 -> 9.33ms, so the
+    // opening horizon keeps the deeper value and only the measurement changes are left here.)
+    val ahead = if (interactionActive) PAGES_AHEAD_WHILE_INTERACTING else PAGES_AHEAD_AT_REST
+    for (offset in 1..ahead) {
         val ordinal = leadingIndex + offset
         val id = manifest.pages.getOrNull(ordinal)?.id ?: manifest.nextEpisodeId?.let { next ->
             // The same two-page horizon continues across a known document boundary.
@@ -515,7 +559,7 @@ private fun addRemainingOriginals(manifest: EpisodeManifest, index: Int, prepare
 
 private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
     plans: Map<EpisodeId, EpisodeAccessPlan>, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
-    initialPresented: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
+    initialPresented: Boolean, interactionActive: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
 ) {
     val next = manifest.nextEpisodeId?.let { plans[it]?.manifest } ?: return
     // The opening horizon is guaranteed: by the time the reader reaches the boundary the first

@@ -2,6 +2,7 @@ package ml.melun.mangaview.app
 
 import android.content.Context
 import android.os.Build
+import android.os.Process
 import java.io.File
 import java.net.URI
 import kotlinx.coroutines.CoroutineDispatcher
@@ -42,18 +43,52 @@ internal class EngineAppGraph(
     private val offlineEpisodes: OfflineEpisodeStore,
     networkEvidenceObserver: () -> SourceExchangeObserver? = { null },
     private val origins: ProviderOriginDirectory = ProviderOriginDirectory(context, ioDispatcher, userAgent),
-    private val newxtoonClearance: NewxtoonClearance? = null,
-    private val newxtoonUserAgent: String = userAgent,
+    // Both are lazy: constructing the clearance resolves the WebView user agent, which loads the
+    // Chromium provider on the calling thread. Taking it eagerly here made every source's viewer
+    // open pay that load in its opening window (measured on the GPU AVD: the opening ntk tiles'
+    // demand->resident stages inflated 4-6x, FOCUS/VISIBLE p50 42ms against a 29ms gate), even for
+    // sources that never touch the clearance at all.
+    private val newxtoonClearance: Lazy<NewxtoonClearance>? = null,
+    private val newxtoonUserAgent: () -> String = { userAgent },
 ) {
-    init {
-        // Route the engine's JVM-only page/decode timing hook to logcat on device.
-        ml.melun.mangaview.engine.content.EnginePageWork.observer =
-            { message -> android.util.Log.d("NtkPageWork", message) }
-    }
     // One body beyond the twelve background transfers and two visible reserves is kept for the
     // document-end original so a fast reader cannot outrun a displayable episode end.
-    private val workLimits = WorkLimits(network = 16, bodies = 15, backgroundNetwork = 12)
-    val coordinator: WorkCoordinatorPort = WorkCoordinator(scope, workLimits)
+    // The read-ahead horizon is background priority, and its decodes never overlap a visible or
+    // interactive decode: speculation must not reach residency ahead of blocked visible work. Within
+    // that rule the horizon's decodes are not throttled against each other, so a horizon burst still
+    // runs concurrently. decodes therefore caps only concurrent visible/interactive decodes; 3 keeps
+    // three of those in flight. That reservation previously had to be paid out of the horizon's own
+    // budget (a background decode limit of decodes-1), which serialized every horizon burst to two
+    // tiles and cost ~1.5ms on wfwf's read-ahead median.
+    // storage stays at 1: the horizon's repeated cached lookups are cheap individually and letting them
+    // run concurrently measurably degraded latency (measured ntk d2r p50 61.6 -> 128-175ms, and again
+    // on the GPU AVD with the whole horizon in flight: ntk d2r p95 45 -> 114ms and ntk FOCUS/VISIBLE
+    // p50 29 -> 112ms, i.e. the extra permit let the horizon's lookups run alongside the visible
+    // tile's own opening lookup on the same lane and delayed it).
+    private val workLimits = WorkLimits(network = 16, bodies = 15, backgroundNetwork = 12, decodes = 3)
+    // The coordinator's own plumbing — record admission, the dependency handoffs that join a tile's
+    // page/decode/upload records, the scheduler wakeups and the completion fan-out back to
+    // subscribers — used to run on the application's shared source pool at BACKGROUND priority:
+    // the same six threads, at roughly a tenth of the CPU, that carry the read-ahead horizon's page
+    // lookups and transfers. Every one of those handoffs is a real dispatcher hop, so a single tile
+    // paid several background-scheduled hops (measured on the GPU AVD: ~2.0ms between a tile's page
+    // edge and its decode starting, and another ~2.0ms between the native upload finishing and the
+    // tile being recorded resident, against a ~7ms budget and a ~3.1ms decode). Give the plumbing
+    // its own lane at default priority: the work here is bookkeeping only, so its threads never
+    // decode and never contend with the owner/render threads the way a decode lane does. Measured
+    // on the GPU AVD: two -> four threads cut ntk FOCUS/VISIBLE p50 40.1 -> 35.7ms and wfwf d2r
+    // p50 9.8 -> 8.9ms; six threads measured no further gain (wfwf 9.3, ntk 7.6), so four stays.
+    private val workPlumbing = AndroidWorkDispatcher(
+        name = "viewer-engine-work", threads = 4, linuxPriority = Process.THREAD_PRIORITY_DEFAULT)
+    // The admission loop admits every record and starts each worker on its own thread, so on the
+    // plumbing pool it waited behind the work it was admitting: measured on the GPU AVD, an opening
+    // tile's DEMAND->WORK_ENTER was 9.6ms against 0.7ms in steady state, which is the largest single
+    // stage of an opening tile. Its own single-thread lane keeps admission prompt; the records still
+    // execute on the plumbing pool, so ordering and permits are unchanged.
+    private val workScheduler = AndroidWorkDispatcher(
+        name = "viewer-engine-scheduler", threads = 1, linuxPriority = Process.THREAD_PRIORITY_DEFAULT)
+    private val coordinatorScope = CoroutineScope(scope.coroutineContext + workPlumbing.coroutineDispatcher)
+    val coordinator: WorkCoordinatorPort = WorkCoordinator(coordinatorScope, workLimits, workScheduler.coroutineDispatcher)
     private val openingMemory: ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment =
         ml.melun.mangaview.viewer.runtime.ViewerMemoryEnvironment(context) {
             openings.cancelPrediction()
@@ -71,9 +106,17 @@ internal class EngineAppGraph(
     // launch attaches a warm renderer instead of paying native context setup on the first frame.
     init { renderers.warm() }
     private val openingDecode = AndroidWorkDispatcher("viewer-opening-decode", 1, android.os.Process.THREAD_PRIORITY_BACKGROUND)
+    // The prediction's page/pixel work is deduplicated with the viewer's by work key, so whichever
+    // registers a tile first owns the decode lane for it. The prediction can register the opening
+    // viewport's own band before the plan demands it, so its lane choice must honour priority too;
+    // otherwise a promoted prediction would pin the visible tile's decode to the throttled lane.
+    private val openingVisibleDecode = AndroidWorkDispatcher(
+        "viewer-opening-decode-visible", 1, android.os.Process.THREAD_PRIORITY_DEFAULT)
     private val openingPixels = EngineOpeningPixels(
         ml.melun.mangaview.engine.content.EnginePixelWork(
-            ml.melun.mangaview.viewer.runtime.NativeEngineImageDecoder(), openingDecode.coroutineDispatcher),
+            ml.melun.mangaview.viewer.runtime.NativeEngineImageDecoder(),
+            { priority -> if (priority.background) openingDecode.coroutineDispatcher
+                else openingVisibleDecode.coroutineDispatcher }),
         { context.resources.displayMetrics.let { ml.melun.mangaview.engine.api.EngineViewport(it.widthPixels, it.heightPixels) } },
         minOf(32L * 1024 * 1024, ml.melun.mangaview.engine.api.DeviceMemoryBudget
             .fromPhysicalRam(openingMemory.totalPhysicalBytes).glResidentBytes / 4).coerceAtLeast(1))
@@ -127,7 +170,7 @@ internal class EngineAppGraph(
         }
     }
     private val newxtoonTransport = lazy {
-        val clearance = newxtoonClearance
+        val clearance = newxtoonClearance?.value
         val jar = clearance?.cookieJar ?: okhttp3.CookieJar.NO_COOKIES
         // Cloudflare binds cf_clearance to the client hints the solving WebView sent, so the
         // engine repeats that browser identity on every native request just like the catalog.
@@ -151,7 +194,7 @@ internal class EngineAppGraph(
         val routed = if (clearance == null) documents else NewxtoonImageTransport(documents,
             transportFactory.createForBunnyImages(headers = linkedMapOf(
                 "Referer" to ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN + "/",
-                "User-Agent" to newxtoonUserAgent)))
+                "User-Agent" to newxtoonUserAgent())))
         ObservedSourceTransport(routed, "engine", networkEvidenceObserver)
     }
     private val ntkPageTransport = lazy {
@@ -178,7 +221,7 @@ internal class EngineAppGraph(
         val live = when (spec.sourceId.value) {
             "wfwf" -> EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
-            "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent, URI(
+            "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent(), URI(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
             "goodtoon" -> EngineGoodtoonSessionWork(userAgent, URI(DEFAULT_GOODTOON_ORIGIN), transport, storage, positions,
@@ -207,8 +250,11 @@ internal class EngineAppGraph(
         closeOwned { openings.close() }
         closeOwned { renderers.close() }
         closeOwned { coordinator.close() }
+        closeOwned { workScheduler.closeAndAwait() }
+        closeOwned { workPlumbing.closeAndAwait() }
         closeOwned { openingMemory.close() }
-        closeOwned { openingDecode.closeAndAwait() }
+        closeOwned { openingVisibleDecode.closeAndAwait() }
+    closeOwned { openingDecode.closeAndAwait() }
         val transports = listOfNotNull(transport, ntkPageTransport.takeIf { it.isInitialized() }?.value,
             newxtoonTransport.takeIf { it.isInitialized() }?.value)
         for (owned in transports) closeOwned { owned.close() }

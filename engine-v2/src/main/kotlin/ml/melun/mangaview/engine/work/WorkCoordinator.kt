@@ -3,6 +3,7 @@ package ml.melun.mangaview.engine.work
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.ContinuationInterceptor
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CompletableDeferred
@@ -26,6 +27,13 @@ import ml.melun.mangaview.engine.api.WorkSubscription
 class WorkCoordinator(
     scope: CoroutineScope,
     limits: WorkLimits = WorkLimits(),
+    // The admission loop both admits every record and starts each worker on its own thread
+    // (UNDISPATCHED), so it must not wait behind the very work it is admitting. On the shared
+    // plumbing pool a saturated queue showed up as a tile's DEMAND->WORK_ENTER of 9.6ms against a
+    // 0.7ms steady-state value, while the records themselves were only paying microseconds of real
+    // bookkeeping. A caller may therefore supply a dedicated single-thread lane; ordering, permits
+    // and the single-loop contract are unchanged.
+    private val schedulerDispatcher: CoroutineDispatcher? = null,
 ) : WorkCoordinatorPort {
     internal val registry = WorkRegistry(limits)
     private val mutex get() = registry.mutex
@@ -45,9 +53,27 @@ class WorkCoordinator(
     private val orderedAdmission = WorkOrderedAdmission(this, registry, execution)
     private val schedulerJob: Job
 
+    // A worker's first segment runs on the admitting thread when it is started UNDISPATCHED, which is
+    // free only while that thread is one of several plumbing threads. On a dedicated single-thread
+    // scheduler lane a blocking first segment stalls every other record: measured on the GPU AVD with
+    // the dedicated lane, a read-ahead tile's page publish worst case went from 1.0ms to 40.6ms and
+    // newxtoon d2r p50 to 15.8ms. The lane thread is the one resource admission cannot wait behind, so
+    // only foreground records keep the undispatched start — that is what took the opening ntk
+    // FOCUS/VISIBLE p50 from 33.3ms to 24.4ms (gate 28.75). Background records are dispatched, and
+    // keying that on the record's domain instead measured worse still: the control records of a
+    // background tile also run a little bookkeeping before they suspend, and with them on the lane
+    // ntk FOCUS/VISIBLE p50 went 23.5ms -> 34.6ms and wfwf 7.6ms -> 8.1ms.
+    internal fun startMode(priority: WorkPriority): CoroutineStart = when {
+        schedulerDispatcher == null -> CoroutineStart.UNDISPATCHED
+        !priority.background -> CoroutineStart.UNDISPATCHED
+        else -> CoroutineStart.DEFAULT
+    }
+
     init {
         schedulerJob = workerScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            orderedAdmission.schedulerLoop()
+            val lane = schedulerDispatcher
+            if (lane == null) orderedAdmission.schedulerLoop()
+            else withContext(lane) { orderedAdmission.schedulerLoop() }
         }
         scope.coroutineContext[Job]?.invokeOnCompletion {
             cleanupScope.launch(start = CoroutineStart.UNDISPATCHED) {

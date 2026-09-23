@@ -1,6 +1,7 @@
 package ml.melun.mangaview.engine.work
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -78,6 +79,45 @@ internal class DependencyWorkContext(
             throw error
         } finally {
             finishCall()
+        }
+    }
+
+    /**
+     * Folding a physical operation into this CONTROL record removed the record that used to carry the
+     * operation's permit. Borrow the same permit for the block: limits and the background rule stay
+     * those of the operation's own domain, so a speculative decode still queues behind a blocked
+     * visible one. The permit is released under the registry lock, which signals the record waiters.
+     */
+    override suspend fun <R : Any> withDomainPermit(domain: WorkDomain, block: suspend () -> R): R {
+        val claim = awaitDomainPermit(domain)
+        try {
+            return block()
+        } finally {
+            withContext(NonCancellable) {
+                state.mutex.withLock {
+                    // Signal even if an accounting check throws, or every waiter on this domain would
+                    // sleep for a wakeup that can no longer arrive.
+                    try { state.admission.release(claim) } finally { state.signalLocked() }
+                }
+            }
+        }
+    }
+
+    private suspend fun awaitDomainPermit(domain: WorkDomain): PermitClaim {
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            var claim: PermitClaim? = null
+            var notification: CompletableDeferred<Unit>? = null
+            state.mutex.withLock {
+                if (parent.cancelRequested || parent.state != WorkRecordState.RUNNING || state.closed) {
+                    throw CancellationException("Parent work is no longer running")
+                }
+                claim = state.admission.tryAcquire(domain, parent.priority.value)
+                if (claim == null) notification = state.wakeup
+            }
+            claim?.let { return it }
+            // No registry lock is held while waiting; a release signals this exact notification.
+            notification?.await()
         }
     }
 

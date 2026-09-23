@@ -14,7 +14,10 @@ import androidx.test.uiautomator.UiDevice
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import ml.melun.mangaview.activity.ViewerActivity
+import ml.melun.mangaview.engine.api.EngineTileSpec
+import ml.melun.mangaview.engine.runtime.EngineStageProbe
 import ml.melun.mangaview.viewer.runtime.EngineFrameObservation
+import ml.melun.mangaview.viewer.runtime.EngineTileTiming
 import ml.melun.mangaview.viewer.runtime.PresentationTimestampKind
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.viewer.runtime.ViewerStartupTiming
@@ -78,6 +81,7 @@ class ViewerFourSourceFrameTimingGateTest {
         private val presented = LinkedHashSet<Long>()
         private val content = LinkedHashSet<Long>()
         private val latencyAtNanos = LinkedHashMap<Long, Long>()
+        private val firstPresentedAtNanos = LinkedHashMap<EngineTileSpec, Long>()
         private val rows = mutableListOf<EngineFrameObservation>()
         private var cursor = 0L
         var nonDisplayPresent = 0
@@ -106,8 +110,16 @@ class ViewerFourSourceFrameTimingGateTest {
                 presented += timestamp
                 latencyAtNanos[timestamp] = frame.renderLatencyNanos
                 if (frame.scene.placements.isNotEmpty()) content += timestamp
+                // First display-present instant per tile: the moment that tile's pixels reached the
+                // screen, which is what a reader actually sees.
+                frame.scene.placements.forEach { placement ->
+                    firstPresentedAtNanos.putIfAbsent(placement.texture.tile, timestamp)
+                }
             }
         }
+
+        /** First display-present instant per tile, in drain order. */
+        fun firstPresented(): Map<EngineTileSpec, Long> = firstPresentedAtNanos
 
         fun presentedNanos(): LongArray = presented.sorted().toLongArray()
 
@@ -149,10 +161,80 @@ class ViewerFourSourceFrameTimingGateTest {
         }
     }
 
+    /**
+     * Per-tile image latency: when the render path asked for a tile, when its pixels became resident,
+     * and when they first reached the display. Diagnostic only — it gates nothing; it exists to show
+     * how long a tile's own load takes and how long after loading it is actually seen.
+     */
+    private fun writeTileTimings(
+        run: File,
+        timings: List<EngineTileTiming>,
+        firstPresentedAtNanos: Map<EngineTileSpec, Long>,
+    ) {
+        fun delta(from: Long, to: Long?): String =
+            if (from <= 0L || to == null || to <= 0L) "" else ((to - from) / NANOS_PER_MILLISECOND).toString()
+        run.resolve("tile-timings.tsv").writeText(buildString {
+            appendLine(
+                "pageId\tcontentRevision\tsha256\tsourceTop\tsourceBottom\tpriority\t" +
+                    "demandedAtNanos\tresidentAtNanos\tfirstPresentedAtNanos\t" +
+                    "demandToResidentMillis\tresidentToPresentedMillis\tdemandToPresentedMillis",
+            )
+            timings.forEach { timing ->
+                val presented = firstPresentedAtNanos[timing.tile]
+                append(timing.tile.pageId.remoteKey).append('\t')
+                    .append(timing.tile.contentRevision).append('\t')
+                    .append(timing.tile.sha256).append('\t')
+                    .append(timing.tile.sourceTop).append('\t')
+                    .append(timing.tile.sourceBottom).append('\t')
+                    .append(timing.priority.name).append('\t')
+                    .append(timing.demandedAtNanos).append('\t')
+                    .append(timing.residentAtNanos).append('\t')
+                    .append(presented ?: 0L).append('\t')
+                    .append(delta(timing.demandedAtNanos, timing.residentAtNanos.takeIf { it > 0L })).append('\t')
+                    .append(delta(timing.residentAtNanos, presented)).append('\t')
+                    .append(delta(timing.demandedAtNanos, presented)).appendLine()
+            }
+        })
+    }
+
+    /**
+     * TEMPORARY stage attribution: splits demand->resident into the pipeline stages so a single
+     * measured run shows which stage owns the latency. Removed before the final gate.
+     */
+    private fun writeStageTimings(run: File) {
+        val stages = EngineStageProbe.snapshot()
+        run.resolve("stage-timings.tsv").writeText(buildString {
+            appendLine(
+                "pageId\tpriority\tidentity\tdemandNanos\tworkEnterMs\tpageReadyMs\tdecodeWaitMs\t" +
+                    "decodeMs\tpixelsReadyMs\tuploadPacerMs\tuploadPostMs\tuploadWaitMs\ttotalMs\tresidentNanos",
+            )
+            stages.forEach { row ->
+                fun ms(from: Long, to: Long): String =
+                    if (from <= 0L || to <= 0L) "" else ((to - from) / NANOS_PER_MILLISECOND).toString()
+                val at = row.at
+                append(row.pageId).append('\t')
+                    .append(row.priority).append('\t')
+                    .append(row.identity).append('\t')
+                    .append(at[EngineStageProbe.DEMAND]).append('\t')
+                    .append(ms(at[EngineStageProbe.DEMAND], at[EngineStageProbe.WORK_ENTER])).append('\t')
+                    .append(ms(at[EngineStageProbe.WORK_ENTER], at[EngineStageProbe.PAGE_READY])).append('\t')
+                    .append(ms(at[EngineStageProbe.PAGE_READY], at[EngineStageProbe.DECODE_ENTER])).append('\t')
+                    .append(ms(at[EngineStageProbe.DECODE_ENTER], at[EngineStageProbe.DECODE_DONE])).append('\t')
+                    .append(ms(at[EngineStageProbe.DECODE_DONE], at[EngineStageProbe.PIXELS_READY])).append('\t')
+                    .append(ms(at[EngineStageProbe.UPLOAD_ENTER], at[EngineStageProbe.UPLOAD_POST])).append('\t')
+                    .append(ms(at[EngineStageProbe.PIXELS_READY], at[EngineStageProbe.UPLOAD_ENTER])).append('\t')
+                    .append(ms(at[EngineStageProbe.UPLOAD_POST], at[EngineStageProbe.UPLOAD_DONE])).append('\t')
+                    .append(ms(at[EngineStageProbe.DEMAND], at[EngineStageProbe.RESIDENT])).append('\t')
+                    .append(at[EngineStageProbe.RESIDENT]).appendLine()
+            }
+        })
+    }
+
     private fun gate(sourceId: String, seriesKey: String, episodeKey: String) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val device = UiDevice.getInstance(instrumentation)
+        EngineStageProbe.reset()
         val output = File(context.getExternalFilesDir(null), "frame-timing-gate").apply { mkdirs() }
         val run = File(output, "$sourceId-${System.currentTimeMillis()}").apply { check(mkdirs()) }
         val startedAtNanos = System.nanoTime()
@@ -271,6 +353,8 @@ class ViewerFourSourceFrameTimingGateTest {
                 )
             })
             evidence.write(run)
+            writeTileTimings(run, activity.engineTileTimingsSnapshot(), evidence.firstPresented())
+            writeStageTimings(run)
 
             fun snapshot(directory: File, interactionWindows: List<LongRange>, starts: LongArray) =
                 ViewerFrameStats(instrumentation, packageName, directory).capture(

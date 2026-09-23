@@ -21,6 +21,7 @@ import ml.melun.mangaview.engine.api.EngineDrawScene
 import ml.melun.mangaview.engine.api.EngineTexture
 import ml.melun.mangaview.engine.api.EngineTextureUploader
 import ml.melun.mangaview.engine.api.FrameIdentity
+import ml.melun.mangaview.engine.runtime.EngineStageProbe
 
 /** The new engine's sole GL owner. All native effects and resource acknowledgements use this thread. */
 internal class EngineSurfaceOwner(
@@ -245,9 +246,12 @@ internal class EngineSurfaceOwner(
 
     private suspend fun uploadTransferred(pixels: NativeEnginePixels, transfer: Long, expectedEpoch: Long): EngineTexture {
         val caller = currentCoroutineContext()[Job]
+        val probeId: Any = pixels.tile
+        EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_ENTER, System.nanoTime())
         var acquired = 0L
         try {
             uploadPacer.acquire(pixels.byteCount)
+            EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_POST, System.nanoTime())
             while (acquired == 0L) {
                 val wait = onOwner("engine_owner_upload") {
                     caller?.ensureActive()
@@ -261,6 +265,7 @@ internal class EngineSurfaceOwner(
                     check(acquired > 0L) { "Native texture upload failed" }
                     null
                 }
+                EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_DONE, System.nanoTime())
                 wait?.await()
             }
             currentCoroutineContext().ensureActive()

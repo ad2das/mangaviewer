@@ -51,7 +51,7 @@ class EngineViewerReadinessPositionTest {
                     val positions = Positions()
                     val failures = mutableListOf<Throwable>()
                     val runtime = EngineViewerRuntime(context, scope, coordinator, source, positions, source.episode,
-                        EngineViewport(100, 100), Dispatchers.IO, {}, {}, { failures += it })
+                        EngineViewport(100, 100), { Dispatchers.IO }, {}, {}, { failures += it })
                     try {
                         runtime.open()
                         runtime.surfaceAvailable(view.holder.surface, 100, 100, 60F) { attached ->

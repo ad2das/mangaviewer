@@ -57,9 +57,28 @@ internal class EngineViewerScreen(
         threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4),
         // Native decode is latency-sensitive but still must yield to input, UI and RenderThread.
         // A dedicated background-priority lane keeps it independent from warm decode without
-        // stealing VSYNC CPU time on lower-core emulators and phones.
+        // stealing VSYNC CPU time on lower-core emulators and phones. Measured on the GPU AVD:
+        // raising this lane to default priority let the speculative decode pool contend with the
+        // owner/render threads during the opening viewport, and ntk d2r p95 45 -> 114ms and ntk
+        // FOCUS/VISIBLE p50 29 -> 112ms regressed. It stays background.
         linuxPriority = Process.THREAD_PRIORITY_BACKGROUND,
     )
+    // The lanes are split by work priority instead of running the whole decoder at one priority.
+    // During the opening window the read-ahead horizon keeps one background-priority decode busy,
+    // and Android gives BACKGROUND threads roughly a tenth of the CPU: a visible tile's decode that
+    // shares that lane measured 7-9ms against 1.5ms when it had the CPU. Driving the visible
+    // demand's decode on a default-priority lane keeps the horizon on its throttled lane while the
+    // tile the reader is actually looking at runs at normal priority. Raising the whole lane instead
+    // (measured) let the horizon contend with the owner/render threads and regressed F/V 29 -> 112ms.
+    private val visibleDecodeWork = AndroidWorkDispatcher(
+        name = "viewer-engine-decode-visible",
+        threads = 2,
+        linuxPriority = Process.THREAD_PRIORITY_DEFAULT,
+    )
+    private val decodeDispatchers: (ml.melun.mangaview.engine.api.WorkPriority) ->
+        kotlinx.coroutines.CoroutineDispatcher = { priority ->
+        if (priority.background) hardDecodeWork.coroutineDispatcher else visibleDecodeWork.coroutineDispatcher
+    }
     private var runtime: EngineViewerRuntime? = null
     private lateinit var ui: ViewerScreenUi
     private val presentationRecorder = ViewerPresentationRecorder()
@@ -103,6 +122,15 @@ internal class EngineViewerScreen(
         ), retry = { runtime?.retryFailures() })
         val source = engine.session(spec)
         val viewport = initialViewport()
+        // The engine graph is built lazily on this very call, so a direct reader launch reaches its
+        // first scene with every work lane, the native decoder and the coordinator still cold: the
+        // opening viewport's tiles then pay class-load/JIT and first-dispatch cost on the demand
+        // path. Start the opening prediction here as well as from the library so the same episode's
+        // originals and opening bands are already being prepared while the surface and first plan
+        // come up. It shares this viewer's coordinator, so plan/page/pixel work is deduplicated
+        // rather than repeated, and by the time the plan demands the opening tiles their decode is
+        // usually already warm or done.
+        engine.openings.warm(spec.episodeId)
         openingHandoff = engine.openings.claim(spec.episodeId)
         rendererLease = engine.renderers.claim()
         contentSource = source
@@ -112,7 +140,7 @@ internal class EngineViewerScreen(
             coordinator = engine.coordinator,
             source = source,
             positions = engine.positions,
-            decodeDispatcher = hardDecodeWork.coroutineDispatcher,
+            decodeDispatchers = decodeDispatchers,
             episodeId = spec.episodeId,
             initialViewport = EngineViewport(Math.toIntExact(viewport.width.units / 1024),
                 Math.toIntExact(viewport.height.units / 1024)),
@@ -203,6 +231,7 @@ internal class EngineViewerScreen(
     internal fun engineInputCloseProof() = engineInputObservations.closeProof()
     internal fun engineFramesSince(ordinal: Long) = engineDiagnostics.framesSince(ordinal)
     internal fun engineFrameCloseProof() = engineDiagnostics.frameCloseProof()
+    internal fun engineTileTimingsSnapshot() = runtime?.tileTimingsSnapshot().orEmpty()
 
     // The old global-offset telemetry cannot represent source-anchor coordinates. Keep unknown
     // data absent until callers migrate to the engine's exact snapshot and frame identities.
@@ -320,6 +349,7 @@ internal class EngineViewerScreen(
     }
 
     private suspend fun closeDecodeWorkers() {
+        visibleDecodeWork.closeAndAwait()
         hardDecodeWork.closeAndAwait()
     }
 

@@ -1,6 +1,7 @@
 package ml.melun.mangaview.engine.runtime
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -33,6 +34,12 @@ internal class SessionWorkSet(
     private val scope: CoroutineScope,
     private val coordinator: WorkCoordinatorPort,
     private val reportFailure: (WorkKey<*>, Throwable) -> Unit,
+    /**
+     * Dispatch for a demand's own await/accept coroutine. A worker completes the subscription from
+     * a pool thread, so the accept — the owner-side bookkeeping that records residency — can only
+     * run once the owner thread is free. A null keeps the scope's dispatcher.
+     */
+    private val demandDispatcher: CoroutineDispatcher? = null,
 ) {
     private val owner = Thread.currentThread()
     private val entries = linkedMapOf<WorkKey<*>, Entry>()
@@ -99,7 +106,8 @@ internal class SessionWorkSet(
         if (closed || !scope.isActive || entries.containsKey(demand.request.key)) return
         val entry = Entry(demand.request.key)
         entries[entry.key] = entry
-        entry.job = scope.launch(start = CoroutineStart.LAZY) { run(entry, demand) }
+        entry.job = if (demandDispatcher == null) scope.launch(start = CoroutineStart.LAZY) { run(entry, demand) }
+        else scope.launch(demandDispatcher, start = CoroutineStart.LAZY) { run(entry, demand) }
         entry.job!!.start()
     }
 
