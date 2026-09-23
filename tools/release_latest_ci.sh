@@ -17,7 +17,10 @@ gh release view "${release_tag}" --repo "${repo}" >/dev/null 2>&1 || \
   gh release create "${release_tag}" --repo "${repo}" --target "${target_branch}" \
     --title "Main Latest" --notes "Latest main branch debug APK."
 # A failed metadata request must stop the release, never reuse the last versionCode.
-gh api "repos/${repo}/releases/tags/${release_tag}" --jq '.assets' > release-work/published-assets.json
+release_id="$(gh api "repos/${repo}/releases/tags/${release_tag}" --jq '.id')"
+# The assets endpoint is the canonical list; the release object's embedded assets
+# can lag a just-uploaded file and hand out a versionCode that already exists.
+gh api --paginate "repos/${repo}/releases/${release_id}/assets" > release-work/published-assets.json
 version_code="$(python3 tools/release_version.py next --base "${version_code}" --assets release-work/published-assets.json)"
 
 apk_name="mangaViewer_${version_code}-debug.apk"
@@ -97,23 +100,73 @@ gh release view "${release_tag}" --repo "${repo}" >/dev/null 2>&1 || \
     --title "Main Latest" \
     --notes "Latest main branch debug APK."
 
-# Publish discovery metadata only after the complete APK is available for download.
-gh release upload "${release_tag}" "${apk_path}" --clobber --repo "${repo}"
-gh release upload "${release_tag}" version.json --clobber --repo "${repo}"
+# The release object can lag a just-uploaded asset, and a same-named asset turns
+# the upload into a 422. Clear the name from the canonical asset list first and
+# retry the upload so a stale list can never fail the release.
+asset_id_by_name() {
+  gh api --paginate "repos/${repo}/releases/${release_id}/assets" \
+    --jq ".[] | select(.name==\"$1\") | .id" 2>/dev/null | head -n 1
+}
 
-release_id="$(gh api "repos/${repo}/releases/tags/${release_tag}" --jq ".id")"
-gh api "repos/${repo}/releases/${release_id}/assets" --jq ".[].name" |
+delete_asset_by_name() {
+  local asset_id
+  asset_id="$(asset_id_by_name "$1")"
+  if [ -n "${asset_id}" ]; then
+    gh api -X DELETE "repos/${repo}/releases/assets/${asset_id}" --silent || true
+  fi
+  for _ in $(seq 1 15); do
+    if [ -z "$(asset_id_by_name "$1")" ]; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "Asset $1 is still visible after its deletion." >&2
+  return 1
+}
+
+upload_asset() {
+  local path="$1" name attempt
+  name="$(basename "${path}")"
+  for attempt in 1 2 3 4 5; do
+    delete_asset_by_name "${name}" || true
+    if gh release upload "${release_tag}" "${path}" --clobber --repo "${repo}"; then
+      return 0
+    fi
+    echo "Uploading ${name} did not land on attempt ${attempt}; clearing the name and retrying." >&2
+    sleep 10
+  done
+  echo "Uploading ${name} failed after five attempts." >&2
+  return 1
+}
+
+# Publish discovery metadata only after the complete APK is available for download.
+upload_asset "${apk_path}"
+upload_asset version.json
+
+gh api --paginate "repos/${repo}/releases/${release_id}/assets" --jq ".[].name" |
 while IFS= read -r asset; do
   if [[ "${asset}" =~ ^mangaViewer_[0-9]+-debug\.apk$ && "${asset}" != "${apk_name}" ]]; then
-    asset_id="$(gh api "repos/${repo}/releases/${release_id}/assets" --jq ".[] | select(.name==\"${asset}\") | .id")"
-    if [ -n "${asset_id}" ]; then
-      gh api -X DELETE "repos/${repo}/releases/assets/${asset_id}" --silent
+    stale_asset_id="$(gh api --paginate "repos/${repo}/releases/${release_id}/assets" --jq ".[] | select(.name==\"${asset}\") | .id" | head -n 1)"
+    if [ -n "${stale_asset_id}" ]; then
+      gh api -X DELETE "repos/${repo}/releases/assets/${stale_asset_id}" --silent || true
     fi
   fi
 done
 
-gh api "repos/${repo}/releases/${release_id}/assets" \
-  --jq ".[] | select(.name==\"${apk_name}\") | {name: .name, size: .size, updatedAt: .updated_at, url: .browser_download_url}"
+published=""
+for _ in $(seq 1 15); do
+  published="$(gh api --paginate "repos/${repo}/releases/${release_id}/assets" \
+    --jq ".[] | select(.name==\"${apk_name}\") | {name: .name, size: .size, updatedAt: .updated_at, url: .browser_download_url}")"
+  if [ -n "${published}" ]; then
+    break
+  fi
+  sleep 2
+done
+if [ -z "${published}" ]; then
+  echo "The published APK ${apk_name} is not visible on the release." >&2
+  exit 1
+fi
+echo "${published}"
 
 if [ "${SYNC_RELEASE_METADATA_TO_BRANCH:-false}" != "true" ]; then
   echo "Skipping branch release metadata sync; version.json is available as a ${release_tag} release asset."
