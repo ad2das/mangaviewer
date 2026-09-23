@@ -257,14 +257,55 @@ class WorkCoordinator(
             // cancelled subscriber kept waiting and its detach/last-subscriber cleanup
             // never ran, wedging the record.
             val relocate = workerScope.coroutineContext[ContinuationInterceptor]
-            return if (relocate == null || relocate == currentCoroutineContext()[ContinuationInterceptor]) {
-                awaitReady(subscriber)
-            } else {
-                withContext(relocate) { awaitReady(subscriber) }
+            if (relocate == null || relocate == currentCoroutineContext()[ContinuationInterceptor]) {
+                return awaitReady(subscriber)
             }
+            // An uncontended tryLock never suspends and never hands the lock to another
+            // dispatcher, so when both checks come back free the whole wait — including the
+            // completion resume — can stay on the caller's dispatcher. That is what keeps a
+            // tile's residency callback one dispatch closer: measured on the GPU AVD, a
+            // read-ahead tile's UPLOAD_DONE->RESIDENT gap was paying a plumbing round trip
+            // plus the main queue before the result reached its owner.
+            if (tryCheckLive(subscriber)) {
+                val value = subscriber.ready.await()
+                markDelivered(subscriber, relocate)
+                return value
+            }
+            return withContext(relocate) { awaitReady(subscriber) }
         } catch (failure: Throwable) {
             withContext(NonCancellable) { detachAndAwait(record, subscriber) }
             throw failure
+        }
+    }
+
+    /** True only when the liveness check ran without contending for the lock. */
+    private fun tryCheckLive(subscriber: WorkSubscriber): Boolean {
+        if (!mutex.tryLock()) return false
+        try {
+            checkSubscriptionLive(subscriber)
+            return true
+        } finally {
+            mutex.unlock()
+        }
+    }
+
+    private suspend fun markDelivered(subscriber: WorkSubscriber, relocate: ContinuationInterceptor) {
+        if (mutex.tryLock()) {
+            try {
+                checkSubscriptionLive(subscriber)
+                if (!subscriber.delivered) subscriber.delivered = true
+            } finally {
+                mutex.unlock()
+            }
+            return
+        }
+        // A resumed mutex waiter owns the lock before its dispatcher runs it, so a contended
+        // acquisition still has to happen off the caller's dispatcher.
+        withContext(relocate) {
+            mutex.withLock {
+                checkSubscriptionLive(subscriber)
+                if (!subscriber.delivered) subscriber.delivered = true
+            }
         }
     }
 
