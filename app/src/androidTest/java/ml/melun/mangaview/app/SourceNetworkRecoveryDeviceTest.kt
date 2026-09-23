@@ -65,20 +65,20 @@ class SourceNetworkRecoveryDeviceTest {
         val requests = mutableListOf<SourceRequest>()
         val fake = SourceTransport { request ->
             requests += request
-            if (request.url.startsWith("https://toki31.com")) throw IOException("Old address is dead")
+            if (request.url.startsWith("https://sbxh9.com")) throw IOException("Old address is dead")
             bytesResponse(request.url, """{"works":[{"sourceWorkId":"11","title":"Real provider work"}],"total":1}""")
         }
         try {
             val first = ProviderOriginTransport(fake, ProviderOriginDirectory(context, Dispatchers.IO, "agent"))
-            val request = SourceRequest("https://toki31.com/api/works?tag=5&page=2", headers = mapOf("Referer" to "https://toki31.com/ing?tag=5"))
+            val request = SourceRequest("https://sbxh9.com/api/works?tag=5&page=2", headers = mapOf("Referer" to "https://sbxh9.com/ing?tag=5"))
             first.execute(request).close()
-            assertEquals("https://sbxh9.com/api/works?tag=5&page=2", requests.last().url)
-            assertEquals("https://sbxh9.com/ing?tag=5", requests.last().headers["Referer"])
+            assertEquals("https://toki31.com/api/works?tag=5&page=2", requests.last().url)
+            assertEquals("https://toki31.com/ing?tag=5", requests.last().headers["Referer"])
             requests.clear()
             val restarted = ProviderOriginTransport(fake, ProviderOriginDirectory(context, Dispatchers.IO, "agent"))
             restarted.execute(request).close()
             assertEquals(1, requests.size)
-            assertEquals("https://sbxh9.com/api/works?tag=5&page=2", requests.single().url)
+            assertEquals("https://toki31.com/api/works?tag=5&page=2", requests.single().url)
         } finally { base.getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear().commit() }
     }
 

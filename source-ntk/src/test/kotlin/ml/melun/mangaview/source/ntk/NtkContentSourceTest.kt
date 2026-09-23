@@ -68,12 +68,24 @@ class NtkContentSourceTest {
         assertTrue(transport.requests[1].url.contains("status=completed"))
     }
 
-    @Test fun stableEntryPointsRequireARealCatalogAndFallbackToTheSecondAddress() = runTest {
+    @Test fun stableEntryPointsRequireARealCatalogAndFallBackToTheNextAddress() = runTest {
         val transport = NtkQueueTransport("<html>address unavailable</html>",
+            "<html>address unavailable</html>", "<html>address unavailable</html>",
+            "<html>address unavailable</html>",
             """{"works":[{"sourceWorkId":"11","title":"Real work"}],"total":1}""")
         val resolver = NtkOriginResolver(transport, "agent")
-        assertEquals("https://newtoki1.org", resolver.resolve("https://sbxh9.com"))
-        assertEquals(listOf("sbxh9.com", "newtoki1.org"), transport.requests.map { java.net.URI(it.url).host })
+        assertEquals("https://sbxh9.com", resolver.resolve("https://toki31.com"))
+        assertEquals(listOf("toki31.com", "toki31.com", "toki31.com", "toki31.com", "sbxh9.com"),
+            transport.requests.map { java.net.URI(it.url).host })
+    }
+
+    @Test fun listPageValidationAcceptsThePlatformWhileTheJsonBackendIsDown() = runTest {
+        val page = """<html><script>self.__next_f.push([1,"sourceWorkId\":\"11\",\"brand\":\"newtoki\""])</script></html>"""
+        val transport = NtkQueueTransport("<html>gateway timeout</html>", page)
+        val resolver = NtkOriginResolver(transport, "agent")
+        assertEquals("https://toki31.com", resolver.resolve("https://toki31.com"))
+        assertEquals(listOf("toki31.com", "toki31.com"), transport.requests.map { java.net.URI(it.url).host })
+        assertTrue(transport.requests[1].url.endsWith("/ing"))
     }
 
     @Test
