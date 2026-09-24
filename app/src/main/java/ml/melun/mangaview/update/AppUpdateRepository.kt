@@ -21,10 +21,13 @@ import java.io.IOException
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.CoroutineContext
 
-internal class AppUpdateRepository(private val context: Context, clientFactory: () -> OkHttpClient = {
-        OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(120, TimeUnit.SECONDS).build()
-    }) {
+/** One shared update client: repeated activity recreation must not stack connection pools. */
+private val sharedUpdateClient: OkHttpClient by lazy {
+    OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(120, TimeUnit.SECONDS).build()
+}
+
+internal class AppUpdateRepository(private val context: Context, clientFactory: () -> OkHttpClient = { sharedUpdateClient }) {
     private val client by lazy(clientFactory)
 
     suspend fun latest(): UpdateRelease = withContext(Dispatchers.IO) {

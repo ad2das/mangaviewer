@@ -22,6 +22,20 @@ import ml.melun.mangaview.source.PreparationIntent
 import ml.melun.mangaview.source.SourceRequest
 import ml.melun.mangaview.source.SourceTransport
 
+/** Bounds the preparation-intent hints; arbitrary older hints are dropped, never the current one. */
+internal fun prunePreparationIntents(
+    intents: ConcurrentHashMap<EpisodeId, PreparationIntent>,
+    keep: EpisodeId,
+    maximum: Int,
+) {
+    while (intents.size > maximum) {
+        val victim = intents.keys.firstOrNull { it != keep } ?: break
+        intents.remove(victim)
+    }
+}
+
+private const val MAXIMUM_PREPARATION_INTENTS = 64
+
 internal class NtkPageService(
     private val transport: SourceTransport,
     private val documents: NtkDocumentClient,
@@ -51,6 +65,7 @@ internal class NtkPageService(
     suspend fun prepare(episodeId: EpisodeId, intent: PreparationIntent) {
         if (preparedEpisodes.contains(episodeId)) return
         preparationIntents.merge(episodeId, intent, ::strongerIntent)
+        prunePreparationIntents(preparationIntents, episodeId, MAXIMUM_PREPARATION_INTENTS)
         val origin = documents.currentOrigin()
         if (intent != PreparationIntent.INITIAL_VIEW && gateway.parallelPreparationCapacity == 1) {
             val from = latestManifestPath

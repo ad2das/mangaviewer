@@ -342,6 +342,8 @@ internal class EngineViewerScreen(
             }
             try {
                 closeDecodeWorkers()
+                // Bound the engine's raw page cache once this session's page leases are released.
+                engine.trimStorageCache()
             } catch (failure: Throwable) {
                 val primary = closeFailure
                 if (primary == null) closeFailure = failure else if (primary !== failure) primary.addSuppressed(failure)

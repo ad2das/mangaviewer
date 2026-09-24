@@ -32,11 +32,14 @@ import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.source.ObservedSourceTransport
 import ml.melun.mangaview.source.SourceExchangeObserver
 
+/** Raw engine page cache budget; oldest unpinned pages beyond it are evicted on session end. */
+private const val ENGINE_STORAGE_BUDGET_BYTES = 1_073_741_824L
+
 internal class EngineAppGraph(
     context: Context,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val parsingDispatcher: CoroutineDispatcher,
-    ioDispatcher: CoroutineDispatcher,
+    private val ioDispatcher: CoroutineDispatcher,
     database: DeferredViewerDatabase,
     private val library: UserLibraryRepository,
     private val userAgent: String,
@@ -272,6 +275,14 @@ internal class EngineAppGraph(
         for (owned in transports) closeOwned { owned.close() }
         primary?.let { throw it }
     }
+    /** Bounds the engine's raw page cache after a reader session ends; recent pages stay cached. */
+    fun trimStorageCache() {
+        scope.launch(ioDispatcher) {
+            runCatching { storage.trimTo(ENGINE_STORAGE_BUDGET_BYTES) }
+                .onFailure { android.util.Log.w("EngineStorage", "Raw page trim failed", it) }
+        }
+    }
+
     suspend fun saveBookmark(anchor: ml.melun.mangaview.engine.api.SourceAnchor, offset: Long) {
         val request = ml.melun.mangaview.engine.api.WorkRequest(
             ml.melun.mangaview.engine.api.WorkKey("library", anchor.pageId.toString(), "bookmark.save",

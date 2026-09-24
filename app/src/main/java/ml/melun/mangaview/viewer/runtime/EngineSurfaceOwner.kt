@@ -70,7 +70,7 @@ internal class EngineSurfaceOwner(
             else check(handler.postAtFrontOfQueue(block)) { "GL owner queue rejected an upload" }
         }
     }
-    private val pending = linkedMapOf<Long, Pending>()
+    private val pending = UnacknowledgedFrames<Pending>(MAXIMUM_UNACKNOWLEDGED_FRAMES)
     private val readbacks = EngineSurfaceReadbacks(native)
     private val nextCapture = EngineNextFrameCapture()
     private val retiring = linkedMapOf<Long, MutableList<CompletableDeferred<Unit>>>()
@@ -352,7 +352,7 @@ internal class EngineSurfaceOwner(
         val identity = FrameIdentity(scene.sessionId, rendererEpoch, surfaceEpoch, token, scene.inputRevision, scene.geometryRevision)
         val record = Pending(identity, scene, System.nanoTime())
         nextCapture.bind(rendererId, identity, scene, readbacks, captureRasterizationReader)
-        pending[token] = record
+        val evicted = pending.add(token, record)
         val tracing = Trace.isEnabled()
         if (tracing) Trace.beginSection("engine_frame:${identity.sessionId}:$rendererId:$surfaceEpoch:$token:${scene.inputRevision}:${scene.geometryRevision}")
         val result = try {
@@ -363,6 +363,7 @@ internal class EngineSurfaceOwner(
             if (tracing) Trace.endSection()
         }
         finishSubmission(record, result)
+        evicted.forEach(::deliverEvicted)
     }
 
     private fun finishSubmission(record: Pending, result: Int) {
@@ -385,9 +386,17 @@ internal class EngineSurfaceOwner(
     }
 
     private fun presented(token: Long, at: Long, kind: Int, frameId: Long) =
-        pending[token]?.recordTimestamp(at, kind, frameId)?.let(::deliver)
+        pending.get(token)?.recordTimestamp(at, kind, frameId)?.let(::deliver)
 
     private fun deliver(record: Pending) = record.deliverFrom(pending, rendererId, callbacks.presented)
+
+    /** Reports a frame evicted from the bound as unavailable, the same shape a failed submit uses. */
+    private fun deliverEvicted(record: Pending) {
+        if (record.timestamp == null) record.timestamp = Timestamp(PresentationTimestampKind.UNAVAILABLE, 0, 0)
+        if (record.submissionResult == null) record.submissionResult = 0
+        if (record.latency == null) record.latency = 0
+        deliver(record)
+    }
 
     private fun schedulePoll() {
         if (pollPosted || (pending.isEmpty() && retiring.isEmpty() && !readbacks.pending && synchronized(lock) { latest == null || !attached }) || destroyed.get()) return
@@ -414,8 +423,10 @@ internal class EngineSurfaceOwner(
         if (pollPosted) choreographer?.removeFrameCallback(poll)
         handler.removeCallbacks(timedPoll)
         pollPosted = false
-        pending.values.toList().forEach { record ->
+        pending.values().forEach { record ->
             if (record.timestamp == null) record.timestamp = Timestamp(kind, 0, 0)
+            if (record.submissionResult == null) record.submissionResult = 0
+            if (record.latency == null) record.latency = 0
             deliver(record)
         }
     }
@@ -458,7 +469,10 @@ internal class EngineSurfaceOwner(
     private suspend fun <T> onUploadOwner(trace: String = "engine_owner_upload", block: () -> T): T =
         withContext(NonCancellable + uploadDispatcher) { traceEngineWork(trace, block) }
 
-    private companion object { val nextRenderer = AtomicLong() }
+    private companion object {
+        val nextRenderer = AtomicLong()
+        const val MAXIMUM_UNACKNOWLEDGED_FRAMES = 16
+    }
 }
 
 internal data class EngineSurfaceCallbacks(
@@ -473,21 +487,54 @@ private class Pending(val identity: FrameIdentity, val scene: EngineSurfaceScene
     var latency: Long? = null
     var submissionResult: Int? = null
     var timestamp: Timestamp? = null
+    var delivered = false
 
     fun recordTimestamp(at: Long, kind: Int, frameId: Long): Pending {
         if (timestamp == null) timestamp = Timestamp(PresentationTimestampKind.fromNative(kind), at, frameId)
         return this
     }
 
-    fun deliverFrom(pending: MutableMap<Long, Pending>, rendererId: Long, report: (EngineSurfacePresentation) -> Unit) {
-        if ((submissionResult ?: 0) > 0) scene.diagnostics?.resolve(identity, rendererId)
+    fun deliverFrom(pending: UnacknowledgedFrames<Pending>, rendererId: Long, report: (EngineSurfacePresentation) -> Unit) {
+        if (delivered) return
         val timestamp = timestamp ?: return
         val latency = latency ?: return
         val result = submissionResult ?: return
-        if (pending.remove(identity.token) !== this) return
+        delivered = true
+        pending.remove(identity.token)
+        if (result > 0) scene.diagnostics?.resolve(identity, rendererId)
         report(EngineSurfacePresentation(identity, scene, submittedAt, latency, result > 0,
             timestamp.kind, timestamp.at, timestamp.frameId, rendererId))
     }
+}
+
+/**
+ * Bounds the frames submitted but not yet acknowledged by the native presentation callback. The
+ * native owner reports every token exactly once; if a callback is ever lost, the oldest frame
+ * beyond the bound is evicted so a long session cannot accumulate scenes and their placements.
+ * Owner-thread confined, like the map it replaces.
+ */
+internal class UnacknowledgedFrames<T : Any>(private val maximum: Int) {
+    private val records = LinkedHashMap<Long, T>()
+    val size: Int get() = records.size
+    fun isEmpty(): Boolean = records.isEmpty()
+    fun get(token: Long): T? = records[token]
+    fun values(): List<T> = records.values.toList()
+
+    /** Adds [record] and returns the oldest entries that no longer fit, in eviction order. */
+    fun add(token: Long, record: T): List<T> {
+        records[token] = record
+        if (records.size <= maximum) return emptyList()
+        val evicted = ArrayList<T>(records.size - maximum)
+        while (records.size > maximum) {
+            val iterator = records.entries.iterator()
+            val oldest = iterator.next()
+            iterator.remove()
+            evicted += oldest.value
+        }
+        return evicted
+    }
+
+    fun remove(token: Long): T? = records.remove(token)
 }
 
 private data class Timestamp(val kind: PresentationTimestampKind, val at: Long, val frameId: Long)

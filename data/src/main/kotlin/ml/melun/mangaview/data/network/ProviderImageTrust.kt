@@ -123,7 +123,12 @@ class ProviderImageTransport(
                 }
                 if (response.isUsableArtwork()) {
                     originalResponse?.close()
-                    if (candidate != request.url) workingMirrors[originalHost] = host(candidate) ?: originalHost
+                    if (candidate != request.url) {
+                        recordWorkingMirror(
+                            workingMirrors, originalHost, host(candidate) ?: originalHost,
+                            MAXIMUM_WORKING_MIRRORS,
+                        )
+                    }
                     return response
                 }
                 if (candidate == request.url) originalResponse = response else response.close()
@@ -152,3 +157,16 @@ class ProviderImageTransport(
         (relaxed as? Closeable)?.close()
     }
 }
+
+/** Records a working mirror, resetting the hint map when it would exceed [maximum]. */
+internal fun recordWorkingMirror(
+    mirrors: ConcurrentHashMap<String, String>,
+    host: String,
+    mirror: String,
+    maximum: Int,
+) {
+    if (mirrors.size >= maximum && !mirrors.containsKey(host)) mirrors.clear()
+    mirrors[host] = mirror
+}
+
+private const val MAXIMUM_WORKING_MIRRORS = 128

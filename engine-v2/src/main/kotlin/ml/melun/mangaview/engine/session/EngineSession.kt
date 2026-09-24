@@ -352,7 +352,7 @@ class EngineSession(
                 null -> Unit
             }
         }
-        return EngineSessionSnapshot(
+        val snapshot = EngineSessionSnapshot(
             sessionId = sessionId,
             generation = generationValue,
             phase = phaseValue,
@@ -370,6 +370,9 @@ class EngineSession(
             movementRevision = presentation.revision,
             splitMode = geometry.splitMode,
         )
+        // A long in-place read must not let geometry maps grow with every episode crossed.
+        geometry.retainWindow(geometry.anchor?.pageId?.episodeId, geometry.targetEpisodeId)
+        return snapshot
     }
 
     private fun resolvePositionIfPossible() {

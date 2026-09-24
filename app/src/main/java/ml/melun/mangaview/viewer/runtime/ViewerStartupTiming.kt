@@ -63,17 +63,17 @@ internal class ViewerStartupTracker {
     }
 
     fun markResponseStarted(pageId: PageId, atNanos: Long) = synchronized(lock) {
-        val stages = pages.getOrPut(pageId, ::MutablePageStages)
+        val stages = stagesFor(pageId)
         stages.responseStarted = mark(stages.responseStarted, atNanos)
     }
 
     fun markVerified(pageId: PageId, atNanos: Long) = synchronized(lock) {
-        val stages = pages.getOrPut(pageId, ::MutablePageStages)
+        val stages = stagesFor(pageId)
         stages.verified = mark(stages.verified, atNanos)
     }
 
     fun markDecoded(pageId: PageId, atNanos: Long) = synchronized(lock) {
-        val stages = pages.getOrPut(pageId, ::MutablePageStages)
+        val stages = stagesFor(pageId)
         stages.decoded = mark(stages.decoded, atNanos)
     }
 
@@ -113,6 +113,14 @@ internal class ViewerStartupTracker {
         )
     }
 
+    private fun stagesFor(pageId: PageId): MutablePageStages =
+        pages.getOrPut(pageId, ::MutablePageStages).also {
+            while (pages.size > MAXIMUM_TRACKED_PAGES) pages.remove(pages.keys.first())
+        }
+
+    /** Diagnostic count for the leak-guard test; never read on the update path. */
+    internal fun trackedPageCount(): Int = synchronized(lock) { pages.size }
+
     private fun mark(current: Long, atNanos: Long): Long {
         require(atNanos > 0L)
         return if (current == 0L) atNanos else current
@@ -120,3 +128,6 @@ internal class ViewerStartupTracker {
 
     private fun Long?.optional(): Long? = this?.takeIf { it > 0L }
 }
+
+// Pages tracked for the startup timing of a single presentation; older pages fall out.
+private const val MAXIMUM_TRACKED_PAGES = 256

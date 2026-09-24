@@ -115,6 +115,7 @@ class OfflineDownloadManager(
         synchronized(stateLock) {
             mutableStates.value = mutableStates.value.toMutableMap().apply {
                 if (state == null) remove(episodeId) else put(episodeId, state)
+                pruneDownloadStates(this, MAXIMUM_RETAINED_STATES)
             }
         }
     }
@@ -124,3 +125,17 @@ class OfflineDownloadManager(
         const val MAX_PARALLEL_EPISODES = 2
     }
 }
+
+/** Completed/failed rows beyond [maximum] are dropped oldest-first; the store still owns them. */
+internal fun pruneDownloadStates(states: MutableMap<EpisodeId, EpisodeDownloadState>, maximum: Int) {
+    if (states.size <= maximum) return
+    val iterator = states.entries.iterator()
+    while (states.size > maximum && iterator.hasNext()) {
+        val entry = iterator.next()
+        if (entry.value is EpisodeDownloadState.Complete || entry.value is EpisodeDownloadState.Failed) {
+            iterator.remove()
+        }
+    }
+}
+
+private const val MAXIMUM_RETAINED_STATES = 256

@@ -90,7 +90,7 @@ class EngineSessionRuntime(
     private val retainedCachedPlans = linkedMapOf<EpisodeId, CachedPlan>()
     private val pageDemands = SessionPageDemands(source, ::acceptPageGeometry,
         { generation, id, plan, page -> if (isCurrent(generation)) acceptPage(generation, id, plan, page) },
-        { id -> failedReadAheadPages += id; process(SessionUpdate(session.snapshot)) })
+        { id -> markPageFailure(id) })
     private var pages: Map<PageId, PageContentIdentity> = emptyMap()
     private val prepared = linkedSetOf<PageId>()
     private val earlyTransfers = EarlyOriginalTransfers()
@@ -297,6 +297,39 @@ class EngineSessionRuntime(
         SessionDemand(held.request) { plan -> check(plan === held.plan) { "Cached plan ownership changed" } }
     }
 
+    private fun markPageFailure(id: PageId) {
+        failedReadAheadPages += id
+        while (failedReadAheadPages.size > MAXIMUM_FAILED_READ_AHEAD_PAGES) {
+            failedReadAheadPages.remove(failedReadAheadPages.first())
+        }
+        process(SessionUpdate(session.snapshot))
+    }
+
+    /**
+     * A long read can cross many documents in place. A plan for a document far behind is never read
+     * again (its page metadata was already dropped), and a retained cached plan additionally pins the
+     * episode's work record and file leases, so keep the plan set inside a window around the reading
+     * position instead of letting it grow with every episode crossed.
+     */
+    private fun retainPlanWindow(state: EngineSessionSnapshot) {
+        if (plans.size <= RETAINED_PLAN_EPISODES) return
+        val anchor = state.anchor?.pageId?.episodeId ?: targetEpisode
+        val protectedEpisodes = mutableSetOf(anchor, targetEpisode)
+        plans[anchor]?.manifest?.let { manifest ->
+            manifest.previousEpisodeId?.let(protectedEpisodes::add)
+            manifest.nextEpisodeId?.let(protectedEpisodes::add)
+        }
+        protectedEpisodes += pages.keys.mapTo(mutableSetOf()) { it.episodeId }
+        protectedEpisodes += state.requiredEpisodes
+        protectedEpisodes += state.requiredNavigation
+        val dropped = planKeysToDrop(plans, protectedEpisodes, RETAINED_PLAN_EPISODES)
+        if (dropped.isEmpty()) return
+        val retained = LinkedHashMap(plans)
+        dropped.forEach(retained::remove)
+        plans = immutableMap(retained)
+        dropped.forEach(retainedCachedPlans::remove)
+    }
+
     /** Demand inputs are versioned by preparation, not by input revision: a scroll that only
      * moves inside the same visible pages reuses the identical request set instead of
      * rebuilding every SessionDemand lambda and rescanning manifest pages on each sample.
@@ -325,6 +358,7 @@ class EngineSessionRuntime(
     }
 
     private fun demands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
+        retainPlanWindow(state)
         val result = mutableListOf<SessionDemand<*>>()
         val generation = state.generation
         if (!positionResolved) result += SessionDemand(source.position(targetEpisode)) { position ->
@@ -477,6 +511,24 @@ private const val BOUNDARY_APPROACH_PAGES = 6
 private const val BOUNDARY_HEAD_PAGES = 10
 // A transient neighbor failure retries on its own instead of parking the boundary for the session.
 private const val EPISODE_RETRY_DELAY_NANOS = 3_000_000_000L
+
+// A long read can cross many documents in place; plans (and cached-plan pins, which hold the
+// episode's file leases) for documents far behind the reading position stay only inside this window.
+private const val RETAINED_PLAN_EPISODES = 8
+// Distinct failed read-ahead pages beyond this many are forgotten oldest-first; a page still on the
+// horizon is retried by its next demand.
+private const val MAXIMUM_FAILED_READ_AHEAD_PAGES = 256
+
+/** Keys to drop so the plan map stays inside its window; never drops a protected episode. */
+internal fun <V> planKeysToDrop(
+    plans: Map<EpisodeId, V>,
+    protectedEpisodes: Set<EpisodeId>,
+    maximum: Int,
+): List<EpisodeId> {
+    val overflow = plans.size - maximum
+    if (overflow <= 0) return emptyList()
+    return plans.keys.filter { it !in protectedEpisodes }.take(overflow)
+}
 
 // Depth of the *page* horizon behind the leading required page. While a gesture owns the frame the
 // bulk read-ahead is deferred, so without this the horizon is only two pages deep and a read-ahead

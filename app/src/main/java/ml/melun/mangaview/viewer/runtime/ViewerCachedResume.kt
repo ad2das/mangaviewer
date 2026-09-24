@@ -128,6 +128,11 @@ internal class ViewerCachedResume(
             lease
         }
         acquired?.close()
-        synchronized(leaseLock) { if (lease === acquired) lease = null }
+        synchronized(leaseLock) {
+            if (lease === acquired) lease = null
+            manifests.clear()
+            bindings.clear()
+            saved.clear()
+        }
     }
 }

@@ -110,6 +110,9 @@ class EngineRenderRuntime(
      * so its size is part of the key.
      */
     private fun renderDemands(snapshot: EngineRuntimeSnapshot, plan: EngineTilePlan): List<SessionDemand<*>> {
+        pruneFailedReadAhead(failedReadAhead, MAXIMUM_FAILED_READ_AHEAD_TILES) {
+            plan.demands.mapTo(linkedSetOf()) { it.tile }
+        }
         if (demandedPlan === plan && demandedFailed == failedReadAhead.size) return plannedDemands
         val list = plan.demands.filter {
             it.priority != WorkPriority.NEXT_IMAGE || it.tile !in failedReadAhead
@@ -444,4 +447,18 @@ class EngineRenderRuntime(
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Render runtime is owner-thread confined" }
     private fun <T> immutableSet(source: Collection<T>): Set<T> =
         Collections.unmodifiableSet(LinkedHashSet(source))
+}
+
+// Failed read-ahead tiles are remembered only while they can still be demanded; beyond this many
+// distinct failures the set is pruned to the current plan so it cannot grow with a long session.
+private const val MAXIMUM_FAILED_READ_AHEAD_TILES = 256
+
+/** Drops failed read-ahead tiles that are no longer wanted once the set outgrows [maximum]. */
+internal fun pruneFailedReadAhead(
+    failed: MutableSet<EngineTileSpec>,
+    maximum: Int,
+    wanted: () -> Set<EngineTileSpec>,
+): Boolean {
+    if (failed.size <= maximum) return false
+    return failed.retainAll(wanted())
 }

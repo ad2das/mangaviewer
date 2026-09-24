@@ -175,6 +175,7 @@ class OkHttpSourceTransport(
         priority == ml.melun.mangaview.source.PageFetchPriority.NORMAL
 
     private fun observeRoute(host: String, index: Int, elapsedNanos: Long) {
+        resetRouteObservationsWhenFull(fastestRoutes, host, MAXIMUM_ROUTE_OBSERVATIONS)
         fastestRoutes.compute(host) { _, current ->
             if (current == null || elapsedNanos < current.elapsedNanos) {
                 RouteObservation(index, elapsedNanos)
@@ -183,8 +184,6 @@ class OkHttpSourceTransport(
             }
         }
     }
-
-    private data class RouteObservation(val index: Int, val elapsedNanos: Long)
 
     private fun SourceRequest.toOkHttpRequest(): Request {
         val builder = Request.Builder().url(url)
@@ -259,3 +258,16 @@ private const val ROUTE_POOL_COUNT = 3
 
 /** A warm that outlives this budget is abandoned; the real request would have opened its own leg. */
 private const val WARM_TIMEOUT_MILLIS = 8_000L
+
+internal data class RouteObservation(val index: Int, val elapsedNanos: Long)
+
+/** Keeps the route-hint map bounded: a full map for other hosts is dropped wholesale. */
+internal fun resetRouteObservationsWhenFull(
+    observations: ConcurrentHashMap<String, RouteObservation>,
+    host: String,
+    maximum: Int,
+) {
+    if (observations.size >= maximum && !observations.containsKey(host)) observations.clear()
+}
+
+private const val MAXIMUM_ROUTE_OBSERVATIONS = 128

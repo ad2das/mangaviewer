@@ -94,6 +94,42 @@ internal class DocumentGeometry(
         }
     }
 
+    /**
+     * A long in-place read crosses documents without a navigate. Keep only the documents around the
+     * reading position (and the session's target) so the maps cannot grow with every episode
+     * crossed; a pruned document is re-requested through the ordinary geometry blockers.
+     */
+    fun retainWindow(
+        anchorEpisodeId: EpisodeId?,
+        target: EpisodeId = targetEpisodeId,
+        maximum: Int = RETAINED_DOCUMENTS,
+    ) {
+        if (manifests.size <= maximum) return
+        val keep = linkedSetOf<EpisodeId>()
+        if (anchorEpisodeId != null) {
+            keep += anchorEpisodeId
+            var cursor: EpisodeId? = anchorEpisodeId
+            var steps = 0
+            while (cursor != null && steps < RETAINED_WINDOW_STEPS) {
+                cursor = manifests[cursor]?.previousEpisodeId
+                if (cursor != null) keep += cursor
+                steps++
+            }
+            cursor = anchorEpisodeId
+            steps = 0
+            while (cursor != null && steps < RETAINED_WINDOW_STEPS) {
+                cursor = manifests[cursor]?.nextEpisodeId
+                if (cursor != null) keep += cursor
+                steps++
+            }
+        }
+        keep += target
+        if (manifests.keys.all { it in keep }) return
+        manifests.keys.retainAll(keep)
+        navigationKnown.keys.retainAll(keep)
+        actualDimensions.keys.retainAll { it.episodeId in keep }
+    }
+
     fun setDimensions(pageId: PageId, dimensions: PageDimensions) {
         actualDimensions[pageId] = dimensions
     }
@@ -446,3 +482,8 @@ private fun BigRational.coerceAtLeast(other: BigRational): BigRational =
     if (this < other) other else this
 
 private fun EpisodeId.firstPageId(): PageId = PageId(this, "p0000")
+
+// Documents kept around the reading position by retainWindow: the anchor, two navigation links in
+// each direction, and the session's target.
+private const val RETAINED_DOCUMENTS = 6
+private const val RETAINED_WINDOW_STEPS = 2
