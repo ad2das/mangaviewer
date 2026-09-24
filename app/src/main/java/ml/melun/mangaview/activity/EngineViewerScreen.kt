@@ -439,18 +439,27 @@ internal class EngineViewerScreen(
     private fun showEpisodePicker(current: ViewerChromeState, episodes: List<SourceEpisode>) {
         if (episodes.isEmpty() || isFinishing || isDestroyed) return
         val currentIndex = episodes.indexOfFirst { it.id == current.episodeId }
+        val list = EpisodePickerList(this).apply {
+            adapter = EpisodePickerAdapter(episodes.map(SourceEpisode::title), currentIndex)
+            // The thumb doubles as the position cue on a long run and is only noise on a short one.
+            isFastScrollAlwaysVisible = episodes.size >= FAST_SCROLL_FROM
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                (resources.displayMetrics.heightPixels * PICKER_HEIGHT_FRACTION).toInt(),
+            )
+        }
         val dialog = AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
             .setTitle("회차 선택")
-            .setSingleChoiceItems(episodes.map(SourceEpisode::title).toTypedArray(), currentIndex) {
-                    dialog, index ->
-                dialog.dismiss()
-                val target = episodes.getOrNull(index)?.id ?: return@setSingleChoiceItems
-                if (target != current.episodeId) launchEpisode(target)
-            }
+            .setView(list)
             .setNegativeButton("취소", null)
             .create()
+        list.setOnItemClickListener { _, _, position, _ ->
+            dialog.dismiss()
+            val target = episodes.getOrNull(position)?.id ?: return@setOnItemClickListener
+            if (target != current.episodeId) launchEpisode(target)
+        }
         if (currentIndex > 0) {
-            dialog.setOnShowListener { dialog.listView?.setSelection(currentIndex) }
+            dialog.setOnShowListener { list.setSelection(currentIndex) }
         }
         dialog.show()
     }
@@ -468,5 +477,11 @@ internal class EngineViewerScreen(
         ui.showFailure(failure)
     }
 
+    private companion object {
+        /** Past this many episodes the fast-scroll thumb is a position cue worth keeping visible. */
+        const val FAST_SCROLL_FROM = 40
 
+        /** Share of the screen the episode rows take; the title and the button keep the rest. */
+        const val PICKER_HEIGHT_FRACTION = 0.6f
+    }
 }
