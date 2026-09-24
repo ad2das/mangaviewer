@@ -233,6 +233,7 @@ internal class AppGraph(
 
     private suspend fun initializeNtkSource(): DeferredSourceResource {
         coroutineContext.ensureActive()
+        val initialOrigin = seededProviderOrigin(origins, "ntk", DEFAULT_NTK_ORIGIN)
         val transport = createNtkTransport()
         val documentTransport = ObservedSourceTransport(resilient(transportFactory.create()), "catalog-ntk-document") { networkEvidenceObserver }
         // Cover artwork sits on an image CDN whose chain the platform cannot build, so those hosts
@@ -242,7 +243,7 @@ internal class AppGraph(
             coroutineContext.ensureActive()
             val source = NtkContentSource(
                 NtkConfig(
-                    initialOrigin = DEFAULT_NTK_ORIGIN,
+                    initialOrigin = initialOrigin,
                     userAgent = userAgent(),
                     browserIdentity = ntkBrowserIdentity,
                 ),
@@ -251,9 +252,9 @@ internal class AppGraph(
                 documentTransport = documentTransport,
                 artworkTransport = artworkTransport,
             )
-            transport.warmConnections(listOf(DEFAULT_NTK_ORIGIN), preferQuic = false)
-            transport.warmConnections(listOf(DEFAULT_NTK_ORIGIN), preferQuic = true)
-            preconnectOrigin(documentTransport, DEFAULT_NTK_ORIGIN)
+            transport.warmConnections(listOf(initialOrigin), preferQuic = false)
+            transport.warmConnections(listOf(initialOrigin), preferQuic = true)
+            preconnectOrigin(documentTransport, initialOrigin)
             return DeferredSourceResource(source) {
                 source.close()
                 (transport as? Closeable)?.close()
@@ -307,22 +308,23 @@ internal class AppGraph(
 
     private suspend fun initializeWfwfSource(): DeferredSourceResource {
         coroutineContext.ensureActive()
+        val initialOrigin = seededProviderOrigin(origins, "wfwf", DEFAULT_WFWF_ORIGIN)
         val transport = createWfwfTransport()
         // Origin discovery must reach the mirror it names; the directory-rewriting transport would
         // fold every probe back onto the persisted origin, which can itself be a moved-address stub.
         val probeTransport = createWfwfRawTransport()
         try {
             val source = WfwfContentSource(
-                WfwfConfig(DEFAULT_WFWF_ORIGIN, userAgent()),
+                WfwfConfig(initialOrigin, userAgent()),
                 transport,
                 applicationScope,
                 originResolver = WfwfOriginResolver(probeTransport, userAgent(), probeParallelism = 4,
                     onProbe = { android.util.Log.i("WfwfOrigin", it) }),
                 onOriginResolved = { origins.remember("wfwf", it) },
             )
-            transport.warmConnections(listOf(DEFAULT_WFWF_ORIGIN), preferQuic = false)
+            transport.warmConnections(listOf(initialOrigin), preferQuic = false)
             source.warm()
-            preconnectOrigin(transport, DEFAULT_WFWF_ORIGIN)
+            preconnectOrigin(transport, initialOrigin)
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
                 (probeTransport as? Closeable)?.close()
@@ -435,18 +437,19 @@ internal class AppGraph(
 
     private suspend fun initializeGoodtoonSource(): DeferredSourceResource {
         coroutineContext.ensureActive()
+        val initialOrigin = seededProviderOrigin(origins, "goodtoon", DEFAULT_GOODTOON_ORIGIN)
         val transport = createGoodtoonTransport()
         try {
             val source = GoodtoonContentSource(
-                GoodtoonConfig(DEFAULT_GOODTOON_ORIGIN, userAgent()),
+                GoodtoonConfig(initialOrigin, userAgent()),
                 transport,
                 applicationScope,
                 originProbeObserver = { android.util.Log.i("GoodtoonOrigin", it) },
                 onOriginResolved = { origins.remember("goodtoon", it) },
             )
-            transport.warmConnections(listOf(DEFAULT_GOODTOON_ORIGIN), preferQuic = false)
+            transport.warmConnections(listOf(initialOrigin), preferQuic = false)
             source.warm()
-            preconnectOrigin(transport, DEFAULT_GOODTOON_ORIGIN)
+            preconnectOrigin(transport, initialOrigin)
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
             }
@@ -483,6 +486,19 @@ internal class AppGraph(
         val GOODTOON_ID = SourceId("goodtoon")
     }
 }
+
+/**
+ * Seeds a catalog source from the verified persisted origin so warm-up and re-discovery start at
+ * the known address instead of the shipped default. Falls back when nothing valid is stored.
+ */
+internal suspend fun seededProviderOrigin(origins: ProviderOrigins, provider: String, fallback: String): String =
+    try {
+        origins.current(provider, fallback)
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (failure: Throwable) {
+        fallback
+    }
 
 /**
  * Builds the newxtoon transport around the clearance's persistent browser identity. Cloudflare
