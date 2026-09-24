@@ -565,6 +565,36 @@ class WorkCoordinatorTest {
         assertFailsWith<IllegalStateException> { coordinator.close() }
     }
 
+    @Test
+    fun dispatchedWorkerCancelledBeforeItsBodyStartsStillReleasesTheRecord() = runTest {
+        // The production coordinator admits on a dedicated lane and starts background workers
+        // dispatched, so a worker can be cancelled while it still sits in the plumbing queue. Its
+        // body never runs then, and without an explicit finalize the record stays RUNNING with no
+        // subscribers forever: its permit is pinned and every awaitReleased on it wedges.
+        val lane = kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)
+        val plumbing = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        val coordinator = WorkCoordinator(
+            kotlinx.coroutines.CoroutineScope(coroutineContext + plumbing),
+            limits(network = 2, bodies = 1, background = 2),
+            lane,
+        )
+        val bodyRan = java.util.concurrent.atomic.AtomicBoolean(false)
+        val subscription = coordinator.submit(
+            request("cancelled-before-dispatch", WorkDomain.NETWORK, WorkPriority.OFFLINE) {
+                bodyRan.set(true)
+                "never"
+            },
+        )
+        assertEquals(1, coordinator.snapshot().active)
+        subscription.close()
+        runCurrent()
+        assertFalse("The dispatched worker must not have started", bodyRan.get())
+        assertEquals(0, coordinator.snapshot().active)
+        assertEquals(0, coordinator.snapshot().queued)
+        subscription.awaitReleased()
+        coordinator.close()
+    }
+
     private fun limits(
         network: Int,
         bodies: Int,

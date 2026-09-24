@@ -270,4 +270,27 @@ internal class WorkExecution(
         }
         waiters.forEach { it.ready.completeExceptionally(failure) }
     }
+
+    /**
+     * A dispatched worker start can be cancelled before its body ever runs, in which case [runRecord]
+     * never executes and nothing finalizes the record: it would stay RUNNING with no subscribers,
+     * pinning its permit and wedging every awaitReleased on it. The worker job's completion observer
+     * calls this to mirror [finishFailure] for exactly that case; a record the body already finalized
+     * is READY, RETIRING or gone, and is left untouched.
+     */
+    suspend fun finalizeAbandonedWorker(record: WorkRecord, cause: Throwable?) {
+        var waiters = emptyList<WorkSubscriber>()
+        state.mutex.withLock {
+            if (state.records[record.key] !== record) return@withLock
+            if (record.state != WorkRecordState.RUNNING && record.state != WorkRecordState.RETRY_WAIT) return@withLock
+            waiters = record.subscribers.toList()
+            record.subscribers.forEach { it.detached = true }
+            record.cleanupSubscribers += waiters
+            record.subscribers.clear()
+            releasePermitLocked(record)
+            removeRecordLocked(record)
+        }
+        val failure = cause ?: CancellationException("Work worker completed without finalizing its record")
+        waiters.forEach { it.ready.completeExceptionally(failure) }
+    }
 }

@@ -208,6 +208,29 @@ class WorkCoordinator(
         }
     }
 
+    /**
+     * A dispatched worker start can be cancelled before its body ever runs; the record would then
+     * stay RUNNING forever, pinning its permit and wedging awaitReleased. Watch every worker job and
+     * finalize a record its body never reached. The state read is safe without the lock: a normally
+     * finished body has already moved the record to READY/RETIRING/DONE on its own thread before the
+     * job completes, and the cancel path that abandons a start synchronized through the registry
+     * mutex, so a RUNNING/RETRY_WAIT reading here is the abandoned case.
+     */
+    internal fun observeWorkerCompletion(record: WorkRecord, worker: Job) {
+        worker.invokeOnCompletion { cause ->
+            if (record.state != WorkRecordState.RUNNING && record.state != WorkRecordState.RETRY_WAIT) return@invokeOnCompletion
+            cleanupScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                withContext(NonCancellable) {
+                    try {
+                        execution.finalizeAbandonedWorker(record, cause)
+                    } catch (failure: Throwable) {
+                        recordObserverFailure(failure)
+                    }
+                }
+            }
+        }
+    }
+
     internal fun <T : Any> registerLocked(request: WorkRequest<T>): Pair<WorkRecord, WorkSubscriber> {
         checkOpenLocked()
         val retired = registry.retiredAuthEpochs[request.key.principal]

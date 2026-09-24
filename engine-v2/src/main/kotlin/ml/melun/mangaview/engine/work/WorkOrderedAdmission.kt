@@ -57,11 +57,13 @@ internal class WorkOrderedAdmission(
             if (retryContinuation) {
                 state.signalLocked()
             } else {
-                record.worker = coordinator.workerScope.launch(
+                val worker = coordinator.workerScope.launch(
                     start = coordinator.startMode(record.priority.value),
                 ) {
                     execution.runRecord(record)
                 }
+                record.worker = worker
+                coordinator.observeWorkerCompletion(record, worker)
             }
         }
     }
