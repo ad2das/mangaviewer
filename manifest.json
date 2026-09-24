@@ -1,0 +1,20 @@
+{
+    "stamp":  "20260924-150945",
+    "head_sha":  "35fcd1a82cc905d963ab270a6073cbe3b50ef52a",
+    "probe_dir":  "long-session-probe-1790222044411",
+    "files":  [
+                  "git-log.txt",
+                  "git-status.txt",
+                  "injected-motion.jsonl",
+                  "probe-dir.txt",
+                  "samples.txt",
+                  "task.json",
+                  "worktree.diff",
+                  "files\\.gitignore",
+                  "files\\ntk-block-live.js",
+                  "files\\ntk-guard-live.js",
+                  "files\\app\\src\\androidTest\\java\\ml\\melun\\mangaview\\viewer\\CrossEpisodeLeakProbeTest.kt",
+                  "files\\app\\src\\androidTest\\java\\ml\\melun\\mangaview\\viewer\\LongSessionScrollProbeTest.kt",
+                  "files\\engine-v2\\src\\main\\kotlin\\ml\\melun\\mangaview\\engine\\work\\WorkCoordinator.kt"
+              ]
+}
