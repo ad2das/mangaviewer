@@ -40,6 +40,7 @@ import ml.melun.mangaview.source.ntk.NtkBrowserIdentity
 import ml.melun.mangaview.source.ntk.NtkWebViewAccessGateway
 import ml.melun.mangaview.source.wfwf.WfwfConfig
 import ml.melun.mangaview.source.wfwf.WfwfContentSource
+import ml.melun.mangaview.source.wfwf.WfwfOriginResolver
 import ml.melun.mangaview.source.newxtoon.NewxtoonConfig
 import ml.melun.mangaview.source.newxtoon.NewxtoonContentSource
 import ml.melun.mangaview.source.goodtoon.GoodtoonConfig
@@ -307,12 +308,16 @@ internal class AppGraph(
     private suspend fun initializeWfwfSource(): DeferredSourceResource {
         coroutineContext.ensureActive()
         val transport = createWfwfTransport()
+        // Origin discovery must reach the mirror it names; the directory-rewriting transport would
+        // fold every probe back onto the persisted origin, which can itself be a moved-address stub.
+        val probeTransport = createWfwfRawTransport()
         try {
             val source = WfwfContentSource(
                 WfwfConfig(DEFAULT_WFWF_ORIGIN, userAgent()),
                 transport,
                 applicationScope,
-                originProbeObserver = { android.util.Log.i("WfwfOrigin", it) },
+                originResolver = WfwfOriginResolver(probeTransport, userAgent(), probeParallelism = 4,
+                    onProbe = { android.util.Log.i("WfwfOrigin", it) }),
                 onOriginResolved = { origins.remember("wfwf", it) },
             )
             transport.warmConnections(listOf(DEFAULT_WFWF_ORIGIN), preferQuic = false)
@@ -320,15 +325,17 @@ internal class AppGraph(
             preconnectOrigin(transport, DEFAULT_WFWF_ORIGIN)
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
+                (probeTransport as? Closeable)?.close()
             }
         } catch (failure: Throwable) {
             (transport as? Closeable)?.close()
+            (probeTransport as? Closeable)?.close()
             throw failure
         }
     }
 
-    private fun createWfwfTransport(): SourceTransport = ObservedSourceTransport(
-        resilient(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+    private fun createWfwfRawTransport(): SourceTransport =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             HttpEngineSourceTransport(
                 appContext,
                 userAgent(),
@@ -336,7 +343,10 @@ internal class AppGraph(
             )
         } else {
             transportFactory.create()
-        }), "catalog-wfwf", { networkEvidenceObserver })
+        }
+
+    private fun createWfwfTransport(): SourceTransport = ObservedSourceTransport(
+        resilient(createWfwfRawTransport()), "catalog-wfwf", { networkEvidenceObserver })
 
     private fun createNewxtoonSource(): DeferredContentSource = DeferredContentSource(
         id = NEWXTOON_ID,

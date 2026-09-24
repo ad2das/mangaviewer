@@ -56,6 +56,24 @@ class WfwfContentSourceTest {
     }
 
     @Test
+    fun movedAddressStubOnTheEpisodeListRecoversToTheResolvedOrigin() = runTest {
+        val transport = StubOriginTransport()
+        val resolved = mutableListOf<String>()
+        val source = WfwfContentSource(
+            WfwfConfig("https://wfwf502.test", "agent"),
+            transport,
+            originResolver = WfwfOriginResolver(transport, "agent"),
+            onOriginResolved = { resolved += it },
+        )
+        val series = SeriesId(SourceId("wfwf"), WfwfSeriesKey(WfwfKind.COMIC, 10).encode())
+
+        val episodes = source.episodes(series).items
+
+        assertEquals(listOf("2", "1"), episodes.map { it.id.remoteKey })
+        assertEquals(listOf("https://wfwf504.com"), resolved)
+    }
+
+    @Test
     fun deadReusableImageRouteFallsThroughToTheFreshHedge() = runTest {
         val transport = RouteRecoveryTransport()
         val source = WfwfContentSource(WfwfConfig("https://wfwf.test", "agent"), transport)
@@ -758,6 +776,34 @@ private class QueueTransport(vararg bodies: String) : SourceTransport {
             contentType = "text/html; charset=utf-8",
         )
     }
+}
+
+/** Serves a moved-address stub on the stale origin and a live catalog plus episode list on wfwf504. */
+private class StubOriginTransport : SourceTransport {
+    override suspend fun execute(request: SourceRequest): SourceResponse {
+        val host = java.net.URI(request.url).host.orEmpty()
+        val path = java.net.URI(request.url).rawPath.orEmpty()
+        if (path == "/ing") {
+            val alive = host == "wfwf504.com"
+            val body = if (alive) "<a href=\"/cl?toon=1\">목록</a>" else ""
+            return response(request.url, body.toByteArray(), if (alive) 200 else 451)
+        }
+        val bytes = if (host == "wfwf504.com") """
+            <a class="ep-item" href="/cv?toon=10&num=2"><span class="ep-title">작품 2화</span></a>
+            <a class="ep-item" href="/cv?toon=10&num=1"><span class="ep-title">작품 1화</span></a>
+        """.trimIndent().toByteArray() else
+            "<html><body>moved address updated=https://wfwf504.com</body></html>".toByteArray()
+        return response(request.url, bytes, 200)
+    }
+
+    private fun response(url: String, bytes: ByteArray, status: Int) = SourceResponse(
+        statusCode = status,
+        finalUrl = url,
+        headers = mapOf("Content-Type" to listOf("text/html; charset=utf-8")),
+        body = BytesStream(bytes),
+        contentLength = bytes.size.toLong(),
+        contentType = "text/html; charset=utf-8",
+    )
 }
 
 private class BytesStream(private val bytes: ByteArray) : PageByteStream {

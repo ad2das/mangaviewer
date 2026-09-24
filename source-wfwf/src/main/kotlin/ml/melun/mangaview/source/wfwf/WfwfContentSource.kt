@@ -412,7 +412,10 @@ class WfwfContentSource(
             "WFWF document identity changed"
         }
         val document = Jsoup.parse(ByteArrayInputStream(bytes), null, finalUrl)
-        if (requested.path in setOf("/ing", "/end", "/cm") &&
+        // A moved provider address serves a live but series-less stub on every catalog route,
+        // including a series' own episode list; classify it as unavailable so origin recovery
+        // replays the request against the new address. Search results may be empty legitimately.
+        if (requested.path in CATALOG_ROUTES &&
             document.select(".thumb-grid, a[href*=toon=]").isEmpty()) {
             throw IOException("WFWF catalog document is unavailable")
         }
@@ -470,6 +473,7 @@ private const val FORWARD_HEADER_TIMEOUT_MILLIS = 5_000L
 private const val NORMAL_HEADER_TIMEOUT_MILLIS = 6_000L
 private const val BACKGROUND_HEADER_TIMEOUT_MILLIS = 8_000L
 private val EXPIRED_PAGE_STATUSES = setOf(401, 403, 404, 410)
+private val CATALOG_ROUTES = setOf("/ing", "/end", "/cm", "/cl", "/list")
 
 private fun WfwfKind?.matches(kind: SeriesKind): Boolean =
     (this == WfwfKind.COMIC && kind == SeriesKind.COMIC) ||

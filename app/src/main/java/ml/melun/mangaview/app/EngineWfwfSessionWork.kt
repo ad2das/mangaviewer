@@ -1,5 +1,6 @@
 package ml.melun.mangaview.app
 
+import java.io.IOException
 import java.net.URI
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
@@ -27,12 +28,15 @@ internal class EngineWfwfSessionWork(
     private val initialPosition: ReadingPosition?,
     observer: EpisodePlanObserver? = null,
     private val initialAnchor: SourceAnchor? = null,
+    /** Probes must not ride the directory-rewriting transport, or every candidate folds back onto the stale origin. */
+    originProbe: WfwfOriginResolver? = null,
+    onOriginResolved: ((URI) -> Unit)? = null,
 ) : EngineViewerWork {
     private val principal = "wfwf:public"
     private val planner = WfwfAccessPlanner(userAgent)
     private val catalog = WfwfEpisodeCatalogPlanner(userAgent)
-    private val origins = EngineWfwfOriginWork(origin,
-        WfwfOriginResolver(transport, userAgent, probeParallelism = 1)::resolve)
+    private val origins = EngineWfwfOriginWork(origin, onOriginResolved,
+        (originProbe ?: WfwfOriginResolver(transport, userAgent, probeParallelism = 4))::resolve)
     private val episodes = EngineEpisodeWork(principal, planner, transport, parsingDispatcher, observer = observer)
     private val pages = EnginePageWork(principal, planner, transport, storage) { _, _, _ ->
         error("WFWF returned an unsupported access prerequisite")
@@ -77,6 +81,12 @@ internal class EngineWfwfSessionWork(
                     execute = { fetchCatalog(seriesId, number, origin) })
                 val parsed = parent.useDependency(document) { value ->
                     withContext(parsingDispatcher) { catalog.parse(seriesId, value) }
+                }
+                // A moved provider address answers the catalog route with a live but episode-less
+                // stub; classify it as a recoverable document failure so origin recovery replays
+                // the load against the new address instead of failing the empty-catalog invariant.
+                if (number == 1 && parsed.episodes.isEmpty()) {
+                    throw IOException("WFWF catalog page at $origin carries no episodes")
                 }
                 loaded += parsed
                 last = maxOf(last, parsed.lastPage)

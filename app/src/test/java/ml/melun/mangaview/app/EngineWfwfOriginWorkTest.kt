@@ -36,6 +36,40 @@ class EngineWfwfOriginWorkTest {
         coordinator.close()
     }
 
+    @Test fun replacementOriginIsPublishedToTheSharedDirectory() = runTest {
+        var resolutions = 0
+        val published = mutableListOf<URI>()
+        val origins = EngineWfwfOriginWork(old, { published += it }) { resolutions++; live.toString() }
+        val coordinator = WorkCoordinator(this)
+        fun episode(id: String) = origins.request { origin -> document(id, origin) {
+            if (origin == old) throw IOException("Connection reset")
+            "$id from $origin"
+        } }
+        val first = coordinator.acquire(episode("3"))
+        assertEquals("3 from $live", first.value)
+        first.close(); first.awaitReleased()
+        val second = coordinator.acquire(episode("4"))
+        second.close(); second.awaitReleased()
+        assertEquals(listOf(live), published)
+        assertEquals(1, resolutions)
+        coordinator.close()
+    }
+
+    @Test fun sameOriginResolutionPublishesNothing() = runTest {
+        val published = mutableListOf<URI>()
+        val origins = EngineWfwfOriginWork(old, { published += it }) { old.toString() }
+        val coordinator = WorkCoordinator(this)
+        val sub = coordinator.submit(origins.request { origin -> document("3", origin) {
+            throw IOException("Connection reset")
+        } })
+        try { sub.await(); fail("Expected connection failure") } catch (actual: IOException) {
+            assertEquals("Connection reset", actual.message)
+        }
+        sub.close(); sub.awaitReleased()
+        assertTrue(published.isEmpty())
+        coordinator.close()
+    }
+
     @Test fun unresolvedAddressPreservesOriginalFailureWithoutReplay() = runTest {
         val failure = IOException("Connection reset")
         var attempts = 0

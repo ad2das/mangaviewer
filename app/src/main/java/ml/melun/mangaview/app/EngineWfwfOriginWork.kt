@@ -8,6 +8,8 @@ import ml.melun.mangaview.engine.api.*
 /** Recovery is an owned BODY dependency; only a different validated origin permits replay. */
 internal class EngineWfwfOriginWork(
     initialOrigin: URI,
+    /** Publishes a replacement origin to the shared provider directory so retries stop being rewritten to the stale one. */
+    private val onResolved: ((URI) -> Unit)? = null,
     private val resolve: suspend (String) -> String?,
 ) {
     private val current = AtomicReference(initialOrigin)
@@ -31,7 +33,12 @@ internal class EngineWfwfOriginWork(
         WorkKey(request.key.principal, origin.toString(), "source.origin", "validated", URI::class.java),
         WorkDomain.BODY, priority, authEpoch = request.authEpoch, execute = {
             if (current.get() == origin) {
-                resolve(origin.toString())?.let { current.compareAndSet(origin, URI(it)) }
+                resolve(origin.toString())?.let { resolved ->
+                    val replacement = URI(resolved)
+                    if (current.compareAndSet(origin, replacement) && replacement != origin) {
+                        onResolved?.invoke(replacement)
+                    }
+                }
             }
             current.get()
         },

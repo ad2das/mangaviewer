@@ -23,6 +23,7 @@ import ml.melun.mangaview.engine.api.WorkCoordinatorPort
 import ml.melun.mangaview.engine.api.WorkLimits
 import ml.melun.mangaview.engine.work.WorkCoordinator
 import ml.melun.mangaview.source.wfwf.DEFAULT_WFWF_ORIGIN
+import ml.melun.mangaview.source.wfwf.WfwfOriginResolver
 import ml.melun.mangaview.source.goodtoon.DEFAULT_GOODTOON_ORIGIN
 import ml.melun.mangaview.source.ntk.NtkBrowserIdentity
 import ml.melun.mangaview.source.ntk.NtkEngineBrowserClient
@@ -143,6 +144,10 @@ internal class EngineAppGraph(
         headers: Map<String, String> = emptyMap(),
     ) = ProviderOriginTransport(transportFactory.protect(transport, cookieJar, headers), origins)
     private val transport = ObservedSourceTransport(resilient(transportFactory.create()), "engine", networkEvidenceObserver)
+    // The directory-rewriting transport folds every probe onto the persisted origin, so a stale
+    // origin could never be escaped. Origin probes ride this raw transport instead.
+    private val wfwfOriginProbeTransport = transportFactory.create()
+    private val wfwfOriginProbe by lazy { WfwfOriginResolver(wfwfOriginProbeTransport, userAgent, probeParallelism = 4) }
     // The engine transport exists for the reader, so nothing warms it while the home screen is up.
     // Open one bodyless exchange per disk-resolved document origin during startup so the first
     // chapter fetch reuses a pooled connection instead of paying DNS and TLS on the open path.
@@ -226,7 +231,8 @@ internal class EngineAppGraph(
     fun session(spec: ViewerLaunchSpec): EngineViewerWork {
         val live = when (spec.sourceId.value) {
             "wfwf" -> EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
-                parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
+                parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
+                wfwfOriginProbe, { origins.remember("wfwf", it.toString()) })
             "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent(), URI(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
@@ -261,7 +267,7 @@ internal class EngineAppGraph(
         closeOwned { openingMemory.close() }
         closeOwned { openingVisibleDecode.closeAndAwait() }
     closeOwned { openingDecode.closeAndAwait() }
-        val transports = listOfNotNull(transport, ntkPageTransport.takeIf { it.isInitialized() }?.value,
+        val transports = listOfNotNull(transport, wfwfOriginProbeTransport, ntkPageTransport.takeIf { it.isInitialized() }?.value,
             newxtoonTransport.takeIf { it.isInitialized() }?.value)
         for (owned in transports) closeOwned { owned.close() }
         primary?.let { throw it }
