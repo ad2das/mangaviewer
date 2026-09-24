@@ -90,18 +90,20 @@ class NtkNativeManifestClient(
             ),
             priority = PageFetchPriority.FOCUS,
         )
-        require(JSONObject(manifest).optBoolean("ok", false)) {
+        require(JSONObject(manifest.body).optBoolean("ok", false)) {
             "NTK native image API rejected the identity proof"
         }
         val observedAt = SystemClock.elapsedRealtimeNanos().coerceAtLeast(1L)
         runCatching {
-            Log.i(TAG, "phase=native-manifest-ready episode=${document.episodeId} bytes=${manifest.length}")
+            Log.i(TAG, "phase=native-manifest-ready episode=${document.episodeId} bytes=${manifest.body.length}")
         }
-        return authorization(base, descriptor, document, manifest, observedAt)
+        // The transport may serve the request from a recovered provider origin; the envelope must
+        // name the origin that actually answered so the identity check binds to this document.
+        return authorization(originOf(manifest.finalUrl) ?: base, descriptor, document, manifest.body, observedAt)
     }
 
     private fun authorization(
-        base: String,
+        servedOrigin: String,
         descriptor: NtkViewerDescriptor,
         document: NtkAccessDocument,
         manifest: String,
@@ -109,7 +111,7 @@ class NtkNativeManifestClient(
     ): NtkEngineAuthorization {
         val payload = JSONObject(manifest)
             .put("endpoint", descriptor.apiPath)
-            .put("responseUrl", base + descriptor.apiPath)
+            .put("responseUrl", servedOrigin + descriptor.apiPath)
             .put("responseContentType", "application/json")
             .put("requestMethod", "POST")
             .put("requestContentType", "application/json")
@@ -163,11 +165,14 @@ class NtkNativeManifestClient(
             priority = PageFetchPriority.NORMAL,
         )
         val granted = cookies["nv"]?.takeIf(::validSession)
-            ?: runCatching { JSONObject(issued).optString("session") }.getOrNull()?.takeIf(::validSession)
+            ?: runCatching { JSONObject(issued.body).optString("session") }.getOrNull()?.takeIf(::validSession)
         requireNotNull(granted) { "NTK native flight did not obtain an nv session" }
         cookies["nv"] = granted
         return granted
     }
+
+    /** A native flight response paired with the URL that actually served it. */
+    private data class Fetched(val body: String, val finalUrl: String)
 
     private suspend fun exchange(
         origin: String,
@@ -177,7 +182,7 @@ class NtkNativeManifestClient(
         cookies: MutableMap<String, String>,
         extraHeaders: Map<String, String>,
         priority: PageFetchPriority,
-    ): String {
+    ): Fetched {
         val headers = buildMap {
             put("User-Agent", userAgent)
             put("Accept", "application/json, text/plain, */*")
@@ -202,7 +207,7 @@ class NtkNativeManifestClient(
             if (response.statusCode !in 200..299) {
                 throw IOException("NTK native flight failed with ${response.statusCode}")
             }
-            response.readBytes(RESPONSE_LIMIT).toString(Charsets.UTF_8)
+            Fetched(response.readBytes(RESPONSE_LIMIT).toString(Charsets.UTF_8), response.finalUrl)
         } finally {
             response.close()
         }
@@ -236,6 +241,16 @@ class NtkNativeManifestClient(
 
     private fun base64Url(raw: ByteArray): String =
         Base64.encodeToString(raw, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+
+    /** The origin that actually served a response, or null when the URL cannot be parsed. */
+    private fun originOf(url: String): String? = runCatching {
+        val uri = URI(url)
+        if (uri.scheme != "https" || uri.host.isNullOrBlank()) {
+            null
+        } else {
+            URI(uri.scheme, null, uri.host, uri.port, null, null, null).toString()
+        }
+    }.getOrNull()
 
     private val random = SecureRandom()
     private val nextRequestId = AtomicLong(1L)
