@@ -39,7 +39,10 @@ class NtkImageManifestRequired(val document: NtkAccessDocument) :
     IllegalStateException("NTK requires an identity-bound protected image manifest")
 
 /** Pure NTK request construction and response binding; owns no browser, transport, cache or queue. */
-class NtkAccessPlanner(private val userAgent: String) : EpisodeDocumentPlanner {
+class NtkAccessPlanner(
+    private val userAgent: String,
+    private val sessionCookies: (String) -> Map<String, String> = { emptyMap() },
+) : EpisodeDocumentPlanner {
     override val sourceId = SourceId("ntk")
     private val parser = NtkDocumentParser()
     private val protectedManifest = NtkBrowserManifestParser()
@@ -47,9 +50,17 @@ class NtkAccessPlanner(private val userAgent: String) : EpisodeDocumentPlanner {
     override fun documentRequest(episodeId: EpisodeId, origin: URI, priority: WorkPriority): SourceRequest {
         validateEpisode(episodeId)
         require(origin.scheme in setOf("https", "http") && !origin.host.isNullOrBlank())
-        return SourceRequest(origin.resolve(episodeId.remoteKey).toString(), headers = mapOf(
-            "User-Agent" to userAgent, "Accept" to "text/html,application/xhtml+xml,*/*;q=0.8",
-        ), priority = priority.fetchPriority())
+        // Present the persisted provider session like the reader's own browser would: the
+        // provider watches for bare first requests and stalls or challenges them.
+        val cookies = sessionCookies(origin.toString())
+        return SourceRequest(origin.resolve(episodeId.remoteKey).toString(), headers = buildMap {
+            put("User-Agent", userAgent)
+            put("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+            if (cookies.isNotEmpty()) {
+                put("Cookie", cookies.entries.joinToString("; ") { "${it.key}=${it.value}" })
+            }
+            put("Referer", origin.toString() + episodeId.seriesId.remoteKey)
+        }, priority = priority.fetchPriority())
     }
 
     fun parseDocument(episodeId: EpisodeId, document: SourceDocument, authEpoch: Long): NtkAccessDocument {

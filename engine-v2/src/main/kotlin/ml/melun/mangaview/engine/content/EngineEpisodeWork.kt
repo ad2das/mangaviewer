@@ -69,7 +69,9 @@ class EngineEpisodeWork(
     }
 
     private suspend fun fetch(episodeId: EpisodeId, origin: URI, priority: WorkPriority): SourceDocument {
+        val startedAtNanos = System.nanoTime()
         val response = transport.execute(planner.documentRequest(episodeId, origin, priority))
+        System.err.println("NtkDoc phase=document-headers ms=${(System.nanoTime() - startedAtNanos) / 1_000_000L}")
         val length = response.contentLength
         try {
             if (response.statusCode != 200) throw PageHttpException(response.statusCode)
@@ -84,6 +86,7 @@ class EngineEpisodeWork(
         }
         // readBytes owns closure, including failures. SourceDocument receives complete immutable bytes.
         val bytes = response.readBytes(maxDocumentBytes)
+        System.err.println("NtkDoc phase=document-body ms=${(System.nanoTime() - startedAtNanos) / 1_000_000L} bytes=${bytes.size}")
         require(length == null || length == bytes.size.toLong()) {
             "Episode document body length mismatch"
         }

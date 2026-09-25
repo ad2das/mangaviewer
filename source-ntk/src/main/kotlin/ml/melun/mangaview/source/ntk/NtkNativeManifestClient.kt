@@ -7,6 +7,7 @@ import java.io.IOException
 import java.net.URI
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import ml.melun.mangaview.source.PageFetchPriority
@@ -27,11 +28,15 @@ import org.json.JSONObject
 class NtkNativeManifestClient(
     private val transport: SourceTransport,
     private val userAgent: String,
+    private val sessionStore: NtkNativeSessionStore? = null,
+    private val payloadCache: NtkManifestPayloadCache? = null,
 ) {
     /** Cookies plus nv credential from the pre-document challenge flight. */
     class Warm internal constructor(
         internal val cookies: MutableMap<String, String>,
         internal val session: String,
+        /** True when the nv session came from the persisted store instead of a fresh flight. */
+        internal val fromStore: Boolean = false,
     )
 
     /**
@@ -46,9 +51,24 @@ class NtkNativeManifestClient(
             "ntk_fp" to identity.fingerprint,
             "ntk_pid" to identity.persistentId,
         )
-        challenge(base, episodePath, referer, cookies)
-        val session = session(base, episodePath, referer, cookies)
-        return Warm(cookies, session)
+        // A stored session lets a cold start skip the challenge and nv round trips entirely; the
+        // proof exchange below still validates it against the provider on the very next request.
+        val warmStartedAt = SystemClock.elapsedRealtime()
+        sessionStore?.load(base)?.let { stored -> stored.forEach { (name, value) -> cookies[name] = value } }
+        cookies["ntk_fp"] = identity.fingerprint
+        cookies["ntk_pid"] = identity.persistentId
+        val storedSession = cookies["nv"]?.takeIf(::validSession)
+        val session = if (storedSession != null) {
+            Log.d(TAG, "phase=warm-store-hit base=$base")
+            storedSession
+        } else {
+            Log.d(TAG, "phase=warm-flight base=$base")
+            challenge(base, episodePath, referer, cookies)
+            session(base, episodePath, referer, cookies)
+        }
+        sessionStore?.save(base, cookies)
+        Log.d(TAG, "phase=warm-done ms=${SystemClock.elapsedRealtime() - warmStartedAt} store=${storedSession != null}")
+        return Warm(cookies, session, fromStore = storedSession != null)
     }
 
     suspend fun capture(
@@ -56,10 +76,28 @@ class NtkNativeManifestClient(
         document: NtkAccessDocument,
         identity: NtkBrowserIdentity,
         warm: Warm? = null,
+    ): NtkEngineAuthorization = try {
+        captureWith(origin, document, identity, warm)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Throwable) {
+        if (warm?.fromStore != true) throw failure
+        // The persisted nv session was stale; repeat the full challenge flight once.
+        Log.i(TAG, "phase=stored-session-rejected: repeating the NTK challenge flight")
+        captureWith(origin, document, identity, null)
+    }
+
+    private suspend fun captureWith(
+        origin: URI,
+        document: NtkAccessDocument,
+        identity: NtkBrowserIdentity,
+        warm: Warm? = null,
     ): NtkEngineAuthorization {
+        val captureStartedAt = SystemClock.elapsedRealtime()
         val descriptor = requireNotNull(document.descriptor) {
             "NTK native manifest requires a protected document"
         }
+        Log.d(TAG, "phase=capture-enter warm=${warm != null} store=${warm?.fromStore == true}")
         val base = URI(origin.scheme, origin.authority, null, null, null).toString()
         val episodePath = document.episodeId.remoteKey
         val referer = base + episodePath
@@ -71,28 +109,39 @@ class NtkNativeManifestClient(
             challenge(base, episodePath, referer, cookies)
             session(base, episodePath, referer, cookies)
         }
-        val nonce = randomToken(NONCE_BYTES)
-        val manifest = exchange(
-            origin = base,
-            url = base + descriptor.apiPath,
-            json = JSONObject()
-                .put("workId", descriptor.workId)
-                .put("episodeId", descriptor.episodeId)
-                .put("token", descriptor.token)
-                .put("nonce", nonce)
-                .put("proof", proof(session, descriptor.token, nonce))
-                .toString(),
-            referer = referer,
-            cookies = cookies,
-            extraHeaders = mapOf(
-                "x-images-client" to "viewer-v1",
-                "x-nv-session" to session,
-            ),
-            priority = PageFetchPriority.FOCUS,
-        )
+        val documentSha = document.sourceDocument.sha256
+        val cached = payloadCache?.load(documentSha, descriptor.token)
+        val manifest = if (cached != null) {
+            Log.d(TAG, "phase=capture-cache-hit")
+            Fetched(cached.body, cached.finalUrl)
+        } else {
+            val nonce = randomToken(NONCE_BYTES)
+            val fetched = exchange(
+                origin = base,
+                url = base + descriptor.apiPath,
+                json = JSONObject()
+                    .put("workId", descriptor.workId)
+                    .put("episodeId", descriptor.episodeId)
+                    .put("token", descriptor.token)
+                    .put("nonce", nonce)
+                    .put("proof", proof(session, descriptor.token, nonce))
+                    .toString(),
+                referer = referer,
+                cookies = cookies,
+                extraHeaders = mapOf(
+                    "x-images-client" to "viewer-v1",
+                    "x-nv-session" to session,
+                ),
+                priority = PageFetchPriority.FOCUS,
+            )
+            payloadCache?.save(documentSha, descriptor.token, fetched.body, fetched.finalUrl)
+            fetched
+        }
         require(JSONObject(manifest.body).optBoolean("ok", false)) {
             "NTK native image API rejected the identity proof"
         }
+        sessionStore?.save(base, cookies)
+        Log.d(TAG, "phase=capture-done ms=${SystemClock.elapsedRealtime() - captureStartedAt}")
         val observedAt = SystemClock.elapsedRealtimeNanos().coerceAtLeast(1L)
         runCatching {
             Log.i(TAG, "phase=native-manifest-ready episode=${document.episodeId} bytes=${manifest.body.length}")

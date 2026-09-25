@@ -160,11 +160,15 @@ class NtkDocumentParser {
     fun manifest(document: NtkEpisodeDocument): NtkManifestDocument {
         val started = System.nanoTime()
         val baseUrl = document.origin + document.path
-        val parsed = Jsoup.parse(document.html, baseUrl)
+        // Script data extraction is a raw scan: building a full jsoup DOM for a ~200KB document
+        // measured ~135ms and dominated the cached-episode open path. The DOM is parsed lazily and
+        // only when the document has no owned script sequence (the img fallback below).
+        var parsedDocument: org.jsoup.nodes.Document? = null
+        val scriptData = extractScriptData(document.html)
         val domAt = System.nanoTime()
         val viewers = mutableListOf<NtkViewerMetadata>()
         val ownedPages = mutableListOf<List<NtkPageRequest>>()
-        NtkDocumentJsonReader.read(parsed.select("script").map { it.data() }).forEach { root ->
+        NtkDocumentJsonReader.read(scriptData).forEach { root ->
             viewers += viewerMetadata(root, document.path) { owner ->
                 NtkDirectPageReader.read(owner) { pageUrl(it, baseUrl) }
                     .takeIf { it.isNotEmpty() }?.let(ownedPages::add)
@@ -176,13 +180,30 @@ class NtkDocumentParser {
         // Protected viewers require their owned sequence or the protected image API. The service
         // never admits DOM images for them, so avoid extracting unowned page chrome on this path.
         val selected = ownedPages.firstOrNull() ?: if (distinctViewers.isNotEmpty()) emptyList() else {
-            parsed.select("img").filterNot(::hasBlockedContext).mapNotNull { image ->
+            val dom = parsedDocument ?: Jsoup.parse(document.html, baseUrl).also { parsedDocument = it }
+            dom.select("img").filterNot(::hasBlockedContext).mapNotNull { image ->
                 IMAGE_ATTRIBUTES.firstNotNullOfOrNull { pageUrl(image.attr(it), baseUrl) }?.let(::NtkPageRequest)
             }
         }
         require(ownedPages.all { it == selected }) { "NTK document contains conflicting page sequences" }
         logManifestParsing(started, domAt, jsonAt, System.nanoTime())
         return NtkManifestDocument(selected, distinctViewers.singleOrNull(), ownedPages.isNotEmpty())
+    }
+
+    /** Raw `<script>` body scan; matches jsoup's `Element.data()` for the provider's documents. */
+    private fun extractScriptData(html: String): List<String> {
+        val scripts = mutableListOf<String>()
+        var cursor = 0
+        while (true) {
+            val open = html.indexOf("<script", cursor, ignoreCase = true)
+            if (open < 0) return scripts
+            val openEnd = html.indexOf('>', open)
+            if (openEnd < 0) return scripts
+            val close = html.indexOf("</script", openEnd + 1, ignoreCase = true)
+            if (close < 0) return scripts
+            scripts += html.substring(openEnd + 1, close)
+            cursor = close + 1
+        }
     }
 
     fun episodePageCount(payload: String): Int {
@@ -416,39 +437,36 @@ class NtkDocumentParser {
         return source.contains("/platforms/") || source.contains("/brand/")
     }
 
-    private fun String.clean(): String = replace('\u00a0', ' ').replace(Regex("<[^>]+>"), " ")
-        .replace(Regex("\\s+"), " ").trim()
-
-    private fun episodeNumber(title: String): Double? {
-        val match = EPISODE_NUMBER.find(title) ?: return null
-        val whole = match.groupValues[1]
-        val fraction = match.groupValues[2]
-        return (if (fraction.isEmpty()) whole else "$whole.$fraction").toDoubleOrNull()
-    }
-
-    private companion object {
-        val EPISODE_NUMBER = Regex("([0-9]+)(?:[.\\-]([0-9]+))?\\s*화")
-        val NON_EPISODE_LABELS = listOf(
-            "목록", "최신화 보기", "첫화부터", "처음부터", "정주행", "이어보기", "전체보기",
-        )
-        val NON_SERIES_TITLES = setOf(
-            "업데이트", "최신 업데이트", "전체", "웹툰", "만화", "목록", "더보기",
-        )
-        const val MAX_EPISODE_PAGES = 100
-        val IMAGE_ATTRIBUTES = listOf("data-original", "data-src", "data-lazy-src", "data-url", "src")
-        val BLOCKED_CONTEXT_TOKENS = listOf("banner", "advert", "sponsor", "popup")
-        val BLOCKED_IMAGE_TOKENS = BLOCKED_CONTEXT_TOKENS + listOf(
-            "board_uploads", "logo", "sprite", "blank", "loading", "image-comic.pstatic.net",
-        )
-        val CONTENT_PATH_TOKENS = listOf(
-            "/webtoon_uploads/", "/manhwa_uploads/", "/comic_uploads/", "/episodes/", "/token/",
-        )
-        val HASH_FILE = Regex("/[A-Za-z0-9_-]{16,}\\.(?:jpe?g|png|webp)(?:[?#].*)?$")
-        val IMAGE_FILE = Regex(".*\\.(?:jpe?g|png|webp)(?:[?#].*)?$")
-    }
-
-
 }
+
+private fun String.clean(): String = replace('\u00a0', ' ').replace(Regex("<[^>]+>"), " ")
+    .replace(Regex("\\s+"), " ").trim()
+
+private fun episodeNumber(title: String): Double? {
+    val match = EPISODE_NUMBER.find(title) ?: return null
+    val whole = match.groupValues[1]
+    val fraction = match.groupValues[2]
+    return (if (fraction.isEmpty()) whole else "$whole.$fraction").toDoubleOrNull()
+}
+
+private val EPISODE_NUMBER = Regex("([0-9]+)(?:[.\\-]([0-9]+))?\\s*화")
+private val NON_EPISODE_LABELS = listOf(
+    "목록", "최신화 보기", "첫화부터", "처음부터", "정주행", "이어보기", "전체보기",
+)
+private val NON_SERIES_TITLES = setOf(
+    "업데이트", "최신 업데이트", "전체", "웹툰", "만화", "목록", "더보기",
+)
+private const val MAX_EPISODE_PAGES = 100
+private val IMAGE_ATTRIBUTES = listOf("data-original", "data-src", "data-lazy-src", "data-url", "src")
+private val BLOCKED_CONTEXT_TOKENS = listOf("banner", "advert", "sponsor", "popup")
+private val BLOCKED_IMAGE_TOKENS = BLOCKED_CONTEXT_TOKENS + listOf(
+    "board_uploads", "logo", "sprite", "blank", "loading", "image-comic.pstatic.net",
+)
+private val CONTENT_PATH_TOKENS = listOf(
+    "/webtoon_uploads/", "/manhwa_uploads/", "/comic_uploads/", "/episodes/", "/token/",
+)
+private val HASH_FILE = Regex("/[A-Za-z0-9_-]{16,}\\.(?:jpe?g|png|webp)(?:[?#].*)?$")
+private val IMAGE_FILE = Regex(".*\\.(?:jpe?g|png|webp)(?:[?#].*)?$")
 
 private fun logManifestParsing(started: Long, dom: Long, json: Long, images: Long) {
     runCatching { android.util.Log.d("NtkNative",
