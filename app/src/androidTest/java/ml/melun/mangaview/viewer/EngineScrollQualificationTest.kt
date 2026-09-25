@@ -376,4 +376,132 @@ class EngineScrollQualificationTest {
             }
         }
     }
+
+    /**
+     * Long continuous very-fast fling stress. Every gesture is a 4-step/1 ms platform swipe
+     * (~5 ms over half the viewport) chained with a short pause, so the reader crosses episode
+     * boundaries under sustained maximum-velocity flings. The ledger's integrity counters and the
+     * exported frame/input/motion artifacts are the evidence; the host-side gap analysis must find
+     * zero moving-presentation gaps >= 100 ms and zero lost frame/input observations.
+     */
+    @Test fun continuousFastFlingStress() = runBlocking {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val device = UiDevice.getInstance(instrumentation)
+        val arguments = InstrumentationRegistry.getArguments()
+        val episode = EpisodeId(
+            SeriesId(
+                SourceId(arguments.getString("captureSource") ?: "ntk"),
+                arguments.getString("captureSeries") ?: "/webtoon/16972",
+            ),
+            arguments.getString("captureEpisode") ?: "/webtoon/16972/1445960",
+        )
+        val kind = SeriesKind.valueOf(arguments.getString("captureKind") ?: "COMIC")
+        val durationMillis = arguments.getString("flingDurationMillis")?.toLongOrNull() ?: 120_000L
+        val interGestureMillis = arguments.getString("flingInterGestureMillis")?.toLongOrNull() ?: 60L
+        val output = File(context.getExternalFilesDir(null),
+            "engine-fast-fling-${System.currentTimeMillis()}").apply { mkdirs() }
+
+        var recorder: ViewerWindowFrameRecorder? = null
+        var ledger: EngineScrollQualificationLedger? = null
+        var gestures = 0
+        var firstViewportSubmittedAtNanos: Long? = null
+        val startedAtMillis = SystemClock.elapsedRealtime()
+
+        withEngineCaptureViewer(
+            instrumentation, output, episode, kind,
+            false,
+            afterViewerClosed = { activity ->
+                withTimeout(30_000) { activity.awaitEngineClosed() }
+                instrumentation.runOnMainSync { }
+                val activeRecorder = requireNotNull(recorder)
+                val activeLedger = requireNotNull(ledger)
+                activeLedger.close(activity, activeRecorder)
+                activeRecorder.close()
+                val integrity = activeLedger.integrityFailures()
+                File(output, "summary.json").writeText(JSONObject().apply {
+                    put("scope", "ENGINE_FAST_FLING_STRESS")
+                    put("schemaVersion", EngineScrollQualificationPolicy.SCHEMA_VERSION)
+                    put("gestures", gestures)
+                    put("durationMillis", durationMillis)
+                    put("interGestureMillis", interGestureMillis)
+                    put("startedAtMillis", startedAtMillis)
+                    put("firstCompleteViewportSubmittedAtNanos",
+                        firstViewportSubmittedAtNanos ?: JSONObject.NULL)
+                    put("lostFrameEvidence", activeLedger.frameLostCount)
+                    put("inputLostEvidence", activeLedger.inputLostCount)
+                    put("motionHistoryOverwritten", activeLedger.motionOverwritten)
+                    put("integrityFailures", JSONArray(integrity))
+                    put("passed", integrity.isEmpty())
+                }.toString(2))
+                check(integrity.isEmpty()) {
+                    "Fast fling integrity failures: $integrity; evidence=${output.absolutePath}"
+                }
+            },
+        ) { activity ->
+            activity.reserveWholeTraversalInputEvidence()
+            recorder = ViewerWindowFrameRecorder(activity.window)
+            var cachedPageBounds: Pair<PageId, PageId>? = null
+            val activeLedger = EngineScrollQualificationLedger(
+                output, episode,
+                pageBoundsProvider = {
+                    cachedPageBounds ?: run {
+                        val pages = activity.viewerEngineSnapshot()?.plans?.get(episode)?.pages
+                        if (pages.isNullOrEmpty()) {
+                            null
+                        } else {
+                            (pages.first().pageId to pages.last().pageId).also {
+                                cachedPageBounds = it
+                            }
+                        }
+                    }
+                },
+                nextEpisodeProvider = {
+                    activity.viewerEngineSnapshot()?.plans?.get(episode)?.manifest?.nextEpisodeId
+                },
+            )
+            ledger = activeLedger
+
+            val viewportDeadline = SystemClock.elapsedRealtime() + 45_000L
+            while (SystemClock.elapsedRealtime() < viewportDeadline) {
+                val timing = activity.viewerStartupTimingSnapshot()
+                if (timing?.firstCompleteViewportSubmittedAtNanos != null) {
+                    firstViewportSubmittedAtNanos = timing.firstCompleteViewportSubmittedAtNanos
+                    break
+                }
+                SystemClock.sleep(20)
+            }
+            check(firstViewportSubmittedAtNanos != null) { "Fast fling stress never saw a viewport" }
+            activeLedger.endStage(budgetExhausted = false)
+            activeLedger.beginStage(EngineScrollQualificationPolicy.STREAMING)
+            activeLedger.activateMeasurement()
+            SystemClock.sleep(1_500L)
+
+            val deadline = SystemClock.elapsedRealtime() + durationMillis
+            var index = 0
+            while (SystemClock.elapsedRealtime() < deadline) {
+                val forward = index % 30 < 27
+                injectEngineTraversalGesture(
+                    instrumentation, device, output, index, forward,
+                    EngineTraversalGestureSpeed.FLING,
+                )
+                index += 1
+                gestures = index
+                activeLedger.recordGesture()
+                activeLedger.drain(activity, requireNotNull(recorder))
+                check(activeLedger.deferredInputsWithoutProgress < 2_048L) {
+                    "Fast fling input pipeline stalled: ${activeLedger.deferredInputsWithoutProgress} " +
+                        "consecutive DEFERRED inputs with no resolution (gesture=$index)"
+                }
+                activity.viewerFailureSnapshot()?.let {
+                    throw AssertionError("Viewer failed during fast fling stress", it)
+                }
+                SystemClock.sleep(interGestureMillis)
+            }
+            SystemClock.sleep(1_200L)
+            activeLedger.drain(activity, requireNotNull(recorder))
+            activeLedger.endStage(budgetExhausted = false)
+            activeLedger.markStopped()
+        }
+    }
 }

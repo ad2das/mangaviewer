@@ -11,6 +11,7 @@ import org.json.JSONObject
 internal enum class EngineTraversalGestureSpeed(val moveSteps: Int, val sampleDelayMillis: Long) {
     NORMAL(30, 5),
     FAST(8, 2),
+    FLING(4, 1),
 }
 
 /** A cold-started viewer can reject the first platform touch before its window gains focus. */
