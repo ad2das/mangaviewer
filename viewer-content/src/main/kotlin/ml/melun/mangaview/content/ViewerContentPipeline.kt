@@ -15,7 +15,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.viewer.session.DemandSnapshot
-import ml.melun.mangaview.viewer.session.DemandClass
 
 data class ContentPipelineDispatchers(
     val network: CoroutineDispatcher,
@@ -53,6 +52,7 @@ class ViewerContentPipeline(
     private val demandUpdates = Channel<PipelineCommand.UpdateDemand>(Channel.CONFLATED)
     private val workers = PipelineWorkers(scope, dispatchers, commands, decoder, uploader, portTimeouts)
     private val pages = LinkedHashMap<PageId, PageRecord>()
+    private val settlement = PipelinePageSettlement(pages)
     private val retiring = RetiringPipelineWork()
     private var generation = 0L
     private var rendererEpoch = 0L
@@ -66,6 +66,11 @@ class ViewerContentPipeline(
     }
     private val episodeWork = PipelineEpisodeWork(
         scope, dispatchers.network, commands, episodeManifests, retryCoordinator, clock, sink, portTimeouts,
+    )
+    private val fetches = PipelineFetchScheduler(
+        scope, pages, commands, retiring, episodeWork, retryCoordinator, sink, rawPages,
+        dispatchers.network, portTimeouts, networkLimit, { networkRampOpen }, { networkRampOpen = true },
+        { generation }, ::nextToken,
     )
     private var memoryPressure = false
     private var memoryPressureUntilMillis = 0L
@@ -160,46 +165,13 @@ class ViewerContentPipeline(
     }
 
     /** Force-releases the operation a faulted handler was carrying so its lane cannot wedge. */
-    private fun settleFaultedOperation(command: PipelineCommand) {
-        when (command) {
-            is PipelineCommand.FetchFinished -> {
-                val active = pages[command.pageId]?.raw as? RawState.Fetching ?: return
-                if (active.token != command.token) return
-                pages[command.pageId]?.raw = RawState.Absent
-            }
-            is PipelineCommand.FetchStopped -> {
-                val active = pages[command.pageId]?.raw as? RawState.Fetching ?: return
-                if (active.token != command.token) return
-                pages[command.pageId]?.raw = RawState.Stranded(active.token, active.job, active.cancelRequested)
-            }
-            is PipelineCommand.DecodeFinished -> {
-                val active = pages[command.pageId]?.decode as? DecodeState.Decoding ?: return
-                if (active.token != command.token) return
-                pages[command.pageId]?.decode = DecodeState.Idle
-            }
-            is PipelineCommand.UploadFinished -> {
-                val active = pages[command.pageId]?.decode as? DecodeState.Uploading ?: return
-                if (active.token != command.token) return
-                pages[command.pageId]?.decode = DecodeState.Idle
-            }
-            is PipelineCommand.DecodeStopped -> {
-                val page = pages[command.pageId] ?: return
-                val active = page.decode
-                if (active is DecodeState.Decoding && !command.upload) {
-                    if (active.token == command.token) page.decode = DecodeState.Idle
-                } else if (active is DecodeState.Uploading && command.upload) {
-                    if (active.token == command.token) page.decode = DecodeState.Idle
-                }
-            }
-            else -> Unit
-        }
-    }
+    private fun settleFaultedOperation(command: PipelineCommand) = settlement.settleFaultedOperation(command)
 
     private fun handleCommand(command: PipelineCommand) {
         when (command) {
-            is PipelineCommand.FetchFinished -> fetchFinished(command)
+            is PipelineCommand.FetchFinished -> fetches.finished(command)
             is PipelineCommand.FetchStopped -> acceptFetchStopped(command, generation, pages, retryCoordinator, sink)
-            is PipelineCommand.FetchTimedOut -> fetchTimedOut(command)
+            is PipelineCommand.FetchTimedOut -> fetches.timedOut(command)
             is PipelineCommand.DecodeStopped -> acceptDecodeStopped(command, generation, pages)
             is PipelineCommand.DecodeTimedOut -> decodeTimedOut(command)
             is PipelineCommand.FetchResponseStarted -> acceptFetchResponse(
@@ -308,63 +280,16 @@ class ViewerContentPipeline(
     }
 
     private fun scheduleWork() {
-        preemptFetchForHardDemand()
-        scheduleFetches(priorityOnly = true)
+        fetches.preemptForHardDemand()
+        fetches.schedule(priorityOnly = true)
         val viewportReady = pages.values.none {
             it.demand?.demandClass?.let(::hardLane) == true && it.raw !is RawState.Verified
         }
-        episodeWork.schedule(networkCapacity(), foreground && networkRampOpen && viewportReady)
-        scheduleFetches(priorityOnly = false)
+        episodeWork.schedule(fetches.capacity(), foreground && networkRampOpen && viewportReady)
+        fetches.schedule(priorityOnly = false)
         if (!foreground || rendererEpoch <= 0L || displayWidthPx <= 0) return
         scheduleDecodeLane(hard = true)
         if (!memoryPressure) scheduleDecodeLane(hard = false)
-    }
-
-    private fun networkCapacity(): Int = (if (networkRampOpen) networkLimit else 1) -
-        pages.values.count { it.raw is RawState.Fetching } -
-        retiring.records().count { it.raw is RawState.Fetching } - episodeWork.activeCount
-
-    private fun scheduleFetches(priorityOnly: Boolean) {
-        var capacity = networkCapacity()
-        if (capacity <= 0) return
-        pipelineCandidates(pages.values).filter { it.raw == RawState.Absent && !retiring.hasFetch(it.page.id) }
-            .filter { !priorityOnly || requireNotNull(it.demand).demandClass <= DemandClass.CURRENT_FORWARD_NEAR }
-            .take(capacity).forEach { page ->
-            val token = nextToken()
-            val pageId = page.page.id
-            val priority = fetchPriority(requireNotNull(page.demand).demandClass, !networkRampOpen)
-            val operationGeneration = generation
-            val job = scope.launch(dispatchers.network) {
-                val result = pipelineWorkerResult {
-                    rawPages.find(pageId) ?: rawPages.fetch(pageId, priority) {
-                        commands.trySend(PipelineCommand.FetchResponseStarted(
-                            operationGeneration,
-                            pageId,
-                            token,
-                        ))
-                    }
-                } ?: return@launch
-                commands.sendCompletion(PipelineCommand.FetchFinished(
-                    operationGeneration, pageId, token, result,
-                ))
-            }
-            page.raw = RawState.Fetching(token, job)
-            scope.notifyCancellation(job, commands, PipelineCommand.FetchStopped(operationGeneration, pageId, token))
-            scope.launchPortWatchdog(job, portTimeouts.fetchMillis) {
-                commands.sendCompletion(PipelineCommand.FetchTimedOut(operationGeneration, pageId, token))
-            }
-            capacity -= 1
-        }
-    }
-
-    private fun preemptFetchForHardDemand() {
-        if (networkCapacity() <= 0 && pages.values.any {
-                it.raw == RawState.Absent && it.demand?.demandClass?.let(::hardLane) == true
-            }) episodeWork.cancel()
-        // Before the first verified response the lane holds a single slot; a hard demand must
-        // still preempt the occupying background fetch, so the effective limit applies, not the
-        // configured one.
-        preemptObsoleteFetch(pages.values, if (networkRampOpen) networkLimit else 1)
     }
 
     private fun scheduleDecodeLane(hard: Boolean) {
@@ -372,35 +297,6 @@ class ViewerContentPipeline(
         val reservation = decodeReservationBytes(plan, displayWidthPx)
         if (!canAdmitDecode(plan, reservation, pages.values, retiring.records(), residentMemoryBudgetBytes)) return
         plan.page.decode = workers.decode(plan, generation, displayWidthPx, nextToken())
-    }
-
-    private fun fetchFinished(command: PipelineCommand.FetchFinished) {
-        val page = pages[command.pageId] ?: return
-        val active = page.raw as? RawState.Fetching ?: return
-        if (command.generation != generation || active.token != command.token || active.cancelRequested) return
-        networkRampOpen = true
-        command.result.fold(
-            onSuccess = { encoded ->
-                check(encoded.pageId == command.pageId)
-                page.raw = RawState.Verified(encoded)
-                page.fetchFailures = 0
-                page.fetchFailureReported = false
-                sink.emit(ContentPipelineEvent.RawVerified(generation, encoded))
-            },
-            onFailure = { failure ->
-                handleFetchFailure(
-                    page, command.pageId, failure, generation, retryCoordinator, sink,
-                )
-            },
-        )
-    }
-
-    /** Releases the fetch lane when the physical call outlives its deadline. */
-    private fun fetchTimedOut(command: PipelineCommand.FetchTimedOut) {
-        val page = pages[command.pageId] ?: return
-        val active = page.raw as? RawState.Fetching ?: return
-        if (command.generation != generation || active.token != command.token) return
-        page.raw = RawState.Stranded(active.token, active.job, active.cancelRequested)
     }
 
     /** Releases a decode or upload lane when the port outlives its deadline. */
@@ -487,25 +383,7 @@ class ViewerContentPipeline(
         }
     }
 
-    private fun releaseAll() {
-        episodeWork.cancel()
-        retryCoordinator.clear()
-        pages.values.forEach { page ->
-            when (val raw = page.raw) {
-                is RawState.Fetching -> raw.job.cancel()
-                is RawState.Stranded -> raw.job.cancel()
-                else -> Unit
-            }
-            when (val decode = page.decode) {
-                is DecodeState.Decoding -> decode.job.cancel()
-                is DecodeState.Uploading -> decode.job.cancel()
-                else -> Unit
-            }
-            page.residents.forEach(uploader::release)
-            page.residents = emptyList()
-        }
-        pages.clear()
-    }
+    private fun releaseAll() = settlement.releaseAll(episodeWork, retryCoordinator, uploader)
 
     private fun snapshotState(): ContentPipelineSnapshot = contentPipelineSnapshot(
         generation, rendererEpoch, pages.values, retryCoordinator.wakeupCount, retiring.records(),
