@@ -11,6 +11,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
+import okhttp3.Credentials
 import okhttp3.Dns
 
 /** Private CONNECT relay on loopback; it never terminates TLS or handles decrypted HTTP. */
@@ -22,8 +23,7 @@ internal class LocalTlsRelay(private val dns: Dns, private val basicAuthenticati
     val username = UUID.randomUUID().toString()
     val password = UUID.randomUUID().toString()
     val realm = "mangaviewer-${UUID.randomUUID()}"
-    val authorization = if (basicAuthentication) "Basic " +
-        java.util.Base64.getEncoder().encodeToString("$username:$password".toByteArray(Charsets.UTF_8))
+    val authorization = if (basicAuthentication) Credentials.basic(username, password)
         else "Bearer ${UUID.randomUUID()}"
     val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", server.localPort))
 
