@@ -88,21 +88,7 @@ class MainActivity : ComponentActivity() {
             ),
         )[LibraryViewModel::class.java]
         showLibrary(graph, viewModel)
-        // The library's first composition spans several frames on a cold start; prime the reader
-        // engine and catalog caches only after the view tree has actually drawn, so renderer
-        // preparation and prefetch never compete with the launch frames.
-        val decor = window.decorView
-        decor.viewTreeObserver.addOnDrawListener(object : ViewTreeObserver.OnDrawListener {
-            override fun onDraw() {
-                decor.post {
-                    decor.viewTreeObserver.removeOnDrawListener(this)
-                    decor.postDelayed({
-                        graph.primeAfterFirstFrame()
-                        viewModel.activateEpisodeWarmer()
-                    }, STARTUP_PRIME_DELAY_MILLIS)
-                }
-            }
-        })
+        primeReaderAfterFirstDraw(graph, viewModel)
         reader = MainReaderHost(this)
         reader.restore(savedInstanceState)
         lifecycleScope.launch {
@@ -128,6 +114,27 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // The library's first composition spans several frames on a cold start; prime the reader
+    // engine and catalog caches only after the view tree has actually drawn, so renderer
+    // preparation and prefetch never compete with the launch frames.
+    private fun primeReaderAfterFirstDraw(
+        graph: ml.melun.mangaview.app.AppGraph,
+        viewModel: LibraryViewModel,
+    ) {
+        val decor = window.decorView
+        decor.viewTreeObserver.addOnDrawListener(object : ViewTreeObserver.OnDrawListener {
+            override fun onDraw() {
+                decor.post {
+                    decor.viewTreeObserver.removeOnDrawListener(this)
+                    decor.postDelayed({
+                        graph.primeAfterFirstFrame()
+                        viewModel.activateEpisodeWarmer()
+                    }, STARTUP_PRIME_DELAY_MILLIS)
+                }
+            }
+        })
     }
 
     override fun onStart() { super.onStart(); if (::reader.isInitialized) reader.enterForeground() }

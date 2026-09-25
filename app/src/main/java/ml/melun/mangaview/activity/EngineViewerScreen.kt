@@ -23,6 +23,7 @@ import ml.melun.mangaview.app.InlinePriorityLane
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.WorkPriority
+import ml.melun.mangaview.engine.api.WorkCoordinatorPort
 import ml.melun.mangaview.engine.content.DecodeLane
 import ml.melun.mangaview.engine.content.DispatcherDecodeLane
 import ml.melun.mangaview.core.EpisodeId
@@ -48,7 +49,6 @@ internal class EngineViewerScreen(
     private val openEpisode: (EpisodeId) -> Unit,
 ) : android.content.ContextWrapper(activity) {
     val window get() = activity.window
-    private val windowManager get() = activity.windowManager
     private var closing = false
     private val isFinishing get() = closing || activity.isFinishing
     private val isDestroyed get() = closing || activity.isDestroyed
@@ -87,6 +87,15 @@ internal class EngineViewerScreen(
     private val decodeLanes: (WorkPriority) -> DecodeLane = { priority ->
         if (priority.background) inlineBackgroundDecode else visibleDecodeLane
     }
+    private val episodePicker = EpisodePickerController(
+        context = activity,
+        scope = sessionScope,
+        chromeState = { runtime?.chromeSnapshot() },
+        coordinator = { engine.coordinator },
+        content = { contentSource },
+        launchEpisode = { openEpisode(it) },
+        isUnavailable = { isFinishing || isDestroyed },
+    )
     private var runtime: EngineViewerRuntime? = null
     private lateinit var ui: ViewerScreenUi
     private val presentationRecorder = ViewerPresentationRecorder()
@@ -107,8 +116,6 @@ internal class EngineViewerScreen(
     internal fun reserveWholeTraversalInputEvidence() {
         engineInputObservations.reserveCaptureCapacity(32_768)
     }
-    private var episodeListJob: Job? = null
-    @Volatile private var episodePickerFailure: Throwable? = null
     private var sessionGateEntered = false
     fun create(): FrameLayout {
         if (!sessionGateEntered) {
@@ -121,7 +128,7 @@ internal class EngineViewerScreen(
         ui = ViewerScreenUi(activity, sessionScope, ViewerChromeController.Actions(
             back = ::finish,
             previous = { navigateAdjacent(next = false) },
-            episodes = ::loadEpisodePicker,
+            episodes = episodePicker::load,
             next = { navigateAdjacent(next = true) },
             bookmark = ::bookmarkCurrentPosition,
             split = ::toggleSplitMode,
@@ -129,7 +136,6 @@ internal class EngineViewerScreen(
             settings = { ui.toggleSettingsPanel() },
         ), retry = { runtime?.retryFailures() })
         val source = engine.session(spec)
-        val viewport = initialViewport()
         // The engine graph is built lazily on this very call, so a direct reader launch reaches its
         // first scene with every work lane, the native decoder and the coordinator still cold: the
         // opening viewport's tiles then pay class-load/JIT and first-dispatch cost on the demand
@@ -142,14 +148,24 @@ internal class EngineViewerScreen(
         openingHandoff = engine.openings.claim(spec.episodeId)
         rendererLease = engine.renderers.claim()
         contentSource = source
-        val createdRuntime = EngineViewerRuntime(
+        val createdRuntime = buildRuntime(source)
+        runtime = createdRuntime
+        val root = ui.content(createdRuntime)
+        surfaceRoot = root as? ViewerTouchRoot
+        ui.observeReaderSettings()
+        return root
+    }
+
+    private fun buildRuntime(source: EngineViewerWork): EngineViewerRuntime {
+        val viewport = initialViewport(activity)
+        return EngineViewerRuntime(
             context = this,
             scope = sessionScope,
             coordinator = engine.coordinator,
             source = source,
             positions = engine.positions,
             decodeLanes = decodeLanes,
-            episodeId = spec.episodeId,
+            episodeId = launchSpec.episodeId,
             initialViewport = EngineViewport(Math.toIntExact(viewport.width.units / 1024),
                 Math.toIntExact(viewport.height.units / 1024)),
             reportGestureBoundary = ::recordGestureBoundary,
@@ -171,11 +187,6 @@ internal class EngineViewerScreen(
             reportFailure = ::showFailure,
             preparedRenderer = rendererLease?.value,
         )
-        runtime = createdRuntime
-        val root = ui.content(createdRuntime)
-        surfaceRoot = root as? ViewerTouchRoot
-        ui.observeReaderSettings()
-        return root
     }
 
     /**
@@ -221,15 +232,8 @@ internal class EngineViewerScreen(
         presentationRecorder.motionFramesSince(sequence)
 
     internal fun presentationRefreshPeriodNanos(): Long {
-        val refreshRate = activityRefreshRate()
+        val refreshRate = activityRefreshRate(activity)
         return (1_000_000_000.0 / refreshRate).toLong().coerceAtLeast(1L)
-    }
-
-    private fun activityRefreshRate(): Float = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        display?.refreshRate?.takeIf { it > 0f } ?: 60f
-    } else {
-        @Suppress("DEPRECATION")
-        windowManager.defaultDisplay.refreshRate.takeIf { it > 0f } ?: 60f
     }
 
     internal fun gestureWindowsSnapshot(): List<LongRange> = presentationRecorder.gestureSnapshot()
@@ -256,7 +260,7 @@ internal class EngineViewerScreen(
     internal fun viewerEngineFrameSnapshot(): EngineSurfacePresentation? = engineDiagnostics.frame
     internal suspend fun awaitEngineClosed() = engineClosed.await()
     internal fun engineDecodeWorkersTerminated(): Boolean = hardDecodeWork.isTerminated
-    internal fun episodePickerFailureSnapshot(): Throwable? = episodePickerFailure
+    internal fun episodePickerFailureSnapshot(): Throwable? = episodePicker.failureSnapshot()
     internal suspend fun captureNextEngineFrame(top: Int, bottom: Int) = requireNotNull(runtime).captureNextFrame(top, bottom)
     internal suspend fun captureNextEngineViewportFrame() = requireNotNull(runtime).captureNextViewportFrame()
 
@@ -318,7 +322,7 @@ internal class EngineViewerScreen(
             sessionGateEntered = false
             ml.melun.mangaview.app.ViewerSessionActivity.exit(launchSpec.sourceId.value)
         }
-        episodeListJob?.cancel()
+        episodePicker.cancel()
         val activeRuntime = runtime
         runtime = null
         sessionScope.launch(NonCancellable) {
@@ -400,57 +404,106 @@ internal class EngineViewerScreen(
         }
     }
 
-    private fun loadEpisodePicker() {
-        if (episodeListJob?.isActive == true) return
-        val state = runtime?.chromeSnapshot() ?: return
-        val source = contentSource ?: return
-        episodePickerFailure = null
-        Toast.makeText(this, "회차 목록을 불러오는 중입니다", Toast.LENGTH_SHORT).show()
-        episodeListJob = sessionScope.launch {
+    private fun showFailure(failure: Throwable) {
+        reportedFailure = failure
+        ui.showFailure(failure)
+    }
+
+}
+
+private fun initialViewport(activity: ComponentActivity): Viewport {
+    val metrics = activity.resources.displayMetrics
+    return Viewport(
+        FixedPx.fromPixels(metrics.widthPixels.coerceAtLeast(1)),
+        FixedPx.fromPixels(metrics.heightPixels.coerceAtLeast(1)),
+    )
+}
+
+private fun activityRefreshRate(activity: ComponentActivity): Float = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+    activity.display?.refreshRate?.takeIf { it > 0f } ?: 60f
+} else {
+    @Suppress("DEPRECATION")
+    activity.windowManager.defaultDisplay.refreshRate.takeIf { it > 0f } ?: 60f
+}
+
+/**
+ * Owns the episode-list dialog: the in-flight catalog request, its failure state, and the picker
+ * UI. Lives beside [EngineViewerScreen] so the screen class stays inside the architecture gate.
+ */
+internal class EpisodePickerController(
+    private val context: ComponentActivity,
+    private val scope: CoroutineScope,
+    private val chromeState: () -> ViewerChromeState?,
+    private val coordinator: () -> WorkCoordinatorPort,
+    private val content: () -> EngineViewerWork?,
+    private val launchEpisode: (EpisodeId) -> Unit,
+    private val isUnavailable: () -> Boolean,
+) {
+    private var job: Job? = null
+
+    @Volatile
+    private var failure: Throwable? = null
+
+    fun failureSnapshot(): Throwable? = failure
+
+    fun cancel() {
+        job?.cancel()
+    }
+
+    fun load() {
+        if (job?.isActive == true) return
+        val state = chromeState() ?: return
+        val source = content() ?: return
+        failure = null
+        Toast.makeText(context, "회차 목록을 불러오는 중입니다", Toast.LENGTH_SHORT).show()
+        job = scope.launch {
             try {
-                val subscription = engine.coordinator.submit(source.episodes(state.episodeId.seriesId, WorkPriority.INTERACTIVE))
-                val episodes = try { subscription.await().episodes } finally {
+                val subscription = coordinator().submit(
+                    source.episodes(state.episodeId.seriesId, WorkPriority.INTERACTIVE))
+                val episodes = try {
+                    subscription.await().episodes
+                } finally {
                     subscription.close()
                     withContext(NonCancellable) { subscription.awaitReleased() }
                 }
-                showEpisodePicker(state, episodes)
+                show(state, episodes)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                episodePickerFailure = failure
+                this@EpisodePickerController.failure = failure
                 android.util.Log.e("ViewerActivity", "episode picker failed", failure)
-                showEpisodePickerFailure()
+                showFailureDialog()
             } finally {
-                episodeListJob = null
+                job = null
             }
         }
     }
 
-    private fun showEpisodePickerFailure() {
-        if (isFinishing || isDestroyed) return
+    private fun showFailureDialog() {
+        if (isUnavailable()) return
         runCatching {
-            AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+            AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("회차 목록")
                 .setMessage("회차 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")
-                .setPositiveButton("다시 시도") { _, _ -> loadEpisodePicker() }
+                .setPositiveButton("다시 시도") { _, _ -> load() }
                 .setNegativeButton("닫기", null)
                 .show()
         }.onFailure { android.util.Log.e("ViewerActivity", "episode picker failure dialog failed", it) }
     }
 
-    private fun showEpisodePicker(current: ViewerChromeState, episodes: List<SourceEpisode>) {
-        if (episodes.isEmpty() || isFinishing || isDestroyed) return
+    private fun show(current: ViewerChromeState, episodes: List<SourceEpisode>) {
+        if (episodes.isEmpty() || isUnavailable()) return
         val currentIndex = episodes.indexOfFirst { it.id == current.episodeId }
-        val list = EpisodePickerList(this).apply {
+        val list = EpisodePickerList(context).apply {
             adapter = EpisodePickerAdapter(episodes.map(SourceEpisode::title), currentIndex)
             // The thumb doubles as the position cue on a long run and is only noise on a short one.
             isFastScrollAlwaysVisible = episodes.size >= FAST_SCROLL_FROM
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                (resources.displayMetrics.heightPixels * PICKER_HEIGHT_FRACTION).toInt(),
+                (context.resources.displayMetrics.heightPixels * PICKER_HEIGHT_FRACTION).toInt(),
             )
         }
-        val dialog = AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        val dialog = AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
             .setTitle("회차 선택")
             .setView(list)
             .setNegativeButton("취소", null)
@@ -464,19 +517,6 @@ internal class EngineViewerScreen(
             dialog.setOnShowListener { list.setSelection(currentIndex) }
         }
         dialog.show()
-    }
-
-    private fun initialViewport(): Viewport {
-        val metrics = resources.displayMetrics
-        return Viewport(
-            FixedPx.fromPixels(metrics.widthPixels.coerceAtLeast(1)),
-            FixedPx.fromPixels(metrics.heightPixels.coerceAtLeast(1)),
-        )
-    }
-
-    private fun showFailure(failure: Throwable) {
-        reportedFailure = failure
-        ui.showFailure(failure)
     }
 
     private companion object {

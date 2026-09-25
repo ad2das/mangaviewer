@@ -30,9 +30,6 @@ import ml.melun.mangaview.source.ContentSource
 import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.ObservedSourceTransport
 import ml.melun.mangaview.source.SourceExchangeObserver
-import ml.melun.mangaview.source.SourceHttpMethod
-import ml.melun.mangaview.source.SourceRequest
-import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.ntk.NtkConfig
 import ml.melun.mangaview.source.ntk.NtkContentSource
 import ml.melun.mangaview.source.ntk.NtkBrowserService
@@ -182,21 +179,8 @@ internal class AppGraph(
         )
     }
 
-    /**
-     * Replays the pre-deferred NTK activation schedule for the debug startup comparison only.
-     *
-     * Production code never calls this method. Keeping the guard here prevents an accidental
-     * release invocation from changing the activation policy, while the instrumentation APK can
-     * compare both schedules against the same installed debug APK and app data.
-     */
-    internal fun activateNtkForStartupBenchmarkOnly() {
-        check(appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-            "Startup benchmark activation is available only in a debuggable application"
-        }
-        check(ntkSource.value.start()) {
-            "NTK source was already activated; startup comparison requires a fresh target process"
-        }
-    }
+    internal fun activateNtkForStartupBenchmarkOnly() =
+        activateNtkStartupBenchmark(appContext) { ntkSource.value }
 
     override fun close() {
         try {
@@ -254,7 +238,7 @@ internal class AppGraph(
             )
             transport.warmConnections(listOf(initialOrigin), preferQuic = false)
             transport.warmConnections(listOf(initialOrigin), preferQuic = true)
-            preconnectOrigin(documentTransport, initialOrigin)
+            preconnectOrigin(applicationScope, ioDispatcher, documentTransport, initialOrigin, ORIGIN_PRECONNECT_TIMEOUT_MILLIS)
             return DeferredSourceResource(source) {
                 source.close()
                 (transport as? Closeable)?.close()
@@ -266,29 +250,6 @@ internal class AppGraph(
             documentTransport.close()
             artworkTransport.close()
             throw failure
-        }
-    }
-
-    /**
-     * HttpEngine construction alone does not resolve DNS or establish TLS. Open one bodyless H2
-     * exchange while the library UI is loading so the first catalog document does not pay that
-     * cold connection cost. This is deliberately limited to the public document origin; signed
-     * image URLs are never probed or consumed by connection warming.
-     */
-    private fun preconnectOrigin(transport: SourceTransport, url: String) {
-        applicationScope.launch(ioDispatcher) {
-            runCatching {
-                transport.execute(
-                    SourceRequest(
-                        url = url,
-                        method = SourceHttpMethod.HEAD,
-                        headers = mapOf("Accept" to "text/html,*/*;q=0.1"),
-                        totalTimeoutMillis = ORIGIN_PRECONNECT_TIMEOUT_MILLIS,
-                        preferQuic = false,
-                        priority = PageFetchPriority.BACKGROUND,
-                    ),
-                ).close()
-            }
         }
     }
 
@@ -324,7 +285,7 @@ internal class AppGraph(
             )
             transport.warmConnections(listOf(initialOrigin), preferQuic = false)
             source.warm()
-            preconnectOrigin(transport, initialOrigin)
+            preconnectOrigin(applicationScope, ioDispatcher, transport, initialOrigin, ORIGIN_PRECONNECT_TIMEOUT_MILLIS)
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
                 (probeTransport as? Closeable)?.close()
@@ -449,7 +410,7 @@ internal class AppGraph(
             )
             transport.warmConnections(listOf(initialOrigin), preferQuic = false)
             source.warm()
-            preconnectOrigin(transport, initialOrigin)
+            preconnectOrigin(applicationScope, ioDispatcher, transport, initialOrigin, ORIGIN_PRECONNECT_TIMEOUT_MILLIS)
             return DeferredSourceResource(source) {
                 (transport as? Closeable)?.close()
             }

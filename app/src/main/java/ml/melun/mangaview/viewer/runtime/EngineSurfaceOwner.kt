@@ -36,7 +36,6 @@ internal class EngineSurfaceOwner(
     private val presentationPollMillisForVerification: Long? = null,
     reportSubmitted: (EngineSurfaceScene) -> Unit = {},
     private val bufferedCompositor: Boolean = false,
-    private val uploadPacer: TileUploadPacer = TileUploadPacer(),
 ) : EngineTextureUploader {
     @Volatile private var callbacks = EngineSurfaceCallbacks(reportPresented, reportFailure,
         reportInvalidated, reportSurfaceLost, reportSubmitted)
@@ -59,22 +58,25 @@ internal class EngineSurfaceOwner(
     private val thread = HandlerThread("engine-gl-$rendererId", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
     private val handler = Handler(thread.looper)
     private val dispatcher = handler.asCoroutineDispatcher("engine-gl-$rendererId")
-    // The tile that just decoded waits on this round trip, so the upload goes to the front of the
-    // owner's queue instead of behind whatever frame work is already posted: measured on the GPU AVD,
-    // that wait was 0.28-0.49ms of a ~5.9ms read-ahead budget. The single upload permit already
-    // serialises transfers, so at most one of these can ever be queued.
-    private val uploadDispatcher = object : CoroutineDispatcher() {
-        override fun isDispatchNeeded(context: CoroutineContext): Boolean = Thread.currentThread() !== thread
-        override fun dispatch(context: CoroutineContext, block: Runnable) {
-            if (Thread.currentThread() === thread) block.run()
-            else check(handler.postAtFrontOfQueue(block)) { "GL owner queue rejected an upload" }
-        }
-    }
+    // The upload transfer, its front-of-queue lane and the capacity handshake live in
+    // EngineSurfaceUploads below so this class stays inside the architecture size gate. The lane
+    // still places a newly decoded tile ahead of already posted frame work.
+    private val uploads = EngineSurfaceUploads(
+        native = native,
+        allocationLimit = textureAllocationLimit,
+        rendererId = rendererId,
+        closing = closing,
+        destroyed = destroyed,
+        configured = { configured },
+        epoch = epoch,
+        ownerDispatcher = dispatcher,
+        uploadDispatcher = EngineOwnerUploadDispatcher(thread, handler),
+        recoverContext = ::recoverContext,
+    )
     private val pending = UnacknowledgedFrames<Pending>(MAXIMUM_UNACKNOWLEDGED_FRAMES)
     private val readbacks = EngineSurfaceReadbacks(native)
     private val nextCapture = EngineNextFrameCapture()
     private val retiring = linkedMapOf<Long, MutableList<CompletableDeferred<Unit>>>()
-    private var capacityChanged = CompletableDeferred<Unit>()
     private val lock = Any()
     private var latest: EngineSurfaceScene? = null
     private var posted = false
@@ -253,46 +255,9 @@ internal class EngineSurfaceOwner(
     }
 
     override suspend fun prepareTexture(pixels: EnginePixels) =
-        prepareOriginalUpload(pixels, textureAllocationLimit, ::uploadTransferred)
+        uploads.prepare(pixels)
     override suspend fun upload(pixels: EnginePixels, expectedEpoch: Long) =
-        uploadOriginal(pixels, textureAllocationLimit, expectedEpoch, ::uploadTransferred)
-
-    private suspend fun uploadTransferred(pixels: NativeEnginePixels, transfer: Long, expectedEpoch: Long): EngineTexture {
-        val caller = currentCoroutineContext()[Job]
-        val probeId: Any = pixels.tile
-        EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_ENTER, System.nanoTime())
-        var acquired = 0L
-        try {
-            uploadPacer.acquire(pixels.byteCount)
-            EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_POST, System.nanoTime())
-            while (acquired == 0L) {
-                val wait = onUploadOwner("engine_owner_upload") {
-                    caller?.ensureActive()
-                    check(!closing.get() && configured && expectedEpoch == rendererEpoch && !pixels.isClosed)
-                    val used = OwnedRendererBridge.nativeTextureCounts(native)[1]
-                    if (pixels.byteCount > textureAllocationLimit - used) return@onUploadOwner capacityChanged
-                    val tile = pixels.tile
-                    acquired = OwnedRendererBridge.nativeUpload(native, transfer, tile.rasterWidth,
-                        tile.decodedHeight, tile.sourceTop, tile.sourceBottom, tile.dimensions.heightPx)
-                    if (acquired <= 0L && OwnedRendererBridge.nativeContextLost(native)) recoverContext()
-                    check(acquired > 0L) { "Native texture upload failed" }
-                    null
-                }
-                EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_DONE, System.nanoTime())
-                wait?.await()
-            }
-            currentCoroutineContext().ensureActive()
-            return EngineTexture(pixels.tile, rendererId, expectedEpoch, acquired, pixels.byteCount).also { acquired = 0 }
-        } finally {
-            if (acquired > 0L) onOwner {
-                if (!destroyed.get()) {
-                    OwnedRendererBridge.nativeReleaseTexture(native, acquired)
-                    check(!OwnedRendererBridge.nativeHasTexture(native, acquired))
-                    signalCapacity()
-                }
-            }
-        }
-    }
+        uploads.upload(pixels, expectedEpoch)
 
     override suspend fun release(texture: EngineTexture) = withContext(NonCancellable) {
         require(texture.rendererId == rendererId)
@@ -311,9 +276,7 @@ internal class EngineSurfaceOwner(
         completion.await()
     }
 
-    suspend fun ownership(): EngineTextureOwnership = if (destroyed.get()) EngineTextureOwnership(0, 0, 0, 0, 0) else onOwner {
-        if (destroyed.get()) EngineTextureOwnership(0, 0, 0, 0, 0) else readEngineTextureOwnership(native)
-    }
+    suspend fun ownership(): EngineTextureOwnership = uploads.ownership()
 
     suspend fun close() = withContext(NonCancellable) {
         if (closing.compareAndSet(false, true)) {
@@ -454,26 +417,27 @@ internal class EngineSurfaceOwner(
 
     private fun acknowledgeRetirements() {
         retiring.acknowledgeNativeRetirements(native, destroyed.get())
-        signalCapacity()
-    }
-
-    private fun signalCapacity() {
-        capacityChanged.complete(Unit)
-        capacityChanged = CompletableDeferred()
+        uploads.signalCapacity()
     }
 
     private suspend fun <T> onOwner(trace: String = "engine_owner_task", block: () -> T): T =
         withContext(NonCancellable + dispatcher) { traceEngineWork(trace, block) }
+}
 
-    /** [onOwner] with the upload's front-of-queue placement; see [uploadDispatcher]. */
-    private suspend fun <T> onUploadOwner(trace: String = "engine_owner_upload", block: () -> T): T =
-        withContext(NonCancellable + uploadDispatcher) { traceEngineWork(trace, block) }
-
-    private companion object {
-        val nextRenderer = AtomicLong()
-        const val MAXIMUM_UNACKNOWLEDGED_FRAMES = 16
+/** The upload lane places a block at the front of the GL owner's queue; see [EngineSurfaceUploads]. */
+private class EngineOwnerUploadDispatcher(
+    private val thread: HandlerThread,
+    private val handler: Handler,
+) : CoroutineDispatcher() {
+    override fun isDispatchNeeded(context: CoroutineContext): Boolean = Thread.currentThread() !== thread
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        if (Thread.currentThread() === thread) block.run()
+        else check(handler.postAtFrontOfQueue(block)) { "GL owner queue rejected an upload" }
     }
 }
+
+private val nextRenderer = AtomicLong()
+private const val MAXIMUM_UNACKNOWLEDGED_FRAMES = 16
 
 internal data class EngineSurfaceCallbacks(
     val presented: (EngineSurfacePresentation) -> Unit,
@@ -548,6 +512,86 @@ private fun MutableMap<Long, MutableList<CompletableDeferred<Unit>>>.acknowledge
     keys.toList().forEach { key ->
         if (destroyed || !OwnedRendererBridge.nativeHasTexture(native, key)) {
             remove(key)?.forEach { it.complete(Unit) }
+        }
+    }
+}
+
+/**
+ * Serialises original-page uploads onto the GL owner's front-of-queue lane: one transfer in flight,
+ * paced by [TileUploadPacer], with a capacity wait when the native texture budget is full. The
+ * owner's retirement acknowledgement calls [signalCapacity] so a waiting upload wakes as soon as a
+ * released texture frees budget.
+ */
+internal class EngineSurfaceUploads(
+    private val native: Long,
+    private val allocationLimit: Long,
+    private val rendererId: Long,
+    private val closing: AtomicBoolean,
+    private val destroyed: AtomicBoolean,
+    private val configured: () -> Boolean,
+    private val epoch: AtomicLong,
+    private val ownerDispatcher: CoroutineDispatcher,
+    private val uploadDispatcher: CoroutineDispatcher,
+    private val recoverContext: () -> Unit,
+) {
+    private val pacer = TileUploadPacer()
+    private var capacityChanged = CompletableDeferred<Unit>()
+
+    fun signalCapacity() {
+        capacityChanged.complete(Unit)
+        capacityChanged = CompletableDeferred()
+    }
+
+    suspend fun prepare(pixels: EnginePixels) =
+        prepareOriginalUpload(pixels, allocationLimit, ::transfer)
+
+    suspend fun upload(pixels: EnginePixels, expectedEpoch: Long) =
+        uploadOriginal(pixels, allocationLimit, expectedEpoch, ::transfer)
+
+    suspend fun ownership(): EngineTextureOwnership = if (destroyed.get()) EngineTextureOwnership(0, 0, 0, 0, 0) else
+        ownerTask {
+            if (destroyed.get()) EngineTextureOwnership(0, 0, 0, 0, 0) else readEngineTextureOwnership(native)
+        }
+
+    private suspend fun <T> ownerTask(block: () -> T): T =
+        withContext(NonCancellable + ownerDispatcher) { traceEngineWork("engine_owner_task", block) }
+
+    private suspend fun transfer(pixels: NativeEnginePixels, transfer: Long, expectedEpoch: Long): EngineTexture {
+        val caller = currentCoroutineContext()[Job]
+        val probeId: Any = pixels.tile
+        EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_ENTER, System.nanoTime())
+        var acquired = 0L
+        try {
+            pacer.acquire(pixels.byteCount)
+            EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_POST, System.nanoTime())
+            while (acquired == 0L) {
+                val wait = withContext(NonCancellable + uploadDispatcher) {
+                    traceEngineWork("engine_owner_upload") {
+                        caller?.ensureActive()
+                        check(!closing.get() && configured() && expectedEpoch == epoch.get() && !pixels.isClosed)
+                        val used = OwnedRendererBridge.nativeTextureCounts(native)[1]
+                        if (pixels.byteCount > allocationLimit - used) return@traceEngineWork capacityChanged
+                        val tile = pixels.tile
+                        acquired = OwnedRendererBridge.nativeUpload(native, transfer, tile.rasterWidth,
+                            tile.decodedHeight, tile.sourceTop, tile.sourceBottom, tile.dimensions.heightPx)
+                        if (acquired <= 0L && OwnedRendererBridge.nativeContextLost(native)) recoverContext()
+                        check(acquired > 0L) { "Native texture upload failed" }
+                        null
+                    }
+                }
+                EngineStageProbe.record(probeId, EngineStageProbe.UPLOAD_DONE, System.nanoTime())
+                wait?.await()
+            }
+            currentCoroutineContext().ensureActive()
+            return EngineTexture(pixels.tile, rendererId, expectedEpoch, acquired, pixels.byteCount).also { acquired = 0 }
+        } finally {
+            if (acquired > 0L) ownerTask {
+                if (!destroyed.get()) {
+                    OwnedRendererBridge.nativeReleaseTexture(native, acquired)
+                    check(!OwnedRendererBridge.nativeHasTexture(native, acquired))
+                    signalCapacity()
+                }
+            }
         }
     }
 }
