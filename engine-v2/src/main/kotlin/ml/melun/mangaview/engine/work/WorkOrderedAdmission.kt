@@ -1,13 +1,18 @@
 package ml.melun.mangaview.engine.work
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal class WorkOrderedAdmission(
     private val coordinator: WorkCoordinator,
     private val state: WorkRegistry,
     private val execution: WorkExecution,
+    private val cleanupScope: CoroutineScope,
 ) {
     suspend fun schedulerLoop() {
         while (true) {
@@ -63,7 +68,32 @@ internal class WorkOrderedAdmission(
                     execution.runRecord(record)
                 }
                 record.worker = worker
-                coordinator.observeWorkerCompletion(record, worker)
+                observeWorkerCompletion(record, worker)
+            }
+        }
+    }
+
+    /**
+     * A dispatched worker start can be cancelled before its body ever runs; the record would then
+     * stay RUNNING forever, pinning its permit and wedging awaitReleased. Watch every worker job and
+     * finalize a record its body never reached. The state read is safe without the lock: a normally
+     * finished body has already moved the record to READY/RETIRING/DONE on its own thread before the
+     * job completes, and the cancel path that abandons a start synchronized through the registry
+     * mutex, so a RUNNING/RETRY_WAIT reading here is the abandoned case.
+     */
+    private fun observeWorkerCompletion(record: WorkRecord, worker: Job) {
+        worker.invokeOnCompletion { cause ->
+            if (record.state != WorkRecordState.RUNNING && record.state != WorkRecordState.RETRY_WAIT) {
+                return@invokeOnCompletion
+            }
+            cleanupScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                withContext(NonCancellable) {
+                    try {
+                        execution.finalizeAbandonedWorker(record, cause)
+                    } catch (failure: Throwable) {
+                        coordinator.recordObserverFailure(failure)
+                    }
+                }
             }
         }
     }

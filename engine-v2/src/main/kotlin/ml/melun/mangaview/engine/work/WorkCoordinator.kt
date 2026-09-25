@@ -50,7 +50,7 @@ class WorkCoordinator(
             registry.closed = value
         }
     private val execution = WorkExecution(this, registry, attemptTokens)
-    private val orderedAdmission = WorkOrderedAdmission(this, registry, execution)
+    private val orderedAdmission = WorkOrderedAdmission(this, registry, execution, cleanupScope)
     private val schedulerJob: Job
 
     // A worker's first segment runs on the admitting thread when it is started UNDISPATCHED, which is
@@ -208,29 +208,6 @@ class WorkCoordinator(
         }
     }
 
-    /**
-     * A dispatched worker start can be cancelled before its body ever runs; the record would then
-     * stay RUNNING forever, pinning its permit and wedging awaitReleased. Watch every worker job and
-     * finalize a record its body never reached. The state read is safe without the lock: a normally
-     * finished body has already moved the record to READY/RETIRING/DONE on its own thread before the
-     * job completes, and the cancel path that abandons a start synchronized through the registry
-     * mutex, so a RUNNING/RETRY_WAIT reading here is the abandoned case.
-     */
-    internal fun observeWorkerCompletion(record: WorkRecord, worker: Job) {
-        worker.invokeOnCompletion { cause ->
-            if (record.state != WorkRecordState.RUNNING && record.state != WorkRecordState.RETRY_WAIT) return@invokeOnCompletion
-            cleanupScope.launch(start = CoroutineStart.UNDISPATCHED) {
-                withContext(NonCancellable) {
-                    try {
-                        execution.finalizeAbandonedWorker(record, cause)
-                    } catch (failure: Throwable) {
-                        recordObserverFailure(failure)
-                    }
-                }
-            }
-        }
-    }
-
     internal fun <T : Any> registerLocked(request: WorkRequest<T>): Pair<WorkRecord, WorkSubscriber> {
         checkOpenLocked()
         val retired = registry.retiredAuthEpochs[request.key.principal]
@@ -258,15 +235,6 @@ class WorkCoordinator(
         records[request.key] = record
         signalLocked()
         return record to subscriber
-    }
-
-    private fun <T : Any> validateCompatible(record: WorkRecord, request: WorkRequest<T>) {
-        if (record.requestDomain != request.domain) {
-            throw WorkRequestConflictException("Work key domain changed: ${request.key}")
-        }
-        if (record.authEpoch != request.authEpoch) {
-            throw WorkRequestConflictException("Work key auth epoch changed: ${request.key}")
-        }
     }
 
     internal suspend fun awaitSubscription(
@@ -377,7 +345,7 @@ class WorkCoordinator(
             return TransitionActions()
         }
         record.cleanupSubscribers += subscriber
-        val actions = transitionLastSubscriberLocked(record)
+        val actions = transitionLastSubscriberLocked(record, execution)
         signalLocked()
         return actions
     }
@@ -397,35 +365,9 @@ class WorkCoordinator(
             return TransitionActions()
         }
         record.cleanupSubscribers += subscriber
-        val actions = transitionLastSubscriberLocked(record)
+        val actions = transitionLastSubscriberLocked(record, execution)
         signalLocked()
         return actions
-    }
-
-    private fun transitionLastSubscriberLocked(record: WorkRecord): TransitionActions {
-        return when (record.state) {
-            WorkRecordState.QUEUED -> {
-                execution.removeRecordLocked(record)
-                TransitionActions()
-            }
-            WorkRecordState.RUNNING,
-            WorkRecordState.RETRY_WAIT,
-            -> {
-                record.cancelRequested = true
-                TransitionActions(job = record.worker)
-            }
-            WorkRecordState.READY ->
-                TransitionActions(disposal = execution.planDisposalLocked(record))
-            WorkRecordState.RETIRING,
-            WorkRecordState.DONE,
-            -> TransitionActions()
-        }
-    }
-
-    private fun checkSubscriptionLive(subscriber: WorkSubscriber) {
-        if (subscriber.detached || subscriber.released) {
-            throw CancellationException("Work subscription is closed")
-        }
     }
 
     internal fun promoteLocked(record: WorkRecord, requested: WorkPriority) {
@@ -453,7 +395,7 @@ class WorkCoordinator(
         failure?.let { throw it }
     }
 
-    private suspend fun recordObserverFailure(failure: Throwable) {
+    internal suspend fun recordObserverFailure(failure: Throwable) {
         withContext(NonCancellable) {
             mutex.withLock {
                 registry.registerDisposalFailureLocked(failure)
@@ -462,8 +404,47 @@ class WorkCoordinator(
         }
     }
 
-    private data class TransitionActions(
-        val job: Job? = null,
-        val disposal: DisposalPlan? = null,
-    )
 }
+
+private fun <T : Any> validateCompatible(record: WorkRecord, request: WorkRequest<T>) {
+    if (record.requestDomain != request.domain) {
+        throw WorkRequestConflictException("Work key domain changed: ${request.key}")
+    }
+    if (record.authEpoch != request.authEpoch) {
+        throw WorkRequestConflictException("Work key auth epoch changed: ${request.key}")
+    }
+}
+
+private fun checkSubscriptionLive(subscriber: WorkSubscriber) {
+    if (subscriber.detached || subscriber.released) {
+        throw CancellationException("Work subscription is closed")
+    }
+}
+
+private fun transitionLastSubscriberLocked(
+    record: WorkRecord,
+    execution: WorkExecution,
+): TransitionActions {
+    return when (record.state) {
+        WorkRecordState.QUEUED -> {
+            execution.removeRecordLocked(record)
+            TransitionActions()
+        }
+        WorkRecordState.RUNNING,
+        WorkRecordState.RETRY_WAIT,
+        -> {
+            record.cancelRequested = true
+            TransitionActions(job = record.worker)
+        }
+        WorkRecordState.READY ->
+            TransitionActions(disposal = execution.planDisposalLocked(record))
+        WorkRecordState.RETIRING,
+        WorkRecordState.DONE,
+        -> TransitionActions()
+    }
+}
+
+private data class TransitionActions(
+    val job: Job? = null,
+    val disposal: DisposalPlan? = null,
+)

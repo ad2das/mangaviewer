@@ -86,7 +86,6 @@ class EngineSessionRuntime(
     private val work = SessionWorkSet(scope, coordinator, reportFailure)
     // Publish new immutable maps only when their metadata changes, not on every scroll sample.
     private var plans: Map<EpisodeId, EpisodeAccessPlan> = emptyMap()
-    private class CachedPlan(val request: WorkRequest<EpisodeAccessPlan>, val plan: EpisodeAccessPlan)
     private val retainedCachedPlans = linkedMapOf<EpisodeId, CachedPlan>()
     private val pageDemands = SessionPageDemands(source, ::acceptPageGeometry,
         { generation, id, plan, page -> if (isCurrent(generation)) acceptPage(generation, id, plan, page) },
@@ -278,7 +277,7 @@ class EngineSessionRuntime(
                 val demand = when {
                     !started || closed -> emptyList()
                     foreground -> cachedDemands(state)
-                    else -> cachedPlanPins()
+                    else -> cachedPlanPins(retainedCachedPlans)
                 }
                 val batch = receipts.toList()
                 receipts.clear()
@@ -289,12 +288,6 @@ class EngineSessionRuntime(
             processing = false
         }
         inputReplay.schedule()
-    }
-
-    private fun cachedPlanPins(): List<SessionDemand<*>> = retainedCachedPlans.values.map { held ->
-        // Complete snapshots pin every original until navigation or close, including background
-        // suspension. The ready dependency performs no network, decoding or ongoing storage work.
-        SessionDemand(held.request) { plan -> check(plan === held.plan) { "Cached plan ownership changed" } }
     }
 
     private fun markPageFailure(id: PageId) {
@@ -312,17 +305,7 @@ class EngineSessionRuntime(
      * position instead of letting it grow with every episode crossed.
      */
     private fun retainPlanWindow(state: EngineSessionSnapshot) {
-        if (plans.size <= RETAINED_PLAN_EPISODES) return
-        val anchor = state.anchor?.pageId?.episodeId ?: targetEpisode
-        val protectedEpisodes = mutableSetOf(anchor, targetEpisode)
-        plans[anchor]?.manifest?.let { manifest ->
-            manifest.previousEpisodeId?.let(protectedEpisodes::add)
-            manifest.nextEpisodeId?.let(protectedEpisodes::add)
-        }
-        protectedEpisodes += pages.keys.mapTo(mutableSetOf()) { it.episodeId }
-        protectedEpisodes += state.requiredEpisodes
-        protectedEpisodes += state.requiredNavigation
-        val dropped = planKeysToDrop(plans, protectedEpisodes, RETAINED_PLAN_EPISODES)
+        val dropped = planWindowToDrop(plans, state, targetEpisode, pages, RETAINED_PLAN_EPISODES)
         if (dropped.isEmpty()) return
         val retained = LinkedHashMap(plans)
         dropped.forEach(retained::remove)
@@ -334,17 +317,8 @@ class EngineSessionRuntime(
      * moves inside the same visible pages reuses the identical request set instead of
      * rebuilding every SessionDemand lambda and rescanning manifest pages on each sample.
      * Mutable sets are copied into the key so in-place mutation invalidates the entry. */
-    /** A transient neighbor failure retries on its own instead of parking the boundary. */
-    private fun releaseRecoveredEpisodeFailures() {
-        if (failedReadAheadEpisodes.isEmpty()) return
-        val now = observationClock()
-        val recovered = failedReadAheadEpisodes.filter { now >= (failedEpisodeRetryAt[it] ?: Long.MAX_VALUE) }
-        if (recovered.isEmpty()) return
-        recovered.forEach { failedReadAheadEpisodes -= it; failedEpisodeRetryAt -= it }
-    }
-
     private fun cachedDemands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
-        releaseRecoveredEpisodeFailures()
+        releaseRecoveredEpisodeFailures(failedReadAheadEpisodes, failedEpisodeRetryAt, observationClock)
         val key = DemandKey(state.generation, state.geometryRevision, positionResolved,
             initialPresented, demandVersion, state.anchor?.pageId,
             state.visibleRegions.mapTo(linkedSetOf()) { it.pageId }, state.requiredDimensions,
@@ -367,7 +341,9 @@ class EngineSessionRuntime(
                 process(session.dispatch(SessionEvent.PositionResolved(generation, position.anchor, position.legacy)))
             }
         }
-        val wantedPages = pagePriorities(state)
+        val wantedPages = pagePriorities(
+            state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, interactionActive, earlyTransfers,
+        )
         pages = retainPreparedMetadata(state, wantedPages.keys, plans, pages)
         // Prepared markers only matter while their page metadata is retained; without this the
         // set keeps growing across a long read that walks past many documents.
@@ -378,7 +354,8 @@ class EngineSessionRuntime(
             if (id.episodeId !in plans) wantedEpisodes[id.episodeId] = priority
         }
         // One forward document uses the spare control slot; its image bodies remain background work.
-        adjacentPrefetch(state)?.let { if (it !in plans) wantedEpisodes.putIfAbsent(it, WorkPriority.INTERACTIVE) }
+        adjacentPrefetch(state, positionResolved, plans, targetEpisode, prepared, initialPresented, failedReadAheadEpisodes)
+            ?.let { if (it !in plans) wantedEpisodes.putIfAbsent(it, WorkPriority.INTERACTIVE) }
         wantedEpisodes.forEach { (id, priority) ->
             if (id !in plans) result += episodeDemand(generation, id, priority)
         }
@@ -403,7 +380,7 @@ class EngineSessionRuntime(
             val plan = plans[id.episodeId] ?: return@forEach
             result += pageDemands.get(generation, id, plan, priority)
         }
-        result += cachedPlanPins()
+        result += cachedPlanPins(retainedCachedPlans)
         return result
     }
 
@@ -476,27 +453,6 @@ class EngineSessionRuntime(
             previous.finalDocumentUrl, previous.authEpoch, previous.pages, previous.prerequisites,
             navigationKnown = true, localOnly = previous.localOnly))
         process(update)
-    }
-
-    private fun pagePriorities(state: EngineSessionSnapshot): LinkedHashMap<PageId, WorkPriority> {
-        val result = linkedMapOf<PageId, WorkPriority>()
-        state.requiredDimensions.forEach { result[it] = WorkPriority.FOCUS }
-        state.visibleRegions.forEach { region ->
-            result.putIfAbsent(region.pageId, if (region.pageId == state.anchor?.pageId) WorkPriority.FOCUS else WorkPriority.VISIBLE)
-        }
-        reserveDocumentEndOriginal(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, result)
-        earlyTransfers.retain(result, prepared, failedReadAheadPages)
-        addReadAhead(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented,
-            interactionActive, result)
-        return result
-    }
-
-    private fun adjacentPrefetch(state: EngineSessionSnapshot): EpisodeId? {
-        if (!positionResolved) return null
-        val episode = state.anchor?.pageId?.episodeId ?: targetEpisode
-        val plan = plans[episode] ?: return null
-        return nextDocumentToPrepare(plan.manifest, plans, prepared,
-            initialPresented, failedReadAheadEpisodes)
     }
 
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
@@ -719,4 +675,93 @@ private fun retainPreparedMetadata(state: EngineSessionSnapshot, wantedPages: Se
     // It owns no file or texture lease; explicit navigation still clears the generation.
     return if (pages.keys.any { it.episodeId !in episodes })
         Collections.unmodifiableMap(pages.filterKeys { it.episodeId in episodes }) else pages
+}
+
+private class CachedPlan(val request: WorkRequest<EpisodeAccessPlan>, val plan: EpisodeAccessPlan)
+
+private fun cachedPlanPins(retained: Map<EpisodeId, CachedPlan>): List<SessionDemand<*>> =
+    retained.values.map { held ->
+        // Complete snapshots pin every original until navigation or close, including background
+        // suspension. The ready dependency performs no network, decoding or ongoing storage work.
+        SessionDemand(held.request) { plan -> check(plan === held.plan) { "Cached plan ownership changed" } }
+    }
+
+/** A transient neighbor failure retries on its own instead of parking the boundary. */
+private fun releaseRecoveredEpisodeFailures(
+    failed: MutableSet<EpisodeId>,
+    retryAt: MutableMap<EpisodeId, Long>,
+    clock: () -> Long,
+) {
+    if (failed.isEmpty()) return
+    val now = clock()
+    val recovered = failed.filter { now >= (retryAt[it] ?: Long.MAX_VALUE) }
+    if (recovered.isEmpty()) return
+    recovered.forEach { failed -= it; retryAt -= it }
+}
+
+/**
+ * A long read can cross many documents in place. A plan for a document far behind is never read
+ * again (its page metadata was already dropped), and a retained cached plan additionally pins the
+ * episode's work record and file leases, so keep the plan set inside a window around the reading
+ * position instead of letting it grow with every episode crossed.
+ */
+private fun planWindowToDrop(
+    plans: Map<EpisodeId, EpisodeAccessPlan>,
+    state: EngineSessionSnapshot,
+    targetEpisode: EpisodeId,
+    pages: Map<PageId, PageContentIdentity>,
+    maximum: Int,
+): List<EpisodeId> {
+    if (plans.size <= maximum) return emptyList()
+    val anchor = state.anchor?.pageId?.episodeId ?: targetEpisode
+    val protectedEpisodes = mutableSetOf(anchor, targetEpisode)
+    plans[anchor]?.manifest?.let { manifest ->
+        manifest.previousEpisodeId?.let(protectedEpisodes::add)
+        manifest.nextEpisodeId?.let(protectedEpisodes::add)
+    }
+    protectedEpisodes += pages.keys.mapTo(mutableSetOf()) { it.episodeId }
+    protectedEpisodes += state.requiredEpisodes
+    protectedEpisodes += state.requiredNavigation
+    return planKeysToDrop(plans, protectedEpisodes, maximum)
+}
+
+private fun pagePriorities(
+    state: EngineSessionSnapshot,
+    plans: Map<EpisodeId, EpisodeAccessPlan>,
+    targetEpisode: EpisodeId,
+    prepared: Set<PageId>,
+    failedReadAheadPages: Set<PageId>,
+    initialPresented: Boolean,
+    interactionActive: Boolean,
+    earlyTransfers: EarlyOriginalTransfers,
+): LinkedHashMap<PageId, WorkPriority> {
+    val result = linkedMapOf<PageId, WorkPriority>()
+    state.requiredDimensions.forEach { result[it] = WorkPriority.FOCUS }
+    state.visibleRegions.forEach { region ->
+        result.putIfAbsent(
+            region.pageId,
+            if (region.pageId == state.anchor?.pageId) WorkPriority.FOCUS else WorkPriority.VISIBLE,
+        )
+    }
+    reserveDocumentEndOriginal(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, result)
+    earlyTransfers.retain(result, prepared, failedReadAheadPages)
+    addReadAhead(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented,
+        interactionActive, result)
+    return result
+}
+
+private fun adjacentPrefetch(
+    state: EngineSessionSnapshot,
+    positionResolved: Boolean,
+    plans: Map<EpisodeId, EpisodeAccessPlan>,
+    targetEpisode: EpisodeId,
+    prepared: Set<PageId>,
+    initialPresented: Boolean,
+    failed: Set<EpisodeId>,
+): EpisodeId? {
+    if (!positionResolved) return null
+    val episode = state.anchor?.pageId?.episodeId ?: targetEpisode
+    val plan = plans[episode] ?: return null
+    return nextDocumentToPrepare(plan.manifest, plans, prepared,
+        initialPresented, failed)
 }

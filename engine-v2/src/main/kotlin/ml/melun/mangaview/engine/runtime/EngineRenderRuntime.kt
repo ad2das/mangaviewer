@@ -362,7 +362,7 @@ class EngineRenderRuntime(
             val next = tracer.section("engine_scene") { scene(snapshot, plan) }
             // Far-away original dimensions advance geometry revision without changing the
             // viewport. Preserve input revisions and every changed pixel, but avoid that swap.
-            if (shouldSubmit(next)) {
+            if (shouldSubmitScene(enabled, hasSubmittedScene, displayed, next)) {
                 tracer.section("engine_submit") { submitScene(next) }
                 hasSubmittedScene = true
             }
@@ -373,21 +373,6 @@ class EngineRenderRuntime(
             work.reconcile(renderDemands(snapshot, plan))
         }
         return true
-    }
-
-    private fun shouldSubmit(next: EngineDrawScene): Boolean =
-        // Before the first attachment, disabled metadata updates have no old pixels to clear.
-        // Keep the first buffer for actual content; later disabling must still retire partial scenes.
-        (enabled || hasSubmittedScene) && !sameSubmittedViewport(displayed, next)
-
-    private fun sameSubmittedViewport(previous: EngineDrawScene?, next: EngineDrawScene): Boolean {
-        if (previous == null || !previous.completeCoverage || !next.completeCoverage) return false
-        val before = previous.session
-        val after = next.session
-        return before.sessionId == after.sessionId && before.generation == after.generation &&
-            before.inputRevision == after.inputRevision && before.movementRevision == after.movementRevision &&
-            before.viewport == after.viewport && before.anchor == after.anchor &&
-            before.visibleRegions == after.visibleRegions && previous.quads == next.quads
     }
 
     private fun releaseDisplayedReferences() {

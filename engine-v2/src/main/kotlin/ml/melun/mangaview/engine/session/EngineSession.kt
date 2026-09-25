@@ -303,29 +303,15 @@ class EngineSession(
     }
 
     private fun receiptsUntilReady(forceSequences: Set<Long>): List<InputReceipt>? {
-        if (isReadyForInput()) return null
+        if (isReadyForInput(phaseValue, positionResolved, geometry.anchor)) return null
         val receipts = mutableListOf<InputReceipt>()
         pendingInputs.firstOrNull()?.let { pending ->
-            pending.blocker = readinessBlocker()
+            pending.blocker = readinessBlocker(positionResolved, geometry)
             if (forceSequences.contains(pending.sample.sequence)) {
                 receipts += deferredReceipt(pending, geometryRevisionValue)
             }
         }
         return receipts
-    }
-
-    private fun isReadyForInput(): Boolean = phaseValue == EngineSessionPhase.ACTIVE &&
-        positionResolved && geometry.anchor != null
-
-    private fun readinessBlocker(): GeometryBlocker? {
-        if (!positionResolved) return null
-        if (!geometry.manifests.containsKey(geometry.targetEpisodeId)) {
-            return GeometryBlocker.Episode(geometry.targetEpisodeId)
-        }
-        return geometry.requirementsForAnchor().let { requirements ->
-            requirements.dimensions.firstOrNull()?.let(GeometryBlocker::Dimension)
-                ?: requirements.episodes.firstOrNull()?.let(GeometryBlocker::Episode)
-        }
     }
 
     private fun buildSnapshot(): EngineSessionSnapshot {

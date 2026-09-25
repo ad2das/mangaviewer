@@ -57,6 +57,10 @@ internal class WorkAdmission(private val limits: WorkLimits) {
             WorkDomain.UPLOAD -> uploadUsed -= 1
             WorkDomain.BROWSER -> browserUsed -= 1
         }
+        verifyCounters()
+    }
+
+    private fun verifyCounters() {
         check(networkUsed >= 0 && bodiesUsed >= 0 && backgroundNetworkUsed >= 0)
         check(decodeUsed >= 0 && backgroundDecodeUsed >= 0 && storageUsed >= 0 && uploadUsed >= 0 && browserUsed >= 0)
     }
