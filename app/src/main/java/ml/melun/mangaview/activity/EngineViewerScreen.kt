@@ -147,6 +147,10 @@ internal class EngineViewerScreen(
         engine.openings.warm(spec.episodeId)
         openingHandoff = engine.openings.claim(spec.episodeId)
         rendererLease = engine.renderers.claim()
+        // Prepare the next viewer's GL owner while this one reads, so tapping to the next episode
+        // attaches an already prepared renderer instead of paying native context setup on its
+        // opening frame.
+        engine.renderers.warm()
         contentSource = source
         val createdRuntime = buildRuntime(source)
         runtime = createdRuntime

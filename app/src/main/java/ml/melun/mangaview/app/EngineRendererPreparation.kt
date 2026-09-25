@@ -11,6 +11,12 @@ internal class EngineRendererPreparation<T : Any>(
     private val prepare: suspend (T) -> Unit,
     private val dispose: suspend (T) -> Unit,
     private val reportFailure: (Throwable) -> Unit,
+    /**
+     * When set, a warm request also prepares one renderer while a reader owns another. The reader
+     * pool sets this so tapping to the next episode claims an already prepared GL owner instead of
+     * paying native context setup on the opening frame of the next viewer.
+     */
+    private val spareWhileActive: Boolean = false,
 ) {
     private class Entry<T> {
         var value: T? = null
@@ -30,7 +36,7 @@ internal class EngineRendererPreparation<T : Any>(
     fun warm() = synchronized(lock) {
         if (closed) return@synchronized
         requested = true
-        if (readers != 0 || pending != null) return@synchronized
+        if (pending != null || (readers != 0 && !spareWhileActive)) return@synchronized
         val entry = Entry<T>()
         val previous = tail
         pending = entry

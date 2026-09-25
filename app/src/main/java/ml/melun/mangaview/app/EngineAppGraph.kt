@@ -7,6 +7,7 @@ import java.io.File
 import java.net.URI
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import ml.melun.mangaview.data.db.DeferredViewerDatabase
 import ml.melun.mangaview.data.engine.EnginePositionStore
@@ -29,6 +30,7 @@ import ml.melun.mangaview.source.ntk.NtkBrowserIdentity
 import ml.melun.mangaview.source.ntk.NtkEngineBrowserClient
 import ml.melun.mangaview.source.ntk.NtkEngineAuthorization
 import ml.melun.mangaview.source.ntk.NtkOriginResolver
+import ml.melun.mangaview.source.ntk.NtkNativeSessionStore
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.source.ObservedSourceTransport
 import ml.melun.mangaview.source.SourceExchangeObserver
@@ -107,8 +109,9 @@ internal class EngineAppGraph(
                 ml.melun.mangaview.engine.api.DeviceMemoryBudget.fromPhysicalRam(openingMemory.totalPhysicalBytes).glResidentBytes,
                 {}, { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) }, {},
                 bufferedCompositor = Build.VERSION.SDK_INT >= 31)
-        }, prepare = { it.prepare() }, dispose = { it.close() },
-        reportFailure = { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) })
+        },         prepare = { it.prepare() }, dispose = { it.close() },
+        reportFailure = { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) },
+        spareWhileActive = true)
     // Create and prepare the GL owner as soon as the engine graph exists so a direct reader
     // launch attaches a warm renderer instead of paying native context setup on the first frame.
     init { renderers.warm() }
@@ -200,6 +203,22 @@ internal class EngineAppGraph(
                 NtkOriginResolver.DEFAULT_ORIGIN
             }
             val started = System.nanoTime()
+            // Preconnect the persisted origin immediately, in parallel with the probe walk: the
+            // walk may take seconds on a cold network, and the first document fetch must find a
+            // warm pool even when the viewer opens before resolution finishes.
+            val immediate = async {
+                runCatching {
+                    transport.execute(ml.melun.mangaview.source.SourceRequest(
+                        url = current,
+                        method = ml.melun.mangaview.source.SourceHttpMethod.HEAD,
+                        headers = mapOf("Accept" to "text/html,*/*;q=0.1"),
+                        totalTimeoutMillis = ENGINE_ORIGIN_PRECONNECT_TIMEOUT_MILLIS,
+                        preferQuic = false,
+                        priority = ml.melun.mangaview.source.PageFetchPriority.BACKGROUND,
+                    )).close()
+                    true
+                }.getOrDefault(false)
+            }
             val resolved = try {
                 ntkOriginProbe.resolve(current)
             } catch (cancellation: kotlinx.coroutines.CancellationException) {
@@ -212,20 +231,24 @@ internal class EngineAppGraph(
                 ntkLiveOrigin = resolved
             }
             val target = resolved ?: current
-            val warmed = try {
-                transport.execute(ml.melun.mangaview.source.SourceRequest(
-                    url = target,
-                    method = ml.melun.mangaview.source.SourceHttpMethod.HEAD,
-                    headers = mapOf("Accept" to "text/html,*/*;q=0.1"),
-                    totalTimeoutMillis = ENGINE_ORIGIN_PRECONNECT_TIMEOUT_MILLIS,
-                    preferQuic = false,
-                    priority = ml.melun.mangaview.source.PageFetchPriority.BACKGROUND,
-                )).close()
-                true
-            } catch (cancellation: kotlinx.coroutines.CancellationException) {
-                throw cancellation
-            } catch (failure: Throwable) {
-                false
+            val warmed = if (target == current) {
+                immediate.await()
+            } else {
+                try {
+                    transport.execute(ml.melun.mangaview.source.SourceRequest(
+                        url = target,
+                        method = ml.melun.mangaview.source.SourceHttpMethod.HEAD,
+                        headers = mapOf("Accept" to "text/html,*/*;q=0.1"),
+                        totalTimeoutMillis = ENGINE_ORIGIN_PRECONNECT_TIMEOUT_MILLIS,
+                        preferQuic = false,
+                        priority = ml.melun.mangaview.source.PageFetchPriority.BACKGROUND,
+                    )).close()
+                    true
+                } catch (cancellation: kotlinx.coroutines.CancellationException) {
+                    throw cancellation
+                } catch (failure: Throwable) {
+                    false
+                }
             }
             android.util.Log.i("EngineWarm", "ntk origin=$target resolved=${resolved != null} " +
                 "ok=$warmed ms=${(System.nanoTime() - started) / 1_000_000}")
@@ -272,6 +295,11 @@ internal class EngineAppGraph(
         File(context.applicationInfo.dataDir, "app_engine_episode_plans_v1"), storage, ioDispatcher,
         reportFailure = { android.util.Log.w("EngineEpisodeCache", "Cached episode metadata unavailable", it) })
     private val ntkIdentity = NtkBrowserIdentity.forDevice(context, "engine")
+    private val ntkSessionStore = NtkNativeSessionStore(context)
+    private val ntkDocumentCache = NtkEpisodeDocumentCache(
+        File(context.cacheDir, "ntk_episode_docs_v1"), 60 * 60_000L)
+    private val ntkManifestCache = ml.melun.mangaview.source.ntk.NtkManifestPayloadCache(
+        File(context.cacheDir, "ntk_manifest_payloads_v1"), 30 * 60_000L)
     private val ntkBrowser by lazy {
         NtkEngineBrowserClient(context, userAgent, ntkIdentity,
             captureEvidence = { ntkAuthorizationEvidenceObserver != null }) {
@@ -294,7 +322,7 @@ internal class EngineAppGraph(
                 spec.initialAnchor, publishOrigin = { resolved ->
                     origins.remember("ntk", resolved)
                     ntkLiveOrigin = resolved
-                })
+                }, sessionStore = ntkSessionStore, documentCache = ntkDocumentCache, payloadCache = ntkManifestCache)
             else -> error("Unknown engine source")
         }
         val cached = ml.melun.mangaview.engine.content.EngineCachedSessionWork(live, completeEpisodes)

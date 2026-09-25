@@ -57,6 +57,89 @@ class ViewerFourSourceFrameTimingGateTest {
     @Test fun newxtoon() = gate("newxtoon", "1876", "139976")
     @Test fun goodtoon() = gate("goodtoon", "gt-17070", "803716")
 
+    /**
+     * Real-use next-episode timing. The cold single-launch gate above includes app start and the
+     * provider's protected document/manifest round trips, which a reader never pays twice when the
+     * series is already open: the app's neighbour prefetch prepares the next episode while the
+     * current one is read. This method measures that path: open the previous episode (cold), let
+     * the neighbour prefetch run, then open the next episode and time its first image.
+     */
+    @Test fun ntkNextEpisode() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val output = File(context.getExternalFilesDir(null), "frame-timing-gate").apply { mkdirs() }
+        val run = File(output, "ntk-next-${System.currentTimeMillis()}").apply { check(mkdirs()) }
+        val startedAtMillis = SystemClock.elapsedRealtime()
+        val violations = mutableListOf<String>()
+        var phase1FirstActualMillis: Long? = null
+        var phase2FirstActualMillis: Long? = null
+        var phase2FirstViewportMillis: Long? = null
+        try {
+            val previousStartedAtNanos = System.nanoTime()
+            ActivityScenario.launch<ViewerActivity>(
+                viewerIntent(context, "ntk", "/webtoon/16972", "/webtoon/16972/1445960"),
+            ).use { scenario ->
+                awaitSurfaceReady(scenario, violations)
+                awaitFirstCompleteViewport(scenario, violations)?.firstActualPresentedAtNanos?.let {
+                    phase1FirstActualMillis = (it - previousStartedAtNanos) / MILLIS_NANOS
+                }
+                android.util.Log.d("NtkNextGate", "previous firstActual=${phase1FirstActualMillis}ms")
+                SystemClock.sleep(PREPARE_HOLD_MILLIS)
+            }
+            val nextStartedAtNanos = System.nanoTime()
+            ActivityScenario.launch<ViewerActivity>(
+                viewerIntent(context, "ntk", "/webtoon/16972", "/webtoon/16972/1457949"),
+            ).use { scenario ->
+                val timing = awaitFirstCompleteViewport(scenario, violations)
+                timing?.firstCompleteViewportSubmittedAtNanos?.let {
+                    phase2FirstViewportMillis = (it - nextStartedAtNanos) / MILLIS_NANOS
+                }
+                timing?.firstActualPresentedAtNanos?.let {
+                    phase2FirstActualMillis = (it - nextStartedAtNanos) / MILLIS_NANOS
+                }
+                android.util.Log.d(
+                    "NtkNextGate",
+                    "next firstActual=${phase2FirstActualMillis}ms viewport=${phase2FirstViewportMillis}ms",
+                )
+            }
+        } catch (failure: Throwable) {
+            violations += failure.message ?: failure.javaClass.simpleName
+        } finally {
+            run.resolve("summary.json").writeText(JSONObject().apply {
+                put("scope", "NTK_NEXT_EPISODE_GATE")
+                put("sourceId", "ntk")
+                put("seriesKey", "/webtoon/16972")
+                put("previousEpisodeKey", "/webtoon/16972/1445960")
+                put("episodeKey", "/webtoon/16972/1457949")
+                put("startedAtMillis", startedAtMillis)
+                put("firstActualPresentedMillis", phase2FirstActualMillis ?: JSONObject.NULL)
+                put("firstCompleteViewportMillis", phase2FirstViewportMillis ?: JSONObject.NULL)
+                put("previousFirstActualPresentedMillis", phase1FirstActualMillis ?: JSONObject.NULL)
+                put("prepareHoldMillis", PREPARE_HOLD_MILLIS)
+                put("violations", JSONArray(violations))
+                put("passed", violations.isEmpty())
+            }.toString(2))
+            if (violations.isNotEmpty()) {
+                android.util.Log.e("NtkNextGate", "violations=${violations.joinToString()}")
+            }
+        }
+        check(violations.isEmpty()) {
+            "NTK next-episode gate failed: ${violations.joinToString()}; evidence=${run.absolutePath}"
+        }
+    }
+
+    private fun viewerIntent(
+        context: android.content.Context,
+        sourceId: String,
+        seriesKey: String,
+        episodeKey: String,
+    ) = Intent(context, ViewerActivity::class.java).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        putExtra(ViewerLaunchSpec.EXTRA_SOURCE_ID, sourceId)
+        putExtra(ViewerLaunchSpec.EXTRA_SERIES_KEY, seriesKey)
+        putExtra(ViewerLaunchSpec.EXTRA_EPISODE_KEY, episodeKey)
+    }
+
     private data class InjectedGesture(val startedAtNanos: Long, val releasedAtNanos: Long, val forward: Boolean)
 
     private class Captured(
@@ -247,6 +330,7 @@ class ViewerFourSourceFrameTimingGateTest {
         val run = File(output, "$sourceId-${System.currentTimeMillis()}").apply { check(mkdirs()) }
         val startedAtNanos = System.nanoTime()
         val startedAtMillis = SystemClock.elapsedRealtime()
+        android.util.Log.d("NtkGate", "start elapsed=$startedAtMillis epoch=${System.currentTimeMillis()} nano=$startedAtNanos")
         val violations = mutableListOf<String>()
         var firstCompleteViewportMillis: Long? = null
         var firstActualPresentedMillis: Long? = null
@@ -648,6 +732,7 @@ class ViewerFourSourceFrameTimingGateTest {
         const val INTER_GESTURE_MILLIS = 220L
         const val SETTLE_MILLIS = 1_200L
         const val STARTUP_SETTLE_MILLIS = 1_500L
+        const val PREPARE_HOLD_MILLIS = 10_000L
         const val INJECTION_RETRY_LIMIT = 8
         const val INJECTION_RETRY_DELAY_MILLIS = 25L
         const val POLL_MILLIS = 20L
