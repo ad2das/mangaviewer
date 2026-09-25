@@ -1,7 +1,11 @@
 package ml.melun.mangaview.source.ntk
 
 import java.net.URI
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import ml.melun.mangaview.core.SourceId
 import ml.melun.mangaview.source.SourceRequest
@@ -9,20 +13,62 @@ import ml.melun.mangaview.source.SourceTransport
 import ml.melun.mangaview.source.readBytes
 
 /** User-supplied stable entry points. A landing page alone cannot establish a usable origin. */
-class NtkOriginResolver(private val transport: SourceTransport, private val userAgent: String) {
-    suspend fun resolve(current: String): String? {
-        for (candidate in (listOf(current) + ENTRY_POINTS).distinct()) {
-            probe(candidate)?.let { return it }
+class NtkOriginResolver(
+    private val transport: SourceTransport,
+    private val userAgent: String,
+    private val probeParallelism: Int = 3,
+    private val onProbe: (String) -> Unit = {},
+) {
+    init { require(probeParallelism in 1..3) }
+
+    /**
+     * Probes the current origin and every stable entry point concurrently and returns the first
+     * origin that proves itself. A dead shipped default then costs the fastest live candidate
+     * instead of the sum of every preceding probe timeout.
+     */
+    suspend fun resolve(current: String): String? = coroutineScope {
+        val candidates = (listOf(current) + ENTRY_POINTS).distinct()
+        onProbe("resolve start current=$current candidates=${candidates.size}")
+        val cursor = AtomicInteger()
+        val results = Channel<String?>(probeParallelism)
+        val workerCount = minOf(probeParallelism, candidates.size)
+        val jobs = List(workerCount) {
+            launch {
+                while (true) {
+                    val index = cursor.getAndIncrement()
+                    if (index >= candidates.size) break
+                    probe(candidates[index])?.let { resolved ->
+                        results.send(resolved)
+                        return@launch
+                    }
+                }
+                results.send(null)
+            }
         }
-        return null
+        try {
+            withTimeoutOrNull(RESOLUTION_TIMEOUT_MILLIS) {
+                repeat(workerCount) { results.receive()?.let { return@withTimeoutOrNull it } }
+                null
+            }
+        } finally {
+            jobs.forEach { it.cancel() }
+            results.cancel()
+        }
     }
 
-    private suspend fun probe(candidate: String): String? = try {
-        withTimeoutOrNull(CANDIDATE_TIMEOUT_MILLIS) {
-            apiProbe(candidate) ?: listProbe(candidate)
+    private suspend fun probe(candidate: String): String? {
+        val origin = try {
+            withTimeoutOrNull(CANDIDATE_TIMEOUT_MILLIS) {
+                apiProbe(candidate) ?: listProbe(candidate)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
         }
-    } catch (cancelled: CancellationException) { throw cancelled }
-      catch (_: Exception) { null }
+        onProbe(if (origin != null) "probe $candidate -> ok $origin" else "probe $candidate -> unavailable")
+        return origin
+    }
 
     /** The catalog JSON only exists on the real provider, so it is the strongest proof. */
     private suspend fun apiProbe(candidate: String): String? = try {
@@ -91,5 +137,6 @@ class NtkOriginResolver(private val transport: SourceTransport, private val user
         private const val LIST_PROBE_TIMEOUT_MILLIS = 6_000L
         private const val LIST_PROBE_ATTEMPTS = 3
         private const val CANDIDATE_TIMEOUT_MILLIS = 24_000L
+        private const val RESOLUTION_TIMEOUT_MILLIS = 10_000L
     }
 }

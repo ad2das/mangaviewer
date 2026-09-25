@@ -28,6 +28,7 @@ import ml.melun.mangaview.source.goodtoon.DEFAULT_GOODTOON_ORIGIN
 import ml.melun.mangaview.source.ntk.NtkBrowserIdentity
 import ml.melun.mangaview.source.ntk.NtkEngineBrowserClient
 import ml.melun.mangaview.source.ntk.NtkEngineAuthorization
+import ml.melun.mangaview.source.ntk.NtkOriginResolver
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 import ml.melun.mangaview.source.ObservedSourceTransport
 import ml.melun.mangaview.source.SourceExchangeObserver
@@ -151,6 +152,14 @@ internal class EngineAppGraph(
     // origin could never be escaped. Origin probes ride this raw transport instead.
     private val wfwfOriginProbeTransport = transportFactory.create()
     private val wfwfOriginProbe by lazy { WfwfOriginResolver(wfwfOriginProbeTransport, userAgent, probeParallelism = 4) }
+    // NTK's shipped default is only a fallback: probe the stable entry points on a raw transport
+    // and publish the live mirror so the first viewer open does not pay the probe walk.
+    private val ntkOriginProbeTransport = transportFactory.create()
+    private val ntkOriginProbe by lazy {
+        NtkOriginResolver(ntkOriginProbeTransport, userAgent,
+            onProbe = { android.util.Log.i("NtkOrigin", it) })
+    }
+    @Volatile private var ntkLiveOrigin: String? = null
     // The engine transport exists for the reader, so nothing warms it while the home screen is up.
     // Open one bodyless exchange per disk-resolved document origin during startup so the first
     // chapter fetch reuses a pooled connection instead of paying DNS and TLS on the open path.
@@ -181,6 +190,45 @@ internal class EngineAppGraph(
                 android.util.Log.i("EngineWarm", "$provider origin=$origin ok=$warmed " +
                     "ms=${(System.nanoTime() - started) / 1_000_000}")
             }
+        }
+        // A dead shipped default must not push the NTK probe walk onto the first viewer document
+        // fetch: resolve the live mirror once here and remember it for the catalog side too.
+        scope.launch(ioDispatcher) {
+            val current = try {
+                origins.current("ntk", NtkOriginResolver.DEFAULT_ORIGIN)
+            } catch (failure: Throwable) {
+                NtkOriginResolver.DEFAULT_ORIGIN
+            }
+            val started = System.nanoTime()
+            val resolved = try {
+                ntkOriginProbe.resolve(current)
+            } catch (cancellation: kotlinx.coroutines.CancellationException) {
+                throw cancellation
+            } catch (failure: Throwable) {
+                null
+            }
+            if (resolved != null) {
+                origins.remember("ntk", resolved)
+                ntkLiveOrigin = resolved
+            }
+            val target = resolved ?: current
+            val warmed = try {
+                transport.execute(ml.melun.mangaview.source.SourceRequest(
+                    url = target,
+                    method = ml.melun.mangaview.source.SourceHttpMethod.HEAD,
+                    headers = mapOf("Accept" to "text/html,*/*;q=0.1"),
+                    totalTimeoutMillis = ENGINE_ORIGIN_PRECONNECT_TIMEOUT_MILLIS,
+                    preferQuic = false,
+                    priority = ml.melun.mangaview.source.PageFetchPriority.BACKGROUND,
+                )).close()
+                true
+            } catch (cancellation: kotlinx.coroutines.CancellationException) {
+                throw cancellation
+            } catch (failure: Throwable) {
+                false
+            }
+            android.util.Log.i("EngineWarm", "ntk origin=$target resolved=${resolved != null} " +
+                "ok=$warmed ms=${(System.nanoTime() - started) / 1_000_000}")
         }
     }
     private val newxtoonTransport = lazy {
@@ -241,9 +289,12 @@ internal class EngineAppGraph(
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
             "goodtoon" -> EngineGoodtoonSessionWork(userAgent, URI(DEFAULT_GOODTOON_ORIGIN), transport, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
-            "ntk" -> EngineNtkSessionWork(userAgent, ntkOrigin, transport, storage, positions,
+            "ntk" -> EngineNtkSessionWork(userAgent, URI(ntkLiveOrigin ?: ntkOrigin.toString()), transport, storage, positions,
                 parsingDispatcher, ntkBrowser, ntkIdentity, library::readingPosition, spec.initialPosition, observations, ntkPageTransport.value,
-                spec.initialAnchor)
+                spec.initialAnchor, publishOrigin = { resolved ->
+                    origins.remember("ntk", resolved)
+                    ntkLiveOrigin = resolved
+                })
             else -> error("Unknown engine source")
         }
         val cached = ml.melun.mangaview.engine.content.EngineCachedSessionWork(live, completeEpisodes)

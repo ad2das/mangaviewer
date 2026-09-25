@@ -152,6 +152,31 @@ class NtkBrowserManifestParserTest {
         }
     }
 
+    @Test
+    fun productionCaptureAcceptsAnEquivalentVerifiedMirrorButNotAnUnknownHost() {
+        val document = NtkEpisodeDocument(
+            origin = "https://sbxh9.com",
+            path = "/webtoon/work/current",
+            html = "",
+        )
+        val requestToken = token("work", "current", "webtoon")
+        val descriptor = NtkViewerDescriptor(
+            workId = "work",
+            episodeId = "current",
+            token = requestToken,
+            apiPath = "/api/webtoon-images",
+            expectedPageCount = 1,
+        )
+        val mirror = exactEnvelope(requestToken)
+            .replace("https://reader.invalid/api/", "https://newtoki1.org/api/")
+        assertEquals(1, parser.parse(mirror, document, descriptor).size)
+        val unknown = exactEnvelope(requestToken)
+            .replace("https://reader.invalid/api/", "https://other.invalid/api/")
+        assertThrows(IllegalArgumentException::class.java) {
+            parser.parse(unknown, document, descriptor)
+        }
+    }
+
     private fun envelope(images: String): String = """
         {"ok":true,"endpoint":"/api/webtoon-images",
          "responseUrl":"https://reader.invalid/api/webtoon-images",

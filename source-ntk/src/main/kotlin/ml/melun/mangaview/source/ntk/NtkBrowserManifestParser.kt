@@ -102,13 +102,19 @@ internal class NtkBrowserManifestParser {
             val expectedKind = descriptor.apiPath.removePrefix("/api/").removeSuffix("-images")
             require(it.kind == expectedKind) { "NTK image manifest token kind changed" }
         }
+        // The provider serves the same platform from more than one stable entry point, and a
+        // single opening can observe the document and the manifest from different mirrors while
+        // the probe walk settles. Accept any verified mirror host; the endpoint, token and
+        // work/episode identity checks above stay exact.
         val response = URI(envelope.optString("responseUrl", ""))
         val expectedOrigin = URI(document.origin)
-        require(
-            response.scheme == expectedOrigin.scheme &&
-                response.authority == expectedOrigin.authority &&
-                response.path == descriptor.apiPath
-        ) { "NTK image manifest response changed origin or path" }
+        val sameOrigin = response.scheme == expectedOrigin.scheme &&
+            response.authority == expectedOrigin.authority &&
+            response.path == descriptor.apiPath
+        val provenMirror = response.scheme == "https" &&
+            response.host in VERIFIED_MIRROR_HOSTS &&
+            response.path == descriptor.apiPath
+        require(sameOrigin || provenMirror) { "NTK image manifest response changed origin or path" }
     }
 
     private fun tokenIdentity(token: String): TokenIdentity? = runCatching {
@@ -234,6 +240,9 @@ internal class NtkBrowserManifestParser {
 
     private companion object {
         val IMAGE_API_PATHS = setOf("/api/webtoon-images", "/api/manhwa-images")
+        // Every host the origin resolver can publish for the provider; a manifest served by any of
+        // them belongs to the same platform and is bound by the endpoint/token/work checks above.
+        val VERIFIED_MIRROR_HOSTS = NtkOriginResolver.ENTRY_POINTS.mapNotNull { URI(it).host }.toSet()
         val HTTP_SCHEMES = setOf("http", "https")
         val MIME_KEYS = listOf("contentType", "mimeType", "mime")
         val SUPPORTED_IMAGE_MIMES = setOf("image/jpeg", "image/jpg", "image/png", "image/webp")

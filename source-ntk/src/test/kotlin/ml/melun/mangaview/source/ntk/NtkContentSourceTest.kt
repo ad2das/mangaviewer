@@ -69,23 +69,34 @@ class NtkContentSourceTest {
     }
 
     @Test fun stableEntryPointsRequireARealCatalogAndFallBackToTheNextAddress() = runTest {
-        val transport = NtkQueueTransport("<html>address unavailable</html>",
-            "<html>address unavailable</html>", "<html>address unavailable</html>",
-            "<html>address unavailable</html>",
-            """{"works":[{"sourceWorkId":"11","title":"Real work"}],"total":1}""")
+        val transport = NtkHostTransport(live = setOf("sbxh9.com"))
         val resolver = NtkOriginResolver(transport, "agent")
         assertEquals("https://sbxh9.com", resolver.resolve("https://toki31.com"))
-        assertEquals(listOf("toki31.com", "toki31.com", "toki31.com", "toki31.com", "sbxh9.com"),
-            transport.requests.map { java.net.URI(it.url).host })
+        // The dead default is probed concurrently with every entry point instead of in front of them.
+        assertTrue(transport.hosts.contains("toki31.com"))
+        assertTrue(transport.hosts.contains("newtoki1.org"))
     }
 
     @Test fun listPageValidationAcceptsThePlatformWhileTheJsonBackendIsDown() = runTest {
         val page = """<html><script>self.__next_f.push([1,"sourceWorkId\":\"11\",\"brand\":\"newtoki\""])</script></html>"""
-        val transport = NtkQueueTransport("<html>gateway timeout</html>", page)
+        val transport = NtkHostTransport(
+            listPages = mapOf("toki31.com" to page),
+            apiDead = setOf("toki31.com"),
+        )
         val resolver = NtkOriginResolver(transport, "agent")
         assertEquals("https://toki31.com", resolver.resolve("https://toki31.com"))
-        assertEquals(listOf("toki31.com", "toki31.com"), transport.requests.map { java.net.URI(it.url).host })
-        assertTrue(transport.requests[1].url.endsWith("/ing"))
+        assertTrue(transport.requests.any { it.url.endsWith("/ing") })
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun aDeadDefaultDoesNotSerialiseTheProbeWalk() = runTest {
+        val transport = NtkHostTransport(
+            live = setOf("sbxh9.com"),
+            slowHosts = setOf("toki31.com", "newtoki1.org"),
+        )
+        val resolver = NtkOriginResolver(transport, "agent")
+        assertEquals("https://sbxh9.com", resolver.resolve("https://toki31.com"))
+        assertTrue("live entry must answer before the dead probes time out", testScheduler.currentTime < 3_000L)
     }
 
     @Test
@@ -323,6 +334,39 @@ private class RecordingGateway(
     ): List<NtkPageRequest> {
         resolved = true
         return pages
+    }
+}
+
+private class NtkHostTransport(
+    private val live: Set<String> = emptySet(),
+    private val listPages: Map<String, String> = emptyMap(),
+    private val apiDead: Set<String> = emptySet(),
+    private val slowHosts: Set<String> = emptySet(),
+) : SourceTransport {
+    val requests = mutableListOf<SourceRequest>()
+    val hosts = mutableListOf<String>()
+
+    override suspend fun execute(request: SourceRequest): SourceResponse {
+        requests += request
+        val host = java.net.URI(request.url).host.orEmpty()
+        hosts += host
+        if (host in slowHosts) kotlinx.coroutines.delay(30_000L)
+        val api = request.url.contains("/api/")
+        val body = when {
+            api && host in live -> """{"works":[{"sourceWorkId":"11","title":"Real work"}],"total":1}"""
+            api && host in apiDead -> "<html>gateway timeout</html>"
+            !api && listPages.containsKey(host) -> listPages.getValue(host)
+            else -> "<html>address unavailable</html>"
+        }
+        val bytes = body.toByteArray()
+        return SourceResponse(
+            statusCode = 200,
+            finalUrl = request.url,
+            headers = emptyMap(),
+            body = NtkBytesStream(bytes),
+            contentLength = bytes.size.toLong(),
+            contentType = "text/html; charset=utf-8",
+        )
     }
 }
 

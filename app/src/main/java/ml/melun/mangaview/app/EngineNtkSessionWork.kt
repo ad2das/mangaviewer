@@ -36,6 +36,7 @@ internal class EngineNtkSessionWork(
     private val observer: EpisodePlanObserver? = null,
     private val pageTransport: SourceTransport = transport,
     private val initialAnchor: SourceAnchor? = null,
+    private val publishOrigin: (String) -> Unit = {},
 ) : EngineViewerWork {
     private val principal = "ntk:engine"
     private val planner = NtkAccessPlanner(userAgent)
@@ -93,6 +94,10 @@ internal class EngineNtkSessionWork(
         fun elapsed() = android.os.SystemClock.elapsedRealtime() - startedAtMillis
         val parsed = withContext(parsingDispatcher) { planner.parseDocument(episodeId, source, 0) }
         android.util.Log.d("NtkEpisodes", "parsed elapsedMs=${elapsed()} descriptor=${parsed.descriptor != null}")
+        // Pin every follow-up flight to the document's own mirror so the manifest proof and the
+        // document identity agree even when the probe walk settled on a different entry point.
+        val documentOrigin = URI(parsed.browserDocument.origin)
+        publishOrigin(parsed.browserDocument.origin)
         val completed = if (parsed.descriptor == null) withContext(parsingDispatcher) { planner.complete(parsed) }
         else parent.useDependency(WorkRequest(
             WorkKey(principal, episodeId.toString(), "ntk.browser", source.replaySha256, NtkEngineAuthorization::class.java),
@@ -101,7 +106,7 @@ internal class EngineNtkSessionWork(
                     // The provider's own challenge/nv/HMAC flight returns the identical manifest
                     // without the isolated WebView; the browser capture stays the fallback.
                     val prewarmed = runCatching { warm.await() }.getOrNull()
-                    nativeManifest.capture(origin, parsed, identity, prewarmed)
+                    nativeManifest.capture(documentOrigin, parsed, identity, prewarmed)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Throwable) {
