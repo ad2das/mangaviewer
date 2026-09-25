@@ -98,3 +98,15 @@ ntk-*-page.js
 !/webtoon-classification.json
 !/update_page.html
 !/README.md
+
+# colab integration local state (bus clone, staged inbox zips, pulled results)
+colab/bus/
+colab/staging/
+colab/results/
+
+# local agent tooling state (opencode goals, playwright-mcp captures)
+.opencode/
+.playwright-mcp/
+
+# captured provider bundles used only for source reconnaissance
+ntk-*-live.js
