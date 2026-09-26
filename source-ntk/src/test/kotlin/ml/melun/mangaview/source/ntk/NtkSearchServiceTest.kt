@@ -4,7 +4,6 @@ import java.net.URI
 import java.net.URLDecoder
 import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.core.SourceId
-import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourceSearchQuery
 import org.junit.Assert.*
@@ -15,14 +14,14 @@ class NtkSearchServiceTest {
         val paths = mutableListOf<String>()
         val search = service { path ->
             paths += path
-            if (path.contains("kind=manhwa")) card("manhwa", "3648", "생존게임")
+            if (path.startsWith("/manhwa")) card("manhwa", "3648", "생존게임")
             else card("webtoon", "847568", "이과장 생존기") + next("생존", "webtoon", 2)
         }
         val page = search.search(SourceSearchQuery("생존"))
         assertEquals(setOf("/webtoon/847568", "/manhwa/3648"), page.items.map { it.id.remoteKey }.toSet())
         assertEquals("w2:m0", page.nextCursor)
         assertEquals(2, paths.size)
-        assertTrue(paths.all { "kind=" in it })
+        assertTrue(paths.all { it.startsWith("/manhwa?") || it.startsWith("/webtoon?") })
     }
 
     @Test fun allSearchAdvancesEachCategoryIndependentlyAndStopsAtTheActualEnd() = runTest {
@@ -30,7 +29,7 @@ class NtkSearchServiceTest {
         val search = service { path ->
             paths += path
             when {
-                "kind=manhwa" in path -> card("manhwa", "3648", "생존게임")
+                path.startsWith("/manhwa") -> card("manhwa", "3648", "생존게임")
                 "page=1" in path -> card("webtoon", "1", "생존 1") + next("생존", "webtoon", 2)
                 else -> card("webtoon", "2", "생존 2")
             }
@@ -39,22 +38,22 @@ class NtkSearchServiceTest {
         val second = search.search(SourceSearchQuery("생존", cursor = first.nextCursor))
         assertEquals(listOf("/webtoon/2"), second.items.map { it.id.remoteKey })
         assertNull(second.nextCursor)
-        assertEquals(1, paths.count { "kind=manhwa" in it })
+        assertEquals(1, paths.count { it.startsWith("/manhwa") })
     }
 
-    @Test fun authorPaginationKeepsUnicodeQueryAndCategoryAndIgnoresUnrelatedLinks() = runTest {
+    @Test fun paginationKeepsUnicodeQueryAndCategoryAndIgnoresUnrelatedLinks() = runTest {
         val paths = mutableListOf<String>()
         val search = service { path ->
             paths += path
-            if ("page=1" in path) card("manhwa", "1", "작품") + next("비가", "manhwa", 2, "author") +
-                next("다른 검색어", "manhwa", 90) + next("비가", "webtoon", 70, "author")
+            if ("page=1" in path) card("manhwa", "1", "작품") + next("비가", "manhwa", 2) +
+                next("다른 검색어", "manhwa", 90) + next("비가", "webtoon", 70)
             else card("manhwa", "2", "다음 작품")
         }
-        val query = SourceSearchQuery("  비가  ", SeriesKind.COMIC, SearchField.AUTHOR)
+        val query = SourceSearchQuery("  비가  ", SeriesKind.COMIC)
         val first = search.search(query)
         assertEquals("2", first.nextCursor)
         assertNull(search.search(query.copy(cursor = first.nextCursor)).nextCursor)
-        assertTrue(paths.all { URLDecoder.decode(URI(it).rawQuery, "UTF-8").contains("q=비가&field=author") })
+        assertTrue(paths.all { URLDecoder.decode(URI(it).rawQuery, "UTF-8").contains("stx=비가") })
     }
 
     @Test fun emptyIntermediatePageStillHasANextCursor() = runTest {
@@ -81,6 +80,6 @@ class NtkSearchServiceTest {
 
     private fun service(load: suspend (String) -> String) = NtkSearchService(SourceId("ntk"), NtkDocumentParser(), load)
     private fun card(kind: String, id: String, title: String) = "<a href='/$kind/$id'><h3>$title</h3></a>"
-    private fun next(query: String, kind: String, page: Int, field: String = "title") =
-        "<a href='/search?q=$query&amp;kind=$kind&amp;field=$field&amp;page=$page'>다음</a>"
+    private fun next(query: String, kind: String, page: Int) =
+        "<a href='/$kind?stx=${java.net.URLEncoder.encode(query, "UTF-8")}&amp;page=$page'>다음</a>"
 }

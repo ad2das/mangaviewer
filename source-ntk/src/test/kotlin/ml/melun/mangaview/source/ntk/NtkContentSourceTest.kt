@@ -107,8 +107,8 @@ class NtkContentSourceTest {
         val source = NtkContentSource(NtkConfig("https://ntk.test", "agent"), transport, RecordingGateway(emptyList()))
         val result = source.search(SourceSearchQuery("역대급 창기사의 회귀", SeriesKind.WEBTOON))
         assertEquals(listOf("/webtoon/57451201"), result.items.map { it.id.remoteKey })
-        assertTrue(transport.requests.single().url.contains("/search?q="))
-        assertTrue(transport.requests.single().url.contains("field=title&match=contains"))
+        assertTrue(transport.requests.single().url.contains("/webtoon?stx="))
+        assertTrue(transport.requests.single().url.contains("page=1"))
     }
 
     @Test
@@ -139,7 +139,7 @@ class NtkContentSourceTest {
     }
 
     @Test
-    fun authorSearchUsesAuthorFieldAndHonorsContentKind() = runTest {
+    fun authorFieldQueryUsesTheListingSearchAndHonorsContentKind() = runTest {
         val html = """
             <a href="/manhwa/11"><h3>만화 결과</h3></a>
             <a href="/webtoon/22"><h3>웹툰 결과</h3></a>
@@ -156,7 +156,10 @@ class NtkContentSourceTest {
         ).items
 
         assertEquals(listOf("/manhwa/11"), result.map { it.id.remoteKey })
-        assertTrue(transport.requests.single().url.contains("field=author"))
+        // The provider search form exposes a single text field, so author queries share the
+        // listing route and keep the kind filter through the /manhwa path.
+        assertTrue(transport.requests.single().url.contains("/manhwa?stx="))
+        assertTrue(transport.requests.single().url.contains("page=1"))
     }
 
     @Test

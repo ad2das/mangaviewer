@@ -6,7 +6,6 @@ import java.net.URLEncoder
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import ml.melun.mangaview.core.SourceId
-import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSearchQuery
@@ -41,12 +40,14 @@ internal class NtkSearchService(
 
     private suspend fun page(query: SourceSearchQuery, kind: SeriesKind, number: Int): SourcePage<SourceSeries> {
         val wireKind = if (kind == SeriesKind.COMIC) "manhwa" else "webtoon"
-        val field = if (query.field == SearchField.AUTHOR) "author" else "title"
         val encoded = URLEncoder.encode(query.text.trim(), "UTF-8")
-        val html = document("/search?q=$encoded&field=$field&match=contains&kind=$wireKind&page=$number")
+        // The provider moved search onto its listing routes ("/manhwa?stx=", "/webtoon?stx="). The
+        // former "/search?q=...&field=...&match=..." route ignores those parameters and renders an
+        // unfiltered page, so the text parameter and route both follow the current search form.
+        val html = document("/$wireKind?stx=$encoded&page=$number")
         val dom = Jsoup.parse(html)
         val parsed = parser.searchHtml(html, sourceId)
-        check(parsed.isNotEmpty() || dom.selectFirst(".search-results-grid, .search-page-form") != null) {
+        check(parsed.isNotEmpty() || dom.selectFirst(".search-results-grid, .search-page-form, .list-page") != null) {
             "NTK 검색 응답을 확인할 수 없습니다. 다시 시도해 주세요"
         }
         dom.selectFirst(".pager-num.is-active")?.text()?.toIntOrNull()?.let { actual ->
@@ -54,23 +55,19 @@ internal class NtkSearchService(
         }
         return SourcePage(
             parsed.filter { NtkSeriesKey.decode(it.id).kind.pathSegment == wireKind },
-            nextPage(dom, query, wireKind, field, number)?.toString(),
+            nextPage(dom, query, wireKind, number)?.toString(),
         )
     }
 
-    private fun nextPage(dom: Document, query: SourceSearchQuery, kind: String, field: String, current: Int): Int? =
+    private fun nextPage(dom: Document, query: SourceSearchQuery, kind: String, current: Int): Int? =
         dom.select("a[href]").mapNotNull { link ->
             val uri = runCatching { URI(link.attr("href")) }.getOrNull() ?: return@mapNotNull null
-            if (uri.path != "/search") return@mapNotNull null
+            if (uri.path != "/$kind") return@mapNotNull null
             val parameters = runCatching { uri.rawQuery.orEmpty().split('&').associate { part ->
                 URLDecoder.decode(part.substringBefore('='), "UTF-8") to
                     URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
             } }.getOrNull() ?: return@mapNotNull null
-            if (parameters["q"] != query.text.trim() || parameters["kind"] != kind ||
-                parameters.getOrDefault("field", "title") != field ||
-                parameters.getOrDefault("match", "contains") != "contains" ||
-                parameters.getOrDefault("sort", "recent") != "recent"
-            ) return@mapNotNull null
+            if (parameters["stx"] != query.text.trim()) return@mapNotNull null
             parameters["page"]?.toIntOrNull()?.takeIf { it > current }
         }.minOrNull()?.let { current + 1 }
 
