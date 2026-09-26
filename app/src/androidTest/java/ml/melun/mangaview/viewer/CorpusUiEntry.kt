@@ -61,7 +61,7 @@ internal class CorpusUiEntry(
         episode: SourceEpisode,
         beforeOpeningSeries: () -> Unit = {},
     ) {
-        ml.melun.mangaview.ui.library.dismissAutomaticUpdateNotice(device)
+        ml.melun.mangaview.ui.library.dismissBlockingDialogs(device)
         await { it.sources.isNotEmpty() }
         timing.mark("sources-ready")
         val targetLabel = state().sources.single { it.id == series.id.sourceId }.label
