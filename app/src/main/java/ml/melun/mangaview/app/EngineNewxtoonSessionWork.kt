@@ -39,12 +39,17 @@ internal class EngineNewxtoonSessionWork(
     private val initialPosition: ReadingPosition?,
     observer: EpisodePlanObserver? = null,
     private val initialAnchor: SourceAnchor? = null,
+    /**
+     * Optional disk boundary for the episode document, shared across viewer sessions: a document
+     * the neighbour prefetch already fetched is reused instead of paying the 386KB round trip.
+     */
+    private val documentStore: EpisodeDocumentStore? = null,
 ) : EngineViewerWork {
     private val principal = "newxtoon:public"
     private val planner = NewxtoonAccessPlanner(userAgent)
     private val parser = NewxtoonHtmlParser(DEFAULT_NEWXTOON_ORIGIN)
     private val episodes = EngineEpisodeWork(principal, planner, transport, parsingDispatcher, observer = observer,
-        onPlan = ::warmArtwork)
+        onPlan = ::warmArtwork, documentStore = documentStore)
     private val pages = EnginePageWork(principal, planner, transport, storage) { _, _, _ ->
         error("NEWXTOON returned an unsupported access prerequisite")
     }

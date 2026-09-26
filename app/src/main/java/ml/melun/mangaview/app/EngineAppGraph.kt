@@ -296,10 +296,14 @@ internal class EngineAppGraph(
         reportFailure = { android.util.Log.w("EngineEpisodeCache", "Cached episode metadata unavailable", it) })
     private val ntkIdentity = NtkBrowserIdentity.forDevice(context, "engine")
     private val ntkSessionStore = NtkNativeSessionStore(context)
-    private val ntkDocumentCache = NtkEpisodeDocumentCache(
+    private val ntkDocumentCache = EpisodeDocumentDiskCache(
         File(context.cacheDir, "ntk_episode_docs_v1"), 60 * 60_000L)
     private val ntkManifestCache = ml.melun.mangaview.source.ntk.NtkManifestPayloadCache(
         File(context.cacheDir, "ntk_manifest_payloads_v1"), 30 * 60_000L)
+    // NEWXTOON's first document flight is a 386KB body behind the relay worker; a disk copy lets
+    // re-opens and the neighbour-prefetched next episode resolve its plan without that round trip.
+    private val newxtoonDocumentCache = EpisodeDocumentDiskCache(
+        File(context.cacheDir, "newxtoon_episode_docs_v1"), 60 * 60_000L)
     private val ntkBrowser by lazy {
         NtkEngineBrowserClient(context, userAgent, ntkIdentity,
             captureEvidence = { ntkAuthorizationEvidenceObserver != null }) {
@@ -314,7 +318,8 @@ internal class EngineAppGraph(
                 wfwfOriginProbe, { origins.remember("wfwf", it.toString()) })
             "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent(), URI(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
-                parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
+                parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
+                documentStore = newxtoonDocumentCache)
             "goodtoon" -> EngineGoodtoonSessionWork(userAgent, URI(DEFAULT_GOODTOON_ORIGIN), transport, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor)
             "ntk" -> EngineNtkSessionWork(userAgent, URI(ntkLiveOrigin ?: ntkOrigin.toString()), transport, storage, positions,

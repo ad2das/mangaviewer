@@ -2,11 +2,13 @@ package ml.melun.mangaview.engine.content
 
 import java.net.URI
 import java.security.MessageDigest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.lowerHex
 import ml.melun.mangaview.engine.api.EpisodeAccessPlan
+import ml.melun.mangaview.engine.api.EpisodeDocumentStore
 import ml.melun.mangaview.engine.api.EpisodePlanObserver
 import ml.melun.mangaview.engine.api.EpisodeDocumentPlanner
 import ml.melun.mangaview.engine.api.SourceDocument
@@ -32,6 +34,11 @@ class EngineEpisodeWork(
      * will need; it must not suspend, block, or fetch a body.
      */
     private val onPlan: ((EpisodeAccessPlan) -> Unit)? = null,
+    /**
+     * Optional disk boundary for the document itself. A hit skips the provider round trip;
+     * a stored body that no longer parses is evicted and the normal fetch runs.
+     */
+    private val documentStore: EpisodeDocumentStore? = null,
 ) {
     init { require(principal.isNotBlank() && maxDocumentBytes > 0) }
 
@@ -46,17 +53,46 @@ class EngineEpisodeWork(
         val planKey = key(episodeId, origin, authEpoch, "episode", EpisodeAccessPlan::class.java,
             catalogAdjacency)
         return WorkRequest(planKey, WorkDomain.CONTROL, priority, authEpoch = authEpoch, execute = { parent ->
-            parent.useDependency(documentRequest(episodeId, origin, authEpoch, parent.priority.value)) { document ->
-                withContext(parsingDispatcher) {
-                    planner.parseEpisode(episodeId, document, authEpoch, catalogAdjacency).also { plan ->
-                        require(plan.manifest.id == episodeId && plan.authEpoch == authEpoch)
-                        require(plan.documentSha256 == document.sha256 && plan.finalDocumentUrl == document.finalUrl)
-                        observer?.observed(episodeId, document, plan)
-                        onPlan?.invoke(plan)
+            val stored = documentStore?.load(episodeId)
+            val storedPlan = if (stored == null) {
+                null
+            } else {
+                try {
+                    parseEpisode(episodeId, stored, authEpoch, catalogAdjacency)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    // A body that no longer parses must not pin the plan; evict and re-fetch.
+                    documentStore.remove(episodeId)
+                    null
+                }
+            }
+            if (storedPlan != null) {
+                storedPlan
+            } else {
+                parent.useDependency(
+                    documentRequest(episodeId, origin, authEpoch, parent.priority.value),
+                ) { document ->
+                    parseEpisode(episodeId, document, authEpoch, catalogAdjacency).also {
+                        documentStore?.save(episodeId, document)
                     }
                 }
             }
         })
+    }
+
+    private suspend fun parseEpisode(
+        episodeId: EpisodeId,
+        document: SourceDocument,
+        authEpoch: Long,
+        catalogAdjacency: AdjacentEpisodes?,
+    ): EpisodeAccessPlan = withContext(parsingDispatcher) {
+        planner.parseEpisode(episodeId, document, authEpoch, catalogAdjacency).also { plan ->
+            require(plan.manifest.id == episodeId && plan.authEpoch == authEpoch)
+            require(plan.documentSha256 == document.sha256 && plan.finalDocumentUrl == document.finalUrl)
+            observer?.observed(episodeId, document, plan)
+            onPlan?.invoke(plan)
+        }
     }
 
     /** Shared document boundary for sources whose plan also depends on browser authorization. */

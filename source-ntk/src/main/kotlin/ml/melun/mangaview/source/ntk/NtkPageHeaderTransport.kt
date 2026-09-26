@@ -21,7 +21,19 @@ class NtkPageHeaderTransport(
                 opened = transport.execute(request)
                 true
             } == true
-            if (!received) throw SocketTimeoutException("NTK image response headers timed out after ${headerTimeoutMillis}ms")
+            if (!received) {
+                // A silent candidate is expected under provider throttling; logging it makes the
+                // stall visible instead of only surfacing as a failed page request downstream.
+                // The log is best-effort: JVM unit tests have no android.util.Log implementation,
+                // and the timeout itself must not depend on the logger.
+                runCatching {
+                    android.util.Log.w(
+                        "NtkPage",
+                        "image response headers silent for ${headerTimeoutMillis}ms; trying the next candidate",
+                    )
+                }
+                throw SocketTimeoutException("NTK image response headers timed out after ${headerTimeoutMillis}ms")
+            }
             return checkNotNull(opened).also { handedOff = true }
         } finally {
             // A response delivered at the cancellation boundary still has one owner.

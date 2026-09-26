@@ -4,23 +4,25 @@ import java.io.File
 import java.net.URI
 import java.security.MessageDigest
 import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.engine.api.EpisodeDocumentStore
 import ml.melun.mangaview.engine.api.SourceDocument
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Disk cache for NTK episode documents. A cold start that re-enters a recently seen episode
- * resolves its page plan from here instead of paying the provider's cold document round trip,
- * which dominates the first-tile demand path (measured ~1.9s headers on the GPU AVD).
+ * Disk cache for episode documents. A cold start that re-enters a recently seen episode resolves
+ * its page plan from here instead of paying the provider's cold document round trip, which
+ * dominates the first-tile demand path (measured ~1.9s headers for NTK and a 386KB first-flight
+ * body for NEWXTOON).
  *
  * The cache trusts nothing: entries expire after [ttlMillis], and a stored digest must match the
  * body byte-for-byte or the entry is discarded and the normal network path runs.
  */
-internal class NtkEpisodeDocumentCache(
+internal class EpisodeDocumentDiskCache(
     private val directory: File,
     private val ttlMillis: Long,
-) {
-    fun load(episodeId: EpisodeId): SourceDocument? {
+) : EpisodeDocumentStore {
+    override fun load(episodeId: EpisodeId): SourceDocument? {
         val name = nameFor(episodeId)
         val body = File(directory, "$name.bin")
         val meta = File(directory, "$name.json")
@@ -39,7 +41,7 @@ internal class NtkEpisodeDocumentCache(
         }
     }
 
-    fun save(episodeId: EpisodeId, document: SourceDocument) {
+    override fun save(episodeId: EpisodeId, document: SourceDocument) {
         runCatching {
             directory.mkdirs()
             val name = nameFor(episodeId)
@@ -60,6 +62,15 @@ internal class NtkEpisodeDocumentCache(
                     document.responseHeaders.forEach { (key, values) -> put(key, JSONArray(values)) }
                 })
                 .toString())
+        }
+    }
+
+    override fun remove(episodeId: EpisodeId) {
+        runCatching {
+            val name = nameFor(episodeId)
+            File(directory, "$name.bin").delete()
+            File(directory, "$name.json").delete()
+            File(directory, "$name.bin.tmp").delete()
         }
     }
 

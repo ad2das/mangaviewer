@@ -40,7 +40,7 @@ internal class EngineNtkSessionWork(
     private val initialAnchor: SourceAnchor? = null,
     private val publishOrigin: (String) -> Unit = {},
     private val sessionStore: NtkNativeSessionStore? = null,
-    private val documentCache: NtkEpisodeDocumentCache? = null,
+    private val documentCache: EpisodeDocumentDiskCache? = null,
     private val payloadCache: NtkManifestPayloadCache? = null,
 ) : EngineViewerWork {
     private val principal = "ntk:engine"
