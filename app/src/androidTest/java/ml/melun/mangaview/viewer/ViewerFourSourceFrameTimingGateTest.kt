@@ -128,6 +128,98 @@ class ViewerFourSourceFrameTimingGateTest {
         }
     }
 
+    /**
+     * NewxToon real-use next-episode timing. The cold single-launch gate includes the provider's
+     * first protected document round trip; when the previous episode was already being read, its
+     * disk-cached document feeds the next episode's plan instead. This method opens the previous
+     * episode (cold), lets the neighbour prefetch run, then opens the next episode discovered from
+     * the engine's own manifest and times its first image.
+     */
+    @Test fun newxtoonNextEpisode() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val output = File(context.getExternalFilesDir(null), "frame-timing-gate").apply { mkdirs() }
+        val run = File(output, "newxtoon-next-${System.currentTimeMillis()}").apply { check(mkdirs()) }
+        val startedAtMillis = SystemClock.elapsedRealtime()
+        val violations = mutableListOf<String>()
+        var phase1FirstActualMillis: Long? = null
+        var phase2FirstActualMillis: Long? = null
+        var phase2FirstViewportMillis: Long? = null
+        var nextEpisodeKey: String? = null
+        val previousKey = "139976"
+        try {
+            val previousStartedAtNanos = System.nanoTime()
+            ActivityScenario.launch<ViewerActivity>(
+                viewerIntent(context, "newxtoon", "1876", previousKey),
+            ).use { scenario ->
+                awaitSurfaceReady(scenario, violations)
+                awaitFirstCompleteViewport(scenario, violations)?.firstActualPresentedAtNanos?.let {
+                    phase1FirstActualMillis = (it - previousStartedAtNanos) / MILLIS_NANOS
+                }
+                android.util.Log.d("NewxtoonNextGate", "previous firstActual=${phase1FirstActualMillis}ms")
+                val discoveryDeadline = SystemClock.elapsedRealtime() + VIEWPORT_TIMEOUT_MILLIS
+                while (nextEpisodeKey == null && SystemClock.elapsedRealtime() < discoveryDeadline) {
+                    val result = AtomicReference<String?>()
+                    scenario.onActivity { activity ->
+                        result.set(
+                            activity.viewerEngineSnapshot()?.plans?.entries
+                                ?.firstOrNull { it.key.remoteKey == previousKey }
+                                ?.value?.manifest?.nextEpisodeId?.remoteKey,
+                        )
+                    }
+                    nextEpisodeKey = result.get()
+                    if (nextEpisodeKey == null) SystemClock.sleep(POLL_MILLIS)
+                }
+                SystemClock.sleep(PREPARE_HOLD_MILLIS)
+            }
+            val nextKey = nextEpisodeKey
+            if (nextKey == null) {
+                violations += "Next episode was never discovered from the open episode's manifest"
+            } else {
+                val nextStartedAtNanos = System.nanoTime()
+                ActivityScenario.launch<ViewerActivity>(
+                    viewerIntent(context, "newxtoon", "1876", nextKey),
+                ).use { scenario ->
+                    val timing = awaitFirstCompleteViewport(scenario, violations)
+                    timing?.firstCompleteViewportSubmittedAtNanos?.let {
+                        phase2FirstViewportMillis = (it - nextStartedAtNanos) / MILLIS_NANOS
+                    }
+                    timing?.firstActualPresentedAtNanos?.let {
+                        phase2FirstActualMillis = (it - nextStartedAtNanos) / MILLIS_NANOS
+                    }
+                    android.util.Log.d(
+                        "NewxtoonNextGate",
+                        "next=$nextKey firstActual=${phase2FirstActualMillis}ms " +
+                            "viewport=${phase2FirstViewportMillis}ms",
+                    )
+                }
+            }
+        } catch (failure: Throwable) {
+            violations += failure.message ?: failure.javaClass.simpleName
+        } finally {
+            run.resolve("summary.json").writeText(JSONObject().apply {
+                put("scope", "NEWXTOON_NEXT_EPISODE_GATE")
+                put("sourceId", "newxtoon")
+                put("seriesKey", "1876")
+                put("previousEpisodeKey", previousKey)
+                put("episodeKey", nextEpisodeKey ?: JSONObject.NULL)
+                put("startedAtMillis", startedAtMillis)
+                put("firstActualPresentedMillis", phase2FirstActualMillis ?: JSONObject.NULL)
+                put("firstCompleteViewportMillis", phase2FirstViewportMillis ?: JSONObject.NULL)
+                put("previousFirstActualPresentedMillis", phase1FirstActualMillis ?: JSONObject.NULL)
+                put("prepareHoldMillis", PREPARE_HOLD_MILLIS)
+                put("violations", JSONArray(violations))
+                put("passed", violations.isEmpty())
+            }.toString(2))
+            if (violations.isNotEmpty()) {
+                android.util.Log.e("NewxtoonNextGate", "violations=${violations.joinToString()}")
+            }
+        }
+        check(violations.isEmpty()) {
+            "NewxToon next-episode gate failed: ${violations.joinToString()}; evidence=${run.absolutePath}"
+        }
+    }
+
     private fun viewerIntent(
         context: android.content.Context,
         sourceId: String,

@@ -405,6 +405,7 @@ class EngineScrollQualificationTest {
         var recorder: ViewerWindowFrameRecorder? = null
         var ledger: EngineScrollQualificationLedger? = null
         var gestures = 0
+        var forcedReverseBursts = 0
         var firstViewportSubmittedAtNanos: Long? = null
         val startedAtMillis = SystemClock.elapsedRealtime()
 
@@ -419,6 +420,31 @@ class EngineScrollQualificationTest {
                 activeLedger.close(activity, activeRecorder)
                 activeRecorder.close()
                 val integrity = activeLedger.integrityFailures()
+                // The window's own HWUI frame metrics stay empty (the viewer renders through its
+                // EGL surface), so the intended-vsync accounting comes from the recorded
+                // Choreographer motion frames: each refreshed frame carries its intended vsync.
+                var motionFrames = 0L
+                var intendedVsyncMissed = 0L
+                var maxMotionGapNanos = 0L
+                runCatching {
+                    val times = ArrayList<Long>(16_384)
+                    File(output, "motion.jsonl").forEachLine { line ->
+                        if (line.isNotBlank()) {
+                            val at = JSONObject(line).optLong("frameTimeNanos", 0L)
+                            if (at > 0L) times.add(at)
+                        }
+                    }
+                    times.sort()
+                    motionFrames = times.size.toLong()
+                    for (position in 1 until times.size) {
+                        val gap = times[position] - times[position - 1]
+                        if (gap > maxMotionGapNanos) maxMotionGapNanos = gap
+                        if (gap > INTENDED_VSYNC_NANOS) {
+                            intendedVsyncMissed +=
+                                (gap + INTENDED_VSYNC_NANOS / 2) / INTENDED_VSYNC_NANOS - 1
+                        }
+                    }
+                }
                 File(output, "summary.json").writeText(JSONObject().apply {
                     put("scope", "ENGINE_FAST_FLING_STRESS")
                     put("schemaVersion", EngineScrollQualificationPolicy.SCHEMA_VERSION)
@@ -431,6 +457,10 @@ class EngineScrollQualificationTest {
                     put("lostFrameEvidence", activeLedger.frameLostCount)
                     put("inputLostEvidence", activeLedger.inputLostCount)
                     put("motionHistoryOverwritten", activeLedger.motionOverwritten)
+                    put("motionFrameCount", motionFrames)
+                    put("intendedVsyncMissedFrames", intendedVsyncMissed)
+                    put("maxMotionGapMillis", maxMotionGapNanos / 1_000_000.0)
+                    put("forcedReverseBursts", forcedReverseBursts)
                     put("integrityFailures", JSONArray(integrity))
                     put("passed", integrity.isEmpty())
                 }.toString(2))
@@ -479,12 +509,16 @@ class EngineScrollQualificationTest {
 
             val deadline = SystemClock.elapsedRealtime() + durationMillis
             var index = 0
+            var stalledGestures = 0
+            var forcedReverseGestures = 0
+            var movingBefore = activeLedger.stageMeasuredFrames(EngineScrollQualificationPolicy.STREAMING)
             while (SystemClock.elapsedRealtime() < deadline) {
-                val forward = index % 30 < 27
+                val forward = if (forcedReverseGestures > 0) false else index % 30 < 27
                 injectEngineTraversalGesture(
                     instrumentation, device, output, index, forward,
                     EngineTraversalGestureSpeed.FLING,
                 )
+                if (forcedReverseGestures > 0) forcedReverseGestures -= 1
                 index += 1
                 gestures = index
                 activeLedger.recordGesture()
@@ -496,6 +530,21 @@ class EngineScrollQualificationTest {
                 activity.viewerFailureSnapshot()?.let {
                     throw AssertionError("Viewer failed during fast fling stress", it)
                 }
+                // A chain of forward flings eventually clamps against the episode end (or the start
+                // after a reverse burst) and the scene stops moving; a stalled run would spend the
+                // rest of the soak on a static scene, so the chain turns around when it happens.
+                val movingNow = activeLedger.stageMeasuredFrames(EngineScrollQualificationPolicy.STREAMING)
+                if (movingNow > movingBefore) {
+                    stalledGestures = 0
+                } else {
+                    stalledGestures += 1
+                    if (stalledGestures >= FLING_STALL_GESTURES) {
+                        forcedReverseGestures = FLING_REVERSE_BURST
+                        forcedReverseBursts += 1
+                        stalledGestures = 0
+                    }
+                }
+                movingBefore = movingNow
                 SystemClock.sleep(interGestureMillis)
             }
             SystemClock.sleep(1_200L)
@@ -505,3 +554,12 @@ class EngineScrollQualificationTest {
         }
     }
 }
+
+/** Gestures without a newly measured moving frame before the chain turns around. */
+private const val FLING_STALL_GESTURES = 10
+
+/** Reverse gestures injected after a stalled chain so the soak keeps covering content. */
+private const val FLING_REVERSE_BURST = 12
+
+/** The emulator display's only supported rate is 60.000004 Hz; intended-vsync arithmetic uses 60 Hz. */
+private const val INTENDED_VSYNC_NANOS = 16_666_666L
