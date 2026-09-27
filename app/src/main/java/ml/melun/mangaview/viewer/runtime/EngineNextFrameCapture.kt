@@ -24,6 +24,9 @@ internal data class EngineCapturedFrame(
 internal class EngineNextFrameCapture {
     private var pending: Ticket? = null
 
+    /** True while a capture awaits the next natural submission. */
+    val awaiting: Boolean get() = pending != null
+
     fun request(surfaceEpoch: Long, top: Int, bottom: Int?): Ticket {
         check(pending == null) { "A capture already awaits the next frame" }
         return Ticket(surfaceEpoch, top, bottom).also { pending = it }

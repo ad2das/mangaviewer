@@ -58,9 +58,7 @@ internal class EngineSurfaceOwner(
     private val thread = HandlerThread("engine-gl-$rendererId", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
     private val handler = Handler(thread.looper)
     private val dispatcher = handler.asCoroutineDispatcher("engine-gl-$rendererId")
-    // The upload transfer, its front-of-queue lane and the capacity handshake live in
-    // EngineSurfaceUploads below so this class stays inside the architecture size gate. The lane
-    // still places a newly decoded tile ahead of already posted frame work.
+    // Upload transfer, front-of-queue lane and capacity handshake live in EngineSurfaceUploads below.
     private val uploads = EngineSurfaceUploads(
         native = native,
         allocationLimit = textureAllocationLimit,
@@ -80,6 +78,7 @@ internal class EngineSurfaceOwner(
     private val lock = Any()
     private var latest: EngineSurfaceScene? = null
     private var posted = false
+    private val keepAlive = EngineSceneKeepAlive()
     private var attached = false
     private var surfaceEpoch = 0L
     private var width = 0
@@ -92,15 +91,9 @@ internal class EngineSurfaceOwner(
     private var configured = false
     private var choreographer: Choreographer? = null
     private var pollPosted = false
-    @Volatile private var interactionActive = false
 
-    /**
-     * Owner-thread hint that a real drag or fling owns the frame. This drain submits a frame on the
-     * owner thread, so while a gesture is pacing the display it must be delivered *after* the motion
-     * callback that requests the next display slot, not before it: a frame callback sorts by due time
-     * and the motion callback registers with no delay.
-     */
-    fun interactionActive(active: Boolean) { interactionActive = active }
+    /** Owner-thread hint that a real drag or fling owns the frame; [schedulePoll] orders the drain. */
+    fun interactionActive(active: Boolean) = keepAlive.noteInteraction(active)
 
     private val poll = Choreographer.FrameCallback {
         pollPosted = false
@@ -115,7 +108,7 @@ internal class EngineSurfaceOwner(
             acknowledgeRetirements()
             readbacks.poll()
         }
-        if (synchronized(lock) { latest != null }) renderLatest()
+        if (synchronized(lock) { latest != null } || keepAliveScene() != null) renderLatest()
         schedulePoll()
     }
 
@@ -302,12 +295,10 @@ internal class EngineSurfaceOwner(
     }
 
     private fun renderLatest() {
-        if (awaitingFrameBuffer(attached, closing.get(), native)) {
-            schedulePoll()
-            return
-        }
+        if (awaitingFrameBuffer(attached, closing.get(), native)) return schedulePoll()
         if (maximumPendingForVerification != null && pending.size >= maximumPendingForVerification) return
-        val scene = synchronized(lock) { posted = false; latest.also { if (attached) latest = null } }
+        val fresh = synchronized(lock) { posted = false; latest.also { if (attached) latest = null } }
+        val scene = fresh ?: keepAliveScene()
         if (scene == null || !attached || closing.get()) return
         if (scene.viewport.widthPx != width || scene.viewport.heightPx != height) return
         if (scene.placements.any { it.texture.rendererId != rendererId || it.texture.rendererEpoch != rendererEpoch }) return
@@ -332,6 +323,7 @@ internal class EngineSurfaceOwner(
     private fun finishSubmission(record: Pending, result: Int) {
         record.submissionResult = result
         if (result > 0) {
+            keepAlive.lastScene = record.scene
             acknowledgeRetirements()
             callbacks.submitted(record.scene)
             deliver(record)
@@ -362,7 +354,8 @@ internal class EngineSurfaceOwner(
     }
 
     private fun schedulePoll() {
-        if (pollPosted || (pending.isEmpty() && retiring.isEmpty() && !readbacks.pending && synchronized(lock) { latest == null || !attached }) || destroyed.get()) return
+        val idle = pending.isEmpty() && retiring.isEmpty() && !readbacks.pending && synchronized(lock) { latest == null || !attached }
+        if (pollPosted || destroyed.get() || (idle && keepAliveScene() == null)) return
         val delay = presentationPollMillisForVerification
         if (delay != null) {
             pollPosted = true
@@ -371,7 +364,7 @@ internal class EngineSurfaceOwner(
         }
         val choreographer = choreographer ?: Choreographer.getInstance().also { choreographer = it }
         pollPosted = true
-        if (interactionActive) {
+        if (keepAlive.interactionActive) {
             // Half a refresh period is always inside the frame this drain belongs to, yet behind the
             // zero-delay motion callback that owns the display slot for the gesture.
             val halfPeriodMillis = (500.0 / refreshRate).toLong().coerceIn(1L, 8L)
@@ -380,6 +373,10 @@ internal class EngineSurfaceOwner(
             choreographer.postFrameCallback(poll)
         }
     }
+
+    /** The last submitted scene while a gesture or recent interaction keeps the surface live. */
+    private fun keepAliveScene() =
+        keepAlive.scene(pending.size < 2, attached, closing.get(), destroyed.get(), nextCapture.awaiting)
 
     private fun terminatePending(kind: PresentationTimestampKind) {
         nextCapture.invalidate()
@@ -438,6 +435,35 @@ private class EngineOwnerUploadDispatcher(
 
 private val nextRenderer = AtomicLong()
 private const val MAXIMUM_UNACKNOWLEDGED_FRAMES = 16
+private const val INTERACTION_KEEP_ALIVE_NANOS = 500_000_000L
+
+/**
+ * Re-presents the last submitted scene while a gesture or a just-finished interaction keeps the
+ * surface live, so a content pause cannot leave the display without a fresh submission. While a
+ * gesture paces the display the drain must be delivered after the zero-delay motion callback that
+ * requests the next display slot, so [interactionActive] is updated with each interaction event.
+ */
+internal class EngineSceneKeepAlive {
+    var lastScene: EngineSurfaceScene? = null
+    @Volatile var interactionActive = false
+        private set
+    @Volatile private var recentInteractionNanos = 0L
+
+    fun noteInteraction(active: Boolean) {
+        interactionActive = active
+        recentInteractionNanos = System.nanoTime()
+    }
+
+    fun scene(pendingBelowBound: Boolean, attached: Boolean, closing: Boolean, destroyed: Boolean,
+              captureAwaiting: Boolean): EngineSurfaceScene? {
+        if (!pendingBelowBound) return null
+        val last = lastScene ?: return null
+        if (!attached || closing || destroyed || captureAwaiting) return null
+        if (interactionActive) return last
+        val since = System.nanoTime() - recentInteractionNanos
+        return if (since in 1..INTERACTION_KEEP_ALIVE_NANOS) last else null
+    }
+}
 
 internal data class EngineSurfaceCallbacks(
     val presented: (EngineSurfacePresentation) -> Unit,

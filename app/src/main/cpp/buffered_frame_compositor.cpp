@@ -11,6 +11,7 @@
 #include <GLES2/gl2ext.h>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <ctime>
@@ -124,7 +125,17 @@ void completed(void* opaque, ASurfaceTransactionStats* stats) {
     }
     ticket->callback->completionPending();
 }
-struct CommitGate { std::atomic<bool> outstanding{false}; };
+std::int64_t monotonicNanos() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// A commit that is late must not stall the next submission for a whole display slot: after this
+// bounded wait the pipeline holds one more frame instead of skipping a slot.
+constexpr std::int64_t kCommitBypassNanos = 12'000'000;
+struct CommitGate {
+    std::atomic<bool> outstanding{false};
+    std::atomic<std::int64_t> armedAtNanos{0};
+};
 struct CommitTicket {
     std::shared_ptr<CommitGate> gate;
     std::shared_ptr<GlPresentationCallback> callback;
@@ -138,6 +149,7 @@ void committed(void* opaque, ASurfaceTransactionStats*) {
 void armCommitGate(const Functions& functions, ASurfaceTransaction* transaction,
     const std::shared_ptr<CommitGate>& gate, const std::shared_ptr<GlPresentationCallback>& callback) noexcept {
     if (!functions.setOnCommit) return;
+    gate->armedAtNanos.store(monotonicNanos(), std::memory_order_release);
     gate->outstanding.store(true, std::memory_order_release);
     functions.setOnCommit(transaction, new CommitTicket{gate, callback}, committed);
 }
@@ -656,7 +668,9 @@ bool BufferedFrameCompositor::ready() noexcept {
     poll();
     if (!state_->layer) return false;
     if (state_->functions.setOnCommit) {
-        if (state_->commitGate->outstanding.load(std::memory_order_acquire)) return false;
+        const bool outstanding = state_->commitGate->outstanding.load(std::memory_order_acquire);
+        const std::int64_t armedAt = state_->commitGate->armedAtNanos.load(std::memory_order_acquire);
+        if (outstanding && monotonicNanos() - armedAt < kCommitBypassNanos) return false;
     } else if (!state_->pending.empty()) {
         // Fallback without setOnCommit: keep latest scene replaceable until the previous transaction
         // completes; completion is not an exact display fence.
