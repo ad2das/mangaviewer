@@ -7,10 +7,13 @@ import kotlinx.coroutines.sync.withLock
 /**
  * Bounds how fast decoded tiles reach the GL owner queue. A page arrives as a burst of ~9 MB
  * bands; without pacing the whole burst lands in one compositor frame and the buffered
- * presenter's glFinish pays the full GPU transfer on the owner thread.
+ * presenter's glFinish pays the full GPU transfer on the owner thread. The emulator's GL
+ * pipeline stalls for seconds when the window allows several page bands at once (measured as
+ * multi-second DISPLAY_PRESENT gaps during an episode-crossing soak), so the budget is one
+ * band per frame: ~240 MB/s, far above the read-ahead's own needs while flattening the burst.
  */
 internal class TileUploadPacer(
-    private val bytesPerWindow: Long = 18L * 1024 * 1024,
+    private val bytesPerWindow: Long = 4L * 1024 * 1024,
     private val windowNanos: Long = 16_666_667L,
     private val nanoTime: () -> Long = System::nanoTime,
     private val sleep: suspend (Long) -> Unit = { nanos -> delay(nanos / 1_000_000L + 1L) },

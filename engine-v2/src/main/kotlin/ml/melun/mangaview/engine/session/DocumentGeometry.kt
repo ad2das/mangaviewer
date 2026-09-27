@@ -110,14 +110,14 @@ internal class DocumentGeometry(
             keep += anchorEpisodeId
             var cursor: EpisodeId? = anchorEpisodeId
             var steps = 0
-            while (cursor != null && steps < RETAINED_WINDOW_STEPS) {
+            while (cursor != null && steps < RETAINED_BACK_STEPS) {
                 cursor = manifests[cursor]?.previousEpisodeId
                 if (cursor != null) keep += cursor
                 steps++
             }
             cursor = anchorEpisodeId
             steps = 0
-            while (cursor != null && steps < RETAINED_WINDOW_STEPS) {
+            while (cursor != null && steps < RETAINED_FORWARD_STEPS) {
                 cursor = manifests[cursor]?.nextEpisodeId
                 if (cursor != null) keep += cursor
                 steps++
@@ -483,7 +483,9 @@ private fun BigRational.coerceAtLeast(other: BigRational): BigRational =
 
 private fun EpisodeId.firstPageId(): PageId = PageId(this, "p0000")
 
-// Documents kept around the reading position by retainWindow: the anchor, two navigation links in
-// each direction, and the session's target.
-private const val RETAINED_DOCUMENTS = 6
-private const val RETAINED_WINDOW_STEPS = 2
+// Documents kept around the reading position by retainWindow: the anchor, a deep backward chain
+// (a fast reverse burst swings the reader several episodes back before any request can run), two
+// forward links, and the session's target.
+private const val RETAINED_DOCUMENTS = 16
+private const val RETAINED_BACK_STEPS = 12
+private const val RETAINED_FORWARD_STEPS = 2

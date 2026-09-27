@@ -23,6 +23,7 @@ import ml.melun.mangaview.engine.api.WorkKey
 import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.engine.api.WorkRequest
 import ml.melun.mangaview.engine.api.WorkMetadata
+import ml.melun.mangaview.engine.session.UnknownPageDimensionsException
 import ml.melun.mangaview.source.AdjacentEpisodes
 
 data class EngineSessionRuntimeDiagnosticSnapshot(
@@ -95,6 +96,8 @@ class EngineSessionRuntime(
     private val earlyTransfers = EarlyOriginalTransfers()
     private val failedReadAheadPages = linkedSetOf<PageId>()
     private val failedReadAheadEpisodes = linkedSetOf<EpisodeId>()
+    /** Required documents whose held plan was already re-delivered in this bout. */
+    private val redeliveredManifests = linkedSetOf<EpisodeId>()
     private val failedEpisodeRetryAt = mutableMapOf<EpisodeId, Long>()
     private val launchGeneration = session.snapshot.generation
     private val launchEpisode = initialEpisode
@@ -276,7 +279,10 @@ class EngineSessionRuntime(
                 val state = session.snapshot
                 val demand = when {
                     !started || closed -> emptyList()
-                    foreground -> cachedDemands(state)
+                    foreground -> {
+                        redeliverRetainedManifests(state)
+                        cachedDemands(state)
+                    }
                     else -> cachedPlanPins(retainedCachedPlans)
                 }
                 val batch = receipts.toList()
@@ -311,6 +317,36 @@ class EngineSessionRuntime(
         dropped.forEach(retained::remove)
         plans = immutableMap(retained)
         dropped.forEach(retainedCachedPlans::remove)
+    }
+
+    /**
+     * The session prunes its own manifest window around the reading position, but a document it
+     * still requires can be gone from the geometry while this runtime keeps the plan. Re-dispatching
+     * the held manifest is instant and idempotent — the same deliverable the plan produced when it
+     * was first accepted — so a reversal into pruned territory resumes without a provider round
+     * trip. A rejected re-delivery falls back to the demand path, whose failure handling owns the
+     * retry.
+     */
+    private fun redeliverRetainedManifests(state: EngineSessionSnapshot) {
+        if (state.requiredEpisodes.isEmpty()) {
+            redeliveredManifests.clear()
+            return
+        }
+        redeliveredManifests.retainAll(state.requiredEpisodes)
+        state.requiredEpisodes.forEach { id ->
+            val plan = plans[id] ?: return@forEach
+            // One re-delivery per required bout: a document that stays required for another reason
+            // must not re-dispatch the same manifest on every pass of the update loop.
+            if (!redeliveredManifests.add(id)) return@forEach
+            val update = try {
+                session.dispatch(SessionEvent.ManifestResolved(state.generation, plan.manifest, plan.navigationKnown))
+            } catch (failure: Throwable) {
+                System.err.println("EngineWork redeliver-failed id=$id error=${failure::class.java.simpleName}: ${failure.message}")
+                return@forEach
+            }
+            receipts += update.receipts
+            dirty = true
+        }
     }
 
     /** Demand inputs are versioned by preparation, not by input revision: a scroll that only
@@ -357,7 +393,17 @@ class EngineSessionRuntime(
         adjacentPrefetch(state, positionResolved, plans, targetEpisode, prepared, initialPresented, failedReadAheadEpisodes)
             ?.let { if (it !in plans) wantedEpisodes.putIfAbsent(it, WorkPriority.INTERACTIVE) }
         wantedEpisodes.forEach { (id, priority) ->
-            if (id !in plans) result += episodeDemand(generation, id, priority)
+            if (id !in plans) {
+                result += episodeDemand(generation, id, priority)
+            } else if (id in state.requiredEpisodes) {
+                // The session prunes its own manifest window around the reading position, but a
+                // document the geometry still requires can be gone from it while this runtime keeps
+                // the plan. The plan map then suppresses the episode demand and the boundary waits
+                // forever. Accepting the held plan again re-dispatches only its manifest.
+                result += SessionDemand(source.episode(id, WorkPriority.FOCUS)) { plan ->
+                    if (isCurrent(generation)) acceptPlan(generation, id, plan)
+                }
+            }
         }
         // The anchor document's adjacency is the boundary the reader is heading toward; resolving
         // it as soon as the plan exists gives a slow catalog the whole chapter of headroom instead
@@ -391,7 +437,16 @@ class EngineSessionRuntime(
         if (matchesVerifiedGeometry(pages[id], geometry) && id in prepared && id !in failedReadAheadPages) return
         demandVersion++
         earlyTransfers.observed(id)
-        process(session.dispatch(SessionEvent.DimensionsResolved(generation, id, geometry.dimensions)))
+        val update = try {
+            session.dispatch(SessionEvent.DimensionsResolved(generation, id, geometry.dimensions))
+        } catch (stale: UnknownPageDimensionsException) {
+            // The document was pruned while this read-ahead demand was in flight. The result is
+            // inert: forget any earlier acceptance so a later delivery of the document re-derives
+            // this page's geometry instead of trusting a stale prepared marker.
+            forgetAcceptedPage(id)
+            return
+        }
+        process(update)
     }
 
     private fun episodeDemand(generation: Long, id: EpisodeId, priority: WorkPriority): SessionDemand<EpisodeAccessPlan> {
@@ -428,7 +483,13 @@ class EngineSessionRuntime(
         if (pages[expected] == identity && expected in prepared && expected !in failedReadAheadPages) return
         prepared += expected
         failedReadAheadPages -= expected
-        val update = session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
+        val update = try {
+            session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
+        } catch (stale: UnknownPageDimensionsException) {
+            // See acceptPageGeometry: the document was pruned while this demand was in flight.
+            forgetAcceptedPage(expected)
+            return
+        }
         if (pages[expected] != identity) pages = withEntry(pages, expected, identity)
         if (generation == launchGeneration && expected.episodeId == launchEpisode &&
             page.contentRevision == launchManifestContentRevision && expected in launchManifestPageIds &&
@@ -456,6 +517,16 @@ class EngineSessionRuntime(
     }
 
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
+
+    /**
+     * Drops acceptance markers for a page whose document the geometry no longer holds, so a later
+     * delivery of that document re-accepts the page's geometry instead of trusting a stale marker.
+     */
+    private fun forgetAcceptedPage(id: PageId) {
+        prepared -= id
+        if (pages.containsKey(id)) pages = withoutEntry(pages, id)
+    }
+
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
 }
 
@@ -492,8 +563,14 @@ internal fun <V> planKeysToDrop(
 // the tile horizon) lets the publish finish ahead of the demand without queueing extra decode work
 // on the lanes the visible tile shares. At rest the bulk already streams the whole tail, so a
 // shallow explicit horizon is enough there.
-private const val PAGES_AHEAD_WHILE_INTERACTING = 4
+private const val PAGES_AHEAD_WHILE_INTERACTING = 6
 private const val PAGES_AHEAD_AT_REST = 2
+
+// The replay head is a single page, so a fast catch-up walk otherwise stalls once per page while
+// each download parses its own geometry. Batching a short window behind the blocker starts those
+// downloads together and turns the walk into one fetch round instead of N.
+private const val BLOCKED_DIMENSION_WINDOW = 4
+private const val BLOCKED_DIMENSION_BACKWARD_WINDOW = 2
 
 // Read-ahead planning lives at file level: pure demand ordering over the caller's maps, so the
 // session runtime stays under the size gate without giving up the prepared/failed context.
@@ -601,6 +678,9 @@ private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeMani
 private fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmodifiableMap(LinkedHashMap(source))
 private fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
     Collections.unmodifiableMap(LinkedHashMap(source).apply { put(key, value) })
+private fun <K, V> withoutEntry(source: Map<K, V>, key: K): Map<K, V> =
+    if (!source.containsKey(key)) source
+    else Collections.unmodifiableMap(LinkedHashMap(source).apply { remove(key) })
 
 // The final original of the reading document gets one spare interactive request so a fast
 // reader cannot outrun a displayable episode end. It is not visible work and never displaces
@@ -737,6 +817,26 @@ private fun pagePriorities(
 ): LinkedHashMap<PageId, WorkPriority> {
     val result = linkedMapOf<PageId, WorkPriority>()
     state.requiredDimensions.forEach { result[it] = WorkPriority.FOCUS }
+    // A blocked replay names only the head of its queue. While a gesture owns the frame, start
+    // the pages behind the blocker as well so a fast catch-up walk resolves their geometry in
+    // one fetch round instead of stalling on each page's own download in turn (both directions:
+    // reverse bursts included). The opening is exempt: its FOCUS/VISIBLE pages must keep the
+    // lanes while they publish, so no speculative page rides beside them.
+    if (interactionActive) {
+        state.requiredDimensions.forEach { blocked ->
+            val manifest = plans[blocked.episodeId]?.manifest ?: return@forEach
+            val index = manifest.pages.indexOfFirst { it.id == blocked }
+            if (index < 0) return@forEach
+            for (offset in 1..BLOCKED_DIMENSION_WINDOW) {
+                val id = manifest.pages.getOrNull(index + offset)?.id ?: break
+                result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
+            }
+            for (offset in 1..BLOCKED_DIMENSION_BACKWARD_WINDOW) {
+                val id = manifest.pages.getOrNull(index - offset)?.id ?: break
+                result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
+            }
+        }
+    }
     state.visibleRegions.forEach { region ->
         result.putIfAbsent(
             region.pageId,

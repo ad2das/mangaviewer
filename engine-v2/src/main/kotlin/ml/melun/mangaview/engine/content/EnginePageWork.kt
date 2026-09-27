@@ -94,9 +94,11 @@ class EnginePageWork(
         val candidates = plan.page(pageId).candidates
         var failure: IOException? = null
         for (candidate in candidates.indices) {
-            val response = try {
+            val opened = try {
                 val request = planner.pageRequest(plan, pageId, candidate, context.priority.value)
-                checkedResponse(transport.execute(request))
+                val response = checkedResponse(transport.execute(request))
+                OpenedPage(response.body, response.contentLength, response.contentType,
+                    response.header("ETag"), response.header("Last-Modified"))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: IOException) {
@@ -106,9 +108,38 @@ class EnginePageWork(
                 failure = error
                 continue
             }
-            val opened = OpenedPage(response.body, response.contentLength, response.contentType,
-                response.header("ETag"), response.header("Last-Modified"))
-            return prepareWithPromotion(context, plan, pageId, opened, reportGeometry)
+            try {
+                return prepareWithPromotion(context, plan, pageId, opened, reportGeometry)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: IOException) {
+                // The connection can die while the body streams (an HTTP/2 reset): that is not the
+                // mirror's answer, so this candidate gets one fresh-connection attempt before the
+                // next mirror. prepareWithPromotion already released the failed body.
+                failure?.let { if (it !== error) error.addSuppressed(it) }
+                failure = error
+            }
+            val retried = try {
+                val request = planner.pageRequest(plan, pageId, candidate, context.priority.value)
+                val response = checkedResponse(transport.executeOnFreshRoute(request))
+                OpenedPage(response.body, response.contentLength, response.contentType,
+                    response.header("ETag"), response.header("Last-Modified"))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: IOException) {
+                failure?.let { if (it !== error) error.addSuppressed(it) }
+                failure = error
+                continue
+            }
+            try {
+                return prepareWithPromotion(context, plan, pageId, retried, reportGeometry)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: IOException) {
+                failure?.let { if (it !== error) error.addSuppressed(it) }
+                failure = error
+                continue
+            }
         }
         throw checkNotNull(failure)
     }

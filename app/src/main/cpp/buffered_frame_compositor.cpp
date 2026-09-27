@@ -477,10 +477,21 @@ private:
 int acquireFence(const Functions& functions) {
     const auto display = eglGetCurrentDisplay();
     const EGLint attributes[] = {EGL_NONE};
-    EGLSyncKHR sync = functions.sync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, attributes);
+    EGLSyncKHR sync = EGL_NO_SYNC_KHR;
+    {
+        ScopedTraceSection phase("engine_gpu_sync_create");
+        sync = functions.sync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, attributes);
+    }
     if (sync == EGL_NO_SYNC_KHR) return -1;
-    glFlush();
-    const int fence = functions.fence(display, sync);
+    {
+        ScopedTraceSection phase("engine_gpu_flush");
+        glFlush();
+    }
+    int fence = -1;
+    {
+        ScopedTraceSection phase("engine_gpu_fence_dup");
+        fence = functions.fence(display, sync);
+    }
     functions.destroySync(display, sync);
     return fence;
 }
@@ -696,8 +707,14 @@ bool BufferedFrameCompositor::presentReady(std::int64_t token) noexcept {
     if (state.drawing < 0 || token <= 0) return false;
     auto& frame = state.frames[state.drawing];
     std::uint64_t bufferId = 0;
-    if (state.functions.bufferId) state.functions.bufferId(frame.buffer, &bufferId);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    {
+        ScopedTraceSection phase("engine_buffered_buffer_id");
+        if (state.functions.bufferId) state.functions.bufferId(frame.buffer, &bufferId);
+    }
+    {
+        ScopedTraceSection phase("engine_buffered_unbind");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
     const int gpuFence = acquireFence(state.functions);
     if (gpuFence < 0) {
         if (ATrace_isEnabled()) traceGpuFenceMissing(state.generation, token, bufferId, "acquire");

@@ -304,6 +304,10 @@ internal class EngineAppGraph(
     // re-opens and the neighbour-prefetched next episode resolve its plan without that round trip.
     private val newxtoonDocumentCache = EpisodeDocumentDiskCache(
         File(context.cacheDir, "newxtoon_episode_docs_v1"), 60 * 60_000L)
+    // WFWF's crossed episode documents stay reusable: a reverse burst or a re-pin into territory
+    // the geometry already read must not pay another provider round trip.
+    private val wfwfDocumentCache = EpisodeDocumentDiskCache(
+        File(context.cacheDir, "wfwf_episode_docs_v1"), 60 * 60_000L)
     private val ntkBrowser by lazy {
         NtkEngineBrowserClient(context, userAgent, ntkIdentity,
             captureEvidence = { ntkAuthorizationEvidenceObserver != null }) {
@@ -315,7 +319,7 @@ internal class EngineAppGraph(
         val live = when (spec.sourceId.value) {
             "wfwf" -> EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
-                wfwfOriginProbe, { origins.remember("wfwf", it.toString()) })
+                wfwfOriginProbe, { origins.remember("wfwf", it.toString()) }, documentStore = wfwfDocumentCache)
             "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent(), URI(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,

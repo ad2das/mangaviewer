@@ -40,6 +40,13 @@ internal class SessionWorkSet(
      * run once the owner thread is free. A null keeps the scope's dispatcher.
      */
     private val demandDispatcher: CoroutineDispatcher? = null,
+    /**
+     * While a demand is still desired, a failed attempt restarts itself after this backoff instead of
+     * parking until an external retry. A transient provider failure must not wedge the boundary for
+     * the rest of the session.
+     */
+    private val retryDelayNanos: Long = 1_000_000_000L,
+    private val clock: () -> Long = System::nanoTime,
 ) {
     private val owner = Thread.currentThread()
     private val entries = linkedMapOf<WorkKey<*>, Entry>()
@@ -52,6 +59,7 @@ internal class SessionWorkSet(
     fun reconcile(demands: List<SessionDemand<*>>) {
         checkOwner()
         if (closed) return
+        if (retryDueFailures()) desired.values.forEach(::startIfAbsent)
         // Both owners hand back the identical list instance while their versioned demand key is
         // unchanged, and every demand a completed entry needs is restarted by finish(). Reconciling
         // that same list again would rebuild the desired map and rescan every entry without changing
@@ -83,6 +91,24 @@ internal class SessionWorkSet(
             if (it.job?.isCompleted == true) entries.remove(it.key) else it.retryRequested = true
         }
         desired.values.forEach(::startIfAbsent)
+    }
+
+    /**
+     * A failed demand whose backoff elapsed restarts while it is still desired: a transient work
+     * failure must not park the boundary for the rest of the session. The owning reconcile pass
+     * relaunches every desired key afterwards, so this only drops the spent entry.
+     */
+    private fun retryDueFailures(): Boolean {
+        val now = clock()
+        var restarted = false
+        entries.values.toList().forEach { entry ->
+            if (entry.failed && entry.job?.isCompleted == true && now >= entry.retryAtNanos) {
+                if (entries[entry.key] === entry) entries.remove(entry.key)
+                System.err.println("EngineWork retry key=${entry.key}")
+                restarted = true
+            }
+        }
+        return restarted
     }
 
     fun ownership(): SessionWorkOwnership {
@@ -152,13 +178,16 @@ internal class SessionWorkSet(
         }
         entry.subscription = null
         entry.ready = false
-        if (!entry.failed || entry.retiring || entry.retryRequested || closed) {
+        if (!entry.failed || entry.retiring || entry.retryRequested || closed || !desired.containsKey(entry.key)) {
             if (entries[entry.key] === entry) entries.remove(entry.key)
             desired[entry.key]?.let(::startIfAbsent)
+        } else {
+            entry.retryAtNanos = clock() + retryDelayNanos
         }
     }
 
     private fun notifyFailure(key: WorkKey<*>, failure: Throwable, handler: ((Throwable) -> Unit)? = null) {
+        System.err.println("EngineWork failure key=$key error=${failure::class.java.simpleName}: ${failure.message}")
         try { if (handler != null) handler(failure) else reportFailure(key, failure) } catch (observerFailure: Throwable) {
             if (observerFailure !== failure) observerFailure.addSuppressed(failure)
             registerCleanupFailure(observerFailure)
@@ -202,5 +231,6 @@ internal class SessionWorkSet(
         var retiring = false
         var failed = false
         var retryRequested = false
+        var retryAtNanos = 0L
     }
 }

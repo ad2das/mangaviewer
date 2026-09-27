@@ -1,5 +1,6 @@
 package ml.melun.mangaview.engine.content
 
+import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
@@ -105,9 +106,33 @@ class EngineEpisodeWork(
     }
 
     private suspend fun fetch(episodeId: EpisodeId, origin: URI, priority: WorkPriority): SourceDocument {
+        var failure: IOException? = null
+        for (attempt in 0..1) {
+            try {
+                return fetchOnce(episodeId, origin, priority, freshRoute = attempt > 0)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: IOException) {
+                // A status answer will not change on another route; a connection that dies mid-body
+                // can. The document is a plain GET, so one fresh-route attempt is safe.
+                if (error is PageHttpException) throw error
+                failure?.let { if (it !== error) error.addSuppressed(it) }
+                failure = error
+            }
+        }
+        throw checkNotNull(failure)
+    }
+
+    private suspend fun fetchOnce(
+        episodeId: EpisodeId,
+        origin: URI,
+        priority: WorkPriority,
+        freshRoute: Boolean,
+    ): SourceDocument {
         val startedAtNanos = System.nanoTime()
-        val response = transport.execute(planner.documentRequest(episodeId, origin, priority))
-        System.err.println("NtkDoc phase=document-headers ms=${(System.nanoTime() - startedAtNanos) / 1_000_000L}")
+        val request = planner.documentRequest(episodeId, origin, priority)
+        val response = if (freshRoute) transport.executeOnFreshRoute(request) else transport.execute(request)
+        System.err.println("NtkDoc ep=${episodeId.remoteKey} priority=$priority phase=document-headers ms=${(System.nanoTime() - startedAtNanos) / 1_000_000L}")
         val length = response.contentLength
         try {
             if (response.statusCode != 200) throw PageHttpException(response.statusCode)
@@ -122,7 +147,7 @@ class EngineEpisodeWork(
         }
         // readBytes owns closure, including failures. SourceDocument receives complete immutable bytes.
         val bytes = response.readBytes(maxDocumentBytes)
-        System.err.println("NtkDoc phase=document-body ms=${(System.nanoTime() - startedAtNanos) / 1_000_000L} bytes=${bytes.size}")
+        System.err.println("NtkDoc ep=${episodeId.remoteKey} priority=$priority phase=document-body ms=${(System.nanoTime() - startedAtNanos) / 1_000_000L} bytes=${bytes.size}")
         require(length == null || length == bytes.size.toLong()) {
             "Episode document body length mismatch"
         }

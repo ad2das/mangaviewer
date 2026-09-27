@@ -17,6 +17,14 @@ import ml.melun.mangaview.engine.api.SessionUpdate
 import ml.melun.mangaview.engine.api.SourceAnchor
 import java.util.ArrayDeque
 
+/**
+ * A page-geometry result for a page the geometry does not hold: its document was pruned while the
+ * demand was in flight, or has not been delivered yet. The session never accepts geometry outside
+ * its accepted manifests; the runtime treats this specific rejection as an inert late result.
+ */
+internal class UnknownPageDimensionsException(pageId: PageId) :
+    IllegalArgumentException("Dimensions arrived for an unknown page: $pageId")
+
 /** Main-thread-owned reducer for one reading session. */
 class EngineSession(
     private val sessionId: Long,
@@ -38,6 +46,8 @@ class EngineSession(
     private var replayYielded = false
     private val presentation = SessionViewportReadiness()
     private var publishedSnapshot: EngineSessionSnapshot? = null
+    /** Last geometry blocker a pending input met, so a stall transition is logged exactly once. */
+    private var lastStallBlocker: GeometryBlocker? = null
 
     init {
         require(sessionId > 0L) { "Session id must be positive" }
@@ -134,7 +144,12 @@ class EngineSession(
         require(pageId.episodeId.seriesId == geometry.targetEpisodeId.seriesId) {
             "Page belongs to another source or series"
         }
-        require(geometry.page(pageId) != null) { "Dimensions arrived for an unknown page: $pageId" }
+        // A read-ahead demand can outlive its document: the geometry prunes a manifest once the
+        // reading position leaves its window while the demand is still in flight. The session
+        // keeps its invariant — only accepted manifest pages carry geometry — and signals this
+        // specific rejection so the runtime can treat the late result as inert instead of
+        // failing the containing work.
+        if (geometry.page(pageId) == null) throw UnknownPageDimensionsException(pageId)
         val old = geometry.actualDimensions[pageId]
         require(old == null || old == dimensions) { "Conflicting dimensions for $pageId" }
         if (old == dimensions) return emptyList()
@@ -272,6 +287,12 @@ class EngineSession(
         pending.applied += result.consumed
         pending.remaining = result.remaining
         pending.blocker = result.blocker
+        if (result.blocker != lastStallBlocker) {
+            lastStallBlocker = result.blocker
+            result.blocker?.let {
+                System.err.println("SessionStall blocker=$it generation=$generationValue pending=${pendingInputs.size}")
+            }
+        }
         val changed = beforeApplied != pending.applied || beforeRemaining != pending.remaining
         presentation.moved(result.consumed)
         when {

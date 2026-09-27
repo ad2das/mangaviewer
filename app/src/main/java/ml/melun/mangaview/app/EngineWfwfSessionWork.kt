@@ -30,14 +30,21 @@ internal class EngineWfwfSessionWork(
     private val initialAnchor: SourceAnchor? = null,
     /** Probes must not ride the directory-rewriting transport, or every candidate folds back onto the stale origin. */
     originProbe: WfwfOriginResolver? = null,
-    onOriginResolved: ((URI) -> Unit)? = null,
+    private val onOriginResolved: ((URI) -> Unit)? = null,
+    /**
+     * Disk boundary for episode documents. A crossed document stays reusable, so a reversal or a
+     * re-pin into territory the geometry already read resolves its plan without a provider round
+     * trip (a cold fetch otherwise costs seconds on the emulator network).
+     */
+    private val documentStore: EpisodeDocumentStore? = null,
 ) : EngineViewerWork {
     private val principal = "wfwf:public"
     private val planner = WfwfAccessPlanner(userAgent)
     private val catalog = WfwfEpisodeCatalogPlanner(userAgent)
     private val origins = EngineWfwfOriginWork(origin, onOriginResolved,
         (originProbe ?: WfwfOriginResolver(transport, userAgent, probeParallelism = 4))::resolve)
-    private val episodes = EngineEpisodeWork(principal, planner, transport, parsingDispatcher, observer = observer)
+    private val episodes = EngineEpisodeWork(principal, planner, transport, parsingDispatcher, observer = observer,
+        documentStore = documentStore)
     private val pages = EnginePageWork(principal, planner, transport, storage) { _, _, _ ->
         error("WFWF returned an unsupported access prerequisite")
     }
