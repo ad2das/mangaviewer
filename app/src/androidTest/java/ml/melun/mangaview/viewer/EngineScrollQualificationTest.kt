@@ -507,18 +507,27 @@ class EngineScrollQualificationTest {
             activeLedger.activateMeasurement()
             SystemClock.sleep(1_500L)
 
+            // Opt-in only: the sampler's pings perturb frame pacing, so measured runs leave it off.
+            val stallSampler = if (androidx.test.platform.app.InstrumentationRegistry.getArguments()
+                    .getString("stallSampler") == "true") MainThreadStallSampler.start() else null
             val deadline = SystemClock.elapsedRealtime() + durationMillis
             var index = 0
             var stalledGestures = 0
             var forcedReverseGestures = 0
+            var forcedForwardGestures = 0
             var movingBefore = activeLedger.stageMeasuredFrames(EngineScrollQualificationPolicy.STREAMING)
             while (SystemClock.elapsedRealtime() < deadline) {
-                val forward = if (forcedReverseGestures > 0) false else index % 30 < 27
+                val forward = when {
+                    forcedForwardGestures > 0 -> true
+                    forcedReverseGestures > 0 -> false
+                    else -> index % 30 < 27
+                }
                 injectEngineTraversalGesture(
                     instrumentation, device, output, index, forward,
                     EngineTraversalGestureSpeed.FLING,
                 )
                 if (forcedReverseGestures > 0) forcedReverseGestures -= 1
+                if (forcedForwardGestures > 0) forcedForwardGestures -= 1
                 index += 1
                 gestures = index
                 activeLedger.recordGesture()
@@ -539,7 +548,13 @@ class EngineScrollQualificationTest {
                 } else {
                     stalledGestures += 1
                     if (stalledGestures >= FLING_STALL_GESTURES) {
-                        forcedReverseGestures = FLING_REVERSE_BURST
+                        // Turn away from the direction that just stalled. Re-arming the same
+                        // reverse burst cannot escape the series start: every reverse gesture
+                        // clamps there, the scene never moves, and the detector would force
+                        // another reverse burst forever. Stalling while reversing therefore
+                        // forces a forward burst instead, and vice versa.
+                        if (forward) forcedReverseGestures = FLING_TURNAROUND_BURST
+                        else forcedForwardGestures = FLING_TURNAROUND_BURST
                         forcedReverseBursts += 1
                         stalledGestures = 0
                     }
@@ -547,6 +562,7 @@ class EngineScrollQualificationTest {
                 movingBefore = movingNow
                 SystemClock.sleep(interGestureMillis)
             }
+            stallSampler?.stop()
             SystemClock.sleep(1_200L)
             activeLedger.drain(activity, requireNotNull(recorder))
             activeLedger.endStage(budgetExhausted = false)
@@ -555,11 +571,58 @@ class EngineScrollQualificationTest {
     }
 }
 
+/**
+ * Samples main-thread responsiveness during a stress stage. A worker pings the main looper and,
+ * when a ping is delayed beyond the app-late threshold, captures the stack the main thread is
+ * executing so a submission hiccup can be attributed to the code that caused it.
+ */
+private class MainThreadStallSampler private constructor() {
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private val mainThread = android.os.Looper.getMainLooper().thread
+    @Volatile private var running = true
+    private var samples = 0
+
+    private val worker = Thread {
+        while (running) {
+            val postedAt = SystemClock.elapsedRealtimeNanos()
+            val latch = java.util.concurrent.CountDownLatch(1)
+            main.post { latch.countDown() }
+            var captured = false
+            try {
+                while (true) {
+                    if (latch.await(8, java.util.concurrent.TimeUnit.MILLISECONDS)) break
+                    val waited = SystemClock.elapsedRealtimeNanos() - postedAt
+                    if (!captured && waited > 32_000_000L && samples < 300) {
+                        captured = true
+                        samples++
+                        val stack = mainThread.stackTrace.take(28).joinToString("\n") { "    at $it" }
+                        System.err.println("MainStall gap=${waited / 1_000_000}ms sample=$samples\n$stack")
+                    }
+                    if (waited > 3_000_000_000L) break
+                }
+            } catch (interrupted: InterruptedException) {
+                return@Thread
+            }
+            try { Thread.sleep(8) } catch (interrupted: InterruptedException) { return@Thread }
+        }
+    }.apply { name = "main-stall-sampler"; isDaemon = true }
+
+    fun stop() {
+        running = false
+        worker.interrupt()
+        worker.join(500)
+    }
+
+    companion object {
+        fun start(): MainThreadStallSampler = MainThreadStallSampler().also { it.worker.start() }
+    }
+}
+
 /** Gestures without a newly measured moving frame before the chain turns around. */
 private const val FLING_STALL_GESTURES = 10
 
-/** Reverse gestures injected after a stalled chain so the soak keeps covering content. */
-private const val FLING_REVERSE_BURST = 12
+/** Gestures injected in the opposite direction after a stalled chain so the soak keeps covering content. */
+private const val FLING_TURNAROUND_BURST = 12
 
 /** The emulator display's only supported rate is 60.000004 Hz; intended-vsync arithmetic uses 60 Hz. */
 private const val INTENDED_VSYNC_NANOS = 16_666_666L

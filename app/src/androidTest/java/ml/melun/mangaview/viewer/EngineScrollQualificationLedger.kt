@@ -175,11 +175,15 @@ internal class EngineScrollQualificationLedger(
         inputCursor = batch.latestOrdinal
         for (observation in batch.observations) {
             latestPendingInputCount = observation.pendingInputCount
-            if (observation.receipt.outcome == InputOutcome.DEFERRED) {
-                deferredInputStreak += 1L
-            } else {
-                deferredInputStreak = 0L
-                lastResolvedInputPendingCount = observation.pendingInputCount
+            when (observation.receipt.outcome) {
+                // An evicted input is not resolution: a saturated queue alternating DEFERRED and
+                // CANCELLED is exactly a stalled pipeline, and it has to accumulate until the
+                // streak check fails the run instead of resetting on every eviction.
+                InputOutcome.DEFERRED, InputOutcome.CANCELLED -> deferredInputStreak += 1L
+                else -> {
+                    deferredInputStreak = 0L
+                    lastResolvedInputPendingCount = observation.pendingInputCount
+                }
             }
         }
     }

@@ -24,18 +24,17 @@ class DocumentGeometryWindowTest {
     @Test
     fun keepsOnlyTheReadingWindowAndTheTarget() {
         val geometry = DocumentGeometry(episode(1), EngineViewport(100, 150))
-        (1..10).forEach { number ->
+        (1..30).forEach { number ->
             geometry.addManifest(
-                manifest(number, (number - 1).takeIf { it >= 1 }, (number + 1).takeIf { it <= 10 }), true,
+                manifest(number, (number - 1).takeIf { it >= 1 }, (number + 1).takeIf { it <= 30 }), true,
             )
         }
-        assertEquals(10, geometry.manifests.size)
-        geometry.retainWindow(episode(6), episode(1))
-        // Anchor 6, two navigation links each way (4, 5, 7, 8), and the session's target 1.
-        assertEquals(
-            setOf(episode(1), episode(4), episode(5), episode(6), episode(7), episode(8)),
-            geometry.manifests.keys.toSet(),
-        )
+        assertEquals(30, geometry.manifests.size)
+        geometry.retainWindow(episode(20), episode(1))
+        // Anchor 20, a deep backward chain (12 links: 8..19), two forward links (21, 22), and the
+        // session's target 1.
+        val expected = setOf(episode(1)) + (8..22).map(::episode).toSet()
+        assertEquals(expected, geometry.manifests.keys.toSet())
         assertEquals(geometry.manifests.keys.toSet(), geometry.navigationKnown.keys.toSet())
         assertTrue(geometry.actualDimensions.keys.all { it.episodeId in geometry.manifests.keys })
     }
