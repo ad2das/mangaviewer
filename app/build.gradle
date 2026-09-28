@@ -17,7 +17,10 @@ android {
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
 
         ndk {
-            abiFilters 'arm64-v8a', 'x86_64'
+            // -PdevAbis=x86_64 (comma separated) narrows the native build for fast local loops;
+            // the default keeps both distributed ABIs.
+            def devAbis = (project.findProperty('devAbis') ?: 'arm64-v8a,x86_64').toString().split(',')
+            abiFilters(*devAbis)
         }
         externalNativeBuild {
             cmake {
