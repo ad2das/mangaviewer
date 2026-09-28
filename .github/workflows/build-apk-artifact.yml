@@ -81,7 +81,7 @@ jobs:
             printf '%s' "$GOOGLE_SERVICES_XML" > app/src/main/res/values/google_services.xml
           fi
 
-      - name: Build debug APK artifact
+      - name: Build release APK artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -92,18 +92,19 @@ jobs:
             echo "Could not read versionCode/versionName from app/build.gradle" >&2
             exit 1
           fi
+          # Legacy name kept stable: the in-app updater validates exactly this asset pattern.
           apk_name="mangaViewer_${version_code}-debug.apk"
           download_url="https://github.com/${REPO_NAME}/releases/download/${RELEASE_TAG}/${apk_name}"
 
           chmod +x ./gradlew
-          ./gradlew --build-cache --parallel :app:assembleDebug
+          ./gradlew --build-cache --parallel :app:assembleRelease
 
           stable_apk="$(python3 - <<'PY'
           import json
           from pathlib import Path
 
-          metadata = json.loads(Path("app/build/outputs/apk/debug/output-metadata.json").read_text(encoding="utf-8"))
-          print(Path("app/build/outputs/apk/debug") / metadata["elements"][0]["outputFile"])
+          metadata = json.loads(Path("app/build/outputs/apk/release/output-metadata.json").read_text(encoding="utf-8"))
+          print(Path("app/build/outputs/apk/release") / metadata["elements"][0]["outputFile"])
           PY
           )"
           test -f "${stable_apk}"
@@ -125,7 +126,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mangaviewer-debug-apk
+          name: mangaviewer-release-apk
           path: release-artifact/*
           if-no-files-found: error
           retention-days: 14

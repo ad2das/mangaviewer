@@ -23,8 +23,9 @@ release_id="$(gh api "repos/${repo}/releases/tags/${release_tag}" --jq '.id')"
 gh api --paginate "repos/${repo}/releases/${release_id}/assets" > release-work/published-assets.json
 version_code="$(python3 tools/release_version.py next --base "${version_code}" --assets release-work/published-assets.json)"
 
+# Legacy name kept stable: the in-app updater validates exactly this asset pattern.
 apk_name="mangaViewer_${version_code}-debug.apk"
-apk_path="app/build/outputs/apk/debug/${apk_name}"
+apk_path="app/build/outputs/apk/release/${apk_name}"
 download_url="https://github.com/${repo}/releases/download/${release_tag}/${apk_name}"
 
 echo "versionCode=${version_code}"
@@ -52,15 +53,16 @@ path.write_text(text, encoding="utf-8")
 PY
 
 chmod +x ./gradlew
+# The published APK is an R8 release build; only the file name keeps its legacy "-debug" suffix.
 ./gradlew --configuration-cache --build-cache --parallel \
-  :app:assembleDebug
+  :app:assembleRelease
 
 stable_apk="$(python3 - <<'PY'
 import json
 from pathlib import Path
 
-metadata = json.loads(Path("app/build/outputs/apk/debug/output-metadata.json").read_text(encoding="utf-8"))
-print(Path("app/build/outputs/apk/debug") / metadata["elements"][0]["outputFile"])
+metadata = json.loads(Path("app/build/outputs/apk/release/output-metadata.json").read_text(encoding="utf-8"))
+print(Path("app/build/outputs/apk/release") / metadata["elements"][0]["outputFile"])
 PY
 )"
 
