@@ -399,6 +399,10 @@ internal class IncrementalHeaderProbe(private val maximumBytes: Int) {
 
     fun result(): ImageHeader = header ?: ImageHeaderProbe.inspect(bytes, used)
 
+    /** First bytes as hex, for diagnosing provider bodies the image probe cannot read. */
+    fun headHex(maxBytes: Int = 16): String =
+        (0 until minOf(used, maxBytes)).joinToString("") { "%02X".format(bytes[it]) }
+
     private fun growIfFull() {
         if (used < bytes.size || bytes.size == maximumBytes) return
         bytes = bytes.copyOf(minOf(maximumBytes, bytes.size * 2))

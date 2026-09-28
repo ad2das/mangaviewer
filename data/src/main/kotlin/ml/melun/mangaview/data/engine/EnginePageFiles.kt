@@ -183,7 +183,14 @@ private class EngineBodyDigest {
 
     fun page(pageId: PageId, revision: String, file: File): StoredPage {
         require(length > 0L) { "Empty page body" }
-        val image = header.result()
+        // A body that is not a supported image is a provider anomaly (a soft-block page or a
+        // format the probe cannot read), not a programming error: surface it as a fetch failure
+        // so the page work retries another route/candidate instead of failing the session.
+        val image = try {
+            header.result()
+        } catch (unsupported: IllegalArgumentException) {
+            throw IOException("Page body is not a supported image: ${unsupported.message} head=${header.headHex()}")
+        }
         return StoredPage(pageId, revision, file, length, digest.digest().hex(), image.dimensions, image.mediaType)
     }
 }

@@ -118,6 +118,8 @@ class EnginePageWork(
                 // next mirror. prepareWithPromotion already released the failed body.
                 failure?.let { if (it !== error) error.addSuppressed(it) }
                 failure = error
+                System.err.println("EnginePageWork page-body-fail id=$pageId candidate=$candidate " +
+                    "url=${planner.pageRequest(plan, pageId, candidate, context.priority.value).url} error=${error.message}")
             }
             val retried = try {
                 val request = planner.pageRequest(plan, pageId, candidate, context.priority.value)
@@ -141,7 +143,9 @@ class EnginePageWork(
                 continue
             }
         }
-        throw checkNotNull(failure)
+        throw checkNotNull(failure).also {
+            System.err.println("EnginePageWork page-failed id=$pageId error=${it.message}")
+        }
     }
 
     private suspend fun prepareWithPromotion(
