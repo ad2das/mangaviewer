@@ -90,7 +90,7 @@ class EngineSessionRuntime(
     private val retainedCachedPlans = linkedMapOf<EpisodeId, CachedPlan>()
     private val pageDemands = SessionPageDemands(source, ::acceptPageGeometry,
         { generation, id, plan, page -> if (isCurrent(generation)) acceptPage(generation, id, plan, page) },
-        { id -> markPageFailure(id) })
+        { id -> markPageFailure(id, failedReadAheadPages) { process(SessionUpdate(session.snapshot)) } })
     private var pages: Map<PageId, PageContentIdentity> = emptyMap()
     private val prepared = linkedSetOf<PageId>()
     private val earlyTransfers = EarlyOriginalTransfers()
@@ -99,13 +99,7 @@ class EngineSessionRuntime(
     /** Required documents whose held plan was already re-delivered in this bout. */
     private val redeliveredManifests = linkedSetOf<EpisodeId>()
     private val failedEpisodeRetryAt = mutableMapOf<EpisodeId, Long>()
-    private val launchGeneration = session.snapshot.generation
-    private val launchEpisode = initialEpisode
-    private var launchManifestAcceptedAtNanos: Long? = null
-    private var launchManifestContentRevision: String? = null
-    private var launchManifestPageIds: List<PageId> = emptyList()
-    private val launchVerifiedPages = linkedMapOf<PageId, EngineVerifiedPageObservation>()
-    private var launchAllPreparedAtNanos: Long? = null
+    private val launch = LaunchPreparationRecorder(session.snapshot.generation, initialEpisode, observationClock)
     private val receipts = mutableListOf<InputReceipt>()
     private var targetEpisode = initialEpisode
     private var positionResolved = false
@@ -222,10 +216,7 @@ class EngineSessionRuntime(
     /** Pull-only owner-thread evidence; never collected from the update or frame path. */
     fun diagnosticSnapshot(): EngineSessionRuntimeDiagnosticSnapshot {
         checkOwner()
-        return EngineSessionRuntimeDiagnosticSnapshot(snapshot, work.ownership(), EngineLaunchPreparationSnapshot(
-            launchGeneration, launchEpisode, launchManifestAcceptedAtNanos,
-            Collections.unmodifiableList(launchManifestPageIds.toList()),
-            immutableMap(launchVerifiedPages), launchAllPreparedAtNanos), prepared.size)
+        return EngineSessionRuntimeDiagnosticSnapshot(snapshot, work.ownership(), launch.snapshot(), prepared.size)
     }
 
     fun releaseStartupInput() {
@@ -280,7 +271,10 @@ class EngineSessionRuntime(
                 val demand = when {
                     !started || closed -> emptyList()
                     foreground -> {
-                        redeliverRetainedManifests(state)
+                        redeliverRetainedManifests(state, plans, redeliveredManifests, { session.dispatch(it) }) {
+                            receipts += it.receipts
+                            dirty = true
+                        }
                         cachedDemands(state)
                     }
                     else -> cachedPlanPins(retainedCachedPlans)
@@ -294,59 +288,6 @@ class EngineSessionRuntime(
             processing = false
         }
         inputReplay.schedule()
-    }
-
-    private fun markPageFailure(id: PageId) {
-        failedReadAheadPages += id
-        while (failedReadAheadPages.size > MAXIMUM_FAILED_READ_AHEAD_PAGES) {
-            failedReadAheadPages.remove(failedReadAheadPages.first())
-        }
-        process(SessionUpdate(session.snapshot))
-    }
-
-    /**
-     * A long read can cross many documents in place. A plan for a document far behind is never read
-     * again (its page metadata was already dropped), and a retained cached plan additionally pins the
-     * episode's work record and file leases, so keep the plan set inside a window around the reading
-     * position instead of letting it grow with every episode crossed.
-     */
-    private fun retainPlanWindow(state: EngineSessionSnapshot) {
-        val dropped = planWindowToDrop(plans, state, targetEpisode, pages, RETAINED_PLAN_EPISODES)
-        if (dropped.isEmpty()) return
-        val retained = LinkedHashMap(plans)
-        dropped.forEach(retained::remove)
-        plans = immutableMap(retained)
-        dropped.forEach(retainedCachedPlans::remove)
-    }
-
-    /**
-     * The session prunes its own manifest window around the reading position, but a document it
-     * still requires can be gone from the geometry while this runtime keeps the plan. Re-dispatching
-     * the held manifest is instant and idempotent — the same deliverable the plan produced when it
-     * was first accepted — so a reversal into pruned territory resumes without a provider round
-     * trip. A rejected re-delivery falls back to the demand path, whose failure handling owns the
-     * retry.
-     */
-    private fun redeliverRetainedManifests(state: EngineSessionSnapshot) {
-        if (state.requiredEpisodes.isEmpty()) {
-            redeliveredManifests.clear()
-            return
-        }
-        redeliveredManifests.retainAll(state.requiredEpisodes)
-        state.requiredEpisodes.forEach { id ->
-            val plan = plans[id] ?: return@forEach
-            // One re-delivery per required bout: a document that stays required for another reason
-            // must not re-dispatch the same manifest on every pass of the update loop.
-            if (!redeliveredManifests.add(id)) return@forEach
-            val update = try {
-                session.dispatch(SessionEvent.ManifestResolved(state.generation, plan.manifest, plan.navigationKnown))
-            } catch (failure: Throwable) {
-                System.err.println("EngineWork redeliver-failed id=$id error=${failure::class.java.simpleName}: ${failure.message}")
-                return@forEach
-            }
-            receipts += update.receipts
-            dirty = true
-        }
     }
 
     /** Demand inputs are versioned by preparation, not by input revision: a scroll that only
@@ -368,7 +309,7 @@ class EngineSessionRuntime(
     }
 
     private fun demands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
-        retainPlanWindow(state)
+        plans = applyPlanWindow(plans, retainedCachedPlans, state, targetEpisode, pages)
         val result = mutableListOf<SessionDemand<*>>()
         val generation = state.generation
         if (!positionResolved) result += SessionDemand(source.position(targetEpisode)) { position ->
@@ -414,13 +355,7 @@ class EngineSessionRuntime(
                 if (isCurrent(generation)) acceptNavigation(generation, anchorEpisode, navigation)
             }
         }
-        state.requiredNavigation.forEach { id ->
-            if (plans[id]?.navigationKnown == false) {
-                result += SessionDemand(source.navigation(id, WorkPriority.INTERACTIVE)) { navigation ->
-                    if (isCurrent(generation)) acceptNavigation(generation, id, navigation)
-                }
-            }
-        }
+        navigationDemands(state, generation, result)
         pageDemands.retain(wantedPages.keys)
         wantedPages.forEach { (id, priority) ->
             val plan = plans[id.episodeId] ?: return@forEach
@@ -428,6 +363,21 @@ class EngineSessionRuntime(
         }
         result += cachedPlanPins(retainedCachedPlans)
         return result
+    }
+
+    /** Boundary navigation documents the geometry still requires but whose plans lack adjacency. */
+    private fun navigationDemands(
+        state: EngineSessionSnapshot,
+        generation: Long,
+        result: MutableList<SessionDemand<*>>,
+    ) {
+        state.requiredNavigation.forEach { id ->
+            if (plans[id]?.navigationKnown == false) {
+                result += SessionDemand(source.navigation(id, WorkPriority.INTERACTIVE)) { navigation ->
+                    if (isCurrent(generation)) acceptNavigation(generation, id, navigation)
+                }
+            }
+        }
     }
 
     private fun acceptPageGeometry(generation: Long, id: PageId, plan: EpisodeAccessPlan, metadata: WorkMetadata) {
@@ -443,7 +393,7 @@ class EngineSessionRuntime(
             // The document was pruned while this read-ahead demand was in flight. The result is
             // inert: forget any earlier acceptance so a later delivery of the document re-derives
             // this page's geometry instead of trusting a stale prepared marker.
-            forgetAcceptedPage(id)
+            forgetAcceptedPage(id, prepared, pages) { pages = it }
             return
         }
         process(update)
@@ -468,11 +418,7 @@ class EngineSessionRuntime(
         require(plan.manifest.id == expected)
         val update = session.dispatch(SessionEvent.ManifestResolved(generation, plan.manifest, plan.navigationKnown))
         plans = withEntry(plans, expected, plan)
-        if (generation == launchGeneration && expected == launchEpisode && launchManifestAcceptedAtNanos == null) {
-            launchManifestPageIds = plan.manifest.pages.map { it.id }
-            launchManifestContentRevision = plan.contentRevision
-            launchManifestAcceptedAtNanos = observationClock().also { require(it > 0L) }
-        }
+        launch.onManifestAccepted(expected, generation, plan)
         process(update)
     }
 
@@ -487,22 +433,11 @@ class EngineSessionRuntime(
             session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
         } catch (stale: UnknownPageDimensionsException) {
             // See acceptPageGeometry: the document was pruned while this demand was in flight.
-            forgetAcceptedPage(expected)
+            forgetAcceptedPage(expected, prepared, pages) { pages = it }
             return
         }
         if (pages[expected] != identity) pages = withEntry(pages, expected, identity)
-        if (generation == launchGeneration && expected.episodeId == launchEpisode &&
-            page.contentRevision == launchManifestContentRevision && expected in launchManifestPageIds &&
-            expected !in launchVerifiedPages
-        ) {
-            val acceptedAt = observationClock().also { require(it > 0L) }
-            launchVerifiedPages[expected] = EngineVerifiedPageObservation(identity,
-                launchManifestPageIds.indexOf(expected), generation, update.snapshot.inputRevision,
-                update.snapshot.geometryRevision, acceptedAt)
-            if (launchAllPreparedAtNanos == null && launchManifestPageIds.isNotEmpty() &&
-                launchVerifiedPages.keys.containsAll(launchManifestPageIds)
-            ) launchAllPreparedAtNanos = acceptedAt
-        }
+        launch.onPageAccepted(expected, page, identity, generation, update.snapshot)
         process(update)
     }
 
@@ -518,15 +453,6 @@ class EngineSessionRuntime(
 
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
 
-    /**
-     * Drops acceptance markers for a page whose document the geometry no longer holds, so a later
-     * delivery of that document re-accepts the page's geometry instead of trusting a stale marker.
-     */
-    private fun forgetAcceptedPage(id: PageId) {
-        prepared -= id
-        if (pages.containsKey(id)) pages = withoutEntry(pages, id)
-    }
-
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
 }
 
@@ -538,13 +464,6 @@ private const val BOUNDARY_APPROACH_PAGES = 6
 private const val BOUNDARY_HEAD_PAGES = 10
 // A transient neighbor failure retries on its own instead of parking the boundary for the session.
 private const val EPISODE_RETRY_DELAY_NANOS = 3_000_000_000L
-
-// A long read can cross many documents in place; plans (and cached-plan pins, which hold the
-// episode's file leases) for documents far behind the reading position stay only inside this window.
-private const val RETAINED_PLAN_EPISODES = 8
-// Distinct failed read-ahead pages beyond this many are forgotten oldest-first; a page still on the
-// horizon is retried by its next demand.
-private const val MAXIMUM_FAILED_READ_AHEAD_PAGES = 256
 
 /** Keys to drop so the plan map stays inside its window; never drops a protected episode. */
 internal fun <V> planKeysToDrop(
@@ -675,10 +594,10 @@ private fun addNextOriginals(state: EngineSessionSnapshot, manifest: EpisodeMani
         .take(available).forEach { result[it.id] = WorkPriority.NEXT_EPISODE }
 }
 
-private fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmodifiableMap(LinkedHashMap(source))
-private fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
+internal fun <K, V> immutableMap(source: Map<K, V>): Map<K, V> = Collections.unmodifiableMap(LinkedHashMap(source))
+internal fun <K, V> withEntry(source: Map<K, V>, key: K, value: V): Map<K, V> =
     Collections.unmodifiableMap(LinkedHashMap(source).apply { put(key, value) })
-private fun <K, V> withoutEntry(source: Map<K, V>, key: K): Map<K, V> =
+internal fun <K, V> withoutEntry(source: Map<K, V>, key: K): Map<K, V> =
     if (!source.containsKey(key)) source
     else Collections.unmodifiableMap(LinkedHashMap(source).apply { remove(key) })
 
@@ -757,7 +676,7 @@ private fun retainPreparedMetadata(state: EngineSessionSnapshot, wantedPages: Se
         Collections.unmodifiableMap(pages.filterKeys { it.episodeId in episodes }) else pages
 }
 
-private class CachedPlan(val request: WorkRequest<EpisodeAccessPlan>, val plan: EpisodeAccessPlan)
+internal class CachedPlan(val request: WorkRequest<EpisodeAccessPlan>, val plan: EpisodeAccessPlan)
 
 private fun cachedPlanPins(retained: Map<EpisodeId, CachedPlan>): List<SessionDemand<*>> =
     retained.values.map { held ->
@@ -777,32 +696,6 @@ private fun releaseRecoveredEpisodeFailures(
     val recovered = failed.filter { now >= (retryAt[it] ?: Long.MAX_VALUE) }
     if (recovered.isEmpty()) return
     recovered.forEach { failed -= it; retryAt -= it }
-}
-
-/**
- * A long read can cross many documents in place. A plan for a document far behind is never read
- * again (its page metadata was already dropped), and a retained cached plan additionally pins the
- * episode's work record and file leases, so keep the plan set inside a window around the reading
- * position instead of letting it grow with every episode crossed.
- */
-private fun planWindowToDrop(
-    plans: Map<EpisodeId, EpisodeAccessPlan>,
-    state: EngineSessionSnapshot,
-    targetEpisode: EpisodeId,
-    pages: Map<PageId, PageContentIdentity>,
-    maximum: Int,
-): List<EpisodeId> {
-    if (plans.size <= maximum) return emptyList()
-    val anchor = state.anchor?.pageId?.episodeId ?: targetEpisode
-    val protectedEpisodes = mutableSetOf(anchor, targetEpisode)
-    plans[anchor]?.manifest?.let { manifest ->
-        manifest.previousEpisodeId?.let(protectedEpisodes::add)
-        manifest.nextEpisodeId?.let(protectedEpisodes::add)
-    }
-    protectedEpisodes += pages.keys.mapTo(mutableSetOf()) { it.episodeId }
-    protectedEpisodes += state.requiredEpisodes
-    protectedEpisodes += state.requiredNavigation
-    return planKeysToDrop(plans, protectedEpisodes, maximum)
 }
 
 private fun pagePriorities(

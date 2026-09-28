@@ -104,8 +104,7 @@ class EnginePageWork(
             } catch (error: IOException) {
                 // Authentication and throttling are not evidence that an image mirror is missing.
                 if (error is PageHttpException && error.statusCode !in setOf(404, 410, 502, 503, 504)) throw error
-                failure?.let { if (it !== error) error.addSuppressed(it) }
-                failure = error
+                failure = suppressed(failure, error)
                 continue
             }
             try {
@@ -116,8 +115,7 @@ class EnginePageWork(
                 // The connection can die while the body streams (an HTTP/2 reset): that is not the
                 // mirror's answer, so this candidate gets one fresh-connection attempt before the
                 // next mirror. prepareWithPromotion already released the failed body.
-                failure?.let { if (it !== error) error.addSuppressed(it) }
-                failure = error
+                failure = suppressed(failure, error)
                 System.err.println("EnginePageWork page-body-fail id=$pageId candidate=$candidate " +
                     "url=${planner.pageRequest(plan, pageId, candidate, context.priority.value).url} error=${error.message}")
             }
@@ -129,8 +127,7 @@ class EnginePageWork(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: IOException) {
-                failure?.let { if (it !== error) error.addSuppressed(it) }
-                failure = error
+                failure = suppressed(failure, error)
                 continue
             }
             try {
@@ -138,8 +135,7 @@ class EnginePageWork(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: IOException) {
-                failure?.let { if (it !== error) error.addSuppressed(it) }
-                failure = error
+                failure = suppressed(failure, error)
                 continue
             }
         }
@@ -192,6 +188,12 @@ class EnginePageWork(
             throw failure
         }
         return response
+    }
+
+    /** Chains a suppressed cause without ever replacing the newest failure. */
+    private fun suppressed(previous: IOException?, error: IOException): IOException {
+        previous?.let { if (it !== error) error.addSuppressed(it) }
+        return error
     }
 
     private class PinnedPage(private val lease: StoredPageLease?) : Closeable {

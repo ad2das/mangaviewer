@@ -268,7 +268,10 @@ class EngineSession(
         replayYielded = false
         val receipts = mutableListOf<InputReceipt>()
         if (startupInputHeld || presentation.held) return receipts
-        receiptsUntilReady(forceSequences)?.let { return it }
+        receiptsUntilReady(
+            phaseValue, positionResolved, geometry.anchor, geometry,
+            pendingInputs.firstOrNull(), forceSequences, geometryRevisionValue,
+        )?.let { return it }
         replayYielded = replayWithinBudget(clockNanos, { pendingInputs.isNotEmpty() }) {
             advancePending(pendingInputs.first, forceSequences, receipts)
         }
@@ -303,7 +306,7 @@ class EngineSession(
                     clockNanos,
                     geometryRevisionValue,
                     result.boundary,
-                    boundaryPage(result.boundary),
+                    boundaryPage(geometry, result.boundary),
                 )
             }
             pending.remaining.isZero() -> {
@@ -321,18 +324,6 @@ class EngineSession(
             else -> return true
         }
         return presentation.held
-    }
-
-    private fun receiptsUntilReady(forceSequences: Set<Long>): List<InputReceipt>? {
-        if (isReadyForInput(phaseValue, positionResolved, geometry.anchor)) return null
-        val receipts = mutableListOf<InputReceipt>()
-        pendingInputs.firstOrNull()?.let { pending ->
-            pending.blocker = readinessBlocker(positionResolved, geometry)
-            if (forceSequences.contains(pending.sample.sequence)) {
-                receipts += deferredReceipt(pending, geometryRevisionValue)
-            }
-        }
-        return receipts
     }
 
     private fun buildSnapshot(): EngineSessionSnapshot {
@@ -422,12 +413,6 @@ class EngineSession(
         return receipts
     }
 
-    private fun boundaryPage(boundary: DocumentBoundary): PageId {
-        return checkNotNull(geometry.boundaryPage(boundary)) {
-            "A clamped receipt requires a proven document boundary"
-        }
-    }
-
     private fun checkOwner() {
         check(Thread.currentThread() === ownerThread) { "EngineSession is owned by its construction thread" }
     }
@@ -473,3 +458,28 @@ private fun closedSessionSnapshot(
         splitMode = geometry.splitMode,
     )
 }
+
+private fun receiptsUntilReady(
+    phase: EngineSessionPhase,
+    positionResolved: Boolean,
+    anchor: AnchorState?,
+    geometry: DocumentGeometry,
+    firstPending: PendingInput?,
+    forceSequences: Set<Long>,
+    geometryRevision: Long,
+): List<InputReceipt>? {
+    if (isReadyForInput(phase, positionResolved, anchor)) return null
+    val receipts = mutableListOf<InputReceipt>()
+    firstPending?.let { pending ->
+        pending.blocker = readinessBlocker(positionResolved, geometry)
+        if (forceSequences.contains(pending.sample.sequence)) {
+            receipts += deferredReceipt(pending, geometryRevision)
+        }
+    }
+    return receipts
+}
+
+private fun boundaryPage(geometry: DocumentGeometry, boundary: DocumentBoundary): PageId =
+    checkNotNull(geometry.boundaryPage(boundary)) {
+        "A clamped receipt requires a proven document boundary"
+    }
