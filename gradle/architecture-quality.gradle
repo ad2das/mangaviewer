@@ -1,7 +1,9 @@
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.provider.Property
 import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -11,12 +13,18 @@ abstract class ArchitectureQualityTask extends DefaultTask {
     @PathSensitive(PathSensitivity.RELATIVE)
     abstract ConfigurableFileCollection getProductionSources()
 
+    // Captured at configuration time so the gate stays configuration-cache compatible; the
+    // scanned files are the task inputs, this only anchors their reported relative paths.
+    @Internal
+    abstract Property<File> getRootDirectory()
+
     @TaskAction
     void verify() {
         List<String> violations = []
         int webViewConstructions = 0
+        File root = rootDirectory.get()
         productionSources.files.sort { it.path }.each { File source ->
-            violations.addAll(ArchitectureQualityScanner.inspect(project.rootDir, source))
+            violations.addAll(ArchitectureQualityScanner.inspect(root, source))
             webViewConstructions += ArchitectureQualityScanner.webViewConstructions(source)
         }
         if (webViewConstructions != 1) {
@@ -470,6 +478,7 @@ def architectureQuality = tasks.register('verifyArchitectureQuality', Architectu
     group = 'verification'
     description = 'Checks production source size, complexity, and forbidden runtime patterns.'
     productionSources.from(productionFiles)
+    rootDirectory.set(rootProject.projectDir)
 }
 
 subprojects { child ->
