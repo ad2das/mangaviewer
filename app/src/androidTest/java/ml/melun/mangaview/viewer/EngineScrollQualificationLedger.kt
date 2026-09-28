@@ -1,5 +1,6 @@
 package ml.melun.mangaview.viewer
 
+import java.io.BufferedWriter
 import java.io.File
 import ml.melun.mangaview.activity.EngineViewerScreen
 import ml.melun.mangaview.core.EpisodeId
@@ -50,8 +51,11 @@ internal class EngineScrollQualificationLedger(
     )
 
     private val presentationChunks = mutableListOf<LongArray>()
-    private val frameObservations = mutableListOf<EngineFrameObservation>()
-    private val inputObservations = mutableListOf<EngineInputObservation>()
+    // Frame and input records stream to disk as they are drained: a long soak must not retain a
+    // snapshot per frame, or the heap fills until blocking GCs delay the very frames being
+    // measured. The writers stay open for the run and are flushed at close.
+    private var framesStream: BufferedWriter? = null
+    private var inputsStream: BufferedWriter? = null
     private val motionPacked = mutableListOf<LongArray>()
     private val motionAppliedAt = mutableListOf<LongArray>()
     private val gestureWindows = linkedMapOf<Long, LongRange>()
@@ -163,17 +167,21 @@ internal class EngineScrollQualificationLedger(
     private fun drainFrames(viewer: EngineViewerScreen) {
         val batch = viewer.engineFramesSince(frameCursor)
         integrityFrameLost += batch.lostCount
-        frameObservations += batch.observations
+        val writer = framesStream ?: File(output, "frames.jsonl").bufferedWriter().also { framesStream = it }
+        batch.observations.forEach { observation ->
+            writer.append(frameRecord(observation).toString()).append('\n')
+            observeFrame(observation)
+        }
         frameCursor = batch.latestOrdinal
-        batch.observations.forEach(::observeFrame)
     }
 
     private fun drainInputs(viewer: EngineViewerScreen) {
         val batch = viewer.engineInputObservationsSince(inputCursor)
         integrityInputLost += batch.lostCount
-        inputObservations += batch.observations
+        val writer = inputsStream ?: File(output, "inputs.jsonl").bufferedWriter().also { inputsStream = it }
         inputCursor = batch.latestOrdinal
         for (observation in batch.observations) {
+            writer.append(inputRecord(observation).toString()).append('\n')
             latestPendingInputCount = observation.pendingInputCount
             when (observation.receipt.outcome) {
                 // An evicted input is not resolution: a saturated queue alternating DEFERRED and
@@ -466,10 +474,13 @@ internal class EngineScrollQualificationLedger(
     }
 
     private fun writeFrames() {
-        File(output, "frames.jsonl").bufferedWriter().use { writer ->
-            frameObservations.forEach { observation ->
-                writer.append(frameRecord(observation).toString()).append('\n')
-            }
+        val stream = framesStream
+        if (stream != null) {
+            stream.flush()
+            stream.close()
+            framesStream = null
+        } else {
+            File(output, "frames.jsonl").createNewFile()
         }
     }
 
@@ -512,35 +523,41 @@ internal class EngineScrollQualificationLedger(
     }
 
     private fun writeInputs() {
-        File(output, "inputs.jsonl").bufferedWriter().use { writer ->
-            inputObservations.forEach { value ->
-                val receipt = value.receipt
-                val row = JSONObject().apply {
-                    put("ordinal", value.ordinal); put("sessionId", value.sessionId)
-                    put("generation", value.generation)
-                    put("inputRevision", value.inputRevision); put("geometryRevision", value.geometryRevision)
-                    put("movementRevision", value.movementRevision)
-                    put("pendingInputCount", value.pendingInputCount); put("anchorIdentity", anchor(value.anchor))
-                    put("sequence", receipt.sample.sequence); put("gestureId", receipt.sample.gestureId)
-                    put("eventTimeNanos", receipt.sample.eventTimeNanos)
-                    put("deltaScreenUnits", receipt.sample.deltaScreenUnits)
-                    put("acceptedAtNanos", receipt.acceptedAtNanos)
-                    put("resolvedAtNanos", receipt.resolvedAtNanos ?: JSONObject.NULL)
-                    put("appliedScreenUnits", receipt.appliedScreenUnits)
-                    put("outcome", receipt.outcome.name)
-                    put("receiptGeometryRevision", receipt.geometryRevision)
-                    put("boundary", receipt.boundary?.let { boundary ->
-                        JSONObject().apply {
-                            put("kind", boundary.boundary.name); put("pageIdentity", page(boundary.pageId))
-                            put("geometryRevision", boundary.geometryRevision)
-                        }
-                    } ?: JSONObject.NULL)
-                    put("rawEventTimeNanos", JSONObject.NULL)
-                    put("rawInputId", JSONObject.NULL)
-                    put("rawBindingAvailable", false)
+        val stream = inputsStream
+        if (stream != null) {
+            stream.flush()
+            stream.close()
+            inputsStream = null
+        } else {
+            File(output, "inputs.jsonl").createNewFile()
+        }
+    }
+
+    private fun inputRecord(value: EngineInputObservation): JSONObject {
+        val receipt = value.receipt
+        return JSONObject().apply {
+            put("ordinal", value.ordinal); put("sessionId", value.sessionId)
+            put("generation", value.generation)
+            put("inputRevision", value.inputRevision); put("geometryRevision", value.geometryRevision)
+            put("movementRevision", value.movementRevision)
+            put("pendingInputCount", value.pendingInputCount); put("anchorIdentity", anchor(value.anchor))
+            put("sequence", receipt.sample.sequence); put("gestureId", receipt.sample.gestureId)
+            put("eventTimeNanos", receipt.sample.eventTimeNanos)
+            put("deltaScreenUnits", receipt.sample.deltaScreenUnits)
+            put("acceptedAtNanos", receipt.acceptedAtNanos)
+            put("resolvedAtNanos", receipt.resolvedAtNanos ?: JSONObject.NULL)
+            put("appliedScreenUnits", receipt.appliedScreenUnits)
+            put("outcome", receipt.outcome.name)
+            put("receiptGeometryRevision", receipt.geometryRevision)
+            put("boundary", receipt.boundary?.let { boundary ->
+                JSONObject().apply {
+                    put("kind", boundary.boundary.name); put("pageIdentity", page(boundary.pageId))
+                    put("geometryRevision", boundary.geometryRevision)
                 }
-                writer.append(row.toString()).append('\n')
-            }
+            } ?: JSONObject.NULL)
+            put("rawEventTimeNanos", JSONObject.NULL)
+            put("rawInputId", JSONObject.NULL)
+            put("rawBindingAvailable", false)
         }
     }
 
