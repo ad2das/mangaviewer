@@ -1,11 +1,14 @@
 package ml.melun.mangaview.source.ntk
 
+import java.io.IOException
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.source.SearchField
 import ml.melun.mangaview.source.SeriesKind
 import ml.melun.mangaview.source.SourcePage
 import ml.melun.mangaview.source.SourceSearchQuery
@@ -40,34 +43,65 @@ internal class NtkSearchService(
 
     private suspend fun page(query: SourceSearchQuery, kind: SeriesKind, number: Int): SourcePage<SourceSeries> {
         val wireKind = if (kind == SeriesKind.COMIC) "manhwa" else "webtoon"
-        val encoded = URLEncoder.encode(query.text.trim(), "UTF-8")
-        // The provider moved search onto its listing routes ("/manhwa?stx=", "/webtoon?stx="). The
-        // former "/search?q=...&field=...&match=..." route ignores those parameters and renders an
-        // unfiltered page, so the text parameter and route both follow the current search form.
+        val text = query.text.trim()
+        val encoded = URLEncoder.encode(text, "UTF-8")
+        val field = if (query.field == SearchField.AUTHOR) "author" else "title"
+        // Current mirrors render the site search at "/search?q=&kind=&field=&match=contains&page=".
+        // Older mirrors keep that URL as an unrelated page and serve search from the listing route
+        // ("/manhwa?stx=", "/webtoon?stx="), so a response without the provider search markers is
+        // rejected instead of accepting the unfiltered page that route can also render.
+        val searchHtml = try {
+            document("/search?q=$encoded&field=$field&match=contains&kind=$wireKind&page=$number")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: IOException) {
+            null
+        }
+        if (searchHtml != null) {
+            val dom = Jsoup.parse(searchHtml)
+            if (dom.selectFirst(".search-results-grid, .search-page-form") != null) {
+                val parsed = parser.searchHtml(searchHtml, sourceId)
+                checkActivePage(dom, number)
+                return SourcePage(
+                    parsed.filter { NtkSeriesKey.decode(it.id).kind.pathSegment == wireKind },
+                    nextPage(dom, text, wireKind, number)?.toString(),
+                )
+            }
+        }
         val html = document("/$wireKind?stx=$encoded&page=$number")
         val dom = Jsoup.parse(html)
         val parsed = parser.searchHtml(html, sourceId)
-        check(parsed.isNotEmpty() || dom.selectFirst(".search-results-grid, .search-page-form, .list-page") != null) {
+        // The listing route also renders the unfiltered category page, so the legacy search layout
+        // marker must be present; parsed items alone would accept that unfiltered page silently.
+        check(dom.selectFirst(".list-page") != null) {
             "NTK 검색 응답을 확인할 수 없습니다. 다시 시도해 주세요"
         }
-        dom.selectFirst(".pager-num.is-active")?.text()?.toIntOrNull()?.let { actual ->
-            check(actual == number) { "NTK 검색 페이지가 반복되었습니다. 다시 시도해 주세요" }
-        }
+        checkActivePage(dom, number)
         return SourcePage(
             parsed.filter { NtkSeriesKey.decode(it.id).kind.pathSegment == wireKind },
-            nextPage(dom, query, wireKind, number)?.toString(),
+            nextPage(dom, text, wireKind, number)?.toString(),
         )
     }
 
-    private fun nextPage(dom: Document, query: SourceSearchQuery, kind: String, current: Int): Int? =
+    private fun checkActivePage(dom: Document, number: Int) {
+        dom.selectFirst(".pager-num.is-active")?.text()?.toIntOrNull()?.let { actual ->
+            check(actual == number) { "NTK 검색 페이지가 반복되었습니다. 다시 시도해 주세요" }
+        }
+    }
+
+    private fun nextPage(dom: Document, text: String, kind: String, current: Int): Int? =
         dom.select("a[href]").mapNotNull { link ->
             val uri = runCatching { URI(link.attr("href")) }.getOrNull() ?: return@mapNotNull null
-            if (uri.path != "/$kind") return@mapNotNull null
             val parameters = runCatching { uri.rawQuery.orEmpty().split('&').associate { part ->
                 URLDecoder.decode(part.substringBefore('='), "UTF-8") to
                     URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
             } }.getOrNull() ?: return@mapNotNull null
-            if (parameters["stx"] != query.text.trim()) return@mapNotNull null
+            val supported = when (uri.path) {
+                "/search" -> parameters["q"] == text && parameters["kind"] == kind
+                "/$kind" -> parameters["stx"] == text
+                else -> false
+            }
+            if (!supported) return@mapNotNull null
             parameters["page"]?.toIntOrNull()?.takeIf { it > current }
         }.minOrNull()?.let { current + 1 }
 

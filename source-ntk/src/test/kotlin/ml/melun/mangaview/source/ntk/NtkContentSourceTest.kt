@@ -102,12 +102,13 @@ class NtkContentSourceTest {
     @Test
     fun titleSearchUsesProviderFormWithoutGeneralCatalogRequest() = runTest {
         val transport = NtkQueueTransport(
-            """<a href="/webtoon/57451201"><h3>역대급 창기사의 회귀</h3></a>""",
+            """<div class="search-results-grid"><a href="/webtoon/57451201"><h3>역대급 창기사의 회귀</h3></a></div>""",
         )
         val source = NtkContentSource(NtkConfig("https://ntk.test", "agent"), transport, RecordingGateway(emptyList()))
         val result = source.search(SourceSearchQuery("역대급 창기사의 회귀", SeriesKind.WEBTOON))
         assertEquals(listOf("/webtoon/57451201"), result.items.map { it.id.remoteKey })
-        assertTrue(transport.requests.single().url.contains("/webtoon?stx="))
+        assertTrue(transport.requests.single().url.contains("/search?"))
+        assertTrue(transport.requests.single().url.contains("kind=webtoon"))
         assertTrue(transport.requests.single().url.contains("page=1"))
     }
 
@@ -116,6 +117,7 @@ class NtkContentSourceTest {
         val transport = NtkQueueTransport("""<div class="search-results-grid"></div>""")
         val source = NtkContentSource(NtkConfig("https://ntk.test", "agent"), transport, RecordingGateway(emptyList()))
         assertTrue(source.search(SourceSearchQuery("absent", SeriesKind.WEBTOON)).items.isEmpty())
+        assertTrue(transport.requests.single().url.contains("/search?"))
         assertEquals(1, transport.requests.size)
     }
 
@@ -139,10 +141,12 @@ class NtkContentSourceTest {
     }
 
     @Test
-    fun authorFieldQueryUsesTheListingSearchAndHonorsContentKind() = runTest {
+    fun authorFieldQueryUsesTheSiteSearchAndHonorsContentKind() = runTest {
         val html = """
+            <div class="search-results-grid">
             <a href="/manhwa/11"><h3>만화 결과</h3></a>
             <a href="/webtoon/22"><h3>웹툰 결과</h3></a>
+            </div>
         """.trimIndent()
         val transport = NtkQueueTransport(html)
         val source = NtkContentSource(
@@ -156,9 +160,9 @@ class NtkContentSourceTest {
         ).items
 
         assertEquals(listOf("/manhwa/11"), result.map { it.id.remoteKey })
-        // The provider search form exposes a single text field, so author queries share the
-        // listing route and keep the kind filter through the /manhwa path.
-        assertTrue(transport.requests.single().url.contains("/manhwa?stx="))
+        assertTrue(transport.requests.single().url.contains("/search?"))
+        assertTrue(transport.requests.single().url.contains("field=author"))
+        assertTrue(transport.requests.single().url.contains("kind=manhwa"))
         assertTrue(transport.requests.single().url.contains("page=1"))
     }
 
