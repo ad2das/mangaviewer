@@ -119,6 +119,31 @@ class NtkDocumentParserTest {
     }
 
     @Test
+    fun legacyListingCardsSplitAcrossCoverAndTitleAnchorsKeepTheirArtwork() {
+        val html = """
+            <ul id="webtoon-list-all" class="list">
+              <li data-genre="일상">
+                <div class="list-row"><div class="list-item">
+                  <div class="imgframe"><div class="img-wrap"><div class="img-item">
+                    <a href="/webtoon/847568"><img class="theme-thumb-img"
+                      src="https://apitk.peertrk.com/black/thumbs/19202.jpg?v2" alt=""/></a>
+                    <div class="in-lable trans-bg-black"><a href="/webtoon/847568">
+                      <span class="title white">이과장 생존기</span></a></div>
+                  </div></div></div>
+                </div></div>
+              </li>
+            </ul>
+        """.trimIndent()
+
+        val result = parser.searchHtml(html, sourceId)
+
+        assertEquals(1, result.size)
+        assertEquals("/webtoon/847568", result.single().id.remoteKey)
+        assertEquals("이과장 생존기", result.single().title)
+        assertEquals("https://apitk.peertrk.com/black/thumbs/19202.jpg?v2", result.single().thumbnailKey)
+    }
+
+    @Test
     fun currentUnicodeProviderSlugsRemainStableSeriesKeys() {
         val json = """{"works":[{"sourceWorkId":"복학생-네이버","title":"복학생"}],"total":1}"""
 

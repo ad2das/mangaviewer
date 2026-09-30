@@ -118,15 +118,28 @@ class NtkDocumentParser {
         document.select("a[href]").forEach { link ->
             val path = normalizedSeriesPath(link.attr("href")) ?: return@forEach
             val key = NtkSeriesKey.decode(SeriesId(sourceId, path))
-            val title = link.selectFirst("h1, h2, h3, h4, .title, .subject, strong")
-                ?.text()?.clean() ?: link.ownText().clean()
+            // Legacy listing themes split one work across a cover-only anchor and a title-only
+            // anchor; pull the missing half from the card around the anchor before giving up.
+            val card = link.closest("li, .list-item, .card") ?: link
+            val title = link.selectFirst(SERIES_TITLE_SELECTOR)?.text()?.clean()?.takeIf(String::isNotBlank)
+                ?: card.takeIf { it !== link }?.selectFirst(SERIES_TITLE_SELECTOR)?.text()?.clean()
+                    ?.takeIf(String::isNotBlank)
+                ?: link.ownText().clean()
             if (title.isBlank() || title in NON_SERIES_TITLES || NON_EPISODE_LABELS.any(title::contains)) {
                 return@forEach
             }
             val thumbnail = link.select("img").firstNotNullOfOrNull { image ->
                 if (isPlatformIcon(image)) null else imageAttribute(image)
+            } ?: card.takeIf { it !== link }?.select("img")?.firstNotNullOfOrNull { image ->
+                if (isPlatformIcon(image)) null else imageAttribute(image)
             }
-            found.putIfAbsent(path, SourceSeries(SeriesId(sourceId, key.path()), title, thumbnailKey = thumbnail))
+            val candidate = SourceSeries(SeriesId(sourceId, key.path()), title, thumbnailKey = thumbnail)
+            val existing = found[path]
+            found[path] = when {
+                existing == null -> candidate
+                existing.thumbnailKey.isNullOrBlank() -> existing.copy(thumbnailKey = candidate.thumbnailKey)
+                else -> existing
+            }
         }
         return found.values.toList()
     }
@@ -456,6 +469,7 @@ private val NON_EPISODE_LABELS = listOf(
 private val NON_SERIES_TITLES = setOf(
     "업데이트", "최신 업데이트", "전체", "웹툰", "만화", "목록", "더보기",
 )
+private const val SERIES_TITLE_SELECTOR = "h1, h2, h3, h4, .title, .subject, strong"
 private const val MAX_EPISODE_PAGES = 100
 private val IMAGE_ATTRIBUTES = listOf("data-original", "data-src", "data-lazy-src", "data-url", "src")
 private val BLOCKED_CONTEXT_TOKENS = listOf("banner", "advert", "sponsor", "popup")

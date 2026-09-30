@@ -105,6 +105,23 @@ class NtkSearchServiceTest {
         assertTrue(paths[1].startsWith("/manhwa?stx="))
     }
 
+    @Test fun listingFallbackKeepsCoverArtworkSplitAcrossSiblingAnchors() = runTest {
+        val search = service { path ->
+            if (path.startsWith("/search")) "<html><body>home</body></html>"
+            else listingPage(
+                "<li><div class='list-item'>" +
+                    "<a href='/webtoon/847568'><img class='theme-thumb-img' " +
+                    "src='https://apitk.peertrk.com/black/thumbs/19202.jpg?v2' alt=''/></a>" +
+                    "<div class='in-lable'><a href='/webtoon/847568'>" +
+                    "<span class='title white'>이과장 생존기</span></a></div>" +
+                    "</div></li>",
+            )
+        }
+        val page = search.search(SourceSearchQuery("생존", SeriesKind.WEBTOON))
+        assertEquals("이과장 생존기", page.items.single().title)
+        assertEquals("https://apitk.peertrk.com/black/thumbs/19202.jpg?v2", page.items.single().thumbnailKey)
+    }
+
     @Test fun authorFieldKeepsItsFieldOnTheSiteSearchRoute() = runTest {
         val paths = mutableListOf<String>()
         val search = service { path ->
