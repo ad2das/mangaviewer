@@ -80,7 +80,11 @@ internal fun forgetAcceptedPage(
     if (pages.containsKey(id)) publish(withoutEntry(pages, id))
 }
 
-/** Marks a read-ahead page failed and forgets the oldest markers beyond the retention bound. */
+/**
+ * Marks a page failed and forgets the oldest markers beyond the retention bound. A failed page the
+ * geometry still requires stays demanded and is retried by the work set on its backoff; speculative
+ * read-ahead skips it until a demand accepts it again.
+ */
 internal fun markPageFailure(id: PageId, failed: MutableSet<PageId>, notify: () -> Unit) {
     failed += id
     while (failed.size > MAXIMUM_FAILED_READ_AHEAD_PAGES) {

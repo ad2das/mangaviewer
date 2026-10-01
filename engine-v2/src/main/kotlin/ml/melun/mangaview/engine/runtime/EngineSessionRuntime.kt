@@ -4,6 +4,7 @@ import java.util.Collections
 import kotlinx.coroutines.CoroutineScope
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
+import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineSessionPort
@@ -58,6 +59,7 @@ internal data class DemandKey(
     val pages: Map<PageId, PageContentIdentity>,
     val prepared: Set<PageId>,
     val failedPages: Set<PageId>,
+    val unavailablePages: Set<PageId>,
     val failedEpisodes: Set<EpisodeId>,
 )
 
@@ -82,19 +84,31 @@ class EngineSessionRuntime(
     reportFailure: (WorkKey<*>, Throwable) -> Unit,
     private val observationClock: () -> Long = System::nanoTime,
     private val awaitInitialPresentation: Boolean = false,
+    /**
+     * Backoff for a failed demand that stays desired. The work set retries it in place so a
+     * transient provider failure cannot wedge the boundary. Injectable so tests can drive the
+     * retry clock instead of sleeping the production second.
+     */
+    private val workRetryDelayNanos: Long = 1_000_000_000L,
+    private val workClock: () -> Long = System::nanoTime,
 ) {
     private val owner = Thread.currentThread()
-    private val work = SessionWorkSet(scope, coordinator, reportFailure)
+    private val work = SessionWorkSet(scope, coordinator, reportFailure,
+        retryDelayNanos = workRetryDelayNanos, clock = workClock)
     // Publish new immutable maps only when their metadata changes, not on every scroll sample.
     private var plans: Map<EpisodeId, EpisodeAccessPlan> = emptyMap()
     private val retainedCachedPlans = linkedMapOf<EpisodeId, CachedPlan>()
     private val pageDemands = SessionPageDemands(source, ::acceptPageGeometry,
         { generation, id, plan, page -> if (isCurrent(generation)) acceptPage(generation, id, plan, page) },
-        { id -> markPageFailure(id, failedReadAheadPages) { process(SessionUpdate(session.snapshot)) } })
+        { id -> handlePageFailure(id) })
     private var pages: Map<PageId, PageContentIdentity> = emptyMap()
     private val prepared = linkedSetOf<PageId>()
     private val earlyTransfers = EarlyOriginalTransfers()
     private val failedReadAheadPages = linkedSetOf<PageId>()
+    /** Required pages declared unavailable for this session once the failure bound was reached. */
+    private val unavailablePages = linkedSetOf<PageId>()
+    /** Distinct failed fetch attempts per page; a demand that keeps bouncing must not reset it. */
+    private val pageFailureCounts = mutableMapOf<PageId, Int>()
     private val failedReadAheadEpisodes = linkedSetOf<EpisodeId>()
     /** Required documents whose held plan was already re-delivered in this bout. */
     private val redeliveredManifests = linkedSetOf<EpisodeId>()
@@ -175,6 +189,8 @@ class EngineSessionRuntime(
         prepared.clear()
         earlyTransfers.clear()
         failedReadAheadPages.clear()
+        unavailablePages.clear()
+        pageFailureCounts.clear()
         failedReadAheadEpisodes.clear()
         failedEpisodeRetryAt.clear()
         positionResolved = true
@@ -198,6 +214,8 @@ class EngineSessionRuntime(
         checkOwner()
         if (!closed) {
             failedReadAheadPages.clear()
+            unavailablePages.clear()
+            pageFailureCounts.clear()
             failedReadAheadEpisodes.clear()
             failedEpisodeRetryAt.clear()
             work.retryFailures()
@@ -300,7 +318,7 @@ class EngineSessionRuntime(
             initialPresented, demandVersion, state.anchor?.pageId,
             state.visibleRegions.mapTo(linkedSetOf()) { it.pageId }, state.requiredDimensions,
             state.requiredEpisodes, state.requiredNavigation, plans, pages,
-            prepared.toSet(), failedReadAheadPages.toSet(), failedReadAheadEpisodes.toSet())
+            prepared.toSet(), failedReadAheadPages.toSet(), unavailablePages.toSet(), failedReadAheadEpisodes.toSet())
         if (key == lastDemandKey) return lastDemands
         val result = demands(state)
         lastDemandKey = key
@@ -321,6 +339,9 @@ class EngineSessionRuntime(
         val wantedPages = pagePriorities(
             state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, interactionActive, earlyTransfers,
         )
+        // A page declared unavailable no longer owns a demand: its placeholder geometry keeps the
+        // layout walkable, and the provider is not consulted again for this session.
+        wantedPages.keys.removeAll(unavailablePages)
         pages = retainPreparedMetadata(state, wantedPages.keys, plans, pages)
         // Prepared markers only matter while their page metadata is retained; without this the
         // set keeps growing across a long read that walks past many documents.
@@ -341,7 +362,8 @@ class EngineSessionRuntime(
                 // document the geometry still requires can be gone from it while this runtime keeps
                 // the plan. The plan map then suppresses the episode demand and the boundary waits
                 // forever. Accepting the held plan again re-dispatches only its manifest.
-                result += SessionDemand(source.episode(id, WorkPriority.FOCUS)) { plan ->
+                result += SessionDemand(source.episode(id, WorkPriority.FOCUS),
+                    onFailure = { _: Throwable -> markEpisodeFailure(id) }) { plan ->
                     if (isCurrent(generation)) acceptPlan(generation, id, plan)
                 }
             }
@@ -351,7 +373,8 @@ class EngineSessionRuntime(
         // of racing the reader at the end.
         val anchorEpisode = state.anchor?.pageId?.episodeId ?: targetEpisode
         if (plans[anchorEpisode]?.navigationKnown == false && anchorEpisode !in state.requiredNavigation) {
-            result += SessionDemand(source.navigation(anchorEpisode, WorkPriority.INTERACTIVE)) { navigation ->
+            result += SessionDemand(source.navigation(anchorEpisode, WorkPriority.INTERACTIVE),
+                onFailure = { _: Throwable -> }) { navigation ->
                 if (isCurrent(generation)) acceptNavigation(generation, anchorEpisode, navigation)
             }
         }
@@ -373,7 +396,8 @@ class EngineSessionRuntime(
     ) {
         state.requiredNavigation.forEach { id ->
             if (plans[id]?.navigationKnown == false) {
-                result += SessionDemand(source.navigation(id, WorkPriority.INTERACTIVE)) { navigation ->
+                result += SessionDemand(source.navigation(id, WorkPriority.INTERACTIVE),
+                    onFailure = { _: Throwable -> }) { navigation ->
                     if (isCurrent(generation)) acceptNavigation(generation, id, navigation)
                 }
             }
@@ -382,6 +406,9 @@ class EngineSessionRuntime(
 
     private fun acceptPageGeometry(generation: Long, id: PageId, plan: EpisodeAccessPlan, metadata: WorkMetadata) {
         if (!isCurrent(generation) || plans[id.episodeId] !== plan) return
+        // Once a page is declared unavailable its placeholder geometry owns the layout for this
+        // session; a late progressive delivery must not conflict with the published dimensions.
+        if (id in unavailablePages) return
         val geometry = metadata as? WorkMetadata.PageGeometry ?: return
         require(geometry.pageId == id && geometry.contentRevision == plan.contentRevision)
         if (matchesVerifiedGeometry(pages[id], geometry) && id in prepared && id !in failedReadAheadPages) return
@@ -401,17 +428,21 @@ class EngineSessionRuntime(
 
     private fun episodeDemand(generation: Long, id: EpisodeId, priority: WorkPriority): SessionDemand<EpisodeAccessPlan> {
         val request = source.episode(id, priority)
-        return SessionDemand(request, onFailure =
-            if (priority == WorkPriority.NEXT_EPISODE || priority == WorkPriority.INTERACTIVE) ({ _: Throwable ->
-                failedReadAheadEpisodes += id
-                failedEpisodeRetryAt[id] = observationClock() + EPISODE_RETRY_DELAY_NANOS
-                process(SessionUpdate(session.snapshot))
-            }) else null) { plan ->
+        // A plan failure never fails the session, whatever its priority: the demand stays desired
+        // while the geometry needs the document, so the work set retries it on its own backoff.
+        return SessionDemand(request, onFailure = { _: Throwable -> markEpisodeFailure(id) }) { plan ->
             if (isCurrent(generation)) {
                 if (plan.localOnly) retainedCachedPlans[id] = CachedPlan(request, plan)
                 acceptPlan(generation, id, plan)
             }
         }
+    }
+
+    /** Marks a failed document fetch and schedules its read-ahead release, mirroring page failures. */
+    private fun markEpisodeFailure(id: EpisodeId) {
+        failedReadAheadEpisodes += id
+        failedEpisodeRetryAt[id] = observationClock() + EPISODE_RETRY_DELAY_NANOS
+        process(SessionUpdate(session.snapshot))
     }
 
     private fun acceptPlan(generation: Long, expected: EpisodeId, plan: EpisodeAccessPlan) {
@@ -424,11 +455,14 @@ class EngineSessionRuntime(
 
     private fun acceptPage(generation: Long, expected: PageId, plan: EpisodeAccessPlan, page: StoredPage) {
         require(page.pageId == expected && page.contentRevision == plan.contentRevision)
+        // See acceptPageGeometry: the session layout already owns the unavailable placeholder.
+        if (expected in unavailablePages) return
         val identity = PageContentIdentity(expected, page.contentRevision, page.sha256, page.dimensions, page.byteCount)
         // Reacquiring the same verified original changes subscription ownership, not visible content.
         if (pages[expected] == identity && expected in prepared && expected !in failedReadAheadPages) return
         prepared += expected
         failedReadAheadPages -= expected
+        pageFailureCounts -= expected
         val update = try {
             session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
         } catch (stale: UnknownPageDimensionsException) {
@@ -451,6 +485,47 @@ class EngineSessionRuntime(
         process(update)
     }
 
+    /**
+     * A page whose provider candidates keep failing while the geometry still needs it is declared
+     * unavailable for this session once its attempts reach the bound: the runtime publishes
+     * placeholder geometry so the reader can continue past it and stops demanding the page. The
+     * counter survives the reader bouncing away, so a boundary stall cannot reset the decision; it
+     * clears only when the original is actually accepted.
+     */
+    private fun handlePageFailure(id: PageId) {
+        markPageFailure(id, failedReadAheadPages) { process(SessionUpdate(session.snapshot)) }
+        if (id in unavailablePages) return
+        val failures = (pageFailureCounts[id] ?: 0) + 1
+        pageFailureCounts[id] = failures
+        val state = session.snapshot
+        if (failures < PAGE_UNAVAILABLE_FAILURES || id !in state.requiredDimensions) return
+        val update = try {
+            session.dispatch(
+                SessionEvent.DimensionsResolved(state.generation, id, unavailableDimensions(id, state)),
+            )
+        } catch (stale: UnknownPageDimensionsException) {
+            return
+        }
+        unavailablePages += id
+        process(update)
+    }
+
+    /**
+     * Placeholder geometry for an unavailable page. A neighbor's dimensions keep the layout's width
+     * scale consistent with the rest of the document; without one, a viewport-sized block.
+     */
+    private fun unavailableDimensions(id: PageId, state: EngineSessionSnapshot): PageDimensions {
+        val manifest = plans[id.episodeId]?.manifest
+        val index = manifest?.pages?.indexOfFirst { it.id == id } ?: -1
+        if (manifest != null && index >= 0) {
+            for (offset in listOf(1, -1)) {
+                val neighbor = manifest.pages.getOrNull(index + offset)?.id ?: continue
+                pages[neighbor]?.dimensions?.let { return it }
+            }
+        }
+        return PageDimensions(state.viewport.widthPx, state.viewport.heightPx)
+    }
+
     private fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
 
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
@@ -464,6 +539,11 @@ private const val BOUNDARY_APPROACH_PAGES = 6
 private const val BOUNDARY_HEAD_PAGES = 10
 // A transient neighbor failure retries on its own instead of parking the boundary for the session.
 private const val EPISODE_RETRY_DELAY_NANOS = 3_000_000_000L
+
+// A required page that fails this many distinct attempts is declared unavailable for the session:
+// the runtime publishes placeholder geometry so one dead provider page cannot block the reader.
+// The work set's own retries cover the ordinary transient failure well before this bound.
+private const val PAGE_UNAVAILABLE_FAILURES = 3
 
 /** Keys to drop so the plan map stays inside its window; never drops a protected episode. */
 internal fun <V> planKeysToDrop(

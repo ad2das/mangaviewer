@@ -370,23 +370,27 @@ class EngineSessionRuntimeTest {
         coordinator.close()
     }
 
-    @Test fun aFailedPageDoesNotSpinAndExplicitRetryCanRecoverIt() = runTest {
+    @Test fun failedRequiredPageIsRetriedAutomaticallyWithoutReporting() = runTest {
         val source = Source()
         var attempts = 0
         source.beforePage = { id ->
             if (id == PageId.at(episode, 0)) { attempts++; if (attempts == 1) error("offline") }
         }
         val failures = mutableListOf<Throwable>()
-        val (runtime, coordinator) = runtime(source, failures = failures)
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
         runtime.open()
         runCurrent()
         assertEquals(1, attempts)
-        assertEquals(1, failures.size)
+        assertTrue("A page fetch failure must not fail the session: $failures", failures.isEmpty())
         repeat(3) { runtime.resize(EngineViewport(100, 100)); runCurrent() }
-        assertEquals(1, attempts)
-        runtime.retryFailures()
+        assertEquals("The failed page must not spin before its backoff", 1, attempts)
+        retryClock += 2_000_000_000L
+        runtime.resize(EngineViewport(100, 100))
         runCurrent()
+        assertEquals(2, attempts)
         assertTrue(runtime.snapshot.session.completeViewport)
+        assertTrue(failures.isEmpty())
         runtime.close()
         coordinator.close()
     }
@@ -395,7 +399,7 @@ class EngineSessionRuntimeTest {
         val coordinator = WorkCoordinator(this)
         val source = Source()
         var attempts = 0
-        source.beforePage = { attempts++; if (attempts == 1) error("retry immediately") }
+        source.beforePosition = { attempts++; if (attempts == 1) error("retry immediately") }
         val session = EngineSession(1, episode, EngineViewport(100, 100)) { 0L }
         lateinit var runtime: EngineSessionRuntime
         runtime = EngineSessionRuntime(this, coordinator, session, source, episode, { _, _ -> }, { _, _ ->
@@ -773,7 +777,8 @@ class EngineSessionRuntimeTest {
             if (id == failedPage) { attempts++; error("unavailable original") }
         }
         val failures = mutableListOf<Throwable>()
-        val (runtime, coordinator) = runtime(source, failures = failures)
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
         runtime.open()
         runCurrent()
         assertTrue(runtime.snapshot.session.completeViewport)
@@ -784,36 +789,98 @@ class EngineSessionRuntimeTest {
         runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
         runCurrent()
         assertEquals(2, attempts)
-        assertEquals(1, failures.size)
-        source.beforePage = {}
-        runtime.retryFailures()
+        assertTrue("A promoted page failure must not fail the session: $failures", failures.isEmpty())
+        repeat(3) { runtime.resize(EngineViewport(100, 100)); runCurrent() }
+        assertEquals("The failed visible page must not spin before its backoff", 2, attempts)
+        source.beforePage = { id -> if (id == failedPage) attempts++ }
+        retryClock += 2_000_000_000L
+        runtime.resize(EngineViewport(100, 100))
         runCurrent()
+        assertEquals(3, attempts)
         assertTrue(runtime.snapshot.session.completeViewport)
         assertEquals(failedPage, runtime.snapshot.session.anchor!!.pageId)
+        assertTrue(failures.isEmpty())
         runtime.close()
         assertEquals(0, source.livePages)
         assertEquals(0, coordinator.snapshot().subscribers)
         coordinator.close()
     }
 
-    @Test fun promotedReadAheadFailureIsReportedForTheNowVisiblePage() = runTest {
+    @Test fun promotedReadAheadFailureIsRetriedForTheNowVisiblePage() = runTest {
         val source = Source()
         val gate = CompletableDeferred<Unit>()
+        var attempts = 0
         source.beforePage = { id ->
-            if (id == PageId.at(episode, 1)) { gate.await(); error("visible failure") }
+            if (id == PageId.at(episode, 1)) { attempts++; gate.await(); error("visible failure") }
         }
         val failures = mutableListOf<Throwable>()
-        val (runtime, coordinator) = runtime(source, failures = failures)
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
         runtime.open()
         runCurrent()
         runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
         runCurrent()
         gate.complete(Unit)
         runCurrent()
-        assertEquals(1, failures.size)
+        assertEquals(1, attempts)
+        assertTrue("A promoted page failure must not fail the session: $failures", failures.isEmpty())
+        source.beforePage = { id -> if (id == PageId.at(episode, 1)) attempts++ }
+        retryClock += 2_000_000_000L
+        runtime.resize(EngineViewport(100, 100))
+        runCurrent()
+        assertEquals(2, attempts)
+        assertTrue(runtime.snapshot.pages.containsKey(PageId.at(episode, 1)))
+        assertTrue(failures.isEmpty())
         runtime.close()
+        assertEquals(0, source.livePages)
         assertEquals(0, coordinator.snapshot().subscribers)
         coordinator.close()
+    }
+
+    @Test fun persistentlyUnavailableRequiredPageIsSkippedSoReadingContinues() = runTest {
+        val source = Source()
+        val unavailable = PageId.at(episode, 0)
+        var attempts = 0
+        source.beforePage = { id -> if (id == unavailable) { attempts++; error("provider page missing") } }
+        val receipts = mutableListOf<InputReceipt>()
+        val failures = mutableListOf<Throwable>()
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, receipts = receipts, failures = failures,
+            workClock = { retryClock })
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(1, attempts)
+            assertTrue("A dead page must not fail the session: $failures", failures.isEmpty())
+            retryClock += 2_000_000_000L
+            runtime.resize(EngineViewport(100, 100))
+            runCurrent()
+            assertEquals("The failure bound has not been reached yet", 2, attempts)
+            assertFalse(runtime.snapshot.session.completeViewport)
+            retryClock += 2_000_000_000L
+            runtime.resize(EngineViewport(100, 100))
+            runCurrent()
+            assertEquals(3, attempts)
+            assertTrue("Placeholder geometry must complete the viewport", runtime.snapshot.session.completeViewport)
+            assertFalse(unavailable in runtime.snapshot.pages)
+            assertTrue(failures.isEmpty())
+            assertEquals(0, runtime.ownership().failed)
+            val input = InputSample(1, 1, 0, 150 * 1_024L)
+            runtime.input(input)
+            runCurrent()
+            assertEquals(InputOutcome.APPLIED, receipts.last { it.sample.sequence == input.sequence }.outcome)
+            assertEquals(0, runtime.snapshot.session.pendingInputCount)
+            val attemptsAfterSkip = attempts
+            retryClock += 2_000_000_000L
+            runtime.resize(EngineViewport(100, 100))
+            runCurrent()
+            assertEquals("An unavailable page must not be demanded again", attemptsAfterSkip, attempts)
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
     }
 
     @Test fun nextManifestFailureWaitsForExplicitRetryWithoutInterruptingCurrentEpisode() = runTest {
@@ -1075,17 +1142,21 @@ class EngineSessionRuntimeTest {
     }
 
     private fun TestScope.runtime(source: Source, receipts: MutableList<InputReceipt> = mutableListOf(),
-        failures: MutableList<Throwable> = mutableListOf()): Pair<EngineSessionRuntime, WorkCoordinator> {
+        failures: MutableList<Throwable> = mutableListOf(),
+        workClock: () -> Long = System::nanoTime,
+        observationClock: () -> Long = System::nanoTime): Pair<EngineSessionRuntime, WorkCoordinator> {
         val coordinator = WorkCoordinator(this)
         val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
         return EngineSessionRuntime(this, coordinator, session, source, episode,
-            { _: EngineRuntimeSnapshot, values -> receipts += values }, { _, failure -> failures += failure }) to coordinator
+            { _: EngineRuntimeSnapshot, values -> receipts += values }, { _, failure -> failures += failure },
+            observationClock = observationClock, workClock = workClock) to coordinator
     }
 
     private inner class Source : EngineSessionWork {
         var earlyGeometry = false
         var beforePage: suspend (PageId) -> Unit = {}
         var beforeEpisode: suspend (EpisodeId) -> Unit = {}
+        var beforePosition: suspend () -> Unit = {}
         var livePages = 0
         var constructedPageRequests = 0
         var pageCount = 3
@@ -1117,7 +1188,7 @@ class EngineSessionRuntimeTest {
         }
 
         override fun position(episodeId: EpisodeId) = request(episodeId.toString(), "position",
-            SessionPosition::class.java, WorkDomain.STORAGE, WorkPriority.FOCUS) { SessionPosition(initialAnchor, legacyPosition) }
+            SessionPosition::class.java, WorkDomain.STORAGE, WorkPriority.FOCUS) { beforePosition(); SessionPosition(initialAnchor, legacyPosition) }
 
         override fun episode(episodeId: EpisodeId, priority: WorkPriority) = request(episodeId.toString(),
             "episode", EpisodeAccessPlan::class.java, WorkDomain.CONTROL, priority) { requestedEpisodes += episodeId; beforeEpisode(episodeId); plan(episodeId) }

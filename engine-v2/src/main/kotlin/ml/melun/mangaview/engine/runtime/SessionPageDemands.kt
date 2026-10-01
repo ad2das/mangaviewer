@@ -12,7 +12,7 @@ internal class SessionPageDemands(
     private val source: EngineSessionWork,
     private val metadata: (Long, PageId, EpisodeAccessPlan, WorkMetadata) -> Unit,
     private val accept: (Long, PageId, EpisodeAccessPlan, StoredPage) -> Unit,
-    private val failedReadAhead: (PageId) -> Unit,
+    private val failed: (PageId) -> Unit,
 ) {
     private class Cached(val generation: Long, val plan: EpisodeAccessPlan,
         val priority: WorkPriority, val demand: SessionDemand<StoredPage>)
@@ -25,9 +25,12 @@ internal class SessionPageDemands(
         entries[id]?.let { cached ->
             if (cached.generation == generation && cached.plan === plan && cached.priority == priority) return cached.demand
         }
-        return SessionDemand(source.page(plan, id, priority), onFailure =
-            if (priority == WorkPriority.NEXT_IMAGE || priority == WorkPriority.NEXT_EPISODE)
-                ({ _: Throwable -> failedReadAhead(id) }) else null,
+        // A page failure never fails the session, whatever its priority: the page is marked failed
+        // (which parks speculative read-ahead) and the work set retries it on its own backoff while
+        // the geometry still needs it. A visible page whose candidates are all transiently
+        // unavailable is a provider outage, not a session error.
+        return SessionDemand(source.page(plan, id, priority),
+            onFailure = { _: Throwable -> failed(id) },
             onMetadata = { value -> metadata(generation, id, plan, value) },
         ) { page -> accept(generation, id, plan, page) }.also {
             entries[id] = Cached(generation, plan, priority, it)
