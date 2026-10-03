@@ -1,24 +1,21 @@
 package ml.melun.mangaview.activity
 
-import android.content.res.ColorStateList
+import android.app.Activity
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.view.animation.AccelerateInterpolator
-import android.view.animation.DecelerateInterpolator
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.TextView
 import java.util.ArrayDeque
-import java.util.IdentityHashMap
 import kotlin.math.abs
+import ml.melun.mangaview.R
+import ml.melun.mangaview.ui.AppFonts
 import ml.melun.mangaview.viewer.runtime.ViewerChromeState
 
 internal class ViewerChromeController(
@@ -36,33 +33,41 @@ internal class ViewerChromeController(
         val split: () -> Unit,
         val immersive: () -> Unit,
         val settings: () -> Unit,
+        val seek: (Int) -> Unit = {},
     )
 
     private val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop
+    private var palette = ViewerPalette.of(dark = true)
+    private var insets = ViewerSafeInsets(0, 0, 0, 0)
     private val top = LinearLayout(activity)
     private val bottom = LinearLayout(activity)
-    private val title = label(16f, Typeface.BOLD).apply {
+    private val back = ChromeIconButton(activity, R.drawable.ic_arrow_back_ios_new, "뒤로", actions.back)
+    private val title = TextView(activity).apply {
         gravity = Gravity.CENTER_VERTICAL or Gravity.START
-        setPadding(dp(12), 0, dp(8), 0)
+        isSingleLine = true
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        setPadding(activity.dp(4), 0, activity.dp(8), 0)
     }
-    private val page = label(13f, Typeface.BOLD).apply {
-        background = roundedDrawable(0x28FFFFFF.toInt(), dp(12).toFloat())
-        setPadding(dp(12), 0, dp(12), 0)
+    private val split = ChromeIconButton(activity, R.drawable.ic_menu_book, "양면 보기", actions.split)
+    private val immersive = ChromeIconButton(activity, R.drawable.ic_fullscreen, "몰입 모드 (전체 화면)", actions.immersive)
+    private val page = TextView(activity).apply {
+        gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        isSingleLine = true
+        fontFeatureSettings = "tnum"
     }
-    private val previous = button("이전", actions.previous)
-    private val episodes = button("회차", actions.episodes)
-    private val next = button("다음", actions.next, isAccent = true)
-    private val bookmark = button("책갈피", actions.bookmark)
-    private val settings = button("설정", actions.settings)
-    private val split = button("양면", actions.split)
-    private val immersive = button("몰입", actions.immersive)
-        .apply { contentDescription = "몰입 모드 (전체 화면)" }
-    private val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
-        max = PROGRESS_SCALE
-        progressTintList = ColorStateList.valueOf(ACCENT_PROGRESS)
-        progressBackgroundTintList = ColorStateList.valueOf(0x33FFFFFF.toInt())
+    private val scrubber = ViewerPageScrubber(activity)
+    private val previous = ChromeActionItem(activity, R.drawable.ic_skip_previous, "이전", false, actions.previous)
+    private val episodes = ChromeActionItem(activity, R.drawable.ic_format_list_bulleted, "회차", false, actions.episodes)
+    private val bookmark = ChromeActionItem(activity, R.drawable.ic_bookmark, "책갈피", false, actions.bookmark)
+    private val settings = ChromeActionItem(activity, R.drawable.ic_tune, "설정", false, actions.settings)
+    private val next = ChromeActionItem(activity, R.drawable.ic_skip_next, "다음", true, actions.next)
+    /** Large page readout in the middle of the screen while the scrubber is held. */
+    private val bubble = TextView(activity).apply {
+        gravity = Gravity.CENTER
+        fontFeatureSettings = "tnum"
+        visibility = View.GONE
+        setPadding(activity.dp(22), activity.dp(12), activity.dp(22), activity.dp(12))
     }
-    private val bottomRow = LinearLayout(activity)
     private val gestureRelay = ChromeGestureRelay(
         surface = surface,
         touchSlop = touchSlop.toFloat(),
@@ -71,15 +76,24 @@ internal class ViewerChromeController(
     )
     private var showing = false
     private var autoHidePaused = false
-    private val accentState = IdentityHashMap<View, Boolean>()
-    private val autoHide = Runnable { if (showing && !autoHidePaused) setVisible(false) }
+    private var scrubbing = false
+    private var pageCount = 0
+    private val autoHide = Runnable { if (showing && !autoHidePaused && !scrubbing) setVisible(false) }
 
     val visible: Boolean get() = showing
 
     fun install(root: FrameLayout) {
         configureBars()
-        root.addView(top, barParams(Gravity.TOP))
-        root.addView(bottom, barParams(Gravity.BOTTOM))
+        configureScrubber()
+        root.addView(bubble, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER,
+        ))
+        root.addView(top, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
+        root.addView(bottom, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        applyPalette(palette)
+        val known = insets
+        insets = ViewerSafeInsets(-1, -1, -1, -1)
+        applyInsets(known)
         showing = false
         top.visibility = View.GONE
         bottom.visibility = View.GONE
@@ -111,54 +125,43 @@ internal class ViewerChromeController(
     fun contains(x: Float, y: Float): Boolean = visible &&
         (top.containsPoint(x, y) || bottom.containsPoint(x, y))
 
-    private fun configureBars() {
-        listOf(top, bottom).forEach { bar ->
-            bar.orientation = LinearLayout.VERTICAL
-            bar.gravity = Gravity.CENTER_VERTICAL
-            bar.setPadding(dp(14), dp(8), dp(14), dp(8))
-            bar.setBackgroundColor(CHROME_BACKGROUND)
-        }
-        top.orientation = LinearLayout.HORIZONTAL
-        bottomRow.orientation = LinearLayout.HORIZONTAL
-        bottomRow.gravity = Gravity.CENTER_VERTICAL
-        val back = button("‹", actions.back, isCircular = true).apply { contentDescription = "뒤로" }
-        top.addView(back, LinearLayout.LayoutParams(dp(48), dp(48)))
-        top.addView(title, LinearLayout.LayoutParams(0, dp(48), 1f))
-        top.addView(split, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
-        top.addView(immersive, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
-        top.addView(settings, LinearLayout.LayoutParams(dp(58), dp(48)).apply { marginStart = dp(6) })
+    /** Follows the reader's light/dark choice; the bars and every control restyle in place. */
+    fun applyPalette(value: ViewerPalette) {
+        palette = value
+        listOf(top, bottom).forEach { it.setBackgroundColor(value.bar) }
+        listOf(back, split, immersive).forEach { it.applyPalette(value) }
+        listOf(previous, episodes, bookmark, settings, next).forEach { it.applyPalette(value) }
+        title.style(16f, AppFonts.SEMIBOLD, value.text)
+        page.style(13f, AppFonts.SEMIBOLD, value.secondary)
+        scrubber.applyPalette(value)
+        bubble.style(22f, AppFonts.BOLD, Color.WHITE)
+        bubble.background = roundedFill(0xE6151824.toInt(), activity.dpf(18f))
+        if (showing) applySystemBarAppearance(true)
+    }
 
-        bottom.addView(progress, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(2),
-        ))
-        bottom.addView(bottomRow, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-        ))
-        bottomRow.addView(page, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(8) })
-        bottomRow.addView(bookmark, itemParams(68))
-        bottomRow.addView(previous, itemParams(58))
-        bottomRow.addView(episodes, itemParams(58))
-        bottomRow.addView(next, itemParams(58))
-
-        installDragForwarding(
-            top, bottom, back, title, page, bookmark, previous, episodes, next, split, immersive, settings,
-        )
+    /** The bars reach under the system bars so their color, not a black strip, frames the screen. */
+    fun applyInsets(value: ViewerSafeInsets) {
+        if (insets == value) return
+        insets = value
+        (top.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = -value.top; top.layoutParams = it }
+        (bottom.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = -value.bottom; bottom.layoutParams = it }
+        top.setPadding(activity.dp(4), value.top + activity.dp(4), activity.dp(8), activity.dp(4))
+        bottom.setPadding(activity.dp(8), activity.dp(2), activity.dp(8), value.bottom + activity.dp(6))
     }
 
     private fun update(state: ViewerChromeState?) {
         setText(title, state?.title ?: "회차 불러오는 중")
-        setText(page, state?.let { "${it.pageNumber} / ${it.pageCount}" } ?: "– / –")
-        val progressValue = state?.takeIf { it.pageCount > 0 }
-            ?.let { it.pageNumber * PROGRESS_SCALE / it.pageCount } ?: 0
-        if (progress.progress != progressValue) progress.progress = progressValue
+        pageCount = state?.pageCount ?: 0
+        if (!scrubbing) setText(page, state?.let { pageLabel(it.pageNumber, it.pageCount) } ?: "– / –")
+        scrubber.bind(state?.pageNumber ?: 1, pageCount)
         previous.enable(state?.previousEpisodeId != null)
         next.enable(state?.nextEpisodeId != null)
         episodes.enable(state != null)
+        bookmark.enable(state != null)
         split.enable(state != null)
         val splitOn = state?.splitMode == true
-        setText(split, if (splitOn) "단면" else "양면")
+        split.setActive(splitOn)
         split.contentDescription = if (splitOn) "단면 보기, 누르면 양면" else "양면 보기, 누르면 단면"
-        accent(split, splitOn)
     }
 
     private fun setText(view: TextView, value: String) {
@@ -168,13 +171,75 @@ internal class ViewerChromeController(
     /** Mirrors the immersive setting on the quick toggle inside the chrome. */
     fun setImmersiveActive(active: Boolean) {
         immersive.contentDescription = if (active) "몰입 모드 켜짐" else "몰입 모드 (전체 화면)"
-        accent(immersive, active)
+        immersive.setActive(active, if (active) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
     }
+
+    private fun configureBars() {
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        top.addView(back, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)))
+        top.addView(title, LinearLayout.LayoutParams(0, activity.dp(48), 1f))
+        top.addView(split, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)))
+        top.addView(immersive, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)).apply {
+            marginStart = activity.dp(4)
+        })
+        bottom.orientation = LinearLayout.VERTICAL
+        val scrubRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(page, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, activity.dp(44)).apply {
+                marginStart = activity.dp(10)
+            })
+            addView(scrubber, LinearLayout.LayoutParams(0, activity.dp(44), 1f))
+        }
+        val actionRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf(previous, episodes, bookmark, settings, next).forEach { item ->
+            actionRow.addView(item, LinearLayout.LayoutParams(0, activity.dp(58), 1f))
+        }
+        bottom.addView(scrubRow)
+        bottom.addView(actionRow)
+        // The scrubber owns its horizontal drag; everything else relays vertical drags to the page.
+        installDragForwarding(top, bottom, scrubRow, actionRow, back, title, page,
+            previous, episodes, bookmark, settings, next, split, immersive)
+    }
+
+    private fun configureScrubber() {
+        scrubber.onDragChanged = { dragging ->
+            scrubbing = dragging
+            if (dragging) cancelAutoHide() else scheduleAutoHide()
+            fadeBubble(dragging)
+        }
+        scrubber.onPreview = { target ->
+            val label = pageLabel(target, pageCount)
+            setText(page, label)
+            setText(bubble, label)
+        }
+        scrubber.onCommit = { target ->
+            setText(page, pageLabel(target, pageCount))
+            actions.seek(target)
+        }
+    }
+
+    private fun fadeBubble(show: Boolean) {
+        bubble.animate().cancel()
+        if (show) {
+            bubble.alpha = 0f
+            bubble.scaleX = 0.92f
+            bubble.scaleY = 0.92f
+            bubble.visibility = View.VISIBLE
+            bubble.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(FAST_MS).setInterpolator(EMPHASIZED).start()
+        } else {
+            bubble.animate().alpha(0f).setDuration(FAST_MS).withEndAction { bubble.visibility = View.GONE }.start()
+        }
+    }
+
+    private fun pageLabel(number: Int, count: Int): String = if (count > 0) "$number / $count" else "– / –"
 
     private fun setVisible(show: Boolean) {
         if (showing == show) return
         showing = show
         cancelAutoHide()
+        applySystemBarAppearance(show)
         if (show) {
             top.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             showBars()
@@ -184,33 +249,45 @@ internal class ViewerChromeController(
         }
     }
 
+    /**
+     * Light bars need dark status/navigation icons while they are on screen. This uses the same
+     * legacy visibility flags as the rest of the app: once a window opts into the controller's
+     * appearance API, the platform stops honoring those flags for the library afterwards.
+     */
+    @Suppress("DEPRECATION")
+    private fun applySystemBarAppearance(chromeShowing: Boolean) {
+        val decor = (activity as? Activity)?.window?.decorView ?: return
+        val mask = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        val next = if (chromeShowing && !palette.dark) decor.systemUiVisibility or mask
+        else decor.systemUiVisibility and mask.inv()
+        if (next != decor.systemUiVisibility) decor.systemUiVisibility = next
+    }
+
     private fun showBars() {
-        val offset = dp(14).toFloat()
         listOf(top, bottom).forEachIndexed { index, bar ->
-            val from = if (index == 0) -offset else offset
             bar.animate().cancel()
             bar.visibility = View.VISIBLE
+            val travel = (bar.height.takeIf { it > 0 } ?: activity.dp(96)).toFloat() * 0.6f
             bar.alpha = 0f
-            bar.translationY = from
+            bar.translationY = if (index == 0) -travel else travel
             bar.animate()
                 .alpha(1f)
                 .translationY(0f)
                 .setDuration(SHOW_DURATION_MS)
-                .setInterpolator(DecelerateInterpolator())
+                .setInterpolator(EMPHASIZED)
                 .start()
         }
     }
 
     private fun hideBarsAnimated() {
-        val offset = dp(14).toFloat()
         listOf(top, bottom).forEachIndexed { index, bar ->
-            val to = if (index == 0) -offset else offset
+            val travel = bar.height.toFloat() * 0.6f
             bar.animate().cancel()
             bar.animate()
                 .alpha(0f)
-                .translationY(to)
+                .translationY(if (index == 0) -travel else travel)
                 .setDuration(HIDE_DURATION_MS)
-                .setInterpolator(AccelerateInterpolator())
+                .setInterpolator(ACCELERATE)
                 .withEndAction {
                     if (!showing) {
                         bar.visibility = View.GONE
@@ -224,49 +301,13 @@ internal class ViewerChromeController(
 
     private fun scheduleAutoHide() {
         top.removeCallbacks(autoHide)
-        if (showing && !autoHidePaused) {
+        if (showing && !autoHidePaused && !scrubbing) {
             top.postDelayed(autoHide, AUTO_HIDE_DELAY_MS)
         }
     }
 
     private fun cancelAutoHide() {
         top.removeCallbacks(autoHide)
-    }
-
-    private fun label(size: Float, style: Int = Typeface.NORMAL) = TextView(activity).apply {
-        setTextColor(Color.WHITE)
-        textSize = size
-        typeface = Typeface.create(Typeface.DEFAULT, style)
-        gravity = Gravity.CENTER
-        isSingleLine = true
-        ellipsize = android.text.TextUtils.TruncateAt.END
-    }
-
-    private fun button(text: String, click: () -> Unit, isCircular: Boolean = false, isAccent: Boolean = false) = label(14f, Typeface.BOLD).apply {
-        this.text = text
-        isClickable = true
-        isFocusable = true
-        setOnClickListener { if (tag != false) click() }
-        val radius = if (isCircular) dp(22).toFloat() else dp(12).toFloat()
-        val bg = if (isAccent) ACCENT_BUTTON_BACKGROUND else BUTTON_BACKGROUND
-        val border = if (isAccent) ACCENT_BORDER else BUTTON_BORDER
-        background = roundedDrawable(bg, radius, dp(1), border)
-    }
-
-    private fun roundedDrawable(color: Int, radius: Float, strokeWidth: Int = 0, strokeColor: Int = 0) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = radius
-        setColor(color)
-        if (strokeWidth > 0) setStroke(strokeWidth, strokeColor)
-    }
-
-    private fun accent(view: TextView, enabled: Boolean) {
-        if (accentState[view] == enabled) return
-        accentState[view] = enabled
-        view.background = roundedDrawable(
-            if (enabled) ACCENT_BUTTON_BACKGROUND else BUTTON_BACKGROUND,
-            dp(12).toFloat(), dp(1), if (enabled) ACCENT_BORDER else BUTTON_BORDER,
-        )
     }
 
     private fun installDragForwarding(vararg views: View) {
@@ -280,6 +321,7 @@ internal class ViewerChromeController(
     private fun hideWithoutDetachingTouchTarget() {
         showing = false
         cancelAutoHide()
+        applySystemBarAppearance(false)
         top.animate().cancel()
         bottom.animate().cancel()
         top.alpha = 0f
@@ -295,37 +337,16 @@ internal class ViewerChromeController(
         bottom.translationY = 0f
     }
 
-    private fun TextView.enable(enabled: Boolean) {
-        tag = enabled
-        alpha = if (enabled) 1f else 0.35f
-    }
-
     private fun View.containsPoint(x: Float, y: Float): Boolean =
-        x >= left && x < right && y >= top && y < bottom
-
-    private fun barParams(gravity: Int) = FrameLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        if (gravity == Gravity.BOTTOM) ViewGroup.LayoutParams.WRAP_CONTENT else dp(64),
-        gravity,
-    )
-
-    private fun itemParams(widthDp: Int) = LinearLayout.LayoutParams(dp(widthDp), dp(48)).apply {
-        marginStart = dp(5)
-    }
-
-    private fun dp(value: Int): Int = (value * activity.resources.displayMetrics.density).toInt()
+        x >= left && x < right && y >= top + translationY && y < bottom + translationY
 
     private companion object {
-        const val CHROME_BACKGROUND = 0xF5080A10.toInt()
-        const val BUTTON_BACKGROUND = 0xFF181C26.toInt()
-        const val BUTTON_BORDER = 0x33FFFFFF.toInt()
-        const val ACCENT_BUTTON_BACKGROUND = 0xFF7C5CFF.toInt()
-        const val ACCENT_BORDER = 0x669080FF.toInt()
-        const val ACCENT_PROGRESS = 0xFF7C5CFF.toInt()
-        const val PROGRESS_SCALE = 1000
-        const val SHOW_DURATION_MS = 180L
-        const val HIDE_DURATION_MS = 140L
+        const val SHOW_DURATION_MS = 240L
+        const val HIDE_DURATION_MS = 160L
+        const val FAST_MS = 140L
         const val AUTO_HIDE_DELAY_MS = 3_500L
+        val EMPHASIZED = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+        val ACCELERATE = PathInterpolator(0.3f, 0f, 0.8f, 0.15f)
     }
 }
 
@@ -338,6 +359,8 @@ internal class ChromeGestureRelay(
     private val axisLock = VerticalGestureAxisLock(touchSlop)
     private val pendingEvents = ArrayDeque<MotionEvent>()
     private var forwarding = false
+    /** The relay consumes the touch stream, so it drives the control's pressed ripple itself. */
+    private var pressed: View? = null
 
     fun onTouch(source: View, event: MotionEvent): Boolean {
         when (event.actionMasked) {
@@ -354,6 +377,11 @@ internal class ChromeGestureRelay(
     private fun begin(source: View, event: MotionEvent) {
         recyclePending()
         forwarding = false
+        if (source.isClickable && source.isEnabled) {
+            source.drawableHotspotChanged(event.x, event.y)
+            source.isPressed = true
+            pressed = source
+        }
         axisLock.begin(event.rawX, event.rawY)
         addPending(copyForSurface(source, event))
     }
@@ -376,7 +404,7 @@ internal class ChromeGestureRelay(
         addPending(copyForSurface(source, event))
         when (axisLock.classify(event.rawX, event.rawY)) {
             VerticalGestureAxisLock.Route.FORWARD -> startForwarding()
-            VerticalGestureAxisLock.Route.REJECT -> recyclePending()
+            VerticalGestureAxisLock.Route.REJECT -> { release(); recyclePending() }
             VerticalGestureAxisLock.Route.PENDING -> Unit
         }
     }
@@ -402,10 +430,17 @@ internal class ChromeGestureRelay(
             // must be replayed as a click or the button listener would never fire.
             source.performClick()
         }
+        release()
         recyclePending()
     }
 
+    private fun release() {
+        pressed?.isPressed = false
+        pressed = null
+    }
+
     private fun cancel(source: View, event: MotionEvent) {
+        release()
         if (forwarding) {
             dispatch(copyForSurface(source, event))
             forwarding = false
@@ -417,6 +452,7 @@ internal class ChromeGestureRelay(
     }
 
     private fun startForwarding() {
+        release()
         forwarding = true
         hideWithoutDetachingTouchTarget()
         while (pendingEvents.isNotEmpty()) {

@@ -39,6 +39,7 @@ import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceSeries
 
 private val GridCardShape = RoundedCornerShape(18.dp)
+private const val COVER_ASPECT = 0.78f
 private val GenreButtonShape = RoundedCornerShape(14.dp)
 private val GridScrimBrush = Brush.verticalGradient(
     listOf(Color.Transparent, Color.Black.copy(alpha = 0.35f)),
@@ -53,8 +54,26 @@ private val RankedNeutralBrush = Brush.linearGradient(
 )
 
 @Composable
-@OptIn(ExperimentalFoundationApi::class)
 internal fun HomeScreen(
+    state: LibraryState,
+    artworkLoader: SeriesArtworkLoader,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    val genres = state.homeTab == HomeTab.GENRES
+    PullToRefresh(
+        refreshing = if (genres) state.genres is GenreContent.Loading else state.homeRefreshing,
+        onRefresh = { accept(if (genres) LibraryIntent.RetryGenres else LibraryIntent.RetryHome) },
+        colors = colors,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        HomeList(state, artworkLoader, colors, accept)
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun HomeList(
     state: LibraryState,
     artworkLoader: SeriesArtworkLoader,
     colors: LibraryColors,
@@ -63,11 +82,12 @@ internal fun HomeScreen(
     val selectedSource = state.sources.firstOrNull { it.id == state.selectedSourceId }
     val showKindSelector = selectedSource?.distinguishesKinds ?: true
     val readyHome = state.home as? HomeContent.Ready
-    val popularRows = remember(readyHome?.popular) { readyHome?.popular.orEmpty().chunked(2) }
-    val newRows = remember(readyHome?.new) { readyHome?.new.orEmpty().chunked(2) }
+    val columns = rememberGridColumns()
+    val popularRows = remember(readyHome?.popular, columns) { readyHome?.popular.orEmpty().chunked(columns) }
+    val newRows = remember(readyHome?.new, columns) { readyHome?.new.orEmpty().chunked(columns) }
     val scroll = rememberLazyListState()
     LazyColumn(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxSize(),
         state = scroll,
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
@@ -80,15 +100,15 @@ internal fun HomeScreen(
         item { HomeTabs(state.homeTab, colors, accept) }
         item { Spacer(Modifier.height(12.dp)) }
         if (state.homeTab == HomeTab.GENRES) {
-            genreRows(state, colors, accept)
+            genreRows(state, colors, columns + 1, accept)
         } else {
             when (val home = state.home) {
                 HomeContent.Loading -> item { HomeLoading(colors) }
                 is HomeContent.Failure -> item { HomeFailure(home.message, colors, accept) }
                 is HomeContent.Ready -> when (state.homeTab) {
                     HomeTab.HOME -> homeRows(home, artworkLoader, colors, accept)
-                    HomeTab.POPULAR -> gridRows(popularRows, artworkLoader, colors, accept)
-                    HomeTab.NEW -> gridRows(newRows, artworkLoader, colors, accept)
+                    HomeTab.POPULAR -> gridRows(popularRows, columns, artworkLoader, colors, accept)
+                    HomeTab.NEW -> gridRows(newRows, columns, artworkLoader, colors, accept)
                     HomeTab.GENRES -> Unit
                 }
             }
@@ -124,6 +144,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.homeRows(
 
 internal fun androidx.compose.foundation.lazy.LazyListScope.gridRows(
     rows: List<List<SourceSeries>>,
+    columns: Int,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
@@ -139,7 +160,7 @@ internal fun androidx.compose.foundation.lazy.LazyListScope.gridRows(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             row.forEach { item -> SeriesGridCard(item, loader, colors, Modifier.weight(1f), accept) }
-            if (row.size == 1) Spacer(Modifier.weight(1f))
+            repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
         }
     }
 }
@@ -147,6 +168,7 @@ internal fun androidx.compose.foundation.lazy.LazyListScope.gridRows(
 private fun androidx.compose.foundation.lazy.LazyListScope.genreRows(
     state: LibraryState,
     colors: LibraryColors,
+    columns: Int,
     accept: (LibraryIntent) -> Unit,
 ) {
     item {
@@ -161,8 +183,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.genreRows(
     when (val genres = state.genres) {
         GenreContent.Empty, GenreContent.Loading -> item { GenreMessage("장르를 불러오는 중…", colors) }
         is GenreContent.Failure -> item { GenreFailure(genres.message, colors, accept) }
-        is GenreContent.Ready -> items(genres.items.chunked(3), key = { row -> row.joinToString("|") { it.key } }) { row ->
-            GenreRow(row, colors, accept)
+        is GenreContent.Ready -> items(genres.items.chunked(columns), key = { row -> row.joinToString("|") { it.key } }) { row ->
+            GenreRow(row, columns, colors, accept)
         }
     }
 }
@@ -170,6 +192,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.genreRows(
 @Composable
 private fun GenreRow(
     row: List<SourceGenre>,
+    columns: Int,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
@@ -195,7 +218,7 @@ private fun GenreRow(
                 )
             }
         }
-        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+        repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
     }
 }
 
@@ -224,19 +247,6 @@ private fun GenreFailure(message: String, colors: LibraryColors, accept: (Librar
 @Composable
 private fun HomeHeading(colors: LibraryColors) {
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 18.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.clip(RoundedCornerShape(8.dp))
-                    .background(colors.accentSurface)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            ) {
-                BasicText(
-                    "PREMIUM VIEWER",
-                    style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.ExtraBold),
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
         BasicText("읽던 작품으로 바로 이동", style = displayStyle(colors, 23))
         Spacer(Modifier.height(5.dp))
         BasicText(
@@ -462,7 +472,7 @@ private fun SeriesGridCard(
     accept: (LibraryIntent) -> Unit,
 ) {
     Column(
-        modifier.height(248.dp)
+        modifier
             .graphicsLayer {
                 shape = GridCardShape
                 clip = true
@@ -472,14 +482,16 @@ private fun SeriesGridCard(
             .semantics { contentDescription = "작품: ${series.title}" }
             .clickable { accept(LibraryIntent.SeriesSelected(series)) },
     ) {
-        Box(Modifier.fillMaxWidth().height(166.dp)) {
+        // Covers keep their portrait proportion at any column width; the caption block is fixed
+        // so every card in a row ends on the same line.
+        Box(Modifier.fillMaxWidth().aspectRatio(COVER_ASPECT)) {
             SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
             Box(Modifier.matchParentSize().background(GridScrimBrush))
             series.status?.let { status ->
                 SeriesStatusBadge(status, colors, Modifier.align(Alignment.TopStart).padding(8.dp))
             }
         }
-        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp)) {
+        Column(Modifier.fillMaxWidth().height(78.dp).padding(horizontal = 12.dp, vertical = 9.dp)) {
             BasicText(
                 series.title,
                 style = bodyStyle(colors, 13).copy(fontWeight = FontWeight.Bold),

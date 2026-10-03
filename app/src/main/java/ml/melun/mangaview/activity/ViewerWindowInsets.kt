@@ -14,8 +14,12 @@ internal data class ViewerSafeInsets(
 )
 
 internal fun Activity.configureViewerWindowInsets() {
-    window.statusBarColor = Color.BLACK
-    window.navigationBarColor = Color.BLACK
+    // The reader root paints black edge to edge, and its chrome bars extend under the system bars;
+    // an opaque bar color would cover that chrome, so the system bars stay transparent.
+    window.statusBarColor = Color.TRANSPARENT
+    window.navigationBarColor = Color.TRANSPARENT
+    window.isNavigationBarContrastEnforced = false
+    window.isStatusBarContrastEnforced = false
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         window.setDecorFitsSystemWindows(false)
     } else {

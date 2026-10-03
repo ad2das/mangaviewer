@@ -3,59 +3,74 @@ package ml.melun.mangaview.activity
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
+import ml.melun.mangaview.R
 import ml.melun.mangaview.data.settings.ViewerSettings
+import ml.melun.mangaview.ui.AppFonts
 
-/** Reader-local overrides that need to stay reachable without leaving the page. */
+/** Reader-local overrides in a bottom sheet that stays reachable without leaving the page. */
 internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context) {
     var onDimChanged: (Int) -> Unit = {}
     var onDimCommitted: (Int) -> Unit = {}
     var onKeepScreenOn: (Boolean) -> Unit = {}
     var onVolumeKeys: (Boolean) -> Unit = {}
+    var onDarkTheme: (Boolean) -> Unit = {}
     var onClose: () -> Unit = {}
 
     val visible: Boolean get() = visibility == View.VISIBLE
 
+    private var palette = ViewerPalette.of(dark = true)
     private val dim = SeekBar(context).apply { max = MAX_DIM_PERCENT }
-    private val dimValue = label(13f, Typeface.BOLD).apply { gravity = Gravity.CENTER_VERTICAL or Gravity.END }
-    private val keepScreenOn = toggle()
-    private val volumeKeys = toggle()
-    private lateinit var card: LinearLayout
+    private val dimValue = TextView(context).apply {
+        gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        fontFeatureSettings = "tnum"
+    }
+    private val darkTheme = toggle("어두운 테마")
+    private val keepScreenOn = toggle("화면 꺼짐 방지")
+    private val volumeKeys = toggle("볼륨 버튼으로 이동")
+    private val heading = TextView(context).apply { text = "뷰어 설정" }
+    private val handle = View(context)
+    private val labels = mutableListOf<TextView>()
+    private val icons = mutableListOf<ImageView>()
+    private val card = LinearLayout(context)
+    private var bottomInset = 0
     private var binding = false
 
     init {
         isClickable = true
-        setBackgroundColor(0xB0000000.toInt())
         setOnClickListener { onClose() }
-
-        card = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            background = rounded(0xF0181A22.toInt(), dp(20).toFloat(), dp(1), 0x33FFFFFF.toInt())
-            val pad = dp(20)
-            setPadding(pad, dp(18), pad, dp(16))
-        }
+        card.orientation = LinearLayout.VERTICAL
+        card.isClickable = true
         card.setOnClickListener { }
-        card.addView(label(16f, Typeface.BOLD).apply { text = "뷰어 설정" })
-        card.addView(divider())
-        card.addView(dimRow())
-        card.addView(toggleRow("화면 꺼짐 방지", keepScreenOn))
-        card.addView(toggleRow("볼륨 버튼으로 이동", volumeKeys))
-        card.addView(closeRow())
-        addView(card, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
-            val margin = dp(20)
-            setMargins(margin, margin, margin, margin)
+        card.addView(handle, LinearLayout.LayoutParams(context.dp(36), context.dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = context.dp(14)
         })
+        card.addView(heading, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = context.dp(6)
+        })
+        card.addView(dimRow())
+        card.addView(toggleRow(R.drawable.ic_dark_mode, "어두운 테마", darkTheme))
+        card.addView(toggleRow(R.drawable.ic_screen_lock_portrait, "화면 꺼짐 방지", keepScreenOn))
+        card.addView(toggleRow(R.drawable.ic_volume_up, "볼륨 버튼으로 이동", volumeKeys))
+        addView(card, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         visibility = View.GONE
+        bindListeners()
+        applyPalette(palette)
+    }
 
+    private fun bindListeners() {
+        darkTheme.setOnCheckedChangeListener { _, checked -> if (!binding) onDarkTheme(checked) }
         keepScreenOn.setOnCheckedChangeListener { _, checked -> if (!binding) onKeepScreenOn(checked) }
         volumeKeys.setOnCheckedChangeListener { _, checked -> if (!binding) onVolumeKeys(checked) }
         dim.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -75,8 +90,42 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         })
     }
 
+    fun applyPalette(value: ViewerPalette) {
+        palette = value
+        setBackgroundColor(value.scrim)
+        card.background = GradientDrawable().apply {
+            setColor(value.sheet)
+            val radius = context.dpf(24f)
+            cornerRadii = floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
+        }
+        handle.background = roundedFill(value.track, context.dpf(2f))
+        heading.style(18f, AppFonts.BOLD, value.text)
+        dimValue.style(13f, AppFonts.SEMIBOLD, value.accent)
+        labels.forEach { it.style(15f, AppFonts.MEDIUM, value.text) }
+        icons.forEach { it.tint(value.secondary) }
+        dim.progressTintList = ColorStateList.valueOf(value.accent)
+        dim.thumbTintList = ColorStateList.valueOf(value.accent)
+        dim.progressBackgroundTintList = ColorStateList.valueOf(value.track)
+        listOf(darkTheme, keepScreenOn, volumeKeys).forEach { tintSwitch(it, value) }
+        updateCardPadding()
+    }
+
+    /** The sheet runs under the navigation bar so its surface, not a black strip, meets the edge. */
+    fun applyInsets(bottom: Int) {
+        if (bottomInset == bottom) return
+        bottomInset = bottom
+        (card.layoutParams as? LayoutParams)?.let { it.bottomMargin = -bottom; card.layoutParams = it }
+        updateCardPadding()
+    }
+
+    private fun updateCardPadding() {
+        val pad = context.dp(22)
+        card.setPadding(pad, context.dp(10), pad, context.dp(18) + bottomInset)
+    }
+
     fun open(settings: ViewerSettings) {
         binding = true
+        darkTheme.isChecked = settings.darkTheme
         keepScreenOn.isChecked = settings.keepScreenOn
         volumeKeys.isChecked = settings.volumeKeyNavigation
         dim.progress = settings.readerDimPercent
@@ -88,34 +137,22 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
             visibility = View.VISIBLE
         }
         card.animate().cancel()
-        card.alpha = 0f
-        card.translationY = dp(28).toFloat()
+        card.translationY = (card.height.takeIf { it > 0 } ?: context.dp(360)).toFloat()
         animate().alpha(1f).setDuration(FADE_MS).start()
-        card.animate()
-            .alpha(1f)
-            .translationY(0f)
-            .setDuration(ENTER_MS)
-            .setInterpolator(android.view.animation.DecelerateInterpolator())
-            .start()
+        card.animate().translationY(0f).setDuration(ENTER_MS).setInterpolator(EMPHASIZED).start()
     }
 
     fun dismiss() {
         if (visibility != View.VISIBLE) return
         animate().cancel()
         card.animate().cancel()
-        card.animate()
-            .alpha(0f)
-            .translationY(dp(20).toFloat())
-            .setDuration(EXIT_MS)
-            .setInterpolator(android.view.animation.AccelerateInterpolator())
-            .start()
+        card.animate().translationY(card.height.toFloat()).setDuration(EXIT_MS).setInterpolator(ACCELERATE).start()
         animate()
             .alpha(0f)
             .setDuration(EXIT_MS)
             .withEndAction {
                 visibility = View.GONE
                 alpha = 1f
-                card.alpha = 1f
                 card.translationY = 0f
             }
             .start()
@@ -124,82 +161,57 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
     private fun dimRow(): View = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, dp(14), 0, 0)
-        addView(label(14f).apply { text = "화면 어둡게" }, LinearLayout.LayoutParams(0, dp(36), 1f))
-        addView(dimValue, LinearLayout.LayoutParams(dp(44), dp(36)))
-        addView(dim, LinearLayout.LayoutParams(0, dp(36), 1.2f))
+        addView(rowIcon(R.drawable.ic_brightness_medium), LinearLayout.LayoutParams(context.dp(22), context.dp(22)))
+        addView(rowLabel("화면 어둡게"), LinearLayout.LayoutParams(0, context.dp(52), 1f).apply {
+            marginStart = context.dp(14)
+        })
+        addView(dimValue, LinearLayout.LayoutParams(context.dp(44), context.dp(52)))
+        addView(dim, LinearLayout.LayoutParams(0, context.dp(52), 1.3f))
     }
 
-    private fun toggleRow(text: String, control: Switch): View = LinearLayout(context).apply {
+    private fun toggleRow(icon: Int, text: String, control: Switch): View = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, dp(10), 0, 0)
-        control.contentDescription = text
-        addView(label(14f).apply { this.text = text }, LinearLayout.LayoutParams(0, dp(48), 1f))
-        addView(control, LinearLayout.LayoutParams(dp(52), dp(48)))
+        addView(rowIcon(icon), LinearLayout.LayoutParams(context.dp(22), context.dp(22)))
+        addView(rowLabel(text), LinearLayout.LayoutParams(0, context.dp(52), 1f).apply {
+            marginStart = context.dp(14)
+        })
+        addView(control, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, context.dp(52)))
+        // The whole row toggles, not just the thumb: a far larger target for the same choice.
+        setOnClickListener { control.toggle() }
     }
 
-    private fun closeRow(): View = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL or Gravity.END
-        setPadding(0, dp(14), 0, 0)
-        addView(TextView(context).apply {
-            text = "닫기"
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            gravity = Gravity.CENTER
-            isClickable = true
-            isFocusable = true
-            setPadding(dp(20), dp(10), dp(20), dp(10))
-            background = rounded(0xFF7C5CFF.toInt(), dp(12).toFloat(), dp(1), 0x669080FF.toInt())
-            setOnClickListener { onClose() }
-        }, LinearLayout.LayoutParams(dp(84), dp(44)))
-    }
-
-    private fun divider(): View = View(context).apply {
-        setBackgroundColor(0x22FFFFFF.toInt())
-    }.also { line ->
-        line.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-            topMargin = dp(12)
-        }
-    }
-
-    private fun toggle() = Switch(context).apply {
-        showText = false
-        thumbTintList = ColorStateList(
-            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-            intArrayOf(0xFFFFFFFF.toInt(), 0xFFB6BDCC.toInt()),
-        )
-        trackTintList = ColorStateList(
-            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-            intArrayOf(0xFF7C5CFF.toInt(), 0xFF3A4256.toInt()),
-        )
-    }
-
-    private fun label(size: Float, style: Int = Typeface.NORMAL) = TextView(context).apply {
-        setTextColor(Color.WHITE)
-        textSize = size
-        typeface = Typeface.create(Typeface.DEFAULT, style)
+    private fun rowLabel(text: String) = TextView(context).apply {
+        this.text = text
         gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        labels += this
+    }
+
+    private fun rowIcon(icon: Int) = ImageView(context).apply {
+        setImageResource(icon)
+        icons += this
+    }
+
+    private fun toggle(label: String) = Switch(context).apply {
+        showText = false
+        contentDescription = label
+    }
+
+    private fun tintSwitch(control: Switch, value: ViewerPalette) {
+        val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
+        control.thumbTintList = ColorStateList(states, intArrayOf(Color.WHITE, if (value.dark) 0xFFB6BDCC.toInt() else Color.WHITE))
+        control.trackTintList = ColorStateList(states, intArrayOf(value.accent, value.track))
+        control.trackTintMode = android.graphics.PorterDuff.Mode.SRC
     }
 
     private fun dimLabel(percent: Int): String = if (percent <= 0) "꺼짐" else "$percent%"
 
-    private fun rounded(color: Int, radius: Float, strokeWidth: Int = 0, strokeColor: Int = 0) =
-        GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = radius
-            setColor(color)
-            if (strokeWidth > 0) setStroke(strokeWidth, strokeColor)
-        }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
     private companion object {
         const val MAX_DIM_PERCENT = 70
-        const val FADE_MS = 160L
-        const val ENTER_MS = 200L
-        const val EXIT_MS = 140L
+        const val FADE_MS = 180L
+        const val ENTER_MS = 280L
+        const val EXIT_MS = 180L
+        val EMPHASIZED = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+        val ACCELERATE = PathInterpolator(0.3f, 0f, 0.8f, 0.15f)
     }
 }

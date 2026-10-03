@@ -41,6 +41,12 @@ android {
         }
     }
 
+    androidResources {
+        // Pretendard is one variable font read at every weight; stored uncompressed it is memory
+        // mapped from the APK instead of inflated into each process's heap.
+        noCompress 'ttf'
+    }
+
     buildFeatures {
         compose true
         buildConfig false

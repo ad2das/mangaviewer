@@ -80,6 +80,8 @@ internal class LibraryCatalogLoader(
                 }
             }
         }
+        update { it.copy(homeRefreshing = true) }
+        homeJob?.invokeOnCompletion { if (version == homeVersion) update { it.copy(homeRefreshing = false) } }
     }
 
     private fun showsHomeFor(snapshot: LibraryState): Boolean =
@@ -121,6 +123,7 @@ internal class LibraryCatalogLoader(
         homeVersion += 1L
         homeJob?.cancel()
         homeJob = null
+        if (current().homeRefreshing) update { it.copy(homeRefreshing = false) }
     }
     fun cancelGenres() = genreJob?.cancel().also { genreJob = null }
 }

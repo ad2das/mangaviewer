@@ -222,7 +222,7 @@ private fun MainTopBar(
     updateAvailable: Boolean,
 ) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        // The brand title and the PLUS badge need room; on narrow phones the source chip
+        // The brand title needs room; on narrow phones the source chip
         // collapses to its logo so the title stays on one line instead of wrapping.
         val compact = maxWidth < 400.dp
         Row(
@@ -262,18 +262,6 @@ private fun MainDestinationTitle(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.width(8.dp))
-                Box(
-                    Modifier.clip(RoundedCornerShape(8.dp))
-                        .background(colors.accentSurface)
-                        .padding(horizontal = 7.dp, vertical = 3.dp),
-                ) {
-                    BasicText(
-                        "PLUS",
-                        style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.ExtraBold),
-                        maxLines = 1,
-                    )
-                }
             }
         }
         MainDestination.SEARCH -> {
@@ -368,9 +356,9 @@ private fun MainBottomNavigation(
             .border(1.dp, colors.cardBorder, RoundedCornerShape(28.dp)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        NavigationItem(MainDestination.HOME, LibraryIcon.HOME, selected, colors, accept)
-        NavigationItem(MainDestination.SEARCH, LibraryIcon.SEARCH, selected, colors, accept)
-        NavigationItem(MainDestination.LIBRARY, LibraryIcon.LIBRARY, selected, colors, accept)
+        NavigationItem(MainDestination.HOME, LibraryIcon.HOME, LibraryIcon.HOME_FILLED, selected, colors, accept)
+        NavigationItem(MainDestination.SEARCH, LibraryIcon.SEARCH, LibraryIcon.SEARCH, selected, colors, accept)
+        NavigationItem(MainDestination.LIBRARY, LibraryIcon.LIBRARY, LibraryIcon.LIBRARY_FILLED, selected, colors, accept)
     }
 }
 
@@ -378,6 +366,7 @@ private fun MainBottomNavigation(
 private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
     item: MainDestination,
     icon: LibraryIcon,
+    activeIcon: LibraryIcon,
     selected: MainDestination,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
@@ -418,7 +407,7 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationItem(
                 .background(pill),
             contentAlignment = Alignment.Center,
         ) {
-            LibraryIconView(icon, iconColor, Modifier.size(22.dp))
+            LibraryIconView(if (active) activeIcon else icon, iconColor, Modifier.size(22.dp))
         }
         Spacer(Modifier.height(3.dp))
         BasicText(

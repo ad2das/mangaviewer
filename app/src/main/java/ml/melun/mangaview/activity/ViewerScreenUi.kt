@@ -1,7 +1,6 @@
 package ml.melun.mangaview.activity
 
 import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Build
 import android.view.Gravity
 import android.view.View
@@ -9,8 +8,6 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.activity.ComponentActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -29,9 +26,11 @@ internal class ViewerScreenUi(
 ) : android.content.ContextWrapper(activity) {
     private val window get() = activity.window
     private lateinit var loading: ViewerLoadingOverlay
-    private lateinit var failureCard: LinearLayout
-    private lateinit var failureText: TextView
+    private lateinit var failureCard: ViewerFailureCard
+    private lateinit var snackbar: ViewerSnackbar
+    private lateinit var episodeSheet: ViewerEpisodeSheet
     private lateinit var dimOverlay: View
+    private var palette = ViewerPalette.of(dark = true)
     private lateinit var settingsPanel: ViewerReaderSettingsPanel
     private var appliedSettings: ViewerSettings? = null
     var volumeKeysEnabled = false
@@ -60,9 +59,18 @@ internal class ViewerScreenUi(
         applyKeepScreenOn(false)
     }
 
+    /** In-reader message bar; it rises above the bottom chrome while that is showing. */
+    fun showMessage(text: String, tone: ViewerSnackbar.Tone = ViewerSnackbar.Tone.INFO,
+        actionLabel: String? = null, action: (() -> Unit)? = null) {
+        if (!::snackbar.isInitialized) return
+        val lift = if (::chrome.isInitialized && chrome.visible) dp(128) else 0
+        snackbar.translationY = -lift.toFloat()
+        snackbar.show(text, tone, actionLabel, action)
+    }
+
     fun showFailure(failure: Throwable) {
         loading.failed()
-        failureText.text = viewerFailureMessage(failure)
+        failureCard.bind(viewerFailureMessage(failure))
         failureCard.animate().cancel()
         if (failureCard.visibility != View.VISIBLE) {
             failureCard.alpha = 0f
@@ -104,6 +112,7 @@ internal class ViewerScreenUi(
 
     private fun applyReaderPreferences(settings: ViewerSettings) {
         if (appliedSettings == settings) return
+        if (appliedSettings?.darkTheme != settings.darkTheme) applyPalette(ViewerPalette.of(settings.darkTheme))
         appliedSettings = settings
         volumeKeysEnabled = settings.volumeKeyNavigation
         if (::dimOverlay.isInitialized) dimOverlay.alpha = settings.readerDimPercent / 100f
@@ -136,6 +145,26 @@ internal class ViewerScreenUi(
             if (::chrome.isInitialized) chrome.setAutoHidePaused(true)
         }
     }
+
+    private fun applyPalette(value: ViewerPalette) {
+        palette = value
+        if (::chrome.isInitialized) chrome.applyPalette(value)
+        if (::settingsPanel.isInitialized) settingsPanel.applyPalette(value)
+        if (::failureCard.isInitialized) failureCard.applyPalette(value)
+        if (::loading.isInitialized) loading.applyPalette(value)
+        if (::snackbar.isInitialized) snackbar.applyPalette(value)
+        if (::episodeSheet.isInitialized) episodeSheet.applyPalette(value)
+    }
+
+    fun showEpisodesLoading() {
+        if (::chrome.isInitialized) chrome.hide()
+        episodeSheet.showLoading()
+    }
+
+    fun showEpisodes(titles: List<String>, currentIndex: Int, pick: (Int) -> Unit) =
+        episodeSheet.showEpisodes(titles, currentIndex, pick)
+
+    fun dismissEpisodes() = episodeSheet.dismiss()
 
     private fun retryFromFailure() {
         hideFailureCard()
@@ -191,6 +220,8 @@ internal class ViewerScreenUi(
             surface.toggleZoom(x - surface.left, y - surface.top)
         }
         setBackgroundColor(Color.BLACK)
+        // Chrome bars and the settings sheet extend into the system-bar insets themselves.
+        clipToPadding = false
         installSystemBarInsets()
         addView(runtime.surface, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -209,14 +240,14 @@ internal class ViewerScreenUi(
         addView(loading, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        failureCard = buildFailureCard()
+        failureCard = ViewerFailureCard(this@ViewerScreenUi, close = { actions.back() }, retry = ::retryFromFailure)
         addView(failureCard, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM,
         ).apply {
-            val margin = dp(24)
-            setMargins(margin, margin, margin, margin + dp(48))
+            val margin = dp(16)
+            setMargins(margin, margin, margin, margin + dp(24))
         })
         // Chrome installs before the panel so the panel and its scrim stay above the bars.
         installChrome(this, runtime)
@@ -225,63 +256,22 @@ internal class ViewerScreenUi(
             onDimCommitted = { percent -> persistSettings { it.copy(readerDimPercent = percent) } }
             onKeepScreenOn = { enabled -> persistSettings { it.copy(keepScreenOn = enabled) } }
             onVolumeKeys = { enabled -> persistSettings { it.copy(volumeKeyNavigation = enabled) } }
-            onClose = { dismiss() }
+            onDarkTheme = { enabled -> persistSettings { it.copy(darkTheme = enabled) } }
+            onClose = { toggleSettingsPanel() }
         }
         addView(settingsPanel, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        }
-
-    private fun buildFailureCard(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        contentDescription = "viewer-failure"
-        val padH = dp(20)
-        setPadding(padH, dp(14), padH, dp(14))
-        background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = dp(16).toFloat()
-            setColor(0xF0181A22.toInt())
-            setStroke(dp(1), 0x33FFFFFF.toInt())
-        }
-        visibility = View.GONE
-        isClickable = true
-        failureText = TextView(this@ViewerScreenUi).apply {
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            gravity = Gravity.CENTER
-        }
-        addView(failureText, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        episodeSheet = ViewerEpisodeSheet(this@ViewerScreenUi)
+        addView(episodeSheet, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
         ))
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        snackbar = ViewerSnackbar(this@ViewerScreenUi)
+        addView(snackbar, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM,
+        ).apply { setMargins(dp(16), 0, dp(16), dp(20)) })
+        applyPalette(palette)
         }
-        row.addView(actionButton("닫기", accent = false) { actions.back() }, LinearLayout.LayoutParams(dp(72), dp(48)))
-        row.addView(actionButton("다시 시도", accent = true) { retryFromFailure() },
-            LinearLayout.LayoutParams(dp(96), dp(48)).apply { marginStart = dp(8) })
-        addView(row, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-        ).apply { topMargin = dp(12) })
-    }
-
-    private fun actionButton(text: String, accent: Boolean, click: () -> Unit) = TextView(this).apply {
-        this.text = text
-        setTextColor(Color.WHITE)
-        textSize = 14f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        gravity = Gravity.CENTER
-        isClickable = true
-        isFocusable = true
-        background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = dp(12).toFloat()
-            setColor(if (accent) 0xFF7C5CFF.toInt() else 0xFF181C26.toInt())
-            setStroke(dp(1), if (accent) 0x669080FF.toInt() else 0x33FFFFFF.toInt())
-        }
-        setOnClickListener { click() }
-    }
 
     private fun installChrome(root: ViewerTouchRoot, runtime: EngineViewerRuntime) {
         chrome = ViewerChromeController(
@@ -294,7 +284,8 @@ internal class ViewerScreenUi(
             controller.setImmersiveActive(appliedSettings?.immersiveMode == true)
         }
         root.excludesSurfaceTap = { x, y ->
-            loading.active || chrome.contains(x, y) || settingsPanel.visible ||
+            loading.active || chrome.contains(x, y) || settingsPanel.visible || episodeSheet.visible ||
+                snackbar.containsPoint(x, y) ||
                 (failureCard.visibility == View.VISIBLE && failureCard.containsPoint(x, y))
         }
     }
@@ -307,6 +298,9 @@ internal class ViewerScreenUi(
             ) {
                 view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
             }
+            if (::chrome.isInitialized) chrome.applyInsets(safe)
+            if (::settingsPanel.isInitialized) settingsPanel.applyInsets(safe.bottom)
+            if (::episodeSheet.isInitialized) episodeSheet.applyInsets(safe.bottom)
             insets
         }
     }
@@ -321,7 +315,11 @@ internal class ViewerScreenUi(
     /** Lets reader-local overlays consume back before the host closes the whole session. */
     fun handleBack(): Boolean {
         if (::settingsPanel.isInitialized && settingsPanel.visible) {
-            settingsPanel.dismiss()
+            toggleSettingsPanel()
+            return true
+        }
+        if (::episodeSheet.isInitialized && episodeSheet.visible) {
+            episodeSheet.dismiss()
             return true
         }
         if (::chrome.isInitialized && chrome.visible) {

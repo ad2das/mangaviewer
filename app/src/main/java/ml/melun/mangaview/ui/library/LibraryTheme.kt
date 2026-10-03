@@ -1,6 +1,7 @@
 package ml.melun.mangaview.ui.library
 
 import androidx.compose.runtime.Composable
+import ml.melun.mangaview.ui.AppFonts
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -124,6 +125,7 @@ internal fun libraryColors(dark: Boolean): LibraryColors = if (dark) {
 }
 
 internal fun displayStyle(colors: LibraryColors, size: Int = 26) = TextStyle(
+    fontFamily = AppFonts.family,
     color = colors.text,
     fontSize = size.sp,
     fontWeight = FontWeight.ExtraBold,
@@ -131,6 +133,7 @@ internal fun displayStyle(colors: LibraryColors, size: Int = 26) = TextStyle(
 )
 
 internal fun titleStyle(colors: LibraryColors, size: Int = 24) = TextStyle(
+    fontFamily = AppFonts.family,
     color = colors.text,
     fontSize = size.sp,
     fontWeight = FontWeight.Bold,
@@ -138,6 +141,7 @@ internal fun titleStyle(colors: LibraryColors, size: Int = 24) = TextStyle(
 )
 
 internal fun sectionStyle(colors: LibraryColors, size: Int = 19) = TextStyle(
+    fontFamily = AppFonts.family,
     color = colors.text,
     fontSize = size.sp,
     fontWeight = FontWeight.ExtraBold,
@@ -145,12 +149,14 @@ internal fun sectionStyle(colors: LibraryColors, size: Int = 19) = TextStyle(
 )
 
 internal fun bodyStyle(colors: LibraryColors, size: Int = 15) = TextStyle(
+    fontFamily = AppFonts.family,
     color = colors.text,
     fontSize = size.sp,
     letterSpacing = (-0.2).sp,
 )
 
 internal fun labelStyle(colors: LibraryColors, selected: Boolean = false) = TextStyle(
+    fontFamily = AppFonts.family,
     color = if (selected) colors.accent else colors.secondary,
     fontSize = 13.sp,
     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
@@ -158,12 +164,14 @@ internal fun labelStyle(colors: LibraryColors, selected: Boolean = false) = Text
 )
 
 internal fun hintStyle(colors: LibraryColors, size: Int = 13) = TextStyle(
+    fontFamily = AppFonts.family,
     color = colors.secondary,
     fontSize = size.sp,
     letterSpacing = (-0.2).sp,
 )
 
 internal fun badgeStyle(colors: LibraryColors, size: Int = 11) = TextStyle(
+    fontFamily = AppFonts.family,
     color = colors.accent,
     fontSize = size.sp,
     fontWeight = FontWeight.Bold,
@@ -171,8 +179,26 @@ internal fun badgeStyle(colors: LibraryColors, size: Int = 11) = TextStyle(
 )
 
 internal fun microBadgeStyle(colors: LibraryColors, size: Int = 10) = TextStyle(
+    fontFamily = AppFonts.family,
     color = Color.White,
     fontSize = size.sp,
     fontWeight = FontWeight.ExtraBold,
     letterSpacing = (-0.2).sp,
 )
+/**
+ * Cover grid density by window width: two covers on a phone, more on foldables, tablets and in
+ * landscape, so a cover keeps roughly the same physical size instead of stretching.
+ */
+internal fun gridColumnsFor(widthDp: Int): Int = when {
+    widthDp >= 1200 -> 6
+    widthDp >= 900 -> 5
+    widthDp >= 720 -> 4
+    widthDp >= 540 -> 3
+    else -> 2
+}
+
+@Composable
+internal fun rememberGridColumns(): Int {
+    val width = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+    return remember(width) { gridColumnsFor(width) }
+}

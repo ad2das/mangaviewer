@@ -88,7 +88,7 @@ private fun MissingArtwork(title: String, colors: LibraryColors) {
         if (label.isNotEmpty()) {
             BasicText(
                 text = label,
-                style = TextStyle(color = colors.secondary, fontSize = 24.sp, fontWeight = FontWeight.SemiBold),
+                style = TextStyle(fontFamily = ml.melun.mangaview.ui.AppFonts.family, color = colors.secondary, fontSize = 24.sp, fontWeight = FontWeight.SemiBold),
             )
         }
     }

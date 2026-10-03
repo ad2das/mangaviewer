@@ -8,7 +8,6 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.lifecycle.Lifecycle
@@ -28,7 +27,11 @@ import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.viewer.runtime.ViewerLaunchSpec
 
 /** Retains the library's window and composition while a reader occupies its content area. */
-internal class MainReaderHost(private val activity: ComponentActivity) {
+internal class MainReaderHost(
+    private val activity: ComponentActivity,
+    /** Library-side error surface; the reader is gone by the time these messages matter. */
+    private val reportError: (String) -> Unit,
+) {
     @Volatile var current: EngineViewerScreen? = null
         private set
     private val showing = MutableStateFlow(false)
@@ -114,7 +117,7 @@ internal class MainReaderHost(private val activity: ComponentActivity) {
         } catch (failure: Exception) {
             closeReader()
             android.util.Log.e("MainReaderHost", "reader launch failed", failure)
-            Toast.makeText(activity, failure.message ?: "뷰어를 열지 못했습니다", Toast.LENGTH_SHORT).show()
+            reportError(failure.message?.takeIf { text -> text.any { it in '가'..'힣' } } ?: "뷰어를 열지 못했습니다")
         }
     }
 
@@ -149,7 +152,7 @@ internal class MainReaderHost(private val activity: ComponentActivity) {
     fun enterForeground() { current?.enterForeground() }
     private fun reportCloseFailure(failure: Exception) {
         android.util.Log.e("MainReaderHost", "reader cleanup failed", failure)
-        if (!destroyed) Toast.makeText(activity, "뷰어를 닫는 중 오류가 발생했습니다", Toast.LENGTH_SHORT).show()
+        if (!destroyed) reportError("뷰어를 닫는 중 오류가 발생했습니다")
     }
     fun enterBackground() { current?.enterBackground() }
     fun destroy() { destroyed = true; closeReader() }
@@ -183,6 +186,8 @@ private class ReaderWindowState(private val activity: ComponentActivity) {
     private val window = activity.window
     private val statusColor = window.statusBarColor
     private val navigationColor = window.navigationBarColor
+    private val navigationContrast = window.isNavigationBarContrastEnforced
+    private val statusContrast = window.isStatusBarContrastEnforced
     private val systemUi = window.decorView.systemUiVisibility
     private val softInput = window.attributes.softInputMode
 
@@ -201,6 +206,8 @@ private class ReaderWindowState(private val activity: ComponentActivity) {
     fun restore() {
         window.statusBarColor = statusColor
         window.navigationBarColor = navigationColor
+        window.isNavigationBarContrastEnforced = navigationContrast
+        window.isStatusBarContrastEnforced = statusContrast
         window.setSoftInputMode(softInput)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.insetsController?.show(WindowInsets.Type.systemBars())

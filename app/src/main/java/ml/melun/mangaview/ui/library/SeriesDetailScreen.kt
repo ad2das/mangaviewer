@@ -77,8 +77,8 @@ private fun DetailToolbar(
         IconButton(LibraryIcon.BACK, "뒤로", colors.secondary) { accept(LibraryIntent.Back) }
         Spacer(Modifier.weight(1f))
         IconButton(
-            LibraryIcon.HEART,
-            "좋아요",
+            heartIcon(favorite),
+            if (favorite) "좋아요 해제" else "좋아요",
             if (favorite) colors.favoriteActive else colors.secondary,
         ) {
             accept(LibraryIntent.FavoriteToggled(series))
@@ -227,7 +227,7 @@ private fun DetailHeader(
                 DetailDescription(series, details, colors)
                 Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     LibraryIconView(
-                        LibraryIcon.HEART,
+                        heartIcon(favorite),
                         if (favorite) colors.favoriteActive else colors.muted,
                         Modifier.size(16.dp),
                     )
@@ -484,7 +484,7 @@ private fun DetailReadingActions(series: SourceSeries, firstEpisode: SourceEpiso
             contentAlignment = Alignment.Center,
         ) {
             LibraryIconView(
-                LibraryIcon.HEART,
+                heartIcon(favorite),
                 if (favorite) colors.favoriteActive else colors.secondary,
                 Modifier.size(24.dp),
             )
@@ -559,10 +559,11 @@ private fun EpisodeStorageAction(episode: SourceEpisode, saved: Boolean, downloa
     ) {
         when {
             saved || downloadState is EpisodeDownloadState.Complete ->
-                BasicText("✓", style = bodyStyle(colors, 18).copy(color = colors.accent, fontWeight = FontWeight.Bold))
-            downloadState is EpisodeDownloadState.Running -> BasicText(
-                "${downloadState.completedPages}/${downloadState.totalPages}",
-                style = hintStyle(colors, 9).copy(color = colors.accent),
+                LibraryIconView(LibraryIcon.CHECK_CIRCLE, colors.accent, Modifier.size(22.dp))
+            downloadState is EpisodeDownloadState.Running -> DownloadProgressRing(
+                downloadState.completedPages,
+                downloadState.totalPages,
+                colors,
             )
             else -> LibraryIconView(LibraryIcon.DOWNLOAD, colors.secondary, Modifier.size(20.dp))
         }
@@ -599,4 +600,36 @@ private fun EpisodeRefreshStatus(content: LibraryContent.Episodes, colors: Libra
         } else return
     BasicText(message, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
         hintStyle(colors, 12).copy(color = if (content.refreshFailure != null) colors.error else colors.secondary))
+}
+
+/** Determinate ring for a running episode download; the page count stays available to TalkBack. */
+@Composable
+private fun DownloadProgressRing(completed: Int, total: Int, colors: LibraryColors) {
+    val fraction = if (total > 0) (completed.toFloat() / total).coerceIn(0f, 1f) else 0f
+    val animated by androidx.compose.animation.core.animateFloatAsState(
+        fraction,
+        androidx.compose.animation.core.tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut),
+        label = "downloadRing",
+    )
+    Box(
+        Modifier.size(26.dp).semantics { contentDescription = "다운로드 중 $completed/$total" },
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            val stroke = 2.5.dp.toPx()
+            val inset = stroke / 2
+            val arcSize = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)
+            val topLeft = androidx.compose.ui.geometry.Offset(inset, inset)
+            drawArc(colors.outline, 0f, 360f, false, topLeft, arcSize,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(stroke))
+            drawArc(colors.accent, -90f, 360f * animated, false, topLeft, arcSize,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                ))
+        }
+        BasicText(
+            "${(fraction * 100).toInt()}",
+            style = hintStyle(colors, 8).copy(color = colors.accent, fontWeight = FontWeight.Bold),
+        )
+    }
 }

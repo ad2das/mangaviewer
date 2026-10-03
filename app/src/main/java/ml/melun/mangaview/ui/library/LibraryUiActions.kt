@@ -99,9 +99,9 @@ internal class LibraryUiActions(
 
     fun removeSaved(item: SavedItemRemoval) {
         scope.launch {
-            try { actions.removeSaved(item); showMessage("${item.series.title} 삭제 완료") }
+            try { actions.removeSaved(item); showMessage("${item.series.title} 삭제 완료", MessageTone.SUCCESS) }
             catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { showMessage("삭제하지 못했습니다. 다시 시도해 주세요") }
+            catch (_: Exception) { showMessage("삭제하지 못했습니다. 다시 시도해 주세요", MessageTone.ERROR) }
         }
     }
 
@@ -111,9 +111,9 @@ internal class LibraryUiActions(
                 intent.items.forEach { actions.removeSaved(it) }
                 intent.bookmarks.forEach { actions.removeBookmark(it) }
                 update { it.copy(savedSelection = emptySet()) }
-                showMessage("${intent.items.size + intent.bookmarks.size}개 삭제 완료")
+                showMessage("${intent.items.size + intent.bookmarks.size}개 삭제 완료", MessageTone.SUCCESS)
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { showMessage("삭제하지 못했습니다. 다시 시도해 주세요") }
+            catch (_: Exception) { showMessage("삭제하지 못했습니다. 다시 시도해 주세요", MessageTone.ERROR) }
         }
     }
 
@@ -136,7 +136,7 @@ internal class LibraryUiActions(
 
     fun removeOffline(episodeId: EpisodeId) {
         downloads.remove(episodeId)
-        showMessage("오프라인 저장을 삭제했습니다")
+        showMessage("오프라인 저장을 삭제했습니다", MessageTone.SUCCESS)
     }
 
     fun resolveSeriesUrl(series: SourceSeries, effect: (String) -> LibraryEffect) {
@@ -144,7 +144,7 @@ internal class LibraryUiActions(
         scope.launch {
             val url = runCatching { actions.seriesUrl(series) }.getOrNull()
             emit(url?.takeIf(String::isNotBlank)?.let(effect) ?: LibraryEffect.ShowMessage(
-                "열 수 있는 작품 주소가 없습니다",
+                "열 수 있는 작품 주소가 없습니다", MessageTone.ERROR,
             ))
         }
     }
@@ -154,7 +154,7 @@ internal class LibraryUiActions(
         emit(LibraryEffect.OpenUri(value))
     }
 
-    fun showMessage(value: String) {
-        emit(LibraryEffect.ShowMessage(value))
+    fun showMessage(value: String, tone: MessageTone = MessageTone.INFO) {
+        emit(LibraryEffect.ShowMessage(value, tone))
     }
 }

@@ -12,6 +12,8 @@ import android.widget.TextView
 
 /** Owns touches on the loading UI until a complete original viewport has been submitted. */
 internal class ViewerLoadingOverlay(context: Context) : FrameLayout(context) {
+    private val spinner = ProgressBar(context)
+    private val label = TextView(context)
     private var failing = false
     private var completing = false
     val active: Boolean get() = visibility == VISIBLE && !failing && !completing
@@ -31,17 +33,19 @@ internal class ViewerLoadingOverlay(context: Context) : FrameLayout(context) {
                 setColor(0xE0181A22.toInt())
             }
         }
-        content.addView(ProgressBar(context).apply {
-            indeterminateTintList = ColorStateList.valueOf(0xFF6C5CE7.toInt())
-        }, LinearLayout.LayoutParams((48 * density).toInt(), (48 * density).toInt()))
-        content.addView(TextView(context).apply {
+        content.addView(spinner, LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt()))
+        content.addView(label.apply {
             text = "페이지를 불러오는 중…"
-            setTextColor(Color.WHITE)
-            textSize = 14f
             gravity = Gravity.CENTER
             setPadding(0, (12 * density).toInt(), 0, 0)
         })
+        applyPalette(ViewerPalette.of(dark = true))
         addView(content, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+    }
+
+    fun applyPalette(value: ViewerPalette) {
+        spinner.indeterminateTintList = ColorStateList.valueOf(value.accent)
+        label.style(14f, ml.melun.mangaview.ui.AppFonts.MEDIUM, Color.WHITE)
     }
 
     /**

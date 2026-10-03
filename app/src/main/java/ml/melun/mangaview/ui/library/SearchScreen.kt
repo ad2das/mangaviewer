@@ -193,7 +193,8 @@ private fun SearchEmpty(state: LibraryState, colors: LibraryColors, accept: (Lib
             RecentSearchKeywords(state.saved.settings.recentQueries, colors, accept)
             Spacer(Modifier.height(26.dp))
         }
-        PopularSearchKeywords(colors, accept)
+        val trending = (state.home as? HomeContent.Ready)?.popular.orEmpty().take(TRENDING_COUNT)
+        if (trending.isNotEmpty()) TrendingSeries(trending, colors, accept)
     }
 }
 
@@ -418,7 +419,7 @@ private fun SearchSeriesCard(
             contentAlignment = Alignment.Center,
         ) {
             LibraryIconView(
-                LibraryIcon.HEART,
+                heartIcon(favorite),
                 if (favorite) colors.favoriteActive else colors.muted,
                 Modifier.size(20.dp),
             )
@@ -460,30 +461,57 @@ private fun SearchFilters(state: LibraryState, colors: LibraryColors, accept: (L
     }
 }
 
+/**
+ * Live suggestions: the selected site's current popularity ranking (the same list the home tab
+ * shows), opened directly instead of round-tripping through a text search.
+ */
 @Composable
-private fun PopularSearchKeywords(colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+private fun TrendingSeries(series: List<SourceSeries>, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
-        BasicText("추천 검색어", style = labelStyle(colors).copy(fontWeight = FontWeight.Bold))
-        Spacer(Modifier.height(12.dp))
-        listOf("나 혼자만 레벨업", "전지적 독자 시점", "화산귀환", "원피스", "생존", "주술회전").chunked(2).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { keyword ->
-                    Box(
-                        Modifier.weight(1f).heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
-                            .background(colors.card).border(1.dp, colors.cardBorder, RoundedCornerShape(12.dp))
-                            .clickable {
-                                accept(LibraryIntent.QueryChanged(keyword))
-                                accept(LibraryIntent.Search)
-                            }.padding(horizontal = 12.dp, vertical = 13.dp),
-                    ) {
-                        BasicText(keyword, style = bodyStyle(colors, 12), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(3.dp).height(14.dp).clip(RoundedCornerShape(2.dp)).background(colors.accent))
+            Spacer(Modifier.width(6.dp))
+            BasicText("지금 인기 있는 작품", style = labelStyle(colors).copy(fontWeight = FontWeight.Bold, fontSize = 13.sp))
+        }
+        Spacer(Modifier.height(10.dp))
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
+                .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp)).padding(vertical = 4.dp),
+        ) {
+            series.forEachIndexed { index, item ->
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        .semantics { contentDescription = "인기 ${index + 1}위 ${item.title}" }
+                        .clickable { accept(LibraryIntent.SeriesSelected(item)) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BasicText(
+                        "${index + 1}",
+                        Modifier.width(22.dp),
+                        style = bodyStyle(colors, 15).copy(
+                            color = if (index < 3) colors.accent else colors.muted,
+                            fontWeight = FontWeight.ExtraBold,
+                        ),
+                    )
+                    BasicText(
+                        item.title,
+                        Modifier.weight(1f),
+                        style = bodyStyle(colors, 14).copy(fontWeight = FontWeight.Medium),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    item.status?.let { status ->
+                        Spacer(Modifier.width(8.dp))
+                        SeriesStatusBadge(status, colors)
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
         }
     }
 }
+
+private const val TRENDING_COUNT = 8
 
 @Composable
 private fun SearchSeriesDescription(series: SourceSeries, colors: LibraryColors, modifier: Modifier) {

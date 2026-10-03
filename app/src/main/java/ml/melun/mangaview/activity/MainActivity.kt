@@ -11,7 +11,6 @@ import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewTreeObserver
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,7 +18,13 @@ import androidx.core.content.FileProvider
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.LocalOverscrollFactory
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,7 +49,10 @@ import ml.melun.mangaview.CrashReportText
 import ml.melun.mangaview.ViewerApplication
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.ReadingPosition
+import ml.melun.mangaview.ui.library.AppMessages
+import ml.melun.mangaview.ui.library.AppSnackbarHost
 import ml.melun.mangaview.ui.library.LibraryEffect
+import ml.melun.mangaview.ui.library.MessageTone
 import ml.melun.mangaview.ui.library.LibraryIntent
 import ml.melun.mangaview.ui.library.LibraryScreen
 import ml.melun.mangaview.ui.library.LibraryViewModel
@@ -63,6 +71,7 @@ private const val STARTUP_PRIME_DELAY_MILLIS = 400L
 class MainActivity : ComponentActivity() {
     private lateinit var updates: AppUpdateViewModel
     private lateinit var reader: MainReaderHost
+    private val messages = AppMessages()
     internal fun readerScreen(): EngineViewerScreen? = if (::reader.isInitialized) reader.current else null
     private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val file = updates.state.value.file ?: return@registerForActivityResult
@@ -89,7 +98,7 @@ class MainActivity : ComponentActivity() {
         )[LibraryViewModel::class.java]
         showLibrary(graph, viewModel)
         primeReaderAfterFirstDraw(graph, viewModel)
-        reader = MainReaderHost(this)
+        reader = MainReaderHost(this) { messages.show(it, MessageTone.ERROR) }
         reader.restore(savedInstanceState)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -185,11 +194,14 @@ class MainActivity : ComponentActivity() {
             }
             CompositionLocalProvider(
                 LocalOverscrollFactory provides null,
-                LocalIndication provides libraryPressIndication(),
+                LocalIndication provides libraryPressIndication(colors.dark),
             ) {
-                LibraryScreen(state, graph.artworkLoader, acceptWithFeedback, account,
-                    updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE,
-                    onOpenCrashReport = { latestCrashReport()?.let { crashReport = it } })
+                androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize()) {
+                    LibraryScreen(state, graph.artworkLoader, acceptWithFeedback, account,
+                        updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE,
+                        onOpenCrashReport = { latestCrashReport()?.let { crashReport = it } })
+                    LibraryMessages(colors, shellVisible = state.activeSeries == null && state.selectedGenre == null)
+                }
             }
             if (!reading) {
                 AppUpdateDialog(
@@ -220,14 +232,24 @@ class MainActivity : ComponentActivity() {
                     is LibraryEffect.OpenEpisode -> openEpisode(effect.episodeId, effect.position)
                     is LibraryEffect.OpenUri -> openExternalUri(effect.value)
                     is LibraryEffect.ShareText -> share(effect.title, effect.value)
-                    is LibraryEffect.ShowMessage -> Toast.makeText(
-                        this@MainActivity,
-                        effect.value,
-                        Toast.LENGTH_SHORT,
-                    ).show()
+                    is LibraryEffect.ShowMessage -> messages.show(effect.value, effect.tone)
                 }
             }
         }
+    }
+
+    /** Messages float above the bottom navigation while the tab shell is showing. */
+    @Composable
+    private fun androidx.compose.foundation.layout.BoxScope.LibraryMessages(colors: LibraryColors, shellVisible: Boolean) {
+        val current by messages.current.collectAsStateWithLifecycle()
+        val lift by androidx.compose.animation.core.animateDpAsState(
+            if (shellVisible) 88.dp else 8.dp, label = "snackbarLift",
+        )
+        AppSnackbarHost(
+            messages, current, colors,
+            androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.BottomCenter)
+                .safeDrawingPadding().imePadding().padding(bottom = lift).fillMaxWidth(),
+        )
     }
 
     /** Shows the newest crash with GitHub and clipboard actions; closing consumes the report. */
@@ -250,7 +272,7 @@ class MainActivity : ComponentActivity() {
     /** The newest report for the settings entry; toasts when nothing was ever recorded. */
     private fun latestCrashReport(): String? {
         val report = CrashLog.latestReport(this)
-        if (report == null) Toast.makeText(this, "저장된 오류 리포트가 없습니다", Toast.LENGTH_SHORT).show()
+        if (report == null) messages.show("저장된 오류 리포트가 없습니다")
         return report
     }
 
@@ -302,7 +324,7 @@ class MainActivity : ComponentActivity() {
 
     private fun openExternalUri(value: String) {
         runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(value))) }
-            .onFailure { Toast.makeText(this, "주소를 열 앱이 없습니다", Toast.LENGTH_SHORT).show() }
+            .onFailure { messages.show("주소를 열 앱이 없습니다", MessageTone.ERROR) }
     }
 
     private fun share(title: String, value: String) {
@@ -312,14 +334,14 @@ class MainActivity : ComponentActivity() {
             putExtra(Intent.EXTRA_TEXT, value)
         }
         runCatching { startActivity(Intent.createChooser(intent, "공유")) }
-            .onFailure { Toast.makeText(this, "공유할 앱이 없습니다", Toast.LENGTH_SHORT).show() }
+            .onFailure { messages.show("공유할 앱이 없습니다", MessageTone.ERROR) }
     }
 
     private fun copyToClipboard(label: String, value: String) {
         val clipboard = getSystemService(ClipboardManager::class.java) ?: return
         clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            Toast.makeText(this, "오류 내용을 클립보드에 복사했습니다", Toast.LENGTH_SHORT).show()
+            messages.show("오류 내용을 클립보드에 복사했습니다", MessageTone.SUCCESS)
         }
     }
 
@@ -327,11 +349,11 @@ class MainActivity : ComponentActivity() {
     private fun openCrashIssue(report: String) {
         val url = CrashReportText.issueUrl(report)
         val opened = runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }.isSuccess
-        Toast.makeText(
-            this,
+        messages.show(
             if (opened) "GitHub 새 이슈 페이지를 엽니다 · 전체 오류 내용은 클립보드에 복사했습니다"
             else "GitHub 페이지를 열지 못했습니다. 오류 내용은 클립보드에 복사해 두었습니다",
-            Toast.LENGTH_LONG,
-        ).show()
+            if (opened) MessageTone.INFO else MessageTone.ERROR,
+            long = true,
+        )
     }
 }

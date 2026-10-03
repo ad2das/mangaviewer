@@ -145,7 +145,8 @@ private fun GenreSeriesList(
     accept: (LibraryIntent) -> Unit,
 ) {
     val visible = catalog.items.filter { filter.accepts(it.status) }
-    val rows = remember(visible) { visible.chunked(2) }
+    val columns = rememberGridColumns()
+    val rows = remember(visible, columns) { visible.chunked(columns) }
     LaunchedEffect(list, catalog.items.size, catalog.nextCursor, catalog.loadingNext, catalog.nextFailure) {
         if (catalog.loadingNext || catalog.nextFailure != null || catalog.nextCursor == null) return@LaunchedEffect
         snapshotFlow {
@@ -156,7 +157,7 @@ private fun GenreSeriesList(
         }
     }
     LazyColumn(modifier.fillMaxWidth(), state = list, contentPadding = PaddingValues(bottom = 20.dp)) {
-        if (rows.isNotEmpty()) gridRows(rows, loader, colors, accept)
+        if (rows.isNotEmpty()) gridRows(rows, columns, loader, colors, accept)
         item(key = "catalog-status") {
             Column(
                 Modifier.fillMaxWidth().padding(24.dp),

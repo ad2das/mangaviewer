@@ -1,10 +1,8 @@
 package ml.melun.mangaview.activity
 
-import android.app.AlertDialog
 import android.os.Build
 import android.os.Process
 import android.widget.FrameLayout
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -95,6 +93,7 @@ internal class EngineViewerScreen(
         content = { contentSource },
         launchEpisode = { openEpisode(it) },
         isUnavailable = { isFinishing || isDestroyed },
+        ui = { if (::ui.isInitialized) ui else null },
     )
     private var runtime: EngineViewerRuntime? = null
     private lateinit var ui: ViewerScreenUi
@@ -134,6 +133,7 @@ internal class EngineViewerScreen(
             split = ::toggleSplitMode,
             immersive = { ui.toggleImmersiveMode() },
             settings = { ui.toggleSettingsPanel() },
+            seek = { page -> runtime?.seekToPage(page) },
         ), retry = { runtime?.retryFailures() })
         val source = engine.session(spec)
         // The engine graph is built lazily on this very call, so a direct reader launch reaches its
@@ -398,11 +398,9 @@ internal class EngineViewerScreen(
         sessionScope.launch(NonCancellable) {
             try {
                 engine.saveBookmark(anchor, position.offsetInPageUnits)
-                if (!isFinishing && !isDestroyed) Toast.makeText(this@EngineViewerScreen,
-                    "현재 위치를 책갈피에 저장했습니다", Toast.LENGTH_SHORT).show()
+                if (!isFinishing && !isDestroyed) ui.showMessage("현재 위치를 책갈피에 저장했어요", ViewerSnackbar.Tone.SUCCESS)
             } catch (failure: Throwable) {
-                if (!isFinishing && !isDestroyed) Toast.makeText(this@EngineViewerScreen,
-                    "책갈피를 저장하지 못했습니다", Toast.LENGTH_SHORT).show()
+                if (!isFinishing && !isDestroyed) ui.showMessage("책갈피를 저장하지 못했습니다", ViewerSnackbar.Tone.ERROR)
                 android.util.Log.e("ViewerActivity", "bookmark save failed", failure)
             }
         }
@@ -442,6 +440,7 @@ internal class EpisodePickerController(
     private val content: () -> EngineViewerWork?,
     private val launchEpisode: (EpisodeId) -> Unit,
     private val isUnavailable: () -> Boolean,
+    private val ui: () -> ViewerScreenUi?,
 ) {
     private var job: Job? = null
 
@@ -459,7 +458,7 @@ internal class EpisodePickerController(
         val state = chromeState() ?: return
         val source = content() ?: return
         failure = null
-        Toast.makeText(context, "회차 목록을 불러오는 중입니다", Toast.LENGTH_SHORT).show()
+        ui()?.showEpisodesLoading()
         job = scope.launch {
             try {
                 val subscription = coordinator().submit(
@@ -485,49 +484,24 @@ internal class EpisodePickerController(
 
     private fun showFailureDialog() {
         if (isUnavailable()) return
-        runCatching {
-            AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle("회차 목록")
-                .setMessage("회차 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")
-                .setPositiveButton("다시 시도") { _, _ -> load() }
-                .setNegativeButton("닫기", null)
-                .show()
-        }.onFailure { android.util.Log.e("ViewerActivity", "episode picker failure dialog failed", it) }
+        val screen = ui() ?: return
+        screen.dismissEpisodes()
+        screen.showMessage("회차 목록을 불러오지 못했습니다", ViewerSnackbar.Tone.ERROR, "다시 시도") { load() }
     }
 
     private fun show(current: ViewerChromeState, episodes: List<SourceEpisode>) {
-        if (episodes.isEmpty() || isUnavailable()) return
+        if (isUnavailable()) return
+        val screen = ui() ?: return
+        if (episodes.isEmpty()) {
+            screen.dismissEpisodes()
+            screen.showMessage("표시할 회차가 없습니다")
+            return
+        }
         val currentIndex = episodes.indexOfFirst { it.id == current.episodeId }
-        val list = EpisodePickerList(context).apply {
-            adapter = EpisodePickerAdapter(episodes.map(SourceEpisode::title), currentIndex)
-            // The thumb doubles as the position cue on a long run and is only noise on a short one.
-            isFastScrollAlwaysVisible = episodes.size >= FAST_SCROLL_FROM
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                (context.resources.displayMetrics.heightPixels * PICKER_HEIGHT_FRACTION).toInt(),
-            )
+        screen.showEpisodes(episodes.map(SourceEpisode::title), currentIndex) { position ->
+            val target = episodes.getOrNull(position)?.id
+            if (target != null && target != current.episodeId) launchEpisode(target)
         }
-        val dialog = AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
-            .setTitle("회차 선택")
-            .setView(list)
-            .setNegativeButton("취소", null)
-            .create()
-        list.setOnItemClickListener { _, _, position, _ ->
-            dialog.dismiss()
-            val target = episodes.getOrNull(position)?.id ?: return@setOnItemClickListener
-            if (target != current.episodeId) launchEpisode(target)
-        }
-        if (currentIndex > 0) {
-            dialog.setOnShowListener { list.setSelection(currentIndex) }
-        }
-        dialog.show()
     }
 
-    private companion object {
-        /** Past this many episodes the fast-scroll thumb is a position cue worth keeping visible. */
-        const val FAST_SCROLL_FROM = 40
-
-        /** Share of the screen the episode rows take; the title and the button keep the rest. */
-        const val PICKER_HEIGHT_FRACTION = 0.6f
-    }
 }

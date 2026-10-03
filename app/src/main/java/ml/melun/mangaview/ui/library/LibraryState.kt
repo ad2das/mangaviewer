@@ -31,6 +31,8 @@ internal data class LibraryState(
     val submittedQuery: String = "",
     val searchRevision: Long = 0L,
     val home: HomeContent = HomeContent.Loading,
+    /** A home load (first paint or pull-to-refresh) is in flight. */
+    val homeRefreshing: Boolean = false,
     val genres: GenreContent = GenreContent.Empty,
     val selectedGenre: SourceGenre? = null,
     val genreStatusFilter: SeriesStatus? = null,
@@ -221,5 +223,5 @@ internal sealed interface LibraryEffect {
     ) : LibraryEffect
     data class OpenUri(val value: String) : LibraryEffect
     data class ShareText(val title: String, val value: String) : LibraryEffect
-    data class ShowMessage(val value: String) : LibraryEffect
+    data class ShowMessage(val value: String, val tone: MessageTone = MessageTone.INFO) : LibraryEffect
 }

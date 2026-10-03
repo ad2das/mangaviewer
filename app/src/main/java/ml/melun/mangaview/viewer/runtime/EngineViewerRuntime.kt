@@ -159,6 +159,16 @@ internal class EngineViewerRuntime(
         if (!closing) content.setSplitMode(enabled)
     }
 
+    /** Page-scrubber jump to a 1-based page of the episode on screen; any fling stops first. */
+    fun seekToPage(pageNumber: Int) {
+        if (closing) return
+        val position = readingPosition() ?: return
+        val pages = content.snapshot.plans[position.pageId.episodeId]?.manifest?.pages ?: return
+        val target = pages.getOrNull(pageNumber - 1) ?: return
+        surface.cancelMotion()
+        content.seekPage(target.id)
+    }
+
     suspend fun close() = withContext(NonCancellable) {
         if (!closing) {
             surface.cancelMotion()
