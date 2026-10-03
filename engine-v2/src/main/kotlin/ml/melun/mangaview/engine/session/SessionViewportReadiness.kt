@@ -20,6 +20,12 @@ internal class SessionViewportReadiness {
         }
     }
 
+    /** A discontinuous anchor change is a movement of its own, even with no consumed distance. */
+    fun jumped() {
+        revision++
+        if (enabled) held = true
+    }
+
     fun release(presented: EngineSessionSnapshot, current: EngineSessionSnapshot): Boolean {
         if (!enabled || !held || current.phase == EngineSessionPhase.CLOSED) return false
         if (presented.sessionId != current.sessionId || presented.generation != current.generation ||

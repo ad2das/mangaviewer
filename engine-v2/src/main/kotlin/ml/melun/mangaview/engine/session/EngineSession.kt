@@ -80,7 +80,7 @@ class EngineSession(
             is SessionEvent.ViewportReady -> viewportReady(event.snapshot)
             is SessionEvent.Resize -> resize(event.viewport)
             is SessionEvent.SetSplitMode -> setSplitMode(event.enabled)
-            is SessionEvent.Navigate -> navigate(event.episodeId)
+            is SessionEvent.Navigate, is SessionEvent.SeekPage -> reposition(event)
             SessionEvent.Close -> close()
         }
         return SessionUpdate(buildSnapshot().also { publishedSnapshot = it }, immutableList(receipts))
@@ -257,6 +257,14 @@ class EngineSession(
         return receipts
     }
 
+    /** Navigate replaces the document; SeekPage moves to the top of a page the geometry holds. */
+    private fun reposition(event: SessionEvent): List<InputReceipt> {
+        if (event is SessionEvent.Navigate) return navigate(event.episodeId)
+        val pageId = (event as SessionEvent.SeekPage).pageId
+        if (phaseValue != EngineSessionPhase.ACTIVE || geometry.page(pageId) == null) return emptyList()
+        return cancelPending().also { geometry.anchor = AnchorState(pageId, BigRational.ZERO, 0L); presentation.jumped() }
+    }
+
     private fun close(): List<InputReceipt> {
         if (phaseValue == EngineSessionPhase.CLOSED) return emptyList()
         val receipts = cancelPending()
@@ -416,7 +424,6 @@ class EngineSession(
     private fun checkOwner() {
         check(Thread.currentThread() === ownerThread) { "EngineSession is owned by its construction thread" }
     }
-
 }
 
 private fun SourceAnchor.toState(): AnchorState = AnchorState(

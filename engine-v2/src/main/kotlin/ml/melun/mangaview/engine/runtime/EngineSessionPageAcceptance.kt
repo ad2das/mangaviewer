@@ -1,0 +1,118 @@
+package ml.melun.mangaview.engine.runtime
+
+import java.util.Collections
+import kotlinx.coroutines.CoroutineScope
+import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.core.EpisodeManifest
+import ml.melun.mangaview.core.PageDimensions
+import ml.melun.mangaview.core.PageId
+import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
+import ml.melun.mangaview.engine.api.EngineSessionPort
+import ml.melun.mangaview.engine.api.EngineSessionSnapshot
+import ml.melun.mangaview.engine.api.EngineSessionWork
+import ml.melun.mangaview.engine.api.EngineViewport
+import ml.melun.mangaview.engine.api.EpisodeAccessPlan
+import ml.melun.mangaview.engine.api.InputReceipt
+import ml.melun.mangaview.engine.api.InputSample
+import ml.melun.mangaview.engine.api.PageContentIdentity
+import ml.melun.mangaview.engine.api.SessionEvent
+import ml.melun.mangaview.engine.api.SessionUpdate
+import ml.melun.mangaview.engine.api.SessionWorkOwnership
+import ml.melun.mangaview.engine.api.StoredPage
+import ml.melun.mangaview.engine.api.WorkCoordinatorPort
+import ml.melun.mangaview.engine.api.WorkKey
+import ml.melun.mangaview.engine.api.WorkPriority
+import ml.melun.mangaview.engine.api.WorkRequest
+import ml.melun.mangaview.engine.api.WorkMetadata
+import ml.melun.mangaview.engine.session.UnknownPageDimensionsException
+import ml.melun.mangaview.source.AdjacentEpisodes
+
+// Page acceptance and failure handling for [EngineSessionRuntime], kept beside it so the runtime
+// class stays inside the architecture size gate. Owner-thread confined like the runtime itself.
+
+internal fun EngineSessionRuntime.acceptPageGeometry(generation: Long, id: PageId, plan: EpisodeAccessPlan, metadata: WorkMetadata) {
+    if (!isCurrent(generation) || plans[id.episodeId] !== plan) return
+    // Once a page is declared unavailable its placeholder geometry owns the layout for this
+    // session; a late progressive delivery must not conflict with the published dimensions.
+    if (id in unavailablePages) return
+    val geometry = metadata as? WorkMetadata.PageGeometry ?: return
+    require(geometry.pageId == id && geometry.contentRevision == plan.contentRevision)
+    if (matchesVerifiedGeometry(pages[id], geometry) && id in prepared && id !in failedReadAheadPages) return
+    demandVersion++
+    earlyTransfers.observed(id)
+    val update = try {
+        session.dispatch(SessionEvent.DimensionsResolved(generation, id, geometry.dimensions))
+    } catch (stale: UnknownPageDimensionsException) {
+        // The document was pruned while this read-ahead demand was in flight. The result is
+        // inert: forget any earlier acceptance so a later delivery of the document re-derives
+        // this page's geometry instead of trusting a stale prepared marker.
+        forgetAcceptedPage(id, prepared, pages) { pages = it }
+        return
+    }
+    process(update)
+}
+
+
+internal fun EngineSessionRuntime.acceptPage(generation: Long, expected: PageId, plan: EpisodeAccessPlan, page: StoredPage) {
+    require(page.pageId == expected && page.contentRevision == plan.contentRevision)
+    // See acceptPageGeometry: the session layout already owns the unavailable placeholder.
+    if (expected in unavailablePages) return
+    val identity = PageContentIdentity(expected, page.contentRevision, page.sha256, page.dimensions, page.byteCount)
+    // Reacquiring the same verified original changes subscription ownership, not visible content.
+    if (pages[expected] == identity && expected in prepared && expected !in failedReadAheadPages) return
+    prepared += expected
+    failedReadAheadPages -= expected
+    pageFailureCounts -= expected
+    val update = try {
+        session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
+    } catch (stale: UnknownPageDimensionsException) {
+        // See acceptPageGeometry: the document was pruned while this demand was in flight.
+        forgetAcceptedPage(expected, prepared, pages) { pages = it }
+        return
+    }
+    if (pages[expected] != identity) pages = withEntry(pages, expected, identity)
+    launch.onPageAccepted(expected, page, identity, generation, update.snapshot)
+    process(update)
+}
+
+
+/**
+ * A page whose provider candidates keep failing while the geometry still needs it is declared
+ * unavailable for this session once its attempts reach the bound: the runtime publishes
+ * placeholder geometry so the reader can continue past it and stops demanding the page. The
+ * counter survives the reader bouncing away, so a boundary stall cannot reset the decision; it
+ * clears only when the original is actually accepted.
+ */
+internal fun EngineSessionRuntime.handlePageFailure(id: PageId) {
+    markPageFailure(id, failedReadAheadPages) { process(SessionUpdate(session.snapshot)) }
+    if (id in unavailablePages) return
+    val failures = (pageFailureCounts[id] ?: 0) + 1
+    pageFailureCounts[id] = failures
+    val state = session.snapshot
+    if (failures < PAGE_UNAVAILABLE_FAILURES || id !in state.requiredDimensions) return
+    val update = try {
+        session.dispatch(
+            SessionEvent.DimensionsResolved(state.generation, id, unavailableDimensions(id, state)),
+        )
+    } catch (stale: UnknownPageDimensionsException) {
+        return
+    }
+    unavailablePages += id
+    process(update)
+}
+
+/**
+ * Placeholder geometry for an unavailable page. A neighbor's dimensions keep the layout's width
+ * scale consistent with the rest of the document; without one, a viewport-sized block.
+ */
+private fun EngineSessionRuntime.unavailableDimensions(id: PageId, state: EngineSessionSnapshot): PageDimensions {
+    val manifest = plans[id.episodeId]?.manifest
+    val index = manifest?.pages?.indexOfFirst { it.id == id } ?: -1
+    if (manifest != null && index >= 0) {
+        for (offset in listOf(1, -1)) {
+            val neighbor = manifest.pages.getOrNull(index + offset)?.id ?: continue
+            pages[neighbor]?.dimensions?.let { return it }
+        }
+    }
+    return PageDimensions(state.viewport.widthPx, state.viewport.heightPx)
+}

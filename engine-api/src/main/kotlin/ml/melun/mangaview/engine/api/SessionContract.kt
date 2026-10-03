@@ -120,6 +120,11 @@ sealed interface SessionEvent {
     /** Splits two-page spreads into stacked single pages without moving the source anchor. */
     data class SetSplitMode(val enabled: Boolean) : SessionEvent
     data class Navigate(val episodeId: EpisodeId) : SessionEvent
+    /**
+     * Moves the anchor to the top of a page the session already holds (the reader's page
+     * scrubber). Queued movement is cancelled first so a drag in flight cannot undo the jump.
+     */
+    data class SeekPage(val pageId: PageId) : SessionEvent
     data object Close : SessionEvent
 }
 
