@@ -7,6 +7,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
@@ -185,6 +186,11 @@ internal fun microBadgeStyle(colors: LibraryColors, size: Int = 10) = TextStyle(
     fontWeight = FontWeight.ExtraBold,
     letterSpacing = (-0.2).sp,
 )
+/** Shared cover card geometry: portrait art at a fixed ratio over a fixed two-line caption. */
+internal const val COVER_ASPECT = 0.78f
+internal val COVER_CAPTION = 78.dp
+internal val COVER_ROW_WIDTH = 152.dp
+
 /**
  * Cover grid density by window width: two covers on a phone, more on foldables, tablets and in
  * landscape, so a cover keeps roughly the same physical size instead of stretching.
@@ -197,8 +203,11 @@ internal fun gridColumnsFor(widthDp: Int): Int = when {
     else -> 2
 }
 
+/** Width of the pane a screen is drawn in; the two-pane layout narrows it below the window. */
+internal val LocalPaneWidthDp = androidx.compose.runtime.compositionLocalOf<Int?> { null }
+
 @Composable
 internal fun rememberGridColumns(): Int {
-    val width = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+    val width = LocalPaneWidthDp.current ?: androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
     return remember(width) { gridColumnsFor(width) }
 }

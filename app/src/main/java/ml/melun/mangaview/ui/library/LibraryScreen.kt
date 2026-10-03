@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -85,22 +86,7 @@ internal fun LibraryScreen(
     ) { accept(LibraryIntent.Back) }
 
     Box(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
-        val layer = when {
-            detailVisible -> LibraryLayer.Detail
-            genreCatalogVisible -> LibraryLayer.Genre
-            else -> LibraryLayer.Shell
-        }
-        AnimatedContent(
-            targetState = layer,
-            transitionSpec = { layerTransition(initialState, targetState) },
-            label = "libraryLayer",
-        ) { target ->
-            when (target) {
-                LibraryLayer.Detail -> SeriesDetailScreen(state, artworkLoader, colors, accept)
-                LibraryLayer.Genre -> GenreCatalogScreen(state, artworkLoader, colors, genreScroll, accept)
-                LibraryLayer.Shell -> MainShell(state, artworkLoader, colors, accept, updateAvailable, screenState)
-            }
-        }
+        LibraryLayers(state, artworkLoader, colors, accept, updateAvailable, screenState, genreScroll)
         AnimatedVisibility(
             visible = state.seriesMenuVisible,
             enter = fadeIn(tween(LibraryMotion.Fast)) +
@@ -151,6 +137,84 @@ internal fun LibraryScreen(
         ) { SourcePickerOverlay(state, colors, accept) }
     }
 }
+
+/**
+ * Phones push Shell -> Genre -> Detail as full-screen layers with the tapped cover flying into the
+ * detail header. From [TWO_PANE_WIDTH] the list stays on the left and the detail opens beside it.
+ */
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun LibraryLayers(
+    state: LibraryState,
+    artworkLoader: SeriesArtworkLoader,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+    updateAvailable: Boolean,
+    screenState: SaveableStateHolder,
+    genreScroll: androidx.compose.foundation.lazy.LazyListState,
+) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        if (maxWidth >= TWO_PANE_WIDTH) {
+            TwoPaneLibrary(state, artworkLoader, colors, accept, updateAvailable, screenState, genreScroll)
+            return@BoxWithConstraints
+        }
+        val layer = when {
+            state.activeSeries != null -> LibraryLayer.Detail
+            state.selectedGenre != null -> LibraryLayer.Genre
+            else -> LibraryLayer.Shell
+        }
+        androidx.compose.animation.SharedTransitionLayout {
+            AnimatedContent(
+                targetState = layer,
+                transitionSpec = { layerTransition(initialState, targetState) },
+                label = "libraryLayer",
+            ) { target ->
+                CompositionLocalProvider(LocalSharedCovers provides this@SharedTransitionLayout,
+                    LocalLayerVisibility provides this) {
+                    when (target) {
+                        LibraryLayer.Detail -> SeriesDetailScreen(state, artworkLoader, colors, accept)
+                        LibraryLayer.Genre -> GenreCatalogScreen(state, artworkLoader, colors, genreScroll, accept)
+                        LibraryLayer.Shell -> MainShell(state, artworkLoader, colors, accept, updateAvailable, screenState)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TwoPaneLibrary(
+    state: LibraryState,
+    artworkLoader: SeriesArtworkLoader,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+    updateAvailable: Boolean,
+    screenState: SaveableStateHolder,
+    genreScroll: androidx.compose.foundation.lazy.LazyListState,
+) {
+    Row(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.weight(LIST_PANE_WEIGHT).fillMaxHeight()) {
+            CompositionLocalProvider(LocalPaneWidthDp provides maxWidth.value.toInt()) {
+                if (state.selectedGenre != null) GenreCatalogScreen(state, artworkLoader, colors, genreScroll, accept)
+                else MainShell(state, artworkLoader, colors, accept, updateAvailable, screenState)
+            }
+        }
+        Box(Modifier.width(1.dp).fillMaxHeight().background(colors.outline))
+        Box(Modifier.weight(1f - LIST_PANE_WEIGHT).fillMaxHeight()) {
+            AnimatedContent(
+                targetState = state.activeSeries?.id,
+                transitionSpec = { fadeIn(tween(LibraryMotion.Medium)) togetherWith fadeOut(tween(LibraryMotion.Fast)) },
+                label = "detailPane",
+            ) { selected ->
+                if (selected == null) LibraryMessage("작품을 선택하면 여기에 표시됩니다", colors)
+                else SeriesDetailScreen(state, artworkLoader, colors, accept)
+            }
+        }
+    }
+}
+
+private val TWO_PANE_WIDTH = 840.dp
+private const val LIST_PANE_WEIGHT = 0.44f
 
 /** Shell -> Genre -> Detail push direction; the reverse slides back out. */
 private fun AnimatedContentTransitionScope<LibraryLayer>.layerTransition(

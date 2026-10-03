@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -76,15 +77,7 @@ internal fun HomeSkeleton(colors: LibraryColors, modifier: Modifier = Modifier) 
             Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            repeat(3) {
-                Column(Modifier.weight(1f)) {
-                    SkeletonBlock(colors, Modifier.fillMaxWidth().height(162.dp), RoundedCornerShape(18.dp), opacity)
-                    Spacer(Modifier.height(10.dp))
-                    SkeletonBlock(colors, Modifier.fillMaxWidth(0.9f).height(13.dp), RoundedCornerShape(5.dp), opacity)
-                    Spacer(Modifier.height(6.dp))
-                    SkeletonBlock(colors, Modifier.fillMaxWidth(0.55f).height(10.dp), RoundedCornerShape(5.dp), opacity)
-                }
-            }
+            repeat(3) { CoverCardSkeleton(colors, opacity, Modifier.width(COVER_ROW_WIDTH)) }
         }
     }
 }
@@ -119,7 +112,7 @@ internal fun SavedSkeleton(colors: LibraryColors, modifier: Modifier = Modifier)
 
 /** Genre/search grid placeholder: same two-column card geometry as the catalog rows. */
 @Composable
-internal fun CatalogGridSkeleton(colors: LibraryColors, modifier: Modifier = Modifier) {
+internal fun CatalogGridSkeleton(colors: LibraryColors, columns: Int = 2, modifier: Modifier = Modifier) {
     val opacity = rememberShimmerOpacity()
     Column(
         modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
@@ -130,16 +123,24 @@ internal fun CatalogGridSkeleton(colors: LibraryColors, modifier: Modifier = Mod
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                repeat(2) {
-                    Column(Modifier.weight(1f)) {
-                        SkeletonBlock(colors, Modifier.fillMaxWidth().height(166.dp), RoundedCornerShape(18.dp), opacity)
-                        Spacer(Modifier.height(10.dp))
-                        SkeletonBlock(colors, Modifier.fillMaxWidth(0.85f).height(13.dp), RoundedCornerShape(5.dp), opacity)
-                        Spacer(Modifier.height(6.dp))
-                        SkeletonBlock(colors, Modifier.fillMaxWidth(0.5f).height(10.dp), RoundedCornerShape(5.dp), opacity)
-                    }
-                }
+                repeat(columns) { CoverCardSkeleton(colors, opacity, Modifier.weight(1f)) }
             }
+        }
+    }
+}
+
+/** One cover card's placeholder with the exact geometry of the real card (art + caption). */
+@Composable
+private fun CoverCardSkeleton(colors: LibraryColors, opacity: Float, modifier: Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(18.dp)).background(colors.card)
+            .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp)),
+    ) {
+        SkeletonBlock(colors, Modifier.fillMaxWidth().aspectRatio(COVER_ASPECT), RoundedCornerShape(0.dp), opacity)
+        Column(Modifier.fillMaxWidth().height(COVER_CAPTION).padding(horizontal = 12.dp, vertical = 12.dp)) {
+            SkeletonBlock(colors, Modifier.fillMaxWidth(0.85f).height(13.dp), RoundedCornerShape(5.dp), opacity)
+            Spacer(Modifier.height(8.dp))
+            SkeletonBlock(colors, Modifier.fillMaxWidth(0.5f).height(10.dp), RoundedCornerShape(5.dp), opacity)
         }
     }
 }

@@ -34,6 +34,7 @@ internal class ViewerChromeController(
         val immersive: () -> Unit,
         val settings: () -> Unit,
         val seek: (Int) -> Unit = {},
+        val autoScroll: () -> Unit = {},
     )
 
     private val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop
@@ -50,6 +51,7 @@ internal class ViewerChromeController(
     }
     private val split = ChromeIconButton(activity, R.drawable.ic_menu_book, "양면 보기", actions.split)
     private val immersive = ChromeIconButton(activity, R.drawable.ic_fullscreen, "몰입 모드 (전체 화면)", actions.immersive)
+    private val autoScroll = ChromeIconButton(activity, R.drawable.ic_swipe_down, "자동 스크롤 시작", actions.autoScroll)
     private val page = TextView(activity).apply {
         gravity = Gravity.CENTER_VERTICAL or Gravity.START
         isSingleLine = true
@@ -129,7 +131,7 @@ internal class ViewerChromeController(
     fun applyPalette(value: ViewerPalette) {
         palette = value
         listOf(top, bottom).forEach { it.setBackgroundColor(value.bar) }
-        listOf(back, split, immersive).forEach { it.applyPalette(value) }
+        listOf(back, autoScroll, split, immersive).forEach { it.applyPalette(value) }
         listOf(previous, episodes, bookmark, settings, next).forEach { it.applyPalette(value) }
         title.style(16f, AppFonts.SEMIBOLD, value.text)
         page.style(13f, AppFonts.SEMIBOLD, value.secondary)
@@ -168,6 +170,11 @@ internal class ViewerChromeController(
         if (view.text?.toString() != value) view.text = value
     }
 
+    fun setAutoScrollActive(active: Boolean) {
+        autoScroll.contentDescription = if (active) "자동 스크롤 멈춤" else "자동 스크롤 시작"
+        autoScroll.setActive(active, if (active) R.drawable.ic_pause_fill1 else R.drawable.ic_swipe_down)
+    }
+
     /** Mirrors the immersive setting on the quick toggle inside the chrome. */
     fun setImmersiveActive(active: Boolean) {
         immersive.contentDescription = if (active) "몰입 모드 켜짐" else "몰입 모드 (전체 화면)"
@@ -179,6 +186,9 @@ internal class ViewerChromeController(
         top.gravity = Gravity.CENTER_VERTICAL
         top.addView(back, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)))
         top.addView(title, LinearLayout.LayoutParams(0, activity.dp(48), 1f))
+        top.addView(autoScroll, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)).apply {
+            marginEnd = activity.dp(4)
+        })
         top.addView(split, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)))
         top.addView(immersive, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)).apply {
             marginStart = activity.dp(4)
@@ -194,12 +204,14 @@ internal class ViewerChromeController(
         }
         val actionRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         listOf(previous, episodes, bookmark, settings, next).forEach { item ->
-            actionRow.addView(item, LinearLayout.LayoutParams(0, activity.dp(58), 1f))
+            // Height follows the label so a large system font grows the row instead of clipping it.
+            item.minHeight = activity.dp(58)
+            actionRow.addView(item, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         bottom.addView(scrubRow)
         bottom.addView(actionRow)
         // The scrubber owns its horizontal drag; everything else relays vertical drags to the page.
-        installDragForwarding(top, bottom, scrubRow, actionRow, back, title, page,
+        installDragForwarding(top, bottom, scrubRow, actionRow, back, title, page, autoScroll,
             previous, episodes, bookmark, settings, next, split, immersive)
     }
 

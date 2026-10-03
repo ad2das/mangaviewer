@@ -60,6 +60,7 @@ internal fun GenreCatalogScreen(
             LibraryContent.Empty, LibraryContent.Loading ->
                 CatalogGridSkeleton(
                     colors,
+                    rememberGridColumns(),
                     Modifier.weight(1f).semantics {
                         liveRegion = LiveRegionMode.Polite
                         progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate

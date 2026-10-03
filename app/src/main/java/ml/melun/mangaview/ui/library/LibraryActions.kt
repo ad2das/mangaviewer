@@ -48,6 +48,34 @@ internal class LibraryActions(
         }
     }
 
+    /**
+     * What a removal is about to delete, captured so an undo can put it back: the favorite flag,
+     * the resume position and the series' bookmarks. Downloads are not restorable and are left out.
+     */
+    suspend fun captureRestore(item: SavedItemRemoval): (suspend () -> Unit)? = withContext(ioDispatcher) {
+        if (item.tab == SavedTab.OFFLINE) return@withContext null
+        val snapshot = library.snapshot.first()
+        val id = item.series.id
+        val favorite = snapshot.favorites.firstOrNull { it.id == id }?.takeIf { it.favorite }
+        val recent = snapshot.recent.firstOrNull { it.series.id == id }
+        val marks = snapshot.bookmarks.filter { it.pageId.episodeId.seriesId == id }
+        val restoresHistory = item.tab == SavedTab.ALL || item.tab == SavedTab.RECENT
+        val restoresFavorite = item.tab == SavedTab.ALL || item.tab == SavedTab.FAVORITES
+        val restorable = (restoresHistory && recent != null) || (restoresFavorite && favorite != null) ||
+            (item.tab == SavedTab.BOOKMARKS && marks.isNotEmpty())
+        if (!restorable) return@withContext null
+        return@withContext {
+            withContext(ioDispatcher) {
+                if (restoresHistory && recent != null) {
+                    library.recordOpened(id, recent.series.title, recent.series.thumbnailKey, recent.episodeId)
+                    library.saveProgress(recent.pageId, recent.offsetInPageUnits)
+                }
+                if (restoresFavorite && favorite != null) library.setFavorite(id, favorite.title, favorite.thumbnailKey, true)
+                if (item.tab == SavedTab.BOOKMARKS) marks.forEach { library.addBookmark(it.pageId, it.offsetInPageUnits) }
+            }
+        }
+    }
+
     fun recordOpened(series: SourceSeries, episode: SourceEpisode) = persist {
         library.recordOpened(series.id, series.title, series.thumbnailKey, episode.id)
     }

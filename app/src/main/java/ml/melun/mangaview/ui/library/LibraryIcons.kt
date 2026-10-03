@@ -21,6 +21,7 @@ internal enum class LibraryIcon(@DrawableRes val res: Int) {
     LIBRARY_FILLED(R.drawable.ic_collections_bookmark_fill1),
     PROFILE(R.drawable.ic_person),
     BACK(R.drawable.ic_arrow_back_ios_new),
+    CHEVRON(R.drawable.ic_chevron_right),
     HEART(R.drawable.ic_favorite),
     HEART_FILLED(R.drawable.ic_favorite_fill1),
     DOWNLOAD(R.drawable.ic_download),

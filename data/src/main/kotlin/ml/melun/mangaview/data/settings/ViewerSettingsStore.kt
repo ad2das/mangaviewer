@@ -25,8 +25,15 @@ data class ViewerSettings(
     val immersiveMode: Boolean = false,
     val volumeKeyNavigation: Boolean = false,
     val readerDimPercent: Int = 0,
+    /** Taps on the top or bottom third of the page step one screen; the middle toggles chrome. */
+    val tapPaging: Boolean = false,
+    /** Auto-scroll speed step, 1 (slowest) to [MAX_AUTO_SCROLL_SPEED]. */
+    val autoScrollSpeed: Int = DEFAULT_AUTO_SCROLL_SPEED,
     val recentQueries: List<String> = emptyList(),
 )
+
+const val DEFAULT_AUTO_SCROLL_SPEED = 2
+const val MAX_AUTO_SCROLL_SPEED = 5
 
 class ViewerSettingsStore(
     private val dataStore: DataStore<Preferences>,
@@ -50,6 +57,9 @@ class ViewerSettingsStore(
         immersiveMode = preferences[IMMERSIVE_MODE] ?: false,
         volumeKeyNavigation = preferences[VOLUME_KEY_NAVIGATION] ?: false,
         readerDimPercent = (preferences[READER_DIM_PERCENT] ?: 0).coerceIn(0, MAX_READER_DIM_PERCENT),
+        tapPaging = preferences[TAP_PAGING] ?: false,
+        autoScrollSpeed = (preferences[AUTO_SCROLL_SPEED] ?: DEFAULT_AUTO_SCROLL_SPEED)
+            .coerceIn(1, MAX_AUTO_SCROLL_SPEED),
         recentQueries = decodeRecentQueries(preferences[RECENT_QUERIES]),
     )
 
@@ -64,6 +74,8 @@ class ViewerSettingsStore(
         preferences[IMMERSIVE_MODE] = value.immersiveMode
         preferences[VOLUME_KEY_NAVIGATION] = value.volumeKeyNavigation
         preferences[READER_DIM_PERCENT] = value.readerDimPercent.coerceIn(0, MAX_READER_DIM_PERCENT)
+        preferences[TAP_PAGING] = value.tapPaging
+        preferences[AUTO_SCROLL_SPEED] = value.autoScrollSpeed.coerceIn(1, MAX_AUTO_SCROLL_SPEED)
         preferences[RECENT_QUERIES] = encodeRecentQueries(value.recentQueries)
     }
 
@@ -96,6 +108,8 @@ class ViewerSettingsStore(
         val VOLUME_KEY_NAVIGATION = booleanPreferencesKey("volume_key_navigation")
         val READER_DIM_PERCENT = intPreferencesKey("reader_dim_percent")
         val RECENT_QUERIES = stringPreferencesKey("recent_queries")
+        val TAP_PAGING = booleanPreferencesKey("tap_paging")
+        val AUTO_SCROLL_SPEED = intPreferencesKey("auto_scroll_speed")
     }
 }
 

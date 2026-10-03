@@ -29,7 +29,19 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
     private val cancel = TextView(context).apply { text = "취소" }
     private val spinner = ProgressBar(context)
     private val list = EpisodePickerList(context)
+    private val search = EpisodeSearchField(context) { query -> adapter?.filter(query); updateEmpty() }
+    private val empty = TextView(context).apply {
+        text = "검색 결과가 없습니다"
+        gravity = Gravity.CENTER
+        visibility = View.GONE
+    }
+    private val jumpCurrent = jumpChip("읽는 회차") { adapter?.currentIndex?.takeIf { it >= 0 } }
+    private val jumpFirst = jumpChip("첫 화") { adapter?.count?.minus(1)?.takeIf { it >= 0 } }
+    private val jumpLatest = jumpChip("최신 화") { 0.takeIf { (adapter?.count ?: 0) > 0 } }
+    private val tools = LinearLayout(context)
+    private val adapter: EpisodeSheetAdapter? get() = list.adapter as? EpisodeSheetAdapter
     private var bottomInset = 0
+    private var imeInset = 0
     private var onPick: (Int) -> Unit = {}
     private var closing = false
 
@@ -47,6 +59,8 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
             bottomMargin = context.dp(8)
         })
         card.addView(header())
+        card.addView(toolRow())
+        card.addView(empty, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, context.dp(120)))
         card.addView(spinner, LinearLayout.LayoutParams(context.dp(32), context.dp(32)).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setMargins(0, context.dp(36), 0, context.dp(48))
@@ -54,7 +68,24 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
         card.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0))
         list.divider = null
         list.selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
-        list.setOnItemClickListener { _, _, position, _ -> dismiss(); onPick(position) }
+        list.setOnItemClickListener { _, _, position, _ ->
+            val episode = adapter?.episodeAt(position) ?: return@setOnItemClickListener
+            dismiss()
+            onPick(episode)
+        }
+        list.setOnScrollListener(object : android.widget.AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: android.widget.AbsListView, state: Int) {
+                if (state == android.widget.AbsListView.OnScrollListener.SCROLL_STATE_TOUCH_SCROLL) search.hideKeyboard()
+            }
+
+            override fun onScroll(view: android.widget.AbsListView, first: Int, visible: Int, total: Int) = Unit
+        })
+        // The reader window does not resize for the keyboard, so the sheet lifts itself above it.
+        setOnApplyWindowInsetsListener { _, insets ->
+            imeInset = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
+            updateCardPadding()
+            insets
+        }
         cancel.setOnClickListener { dismiss() }
         addView(card, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         applyPalette(palette)
@@ -73,8 +104,54 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
         cancel.setPadding(context.dp(14), 0, context.dp(14), 0)
     }
 
+    private fun toolRow(): View = tools.apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(context.dp(18), 0, context.dp(18), context.dp(8))
+        addView(search, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, context.dp(44)))
+        val chips = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            listOf(jumpCurrent, jumpFirst, jumpLatest).forEach { chip ->
+                addView(chip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, context.dp(36)).apply {
+                    marginEnd = context.dp(8)
+                })
+            }
+        }
+        addView(chips, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = context.dp(10) })
+    }
+
+    /** A quick jump clears any search first so the target row is guaranteed to be listed. */
+    private fun jumpChip(label: String, target: () -> Int?) = TextView(context).apply {
+        text = label
+        gravity = Gravity.CENTER
+        setPadding(context.dp(14), 0, context.dp(14), 0)
+        isClickable = true
+        setOnClickListener {
+            search.clear()
+            val episode = target() ?: return@setOnClickListener
+            val position = adapter?.positionOf(episode)?.takeIf { it >= 0 } ?: return@setOnClickListener
+            list.setSelectionFromTop(position, context.dp(72))
+        }
+    }
+
+    private fun updateEmpty() {
+        val none = adapter?.count == 0
+        empty.visibility = if (none) View.VISIBLE else View.GONE
+        list.visibility = if (none) View.GONE else View.VISIBLE
+    }
+
+    private fun updateCardPadding() {
+        card.setPadding(0, 0, 0, maxOf(bottomInset, imeInset) + context.dp(8))
+    }
+
     fun applyPalette(value: ViewerPalette) {
         palette = value
+        search.applyPalette(value)
+        empty.style(14f, AppFonts.MEDIUM, value.secondary)
+        listOf(jumpCurrent, jumpFirst, jumpLatest).forEach { chip ->
+            chip.style(13f, AppFonts.SEMIBOLD, value.text)
+            chip.background = pressable(value, value.surface, context.dpf(18f))
+        }
         setBackgroundColor(value.scrim)
         card.background = GradientDrawable().apply {
             setColor(value.sheet)
@@ -95,13 +172,15 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
         if (bottomInset == bottom) return
         bottomInset = bottom
         (card.layoutParams as? LayoutParams)?.let { it.bottomMargin = -bottom; card.layoutParams = it }
-        card.setPadding(0, 0, 0, bottom + context.dp(8))
+        updateCardPadding()
     }
 
     /** Opens at once with a spinner so the tap is acknowledged while the catalog loads. */
     fun showLoading() {
         spinner.visibility = View.VISIBLE
         list.visibility = View.GONE
+        tools.visibility = View.GONE
+        empty.visibility = View.GONE
         count.text = ""
         enter()
     }
@@ -112,6 +191,9 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
         onPick = pick
         spinner.visibility = View.GONE
         list.visibility = View.VISIBLE
+        tools.visibility = View.VISIBLE
+        search.clear()
+        jumpCurrent.visibility = if (currentIndex >= 0) View.VISIBLE else View.GONE
         list.adapter = EpisodeSheetAdapter(titles, currentIndex, palette)
         list.isFastScrollAlwaysVisible = titles.size >= FAST_SCROLL_FROM
         (list.layoutParams as LinearLayout.LayoutParams).height =
@@ -137,6 +219,7 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
     fun dismiss() {
         if (visibility != View.VISIBLE || closing) return
         closing = true
+        search.hideKeyboard()
         animate().cancel()
         card.animate().cancel()
         card.animate().translationY(card.height.toFloat()).setDuration(EXIT_MS).start()
@@ -157,62 +240,3 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
         val EMPHASIZED = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
     }
 }
-
-/** Rows show the exact episode title as text; the open episode adds an accent chip beside it. */
-private class EpisodeSheetAdapter(
-    private val titles: List<String>,
-    private val currentIndex: Int,
-    var palette: ViewerPalette,
-) : BaseAdapter(), SectionIndexer {
-    private val sections: Array<Any> = Array((titles.size + SECTION - 1) / SECTION) { index ->
-        titles.getOrElse(index * SECTION) { "" }
-    }
-
-    override fun getCount(): Int = titles.size
-    override fun getItem(position: Int): Any = titles[position]
-    override fun getItemId(position: Int): Long = position.toLong()
-
-    override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-        val row = convertView as? EpisodeRow ?: EpisodeRow(parent.context)
-        row.bind(titles[position], position == currentIndex, palette)
-        return row
-    }
-
-    override fun getSections(): Array<Any> = sections
-    override fun getPositionForSection(section: Int): Int = (section * SECTION).coerceAtMost(count - 1)
-    override fun getSectionForPosition(position: Int): Int = position / SECTION
-
-    private companion object {
-        const val SECTION = 50
-    }
-}
-
-private class EpisodeRow(context: Context) : LinearLayout(context) {
-    private val title = TextView(context)
-    private val chip = TextView(context).apply { text = "읽는 중" }
-
-    init {
-        orientation = HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = context.dp(56)
-        setPadding(context.dp(22), context.dp(6), context.dp(22), context.dp(6))
-        title.maxLines = 2
-        title.ellipsize = android.text.TextUtils.TruncateAt.END
-        addView(title, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
-        addView(chip, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-            marginStart = context.dp(10)
-        })
-        chip.setPadding(context.dp(8), context.dp(3), context.dp(8), context.dp(3))
-    }
-
-    fun bind(text: String, current: Boolean, palette: ViewerPalette) {
-        title.text = text
-        title.style(15f, if (current) AppFonts.BOLD else AppFonts.REGULAR, if (current) palette.accent else palette.text)
-        chip.visibility = if (current) View.VISIBLE else View.GONE
-        chip.style(11f, AppFonts.BOLD, palette.accent)
-        chip.background = roundedFill(palette.accentSurface, context.dpf(8f))
-        background = pressable(palette, if (current) palette.accentSurface.withAlpha(0x66) else Color.TRANSPARENT, 0f)
-    }
-}
-
-private fun Int.withAlpha(alpha: Int): Int = (this and 0x00FFFFFF) or (alpha shl 24)

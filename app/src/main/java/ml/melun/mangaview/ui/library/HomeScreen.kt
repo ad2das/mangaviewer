@@ -39,7 +39,6 @@ import ml.melun.mangaview.source.SourceGenre
 import ml.melun.mangaview.source.SourceSeries
 
 private val GridCardShape = RoundedCornerShape(18.dp)
-private const val COVER_ASPECT = 0.78f
 private val GenreButtonShape = RoundedCornerShape(14.dp)
 private val GridScrimBrush = Brush.verticalGradient(
     listOf(Color.Transparent, Color.Black.copy(alpha = 0.35f)),
@@ -91,7 +90,7 @@ private fun HomeList(
         state = scroll,
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
-        item { HomeHeading(colors) }
+        item { HomeHeading(colors, resuming = state.saved.recent.isNotEmpty()) }
         item { HomeContinuations(state.saved.recent, artworkLoader, colors, accept) }
         if (showKindSelector) {
             item { KindSelector(state.homeKind, colors, accept) }
@@ -103,7 +102,7 @@ private fun HomeList(
             genreRows(state, colors, columns + 1, accept)
         } else {
             when (val home = state.home) {
-                HomeContent.Loading -> item { HomeLoading(colors) }
+                HomeContent.Loading -> item { HomeLoading(colors, state.homeTab, columns) }
                 is HomeContent.Failure -> item { HomeFailure(home.message, colors, accept) }
                 is HomeContent.Ready -> when (state.homeTab) {
                     HomeTab.HOME -> homeRows(home, artworkLoader, colors, accept)
@@ -245,12 +244,13 @@ private fun GenreFailure(message: String, colors: LibraryColors, accept: (Librar
 }
 
 @Composable
-private fun HomeHeading(colors: LibraryColors) {
+private fun HomeHeading(colors: LibraryColors, resuming: Boolean) {
+    // The greeting speaks to what the reader can actually do here: resume, or start something.
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 18.dp)) {
-        BasicText("읽던 작품으로 바로 이동", style = displayStyle(colors, 23))
+        BasicText(if (resuming) "이어서 읽어볼까요?" else "오늘 읽을 작품을 찾아보세요", style = displayStyle(colors, 23))
         Spacer(Modifier.height(5.dp))
         BasicText(
-            "최근 기록, 실시간 인기 랭킹, 최신 연재작을 감상해보세요.",
+            if (resuming) "읽던 회차, 실시간 인기 랭킹, 최신 연재작을 한곳에서" else "실시간 인기 랭킹과 최신 연재작을 모았어요",
             style = hintStyle(colors, 13),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -410,8 +410,7 @@ private fun RankedRow(
         itemsIndexed(items, key = { _, series -> series.id.remoteKey }) { index, series ->
             val rank = index + 1
             Column(
-                Modifier.width(152.dp)
-                    .height(246.dp)
+                Modifier.width(COVER_ROW_WIDTH)
                     .graphicsLayer {
                         shape = GridCardShape
                         clip = true
@@ -420,13 +419,13 @@ private fun RankedRow(
                     .border(1.dp, colors.cardBorder, GridCardShape)
                     .clickable { accept(LibraryIntent.SeriesSelected(series)) },
             ) {
-                Box(Modifier.fillMaxWidth().height(162.dp)) {
+                Box(Modifier.fillMaxWidth().aspectRatio(COVER_ASPECT)) {
                     SeriesArtwork(series, loader, colors, Modifier.matchParentSize())
                     Box(Modifier.matchParentSize().background(RankedScrimBrush))
                     // Real rank medal badge (1, 2, 3 medals, 4..10 frosted number)
                     RankMedal(rank, colors)
                 }
-                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp)) {
+                Column(Modifier.fillMaxWidth().height(COVER_CAPTION).padding(horizontal = 12.dp, vertical = 9.dp)) {
                     BasicText(
                         series.title,
                         style = bodyStyle(colors, 13).copy(fontWeight = FontWeight.Bold),
@@ -458,7 +457,7 @@ private fun CoverRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(items, key = { it.id.remoteKey }) { series ->
-            SeriesGridCard(series, loader, colors, Modifier.width(152.dp), accept)
+            SeriesGridCard(series, loader, colors, Modifier.width(COVER_ROW_WIDTH), accept)
         }
     }
 }
@@ -484,14 +483,14 @@ private fun SeriesGridCard(
     ) {
         // Covers keep their portrait proportion at any column width; the caption block is fixed
         // so every card in a row ends on the same line.
-        Box(Modifier.fillMaxWidth().aspectRatio(COVER_ASPECT)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(COVER_ASPECT).sharedCover(series)) {
             SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
             Box(Modifier.matchParentSize().background(GridScrimBrush))
             series.status?.let { status ->
                 SeriesStatusBadge(status, colors, Modifier.align(Alignment.TopStart).padding(8.dp))
             }
         }
-        Column(Modifier.fillMaxWidth().height(78.dp).padding(horizontal = 12.dp, vertical = 9.dp)) {
+        Column(Modifier.fillMaxWidth().height(COVER_CAPTION).padding(horizontal = 12.dp, vertical = 9.dp)) {
             BasicText(
                 series.title,
                 style = bodyStyle(colors, 13).copy(fontWeight = FontWeight.Bold),
@@ -510,7 +509,7 @@ private fun SeriesGridCard(
 }
 
 @Composable
-private fun HomeLoading(colors: LibraryColors) {
+private fun HomeLoading(colors: LibraryColors, tab: HomeTab, columns: Int) {
     Column(
         Modifier.fillMaxWidth()
             .semantics {
@@ -518,7 +517,8 @@ private fun HomeLoading(colors: LibraryColors) {
                 progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
             },
     ) {
-        HomeSkeleton(colors)
+        // Each tab's placeholder has the geometry of what replaces it, so nothing jumps on load.
+        if (tab == HomeTab.HOME) HomeSkeleton(colors) else CatalogGridSkeleton(colors, columns)
     }
 }
 

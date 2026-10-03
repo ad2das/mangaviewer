@@ -388,6 +388,7 @@ private fun SavedSourceSeriesCard(
     ) {
         Box(
             Modifier.width(74.dp).fillMaxHeight()
+                .sharedCover(series)
                 .clip(SavedThumbShape)
                 .border(0.5.dp, colors.cardBorder, SavedThumbShape),
         ) {
@@ -405,7 +406,7 @@ private fun SavedSourceSeriesCard(
         if (selectionMode) {
             SelectionMark(selected, colors)
         } else {
-            BasicText("›", style = hintStyle(colors, 18).copy(fontWeight = FontWeight.Light))
+            LibraryIconView(LibraryIcon.CHEVRON, colors.muted, Modifier.size(20.dp))
         }
     }
 }

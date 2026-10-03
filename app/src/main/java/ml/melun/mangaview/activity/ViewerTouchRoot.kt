@@ -24,6 +24,10 @@ internal class ViewerTouchRoot(
     private var pendingTap: Runnable? = null
     private var pendingLongPress: Runnable? = null
     var onSurfaceTap: () -> Unit = {}
+    /** Positioned single tap; returning true consumes it before [onSurfaceTap] (tap paging). */
+    var onSurfaceTapAt: (Float, Float) -> Boolean = { _, _ -> false }
+    /** A gesture began on the page itself (not on chrome); auto-scroll yields to the reader. */
+    var onSurfaceDown: () -> Unit = {}
     // The surface uses no long press, so a stationary hold is the reader's deliberate gesture
     // for the chrome where a plain tap must stay silent.
     var onSurfaceLongPress: () -> Unit = {}
@@ -51,7 +55,10 @@ internal class ViewerTouchRoot(
                 cancelPendingLongPress()
                 val eligible = !excludesSurfaceTap(event.x, event.y)
                 tapTracker.begin(event.x, event.y, eligible = eligible)
-                if (eligible) scheduleLongPress()
+                if (eligible) {
+                    scheduleLongPress()
+                    onSurfaceDown()
+                }
             }
             MotionEvent.ACTION_MOVE -> {
                 tapTracker.move(event.x, event.y)
@@ -96,7 +103,7 @@ internal class ViewerTouchRoot(
         cancelPendingTap()
         val commit = Runnable {
             pendingTap = null
-            onSurfaceTap()
+            if (!onSurfaceTapAt(x, y)) onSurfaceTap()
         }
         pendingTap = commit
         tapHandler.postDelayed(commit, doubleTapTimeoutMillis)

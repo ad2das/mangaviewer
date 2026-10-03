@@ -103,7 +103,7 @@ private fun PreferenceRow(label: String, value: String, colors: LibraryColors, c
                     style = labelStyle(colors, true).copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
                 )
                 Spacer(Modifier.width(6.dp))
-                BasicText("›", style = hintStyle(colors, 16))
+                LibraryIconView(LibraryIcon.CHEVRON, colors.muted, Modifier.size(18.dp))
             }
         }
     }

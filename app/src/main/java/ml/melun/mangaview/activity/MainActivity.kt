@@ -67,6 +67,8 @@ import ml.melun.mangaview.update.AppUpdateViewModel
 import java.io.File
 
 private const val STARTUP_PRIME_DELAY_MILLIS = 400L
+/** Matches the library's two-pane breakpoint, where the tab bar stays on screen beside a detail. */
+private const val TWO_PANE_WIDTH_DP = 840
 
 class MainActivity : ComponentActivity() {
     private lateinit var updates: AppUpdateViewModel
@@ -200,7 +202,8 @@ class MainActivity : ComponentActivity() {
                     LibraryScreen(state, graph.artworkLoader, acceptWithFeedback, account,
                         updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE,
                         onOpenCrashReport = { latestCrashReport()?.let { crashReport = it } })
-                    LibraryMessages(colors, shellVisible = state.activeSeries == null && state.selectedGenre == null)
+                    LibraryMessages(colors, shellVisible = state.selectedGenre == null && (state.activeSeries == null ||
+                        androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= TWO_PANE_WIDTH_DP))
                 }
             }
             if (!reading) {
@@ -232,7 +235,7 @@ class MainActivity : ComponentActivity() {
                     is LibraryEffect.OpenEpisode -> openEpisode(effect.episodeId, effect.position)
                     is LibraryEffect.OpenUri -> openExternalUri(effect.value)
                     is LibraryEffect.ShareText -> share(effect.title, effect.value)
-                    is LibraryEffect.ShowMessage -> messages.show(effect.value, effect.tone)
+                    is LibraryEffect.ShowMessage -> messages.show(effect.value, effect.tone, effect.actionLabel, effect.action)
                 }
             }
         }

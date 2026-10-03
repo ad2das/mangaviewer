@@ -404,6 +404,7 @@ private fun SearchSeriesCard(
     ) {
         Box(
             Modifier.size(width = 72.dp, height = 96.dp)
+                .sharedCover(series)
                 .clip(SearchResultThumbShape)
                 .border(0.5.dp, colors.cardBorder, SearchResultThumbShape),
         ) {

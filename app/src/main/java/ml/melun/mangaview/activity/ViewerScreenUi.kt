@@ -37,6 +37,7 @@ internal class ViewerScreenUi(
         private set
     private var foreground = false
     private lateinit var chrome: ViewerChromeController
+    private lateinit var autoScroller: ViewerAutoScroller
 
     fun presentationComplete() {
         loading.complete()
@@ -55,6 +56,7 @@ internal class ViewerScreenUi(
 
     fun enterBackground() {
         foreground = false
+        if (::autoScroller.isInitialized) autoScroller.stop()
         applyImmersive(false)
         applyKeepScreenOn(false)
     }
@@ -115,10 +117,11 @@ internal class ViewerScreenUi(
         if (appliedSettings?.darkTheme != settings.darkTheme) applyPalette(ViewerPalette.of(settings.darkTheme))
         appliedSettings = settings
         volumeKeysEnabled = settings.volumeKeyNavigation
+        if (::autoScroller.isInitialized) autoScroller.speed = settings.autoScrollSpeed
         if (::dimOverlay.isInitialized) dimOverlay.alpha = settings.readerDimPercent / 100f
         if (::chrome.isInitialized) chrome.setImmersiveActive(settings.immersiveMode)
         if (foreground) {
-            applyKeepScreenOn(settings.keepScreenOn)
+            applyKeepScreenOn(settings.keepScreenOn || (::autoScroller.isInitialized && autoScroller.running))
             applyImmersive(settings.immersiveMode)
         }
     }
@@ -203,13 +206,14 @@ internal class ViewerScreenUi(
         }
     }
 
-    fun content(runtime: EngineViewerRuntime): FrameLayout =
-        ViewerTouchRoot(this).apply {
+    private fun ViewerTouchRoot.installGestures(runtime: EngineViewerRuntime) {
         onSurfaceTap = {
             // Immersive reading owns plain taps: the reader asked for the chrome to stay hidden
             // until a deliberate long press requests it.
             if (::chrome.isInitialized && appliedSettings?.immersiveMode != true) chrome.toggle()
         }
+        onSurfaceTapAt = { _, y -> tapPage(runtime, y) }
+        onSurfaceDown = { if (::autoScroller.isInitialized) autoScroller.stop() }
         onSurfaceLongPress = {
             if (::chrome.isInitialized && appliedSettings?.immersiveMode == true) chrome.toggle()
         }
@@ -219,6 +223,41 @@ internal class ViewerScreenUi(
             surface.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
             surface.toggleZoom(x - surface.left, y - surface.top)
         }
+    }
+
+    /**
+     * Tap paging: with the chrome hidden, the top third steps one screen back and the bottom third
+     * one screen forward; the middle third still toggles the chrome.
+     */
+    private fun tapPage(runtime: EngineViewerRuntime, y: Float): Boolean {
+        if (appliedSettings?.tapPaging != true || (::chrome.isInitialized && chrome.visible)) return false
+        val surface = runtime.surface
+        val local = y - surface.top
+        val zone = surface.height / 3f
+        if (surface.height <= 0 || local in zone..(zone * 2)) return false
+        val forward = local > zone * 2
+        surface.stepViewport(if (forward) surface.height * PAGE_STEP else -surface.height * PAGE_STEP)
+        return true
+    }
+
+    fun toggleAutoScroll() {
+        if (::autoScroller.isInitialized) autoScroller.toggle()
+    }
+
+    private fun autoScrollChanged(running: Boolean) {
+        if (::chrome.isInitialized) {
+            chrome.setAutoScrollActive(running)
+            if (running) chrome.hide()
+        }
+        if (foreground) applyKeepScreenOn(running || appliedSettings?.keepScreenOn == true)
+    }
+
+    fun content(runtime: EngineViewerRuntime): FrameLayout =
+        ViewerTouchRoot(this).apply {
+        installGestures(runtime)
+        autoScroller = ViewerAutoScroller(resources.displayMetrics.density,
+            { pixels -> runtime.surface.stepViewport(pixels) }, ::autoScrollChanged)
+            .also { it.speed = appliedSettings?.autoScrollSpeed ?: it.speed }
         setBackgroundColor(Color.BLACK)
         // Chrome bars and the settings sheet extend into the system-bar insets themselves.
         clipToPadding = false
@@ -257,6 +296,8 @@ internal class ViewerScreenUi(
             onKeepScreenOn = { enabled -> persistSettings { it.copy(keepScreenOn = enabled) } }
             onVolumeKeys = { enabled -> persistSettings { it.copy(volumeKeyNavigation = enabled) } }
             onDarkTheme = { enabled -> persistSettings { it.copy(darkTheme = enabled) } }
+            onTapPaging = { enabled -> persistSettings { it.copy(tapPaging = enabled) } }
+            onAutoScrollSpeed = { speed -> persistSettings { it.copy(autoScrollSpeed = speed) } }
             onClose = { toggleSettingsPanel() }
         }
         addView(settingsPanel, FrameLayout.LayoutParams(
@@ -336,5 +377,7 @@ internal class ViewerScreenUi(
 
     private companion object {
         const val CARD_ANIMATION_MS = 180L
+        /** A tap step keeps a sliver of the previous screen so the eye can find its place. */
+        const val PAGE_STEP = 0.88
     }
 }

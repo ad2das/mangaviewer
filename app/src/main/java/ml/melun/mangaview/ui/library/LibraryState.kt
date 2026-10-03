@@ -223,5 +223,10 @@ internal sealed interface LibraryEffect {
     ) : LibraryEffect
     data class OpenUri(val value: String) : LibraryEffect
     data class ShareText(val title: String, val value: String) : LibraryEffect
-    data class ShowMessage(val value: String, val tone: MessageTone = MessageTone.INFO) : LibraryEffect
+    data class ShowMessage(
+        val value: String,
+        val tone: MessageTone = MessageTone.INFO,
+        val actionLabel: String? = null,
+        val action: (() -> Unit)? = null,
+    ) : LibraryEffect
 }

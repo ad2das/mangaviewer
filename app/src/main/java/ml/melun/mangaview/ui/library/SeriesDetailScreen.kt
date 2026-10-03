@@ -115,7 +115,7 @@ private fun DetailLoading(
 ) {
     val series = state.activeSeries ?: return
     Column(Modifier.fillMaxSize()) {
-        DetailHeader(series, null, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept)
+        DetailHeader(series, null, false, state.activeSeriesDetails, loader, colors, accept)
         DetailEpisodeSkeleton(
             colors,
             Modifier.weight(1f).semantics {
@@ -136,7 +136,7 @@ private fun DetailFailure(
 ) {
     val series = state.activeSeries ?: return
     Column(Modifier.fillMaxSize()) {
-        DetailHeader(series, null, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept)
+        DetailHeader(series, null, false, state.activeSeriesDetails, loader, colors, accept)
         LibraryMessage(message, colors, Modifier.weight(1f))
         LibraryAction(
             "다시 시도",
@@ -167,7 +167,8 @@ private fun DetailBody(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 28.dp),
     ) {
-        item { DetailHeader(series, quickRead, isFavorite(state, series), state.activeSeriesDetails, loader, colors, accept) }
+        val resuming = quickRead != null && state.saved.recent.any { it.episodeId == quickRead.id }
+        item { DetailHeader(series, quickRead, resuming, state.activeSeriesDetails, loader, colors, accept) }
         item { DetailTabs(state.detailTab, colors, accept) }
         if (state.detailTab != DetailTab.EPISODES) {
             item { DetailInformation(state.detailTab, series, episodes.size, state.activeSeriesDetails, colors, content.complete) }
@@ -206,7 +207,7 @@ private fun DetailBody(
 private fun DetailHeader(
     series: SourceSeries,
     firstEpisode: SourceEpisode?,
-    favorite: Boolean,
+    resuming: Boolean,
     details: SourceSeriesDetails?,
     loader: SeriesArtworkLoader,
     colors: LibraryColors,
@@ -216,6 +217,7 @@ private fun DetailHeader(
         Row(Modifier.fillMaxWidth().heightIn(min = 192.dp), verticalAlignment = Alignment.Top) {
             Box(
                 Modifier.width(138.dp).height(192.dp)
+                    .sharedCover(series)
                     .shadow(10.dp, RoundedCornerShape(20.dp), spotColor = Color.Black.copy(alpha = 0.22f))
                     .clip(RoundedCornerShape(20.dp))
                     .border(1.dp, colors.cardBorder, RoundedCornerShape(20.dp)),
@@ -223,24 +225,13 @@ private fun DetailHeader(
                 SeriesArtwork(series, loader, colors, Modifier.fillMaxSize())
             }
             Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f).heightIn(min = 192.dp), verticalArrangement = Arrangement.SpaceBetween) {
+            // The favorite toggle lives once, in the toolbar; the header carries the story itself.
+            Column(Modifier.weight(1f).heightIn(min = 192.dp)) {
                 DetailDescription(series, details, colors)
-                Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    LibraryIconView(
-                        heartIcon(favorite),
-                        if (favorite) colors.favoriteActive else colors.muted,
-                        Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    BasicText(
-                        if (favorite) "관심 등록됨" else "관심 등록",
-                        style = hintStyle(colors, 12).copy(fontWeight = FontWeight.Medium),
-                    )
-                }
             }
         }
         Spacer(Modifier.height(20.dp))
-        DetailReadingActions(series, firstEpisode, favorite, colors, accept)
+        DetailReadingActions(firstEpisode, resuming, colors, accept)
     }
 }
 
@@ -424,9 +415,6 @@ private fun EpisodeReadBadge(state: EpisodeReadState, colors: LibraryColors) {
     }
 }
 
-private fun isFavorite(state: LibraryState, series: SourceSeries): Boolean =
-    state.saved.favorites.any { it.id == series.id }
-
 internal fun quickReadEpisode(
     state: LibraryState,
     series: SourceSeries,
@@ -448,46 +436,39 @@ private fun SeriesStatus.label(): String = when (this) {
 
 private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd")
 @Composable
-private fun DetailReadingActions(series: SourceSeries, firstEpisode: SourceEpisode?, favorite: Boolean, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().height(52.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun DetailReadingActions(
+    episode: SourceEpisode?,
+    resuming: Boolean,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    // The primary action says exactly what it opens: where the reader left off, or the first episode.
+    val enabled = episode != null
+    Box(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp)
+            .alpha(if (enabled) 1f else 0.45f)
+            .shadow(6.dp, RoundedCornerShape(16.dp), spotColor = colors.accent.copy(alpha = 0.40f))
+            .clip(RoundedCornerShape(16.dp))
+            .background(colors.accentGradient)
+            .clickable(enabled = enabled) { episode?.let { accept(LibraryIntent.EpisodeSelected(it.id)) } }
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        val readEnabled = firstEpisode != null
-        Box(
-            Modifier.weight(1f).fillMaxHeight()
-                .alpha(if (readEnabled) 1f else 0.45f)
-                .shadow(6.dp, RoundedCornerShape(16.dp), spotColor = colors.accent.copy(alpha = 0.40f))
-                .clip(RoundedCornerShape(16.dp))
-                .background(colors.accentGradient)
-                .clickable(enabled = readEnabled) { firstEpisode?.let { accept(LibraryIntent.EpisodeSelected(it.id)) } },
-            contentAlignment = Alignment.Center,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                LibraryIconView(LibraryIcon.PLAY, Color.White, Modifier.size(14.dp))
-                Spacer(Modifier.width(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            LibraryIconView(LibraryIcon.PLAY, Color.White, Modifier.size(16.dp))
+            Spacer(Modifier.width(10.dp))
+            Column {
                 BasicText(
-                    "바로 읽기",
-                    style = bodyStyle(colors, 15).copy(color = Color.White, fontWeight = FontWeight.Bold),
+                    if (resuming) "이어 읽기" else "첫 화 보기",
+                    style = bodyStyle(colors, 16).copy(color = Color.White, fontWeight = FontWeight.Bold),
+                )
+                if (episode != null) BasicText(
+                    episode.title,
+                    style = hintStyle(colors, 12).copy(color = Color.White.copy(alpha = 0.82f)),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-        }
-        Box(
-            Modifier.width(52.dp).fillMaxHeight()
-                .semantics { contentDescription = "좋아요" }
-                .shadow(3.dp, RoundedCornerShape(16.dp), spotColor = Color.Black.copy(alpha = 0.06f))
-                .clip(RoundedCornerShape(16.dp))
-                .background(colors.card)
-                .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp))
-                .clickable { accept(LibraryIntent.FavoriteToggled(series)) },
-            contentAlignment = Alignment.Center,
-        ) {
-            LibraryIconView(
-                heartIcon(favorite),
-                if (favorite) colors.favoriteActive else colors.secondary,
-                Modifier.size(24.dp),
-            )
         }
     }
 }

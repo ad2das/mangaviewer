@@ -15,6 +15,7 @@ import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import ml.melun.mangaview.R
+import ml.melun.mangaview.data.settings.MAX_AUTO_SCROLL_SPEED
 import ml.melun.mangaview.data.settings.ViewerSettings
 import ml.melun.mangaview.ui.AppFonts
 
@@ -25,6 +26,8 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
     var onKeepScreenOn: (Boolean) -> Unit = {}
     var onVolumeKeys: (Boolean) -> Unit = {}
     var onDarkTheme: (Boolean) -> Unit = {}
+    var onTapPaging: (Boolean) -> Unit = {}
+    var onAutoScrollSpeed: (Int) -> Unit = {}
     var onClose: () -> Unit = {}
 
     val visible: Boolean get() = visibility == View.VISIBLE
@@ -36,6 +39,9 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         fontFeatureSettings = "tnum"
     }
     private val darkTheme = toggle("어두운 테마")
+    private val tapPaging = toggle("화면 위·아래 탭으로 넘기기")
+    private val speed = SeekBar(context).apply { max = MAX_AUTO_SCROLL_SPEED - 1 }
+    private val speedValue = TextView(context).apply { gravity = Gravity.CENTER_VERTICAL or Gravity.END }
     private val keepScreenOn = toggle("화면 꺼짐 방지")
     private val volumeKeys = toggle("볼륨 버튼으로 이동")
     private val heading = TextView(context).apply { text = "뷰어 설정" }
@@ -59,7 +65,9 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         card.addView(heading, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             bottomMargin = context.dp(6)
         })
-        card.addView(dimRow())
+        card.addView(sliderRow(R.drawable.ic_brightness_medium, "화면 어둡게", dimValue, dim))
+        card.addView(sliderRow(R.drawable.ic_swipe_down, "자동 스크롤 속도", speedValue, speed))
+        card.addView(toggleRow(R.drawable.ic_touch_app, "화면 위·아래 탭으로 넘기기", tapPaging))
         card.addView(toggleRow(R.drawable.ic_dark_mode, "어두운 테마", darkTheme))
         card.addView(toggleRow(R.drawable.ic_screen_lock_portrait, "화면 꺼짐 방지", keepScreenOn))
         card.addView(toggleRow(R.drawable.ic_volume_up, "볼륨 버튼으로 이동", volumeKeys))
@@ -73,6 +81,16 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         darkTheme.setOnCheckedChangeListener { _, checked -> if (!binding) onDarkTheme(checked) }
         keepScreenOn.setOnCheckedChangeListener { _, checked -> if (!binding) onKeepScreenOn(checked) }
         volumeKeys.setOnCheckedChangeListener { _, checked -> if (!binding) onVolumeKeys(checked) }
+        tapPaging.setOnCheckedChangeListener { _, checked -> if (!binding) onTapPaging(checked) }
+        speed.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                speedValue.text = speedLabel(progress + 1)
+            }
+
+            override fun onStartTrackingTouch(bar: SeekBar) = Unit
+
+            override fun onStopTrackingTouch(bar: SeekBar) = onAutoScrollSpeed(bar.progress + 1)
+        })
         dim.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
@@ -101,12 +119,15 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         handle.background = roundedFill(value.track, context.dpf(2f))
         heading.style(18f, AppFonts.BOLD, value.text)
         dimValue.style(13f, AppFonts.SEMIBOLD, value.accent)
+        speedValue.style(13f, AppFonts.SEMIBOLD, value.accent)
         labels.forEach { it.style(15f, AppFonts.MEDIUM, value.text) }
         icons.forEach { it.tint(value.secondary) }
-        dim.progressTintList = ColorStateList.valueOf(value.accent)
-        dim.thumbTintList = ColorStateList.valueOf(value.accent)
-        dim.progressBackgroundTintList = ColorStateList.valueOf(value.track)
-        listOf(darkTheme, keepScreenOn, volumeKeys).forEach { tintSwitch(it, value) }
+        listOf(dim, speed).forEach { bar ->
+            bar.progressTintList = ColorStateList.valueOf(value.accent)
+            bar.thumbTintList = ColorStateList.valueOf(value.accent)
+            bar.progressBackgroundTintList = ColorStateList.valueOf(value.track)
+        }
+        listOf(darkTheme, tapPaging, keepScreenOn, volumeKeys).forEach { tintSwitch(it, value) }
         updateCardPadding()
     }
 
@@ -128,6 +149,9 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         darkTheme.isChecked = settings.darkTheme
         keepScreenOn.isChecked = settings.keepScreenOn
         volumeKeys.isChecked = settings.volumeKeyNavigation
+        tapPaging.isChecked = settings.tapPaging
+        speed.progress = settings.autoScrollSpeed - 1
+        speedValue.text = speedLabel(settings.autoScrollSpeed)
         dim.progress = settings.readerDimPercent
         dimValue.text = dimLabel(settings.readerDimPercent)
         binding = false
@@ -158,22 +182,27 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
             .start()
     }
 
-    private fun dimRow(): View = LinearLayout(context).apply {
+    private fun sliderRow(icon: Int, text: String, value: TextView, bar: SeekBar): View = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        addView(rowIcon(R.drawable.ic_brightness_medium), LinearLayout.LayoutParams(context.dp(22), context.dp(22)))
-        addView(rowLabel("화면 어둡게"), LinearLayout.LayoutParams(0, context.dp(52), 1f).apply {
+        minimumHeight = context.dp(52)
+        bar.contentDescription = text
+        addView(rowIcon(icon), LinearLayout.LayoutParams(context.dp(22), context.dp(22)))
+        addView(rowLabel(text), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
             marginStart = context.dp(14)
         })
-        addView(dimValue, LinearLayout.LayoutParams(context.dp(44), context.dp(52)))
-        addView(dim, LinearLayout.LayoutParams(0, context.dp(52), 1.3f))
+        addView(value, LinearLayout.LayoutParams(context.dp(76), context.dp(52)))
+        addView(bar, LinearLayout.LayoutParams(0, context.dp(52), 1.1f))
     }
+
+    private fun speedLabel(step: Int): String = SPEED_LABELS.getOrElse(step - 1) { "보통" }
 
     private fun toggleRow(icon: Int, text: String, control: Switch): View = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         addView(rowIcon(icon), LinearLayout.LayoutParams(context.dp(22), context.dp(22)))
-        addView(rowLabel(text), LinearLayout.LayoutParams(0, context.dp(52), 1f).apply {
+        minimumHeight = context.dp(52)
+        addView(rowLabel(text), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
             marginStart = context.dp(14)
         })
         addView(control, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, context.dp(52)))
@@ -208,6 +237,7 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
 
     private companion object {
         const val MAX_DIM_PERCENT = 70
+        val SPEED_LABELS = listOf("느리게", "조금 느리게", "보통", "조금 빠르게", "빠르게")
         const val FADE_MS = 180L
         const val ENTER_MS = 280L
         const val EXIT_MS = 180L

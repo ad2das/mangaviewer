@@ -99,9 +99,22 @@ internal class LibraryUiActions(
 
     fun removeSaved(item: SavedItemRemoval) {
         scope.launch {
-            try { actions.removeSaved(item); showMessage("${item.series.title} 삭제 완료", MessageTone.SUCCESS) }
+            try {
+                val restore = runCatching { actions.captureRestore(item) }.getOrNull()
+                actions.removeSaved(item)
+                emit(LibraryEffect.ShowMessage("${item.series.title} 삭제 완료", MessageTone.SUCCESS,
+                    restore?.let { "실행 취소" }, restore?.let { undo -> { undoRemoval(undo) } }))
+            }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { showMessage("삭제하지 못했습니다. 다시 시도해 주세요", MessageTone.ERROR) }
+        }
+    }
+
+    private fun undoRemoval(restore: suspend () -> Unit) {
+        scope.launch {
+            try { restore(); showMessage("되돌렸습니다", MessageTone.SUCCESS) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { showMessage("되돌리지 못했습니다", MessageTone.ERROR) }
         }
     }
 

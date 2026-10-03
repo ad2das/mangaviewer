@@ -134,6 +134,7 @@ internal class EngineViewerScreen(
             immersive = { ui.toggleImmersiveMode() },
             settings = { ui.toggleSettingsPanel() },
             seek = { page -> runtime?.seekToPage(page) },
+            autoScroll = { ui.toggleAutoScroll() },
         ), retry = { runtime?.retryFailures() })
         val source = engine.session(spec)
         // The engine graph is built lazily on this very call, so a direct reader launch reaches its
