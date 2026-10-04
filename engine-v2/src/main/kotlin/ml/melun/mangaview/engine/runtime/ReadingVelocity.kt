@@ -43,6 +43,17 @@ internal class ReadingVelocity(private val windowNanos: Long = TRAILING_WINDOW_N
         else ((position - first.position) / (spanNanos / NANOS_PER_SECOND)).coerceAtLeast(0.0)
     }
 
+    /**
+     * The velocity as of [nowNanos]. A newest sample older than the trailing window no longer
+     * describes the reader — a held finger must not keep the last fling's estimate — so the read
+     * goes to zero until the anchor moves again. Callers that want the last computed estimate
+     * regardless of its age read [pagesPerSecond].
+     */
+    fun pagesPerSecondAt(nowNanos: Long): Double {
+        val newest = samples.lastOrNull() ?: return 0.0
+        return if (nowNanos - newest.atNanos > windowNanos) 0.0 else pagesPerSecond
+    }
+
     private companion object {
         const val TRAILING_WINDOW_NANOS = 400_000_000L
         const val NANOS_PER_SECOND = 1_000_000_000.0

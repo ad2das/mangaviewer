@@ -1226,6 +1226,46 @@ class EngineSessionRuntimeTest {
         assertEquals(0, source.livePages)
     }
 
+    @Test fun oscillatingVelocityDoesNotChurnTheDemandCache() = runTest {
+        val source = Source().apply { pageCount = 40; beforePage = { awaitCancellation() } }
+        val coordinator = WorkCoordinator(this, WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12))
+        val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode, { _, _ -> },
+            { _, failure -> throw failure }, observationClock = { testScheduler.currentTime * 1_000_000L })
+        try {
+            runtime.interactionActive(true)
+            runtime.open()
+            runCurrent()
+            val baseline = runtime.demandCache.rebuilds
+            val velocity = runtime.horizon.readingVelocity
+            var position = 0.0
+            fun step(pagesPerSecond: Double) {
+                advanceTimeBy(25)
+                position += pagesPerSecond * 0.025
+                val ordinal = position.toInt()
+                velocity.onSample(episode, ordinal, position - ordinal, testScheduler.currentTime * 1_000_000L)
+                runtime.resize(EngineViewport(100, 100))
+                runCurrent()
+            }
+            repeat(24) { step(12.3) } // 600 ms: one immediate deepening rebuild
+            assertTrue("the deepened horizon must be demanded: ${source.startedPriorities.keys}",
+                PageId.at(episode, 10) in source.startedPriorities)
+            val deepened = runtime.demandCache.rebuilds
+            // 1.8 s across the ceil boundary, inside the 3 s episode-retry release so only the
+            // lead can move the demand key.
+            repeat(3) {
+                repeat(12) { step(12.1) } // 300 ms dips whose computed lead reads 11
+                repeat(12) { step(12.3) }
+            }
+            assertEquals("a dip shorter than the hold must not rebuild the demand cache",
+                1L, deepened - baseline)
+            assertEquals("oscillation beyond the deepening must stay cache-stable",
+                deepened, runtime.demandCache.rebuilds)
+            assertTrue(PageId.at(episode, 10) in source.startedPriorities)
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+    }
+
     private fun TestScope.runtime(source: Source, receipts: MutableList<InputReceipt> = mutableListOf(),
         failures: MutableList<Throwable> = mutableListOf(),
         workClock: () -> Long = System::nanoTime,

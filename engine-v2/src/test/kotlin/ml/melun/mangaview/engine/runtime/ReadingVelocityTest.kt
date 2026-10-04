@@ -70,6 +70,21 @@ class ReadingVelocityTest {
     }
 
     @Test
+    fun timeAwareReadWithoutSamplesIsZero() {
+        assertEquals(0.0, ReadingVelocity().pagesPerSecondAt(123L), 1e-9)
+    }
+
+    @Test
+    fun aNewestSampleOlderThanTheTrailingWindowReadsAsZero() {
+        val velocity = ReadingVelocity()
+        velocity.onSample(episode, 0, 0.0, 0L)
+        velocity.onSample(episode, 1, 0.0, 100_000_000L)
+        assertEquals(10.0, velocity.pagesPerSecondAt(100_000_000L), 1e-9)
+        assertEquals(10.0, velocity.pagesPerSecondAt(500_000_000L), 1e-9)
+        assertEquals(0.0, velocity.pagesPerSecondAt(500_000_001L), 1e-9)
+    }
+
+    @Test
     fun resetClearsTheEstimate() {
         val velocity = ReadingVelocity()
         velocity.onSample(episode, 0, 0.0, 0L)

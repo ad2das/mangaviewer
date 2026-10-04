@@ -125,8 +125,8 @@ class EngineSessionRuntime(
     private var started = false
     private var foreground = true
     internal var demandVersion = 0L
-    private var lastDemandKey: DemandKey? = null
-    private var lastDemands: List<SessionDemand<*>> = emptyList()
+    /** Keyed demand cache; its rebuild count proves the lead hysteresis keeps the cache stable. */
+    internal val demandCache = DemandCache()
     private var closed = false
     // Owner-thread interaction hint. A drag or fling owns the frame: while it does, the bulk
     // read-ahead only queues cached body lookups behind the tiles the reader is scrolling onto.
@@ -211,8 +211,7 @@ class EngineSessionRuntime(
         positionResolved = true
         targetEpisode = episodeId
         initialPresented = !awaitInitialPresentation
-        lastDemandKey = null
-        lastDemands = emptyList()
+        demandCache.clear()
         process(update)
     }
 
@@ -337,11 +336,7 @@ class EngineSessionRuntime(
             state.visibleRegions.mapTo(linkedSetOf()) { it.pageId }, state.requiredDimensions,
             state.requiredEpisodes, state.requiredNavigation, plans, pages,
             prepared.toSet(), failedReadAheadPages.toSet(), unavailablePages.toSet(), failedReadAheadEpisodes.toSet())
-        if (key == lastDemandKey) return lastDemands
-        val result = demands(state, lead)
-        lastDemandKey = key
-        lastDemands = result
-        return result
+        return demandCache.get(key) { demands(state, lead) }
     }
 
     private fun demands(state: EngineSessionSnapshot, lead: Int): List<SessionDemand<*>> {
@@ -474,6 +469,31 @@ class EngineSessionRuntime(
     internal fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
 
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
+}
+
+/**
+ * Value-keyed demand cache. [rebuilds] counts how often the planner actually ran; the lead
+ * hysteresis test reads it to prove an oscillating horizon no longer invalidates the plan.
+ */
+internal class DemandCache {
+    private var lastKey: DemandKey? = null
+    private var lastDemands: List<SessionDemand<*>> = emptyList()
+    var rebuilds = 0L
+        private set
+
+    fun get(key: DemandKey, build: () -> List<SessionDemand<*>>): List<SessionDemand<*>> {
+        if (key == lastKey) return lastDemands
+        val result = build()
+        rebuilds++
+        lastKey = key
+        lastDemands = result
+        return result
+    }
+
+    fun clear() {
+        lastKey = null
+        lastDemands = emptyList()
+    }
 }
 
 // A failed page wakes the idle runtime for its retry with doubling backoff, up to this many times.
