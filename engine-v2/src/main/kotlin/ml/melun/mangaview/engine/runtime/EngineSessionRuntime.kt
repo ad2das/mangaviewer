@@ -18,6 +18,7 @@ import ml.melun.mangaview.engine.api.PageContentIdentity
 import ml.melun.mangaview.engine.api.SessionEvent
 import ml.melun.mangaview.engine.api.SessionUpdate
 import ml.melun.mangaview.engine.api.SessionWorkOwnership
+import ml.melun.mangaview.engine.api.SourceAnchor
 import ml.melun.mangaview.engine.api.StoredPage
 import ml.melun.mangaview.engine.api.WorkCoordinatorPort
 import ml.melun.mangaview.engine.api.WorkKey
@@ -49,6 +50,8 @@ internal data class DemandKey(
     val geometryRevision: Long,
     val positionResolved: Boolean,
     val initialPresented: Boolean,
+    /** Clamped interaction horizon depth; recomputed from velocity and fetch latency. */
+    val lead: Int,
     val transferVersion: Long,
     val anchorPage: PageId?,
     val visiblePages: Set<PageId>,
@@ -82,7 +85,7 @@ class EngineSessionRuntime(
     initialEpisode: EpisodeId,
     private val reportUpdate: (EngineRuntimeSnapshot, List<InputReceipt>) -> Unit,
     reportFailure: (WorkKey<*>, Throwable) -> Unit,
-    private val observationClock: () -> Long = System::nanoTime,
+    internal val observationClock: () -> Long = System::nanoTime,
     private val awaitInitialPresentation: Boolean = false,
     /**
      * Backoff for a failed demand that stays desired. The work set retries it in place so a
@@ -105,6 +108,7 @@ class EngineSessionRuntime(
     internal var pages: Map<PageId, PageContentIdentity> = emptyMap()
     internal val prepared = linkedSetOf<PageId>()
     internal val earlyTransfers = EarlyOriginalTransfers()
+    internal val horizon = SessionFlingHorizon { observationClock() } // velocity + fetch latency
     internal val failedReadAheadPages = linkedSetOf<PageId>()
     /** Required pages declared unavailable for this session once the failure bound was reached. */
     internal val unavailablePages = linkedSetOf<PageId>()
@@ -203,6 +207,7 @@ class EngineSessionRuntime(
         pageFailureCounts.clear()
         failedReadAheadEpisodes.clear()
         failedEpisodeRetryAt.clear()
+        horizon.reset()
         positionResolved = true
         targetEpisode = episodeId
         initialPresented = !awaitInitialPresentation
@@ -216,7 +221,7 @@ class EngineSessionRuntime(
         if (closed || foreground == enabled) return
         foreground = enabled
         if (!enabled) inputReplay.cancel()
-        if (!enabled) { pages = emptyMap(); prepared.clear(); earlyTransfers.clear(); pageDemands.clear() }
+        if (!enabled) { pages = emptyMap(); prepared.clear(); earlyTransfers.clear(); pageDemands.clear(); horizon.reset() }
         process(SessionUpdate(session.snapshot))
     }
 
@@ -297,6 +302,7 @@ class EngineSessionRuntime(
             while (dirty) {
                 dirty = false
                 val state = session.snapshot
+                horizon.sample(state, plans)
                 val demand = when {
                     !started || closed -> emptyList()
                     foreground -> {
@@ -325,19 +331,20 @@ class EngineSessionRuntime(
      * Mutable sets are copied into the key so in-place mutation invalidates the entry. */
     private fun cachedDemands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
         releaseRecoveredEpisodeFailures(failedReadAheadEpisodes, failedEpisodeRetryAt, observationClock)
+        val lead = horizon.lead(interactionActive)
         val key = DemandKey(state.generation, state.geometryRevision, positionResolved,
-            initialPresented, demandVersion, state.anchor?.pageId,
+            initialPresented, lead, demandVersion, state.anchor?.pageId,
             state.visibleRegions.mapTo(linkedSetOf()) { it.pageId }, state.requiredDimensions,
             state.requiredEpisodes, state.requiredNavigation, plans, pages,
             prepared.toSet(), failedReadAheadPages.toSet(), unavailablePages.toSet(), failedReadAheadEpisodes.toSet())
         if (key == lastDemandKey) return lastDemands
-        val result = demands(state)
+        val result = demands(state, lead)
         lastDemandKey = key
         lastDemands = result
         return result
     }
 
-    private fun demands(state: EngineSessionSnapshot): List<SessionDemand<*>> {
+    private fun demands(state: EngineSessionSnapshot, lead: Int): List<SessionDemand<*>> {
         plans = applyPlanWindow(plans, retainedCachedPlans, state, targetEpisode, pages)
         val result = mutableListOf<SessionDemand<*>>()
         val generation = state.generation
@@ -348,7 +355,8 @@ class EngineSessionRuntime(
             }
         }
         val wantedPages = pagePriorities(
-            state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, interactionActive, earlyTransfers,
+            state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, interactionActive,
+            lead, earlyTransfers,
         )
         // A page declared unavailable keeps the layout walkable through its placeholder geometry.
         // Off screen it owns no demand; on screen it keeps retrying on the work set's backoff, so a
@@ -359,6 +367,7 @@ class EngineSessionRuntime(
         // Prepared markers only matter while their page metadata is retained; without this the
         // set keeps growing across a long read that walks past many documents.
         prepared.retainAll(pages.keys)
+        horizon.track(wantedPages, prepared)
         val wantedEpisodes = linkedMapOf<EpisodeId, WorkPriority>()
         state.requiredEpisodes.forEach { wantedEpisodes[it] = WorkPriority.FOCUS }
         wantedPages.forEach { (id, priority) ->

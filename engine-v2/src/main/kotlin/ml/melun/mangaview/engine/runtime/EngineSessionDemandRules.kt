@@ -1,6 +1,7 @@
 package ml.melun.mangaview.engine.runtime
 
 import java.util.Collections
+import kotlin.math.ceil
 import kotlinx.coroutines.CoroutineScope
 import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
@@ -61,6 +62,27 @@ internal fun <V> planKeysToDrop(
 internal const val PAGES_AHEAD_WHILE_INTERACTING = 6
 internal const val PAGES_AHEAD_AT_REST = 2
 
+// The interaction horizon follows the reader: lead = ceil(v * L * 1.5), bounded below by the fixed
+// minimum and above by MAX_INTERACTION_LEAD. v is the forward reading velocity in pages/second and
+// L the runtime EWMA of demand->accepted fetch latency in seconds (see ReadingVelocity and
+// FetchLatencyEstimate); a still or reversing reader keeps the fixed six-page horizon.
+internal const val MAX_INTERACTION_LEAD = 20
+// The horizon never holds more than this many not-yet-prepared pages: leaving two permits of the
+// background network budget (WorkLimits.backgroundNetwork = 12) keeps the visible path headroom.
+internal const val MAX_INTERACTION_HORIZON_FETCHES = 10
+private const val LEAD_SAFETY_FACTOR = 1.5
+
+internal fun interactionLead(pagesPerSecond: Double, latencySeconds: Double): Int {
+    if (!pagesPerSecond.isFinite() || !latencySeconds.isFinite() || pagesPerSecond <= 0.0 ||
+        latencySeconds <= 0.0
+    ) {
+        return PAGES_AHEAD_WHILE_INTERACTING
+    }
+    val raw = pagesPerSecond * latencySeconds * LEAD_SAFETY_FACTOR
+    if (!raw.isFinite()) return MAX_INTERACTION_LEAD
+    return ceil(raw).toInt().coerceIn(PAGES_AHEAD_WHILE_INTERACTING, MAX_INTERACTION_LEAD)
+}
+
 // The replay head is a single page, so a fast catch-up walk otherwise stalls once per page while
 // each download parses its own geometry. Batching a short window behind the blocker starts those
 // downloads together and turns the walk into one fetch round instead of N.
@@ -71,14 +93,14 @@ internal const val BLOCKED_DIMENSION_BACKWARD_WINDOW = 2
 // session runtime stays under the size gate without giving up the prepared/failed context.
 internal fun addReadAhead(state: EngineSessionSnapshot, plans: Map<EpisodeId, EpisodeAccessPlan>,
     targetEpisode: EpisodeId, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
-    initialPresented: Boolean, interactionActive: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
+    initialPresented: Boolean, interactionActive: Boolean, lead: Int, result: LinkedHashMap<PageId, WorkPriority>,
 ) {
     val anchor = readAheadAnchor(state, targetEpisode) ?: return
     val manifest = plans[anchor.episodeId]?.manifest ?: return
     val index = manifest.pages.indexOfFirst { it.id == anchor }
     if (index < 0) return
     addNearbyOriginals(state, manifest, index, plans, prepared, failedReadAheadPages, initialPresented,
-        interactionActive, result)
+        lead, result)
     // Give every original needed by the opening viewport the first network window.
     // Bulk transfer starts as soon as those bytes arrive, independently of rendering.
     // While a drag or fling owns the frame the bulk waits: it only re-materialises whole cached
@@ -92,7 +114,7 @@ internal fun addReadAhead(state: EngineSessionSnapshot, plans: Map<EpisodeId, Ep
 
 internal fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeManifest, index: Int,
     plans: Map<EpisodeId, EpisodeAccessPlan>, prepared: Set<PageId>, failedReadAheadPages: Set<PageId>,
-    initialPresented: Boolean, interactionActive: Boolean, result: LinkedHashMap<PageId, WorkPriority>,
+    initialPresented: Boolean, lead: Int, result: LinkedHashMap<PageId, WorkPriority>,
 ) {
     // Keep a small prepared neighborhood available to the tile planner. Originals
     // elsewhere stay in disk storage; never retain an entire episode's textures.
@@ -105,26 +127,26 @@ internal fun addNearbyOriginals(state: EngineSessionSnapshot, manifest: EpisodeM
     val leadingIndex = state.requiredDimensions.fold(index) { leading, id ->
         maxOf(leading, manifest.pages.indexOfFirst { it.id == id })
     }
-    // While a gesture owns the frame the bulk read-ahead is deferred, so the page horizon is only
-    // two pages deep and a read-ahead tile's page is usually still being published when the tile is
-    // demanded (measured: pageReady 1.8ms of a 8.5ms tile, and 6.7ms on an opening tile). Deepen
-    // only the page horizon while interacting — pages, never tiles — so the publish completes ahead
-    // of the demand without queueing any extra decode on the lanes the visible tile has to share.
-    // Only after the opening is presented: during the opening the FOCUS/VISIBLE pages are still being
-    // published, and horizon pages queued beside them take the lanes those tiles are waiting on.
-    // Measured on the GPU AVD: deepening the horizon during the opening as well raised the opening
-    // tiles' demand->resident to 40.9ms (gate 28.75) while the later read-ahead mass kept its gain.
-    // (Gating it on initialPresented was measured worse still: wfwf d2r p50 7.94 -> 9.33ms, so the
-    // opening horizon keeps the deeper value and only the measurement changes are left here.)
-    val ahead = if (interactionActive) PAGES_AHEAD_WHILE_INTERACTING else PAGES_AHEAD_AT_REST
-    for (offset in 1..ahead) {
+    // While a gesture owns the frame the bulk read-ahead is deferred, so the page horizon is the
+    // only forward demand. Its depth follows the reader's forward velocity and the measured fetch
+    // latency (the caller computes the clamped lead); deep only when the reader is actually
+    // outrunning the fetches, and never deeper than the outstanding-fetch budget. Nearest pages
+    // first: the loop walks outward and the map keeps insertion order, so a deeper page added
+    // later never takes the sequence of a nearer one.
+    var outstanding = 0
+    for (offset in 1..lead) {
         val ordinal = leadingIndex + offset
         val id = manifest.pages.getOrNull(ordinal)?.id ?: manifest.nextEpisodeId?.let { next ->
-            // The same two-page horizon continues across a known document boundary.
+            // The same lead continues across a known document boundary.
             plans[next]?.manifest?.pages?.getOrNull(ordinal - manifest.pages.size)?.id
         } ?: continue
+        if (id in failedReadAheadPages) continue
+        if (id !in prepared) {
+            if (outstanding >= MAX_INTERACTION_HORIZON_FETCHES) continue
+            outstanding++
+        }
         val priority = if (!initialPresented && ordinal <= index + 2) WorkPriority.VISIBLE else WorkPriority.NEXT_IMAGE
-        if (id !in failedReadAheadPages) result.putIfAbsent(id, priority)
+        result.putIfAbsent(id, priority)
     }
 }
 
@@ -282,6 +304,7 @@ internal fun pagePriorities(
     failedReadAheadPages: Set<PageId>,
     initialPresented: Boolean,
     interactionActive: Boolean,
+    lead: Int,
     earlyTransfers: EarlyOriginalTransfers,
 ): LinkedHashMap<PageId, WorkPriority> {
     val result = linkedMapOf<PageId, WorkPriority>()
@@ -315,7 +338,7 @@ internal fun pagePriorities(
     reserveDocumentEndOriginal(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, result)
     earlyTransfers.retain(result, prepared, failedReadAheadPages)
     addReadAhead(state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented,
-        interactionActive, result)
+        interactionActive, lead, result)
     return result
 }
 

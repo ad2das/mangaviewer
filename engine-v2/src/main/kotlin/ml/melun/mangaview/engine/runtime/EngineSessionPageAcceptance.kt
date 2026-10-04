@@ -36,6 +36,9 @@ internal fun EngineSessionRuntime.acceptPageGeometry(generation: Long, id: PageI
     require(geometry.pageId == id && geometry.contentRevision == plan.contentRevision)
     if (!restoreUnavailable(generation, id, geometry.dimensions)) return
     if (matchesVerifiedGeometry(pages[id], geometry) && id in prepared && id !in failedReadAheadPages) return
+    // Only a body transfer publishes geometry; a storage lookup never does, so a fact that reaches
+    // a fresh (not yet prepared) demand marks it as a network fetch for the latency estimate.
+    horizon.fetchLatency.network(id)
     demandVersion++
     earlyTransfers.observed(id)
     val update = try {
@@ -57,6 +60,7 @@ internal fun EngineSessionRuntime.acceptPage(generation: Long, expected: PageId,
     val identity = PageContentIdentity(expected, page.contentRevision, page.sha256, page.dimensions, page.byteCount)
     // Reacquiring the same verified original changes subscription ownership, not visible content.
     if (pages[expected] == identity && expected in prepared && expected !in failedReadAheadPages) return
+    horizon.fetchLatency.complete(expected) { observationClock() }
     prepared += expected
     failedReadAheadPages -= expected
     pageFailureCounts -= expected
@@ -82,6 +86,7 @@ internal fun EngineSessionRuntime.acceptPage(generation: Long, expected: PageId,
  */
 internal fun EngineSessionRuntime.handlePageFailure(id: PageId) {
     markPageFailure(id, failedReadAheadPages) { process(SessionUpdate(session.snapshot)) }
+    horizon.fetchLatency.abandon(id)
     val failures = (pageFailureCounts[id] ?: 0) + 1
     pageFailureCounts[id] = failures
     // Idle retries back off and stop after a bound; reading on reconciles again anyway.

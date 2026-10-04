@@ -5,6 +5,7 @@ import java.net.URI
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.TestScope
@@ -977,25 +978,26 @@ class EngineSessionRuntimeTest {
         val source = Source()
         val delayed = CompletableDeferred<Unit>()
         source.beforePage = { if (it == PageId.at(episode, 1)) delayed.await() }
-        var observedAt = 0L
+        var observedAt = 100L
         val coordinator = WorkCoordinator(this)
         val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
         val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
-            { _, _ -> }, { _, failure -> throw failure }, observationClock = { observedAt += 10; observedAt })
+            { _, _ -> }, { _, failure -> throw failure }, observationClock = { observedAt })
 
         runtime.open()
         runCurrent()
         var preparation = runtime.diagnosticSnapshot().launchPreparation
-        assertEquals(10L, preparation.manifestAcceptedAtNanos)
+        assertEquals(100L, preparation.manifestAcceptedAtNanos)
         assertEquals((0 until 3).map { PageId.at(episode, it) }, preparation.manifestPageIds)
         assertEquals(setOf(PageId.at(episode, 0), PageId.at(episode, 2)), preparation.verifiedPages.keys)
         assertNull(preparation.allFirstVerifiedPreparedAtNanos)
 
+        observedAt = 200L
         delayed.complete(Unit)
         runCurrent()
         preparation = runtime.diagnosticSnapshot().launchPreparation
-        assertEquals(listOf(20L, 30L, 40L), preparation.verifiedPages.values.map { it.firstVerifiedAtNanos })
-        assertEquals(40L, preparation.allFirstVerifiedPreparedAtNanos)
+        assertEquals(listOf(100L, 100L, 200L), preparation.verifiedPages.values.map { it.firstVerifiedAtNanos })
+        assertEquals(200L, preparation.allFirstVerifiedPreparedAtNanos)
 
         runtime.foreground(false)
         assertTrue(runtime.snapshot.pages.isEmpty())
@@ -1183,6 +1185,45 @@ class EngineSessionRuntimeTest {
         } finally { runtime.close(); coordinator.close() }
         assertEquals(0, source.livePages)
         assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun forwardFlingAndNetworkLatencyDeepenTheDemandedHorizon() = runTest {
+        val completing = (0 until 8).map { PageId.at(episode, it) }.toSet()
+        val source = Source().apply {
+            pageCount = 40
+            earlyGeometry = true
+            beforePage = { id -> if (id in completing) delay(1_000) else awaitCancellation() }
+        }
+        val coordinator = WorkCoordinator(this, WorkLimits(network = 16, bodies = 14, backgroundNetwork = 12))
+        val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode, { _, _ -> },
+            { _, failure -> throw failure }, observationClock = { testScheduler.currentTime * 1_000_000L })
+        fun move(sequence: Long) {
+            runtime.input(InputSample(sequence, 1, 0L, 100L * 1_024L))
+            runCurrent()
+        }
+        try {
+            runtime.interactionActive(true)
+            runtime.open()
+            runCurrent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertTrue("network completions must feed the estimate: ${runtime.horizon.fetchLatency.seconds}",
+                runtime.horizon.fetchLatency.seconds > 0.8)
+            move(1)
+            advanceTimeBy(125)
+            move(2)
+            advanceTimeBy(125)
+            move(3)
+            assertEquals("one page per 125ms is eight pages per second",
+                8.0, runtime.horizon.readingVelocity.pagesPerSecond, 1e-9)
+            assertEquals(PageId.at(episode, 3), runtime.snapshot.session.anchor!!.pageId)
+            val lead = interactionLead(8.0, runtime.horizon.fetchLatency.seconds)
+            assertTrue("latency must deepen the lead beyond the fixed minimum: $lead", lead > PAGES_AHEAD_WHILE_INTERACTING)
+            assertTrue("the deepened horizon must be demanded: ${source.startedPriorities.keys}",
+                PageId.at(episode, 3 + lead) in source.startedPriorities)
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
     }
 
     private fun TestScope.runtime(source: Source, receipts: MutableList<InputReceipt> = mutableListOf(),
