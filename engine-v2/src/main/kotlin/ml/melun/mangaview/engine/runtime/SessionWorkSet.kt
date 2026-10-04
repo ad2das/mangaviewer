@@ -153,7 +153,14 @@ internal class SessionWorkSet(
             throw cancelled
         } catch (failure: Throwable) {
             entry.failed = true
-            if (!entry.retiring && !closed) notifyFailure(entry.key, failure, desired[entry.key]?.onFailure)
+            if (!entry.retiring && !closed) {
+                // The attempt's own demand owns its failure handling. Prefer the latest desired
+                // instance for the key, but never let an attempt whose demand carries a handler
+                // (a page failure, above all) fall through to a session error just because the
+                // demand was dropped between the attempt and this notification. A page failure
+                // is never fatal to the session, whatever the demand bookkeeping did meanwhile.
+                notifyFailure(entry.key, failure, desired[entry.key]?.onFailure ?: demand.onFailure)
+            }
         } finally {
             finish(entry)
         }

@@ -487,6 +487,33 @@ class EngineSessionTest {
         session.dispatch(SessionEvent.DimensionsResolved(1L, page, PageDimensions(101, 200)))
     }
 
+    @Test
+    fun replacingPlaceholderDimensionsRescalesAnchorInsideThePage() {
+        val page = PageId.at(episode, 0)
+        val session = readySession(
+            sessionId = 20L,
+            viewport = EngineViewport(100, 100),
+            pages = listOf(PageSpec(page, 0, dimensions = PageDimensions(100, 100))),
+            anchor = SourceAnchor(page, 50L * SourceAnchor.SOURCE_UNITS_PER_PIXEL, 0L),
+        )
+        assertRejected {
+            session.dispatch(
+                SessionEvent.DimensionsResolved(1L, page, PageDimensions(100, 250), replacesPlaceholder = false),
+            )
+        }
+        val before = session.snapshot
+
+        val update = session.dispatch(
+            SessionEvent.DimensionsResolved(1L, page, PageDimensions(100, 250), replacesPlaceholder = true),
+        )
+
+        assertEquals(before.geometryRevision + 1L, update.snapshot.geometryRevision)
+        assertEquals(PageDimensions(100, 250), update.snapshot.anchorDimensions)
+        assertEquals(page, update.snapshot.anchor?.pageId)
+        // Halfway down a 100px page stays halfway down the recovered 250px page.
+        assertEquals(125L * SourceAnchor.SOURCE_UNITS_PER_PIXEL, update.snapshot.anchor?.sourceYQ32)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun manifestFromAnotherSeriesIsRejected() {
         val foreign = EpisodeId(SeriesId(SourceId("foreign"), "series"), "episode")

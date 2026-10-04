@@ -67,14 +67,6 @@ internal class DocumentGeometry(
         if (!enabled) foldAnchorOutOfTheSecondHalf()
     }
 
-    private fun foldAnchorOutOfTheSecondHalf() {
-        val value = anchor ?: return
-        val dimensions = page(value.pageId)?.dimensions ?: return
-        if (!SpreadPages.isSpread(dimensions)) return
-        val half = BigRational.of(pageSourceExtent(dimensions.heightPx))
-        if (value.sourceQ32 >= half) anchor = value.copy(sourceQ32 = value.sourceQ32 - half)
-    }
-
     private fun splitFactor(dimensions: PageDimensions): Long =
         if (splitMode && SpreadPages.isSpread(dimensions)) 2L else 1L
 
@@ -132,6 +124,19 @@ internal class DocumentGeometry(
 
     fun setDimensions(pageId: PageId, dimensions: PageDimensions) {
         actualDimensions[pageId] = dimensions
+    }
+
+    /**
+     * Replaces placeholder geometry with the recovered original's. An anchor inside the page keeps
+     * its relative position, so the reader stays on the same part of the page; anchors elsewhere are
+     * page-relative and do not move.
+     */
+    fun replaceDimensions(pageId: PageId, old: PageDimensions, dimensions: PageDimensions) {
+        val value = anchor
+        actualDimensions[pageId] = dimensions
+        if (value == null || value.pageId != pageId) return
+        val scaled = value.sourceQ32 * BigRational.of(documentExtent(dimensions)) / BigRational.of(documentExtent(old))
+        anchor = value.copy(sourceQ32 = scaled)
     }
 
     fun resolveNavigation(
@@ -439,6 +444,14 @@ internal class DocumentGeometry(
 
     private fun AnchorState.toCursor(): Cursor = Cursor(pageId, sourceQ32)
 
+}
+
+private fun DocumentGeometry.foldAnchorOutOfTheSecondHalf() {
+    val value = anchor ?: return
+    val dimensions = page(value.pageId)?.dimensions ?: return
+    if (!SpreadPages.isSpread(dimensions)) return
+    val half = BigRational.of(pageSourceExtent(dimensions.heightPx))
+    if (value.sourceQ32 >= half) anchor = value.copy(sourceQ32 = value.sourceQ32 - half)
 }
 
 private fun appendRegion(

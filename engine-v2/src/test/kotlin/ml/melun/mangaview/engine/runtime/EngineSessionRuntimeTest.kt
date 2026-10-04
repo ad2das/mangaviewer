@@ -10,6 +10,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.core.EpisodeId
@@ -864,17 +865,60 @@ class EngineSessionRuntimeTest {
             assertTrue("Placeholder geometry must complete the viewport", runtime.snapshot.session.completeViewport)
             assertFalse(unavailable in runtime.snapshot.pages)
             assertTrue(failures.isEmpty())
-            assertEquals(0, runtime.ownership().failed)
+            retryClock += 2_000_000_000L
+            runtime.resize(EngineViewport(100, 100))
+            runCurrent()
+            assertEquals("A visible placeholder keeps retrying its original", 4, attempts)
             val input = InputSample(1, 1, 0, 150 * 1_024L)
             runtime.input(input)
             runCurrent()
             assertEquals(InputOutcome.APPLIED, receipts.last { it.sample.sequence == input.sequence }.outcome)
             assertEquals(0, runtime.snapshot.session.pendingInputCount)
+            assertEquals(0, runtime.ownership().failed)
             val attemptsAfterSkip = attempts
             retryClock += 2_000_000_000L
             runtime.resize(EngineViewport(100, 100))
             runCurrent()
-            assertEquals("An unavailable page must not be demanded again", attemptsAfterSkip, attempts)
+            assertEquals("An off-screen unavailable page must not be demanded", attemptsAfterSkip, attempts)
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun recoveredUnavailablePageReplacesItsPlaceholder() = runTest {
+        val source = Source()
+        val unavailable = PageId.at(episode, 0)
+        var attempts = 0
+        var outage = true
+        source.beforePage = { id -> if (id == unavailable) { attempts++; if (outage) error("provider outage") } }
+        source.pageDimensions = { id -> if (id == unavailable) PageDimensions(100, 250) else PageDimensions(100, 100) }
+        val failures = mutableListOf<Throwable>()
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
+        try {
+            runtime.open()
+            runCurrent()
+            repeat(2) {
+                retryClock += 2_000_000_000L
+                runtime.resize(EngineViewport(100, 100))
+                runCurrent()
+            }
+            assertEquals(3, attempts)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertFalse(unavailable in runtime.snapshot.pages)
+            outage = false
+            // No input: the idle runtime wakes itself for the retry once the backoff elapsed.
+            retryClock += 10_000_000_000L
+            advanceTimeBy(40_000L)
+            runCurrent()
+            assertEquals(4, attempts)
+            assertEquals(PageDimensions(100, 250), runtime.snapshot.pages[unavailable]?.dimensions)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertEquals(unavailable, runtime.snapshot.session.anchor!!.pageId)
+            assertTrue(failures.isEmpty())
         } finally {
             runtime.close()
             coordinator.close()
@@ -1155,6 +1199,7 @@ class EngineSessionRuntimeTest {
     private inner class Source : EngineSessionWork {
         var earlyGeometry = false
         var beforePage: suspend (PageId) -> Unit = {}
+        var pageDimensions: (PageId) -> PageDimensions = { PageDimensions(100, 100) }
         var beforeEpisode: suspend (EpisodeId) -> Unit = {}
         var beforePosition: suspend () -> Unit = {}
         var livePages = 0
@@ -1207,7 +1252,7 @@ class EngineSessionRuntimeTest {
                 beforePage(pageId)
                 livePages++
                 StoredPage(pageId, plan.contentRevision, File("immutable-${pageId.remoteKey}.png"), 1,
-                    "1".repeat(64), PageDimensions(100, 100), "image/png")
+                    "1".repeat(64), pageDimensions(pageId), "image/png")
             }, dispose = { livePages-- },
         )
         }

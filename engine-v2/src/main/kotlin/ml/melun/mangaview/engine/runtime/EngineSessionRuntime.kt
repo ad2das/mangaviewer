@@ -130,6 +130,9 @@ class EngineSessionRuntime(
     private var processing = false
     private var dirty = false
     private var initialPresented = !awaitInitialPresentation
+    private val retryWake = SessionRetryWake(scope) {
+        if (started && !closed && foreground) process(SessionUpdate(session.snapshot))
+    }
     private val inputReplay = SessionInputReplay(scope, { session.snapshot.generation },
         { started && !closed && foreground && session.inputReplayPending },
         { generation -> process(session.dispatch(SessionEvent.ContinueInput(generation))) })
@@ -271,6 +274,7 @@ class EngineSessionRuntime(
     suspend fun close() {
         checkOwner()
         inputReplay.close()
+        retryWake.cancel()
         if (!closed) {
             closed = true
             pages = emptyMap()
@@ -346,9 +350,11 @@ class EngineSessionRuntime(
         val wantedPages = pagePriorities(
             state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, interactionActive, earlyTransfers,
         )
-        // A page declared unavailable no longer owns a demand: its placeholder geometry keeps the
-        // layout walkable, and the provider is not consulted again for this session.
-        wantedPages.keys.removeAll(unavailablePages)
+        // A page declared unavailable keeps the layout walkable through its placeholder geometry.
+        // Off screen it owns no demand; on screen it keeps retrying on the work set's backoff, so a
+        // provider outage that ends restores the original instead of leaving a blank page for the
+        // rest of the session.
+        wantedPages.keys.removeAll { it in unavailablePages && state.visibleRegions.none { region -> region.pageId == it } }
         pages = retainPreparedMetadata(state, wantedPages.keys, plans, pages)
         // Prepared markers only matter while their page metadata is retained; without this the
         // set keeps growing across a long read that walks past many documents.
@@ -446,7 +452,21 @@ class EngineSessionRuntime(
         process(update)
     }
 
+    /**
+     * A failed page wakes the idle runtime for its retry with doubling backoff, up to a bound.
+     * Kept on the runtime so the wake and its delay stay private; page acceptance calls this.
+     */
+    internal fun armPageRetryWake(failures: Int) {
+        if (failures <= PAGE_WAKE_FAILURES) {
+            retryWake.schedule(workRetryDelayNanos shl minOf(failures - 1, PAGE_WAKE_MAX_SHIFT))
+        }
+    }
+
     internal fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
 
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
 }
+
+// A failed page wakes the idle runtime for its retry with doubling backoff, up to this many times.
+private const val PAGE_WAKE_FAILURES = 12
+private const val PAGE_WAKE_MAX_SHIFT = 5

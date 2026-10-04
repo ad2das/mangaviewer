@@ -108,6 +108,11 @@ sealed interface SessionEvent {
         val generation: Long,
         val pageId: PageId,
         val dimensions: PageDimensions,
+        /**
+         * The page currently holds placeholder geometry the runtime published for an unavailable
+         * page; its recovered original may replace those dimensions instead of conflicting.
+         */
+        val replacesPlaceholder: Boolean = false,
     ) : SessionEvent
     data class Input(val sample: InputSample) : SessionEvent
     /** Resumes a bounded FIFO replay; an old generation cannot move a newer document. */

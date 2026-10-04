@@ -71,7 +71,8 @@ class EngineSession(
             is SessionEvent.ManifestResolved ->
                 manifestResolved(event.generation, event.manifest, event.navigationKnown)
             is SessionEvent.NavigationResolved -> navigationResolved(event)
-            is SessionEvent.DimensionsResolved -> dimensionsResolved(event.generation, event.pageId, event.dimensions)
+            is SessionEvent.DimensionsResolved ->
+                dimensionsResolved(event.generation, event.pageId, event.dimensions, event.replacesPlaceholder)
             is SessionEvent.Input -> input(event.sample)
             is SessionEvent.ContinueInput -> if (event.generation == generationValue && replayYielded) {
                 replayPending(emptySet())
@@ -138,6 +139,7 @@ class EngineSession(
         generation: Long,
         pageId: PageId,
         dimensions: PageDimensions,
+        replacesPlaceholder: Boolean,
     ): List<InputReceipt> {
         if (generation != generationValue) return emptyList()
         if (phaseValue == EngineSessionPhase.CLOSED) return emptyList()
@@ -150,10 +152,7 @@ class EngineSession(
         // specific rejection so the runtime can treat the late result as inert instead of
         // failing the containing work.
         if (geometry.page(pageId) == null) throw UnknownPageDimensionsException(pageId)
-        val old = geometry.actualDimensions[pageId]
-        require(old == null || old == dimensions) { "Conflicting dimensions for $pageId" }
-        if (old == dimensions) return emptyList()
-        geometry.setDimensions(pageId, dimensions)
+        if (!geometry.applyResolvedDimensions(pageId, dimensions, replacesPlaceholder)) return emptyList()
         geometryRevisionValue++
         resolvePositionIfPossible()
         refreshPhase()
@@ -424,6 +423,22 @@ class EngineSession(
     private fun checkOwner() {
         check(Thread.currentThread() === ownerThread) { "EngineSession is owned by its construction thread" }
     }
+}
+
+/**
+ * Applies one page's resolved geometry; placeholder dimensions are replaced by the recovered
+ * original's, anything else must match. False when the dimensions were already known.
+ */
+private fun DocumentGeometry.applyResolvedDimensions(
+    pageId: PageId,
+    dimensions: PageDimensions,
+    replacesPlaceholder: Boolean,
+): Boolean {
+    val old = actualDimensions[pageId]
+    require(old == null || old == dimensions || replacesPlaceholder) { "Conflicting dimensions for $pageId" }
+    if (old == dimensions) return false
+    if (old != null) replaceDimensions(pageId, old, dimensions) else setDimensions(pageId, dimensions)
+    return true
 }
 
 private fun SourceAnchor.toState(): AnchorState = AnchorState(

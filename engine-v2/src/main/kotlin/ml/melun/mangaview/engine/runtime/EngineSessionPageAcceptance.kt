@@ -32,11 +32,9 @@ import ml.melun.mangaview.source.AdjacentEpisodes
 
 internal fun EngineSessionRuntime.acceptPageGeometry(generation: Long, id: PageId, plan: EpisodeAccessPlan, metadata: WorkMetadata) {
     if (!isCurrent(generation) || plans[id.episodeId] !== plan) return
-    // Once a page is declared unavailable its placeholder geometry owns the layout for this
-    // session; a late progressive delivery must not conflict with the published dimensions.
-    if (id in unavailablePages) return
     val geometry = metadata as? WorkMetadata.PageGeometry ?: return
     require(geometry.pageId == id && geometry.contentRevision == plan.contentRevision)
+    if (!restoreUnavailable(generation, id, geometry.dimensions)) return
     if (matchesVerifiedGeometry(pages[id], geometry) && id in prepared && id !in failedReadAheadPages) return
     demandVersion++
     earlyTransfers.observed(id)
@@ -55,8 +53,7 @@ internal fun EngineSessionRuntime.acceptPageGeometry(generation: Long, id: PageI
 
 internal fun EngineSessionRuntime.acceptPage(generation: Long, expected: PageId, plan: EpisodeAccessPlan, page: StoredPage) {
     require(page.pageId == expected && page.contentRevision == plan.contentRevision)
-    // See acceptPageGeometry: the session layout already owns the unavailable placeholder.
-    if (expected in unavailablePages) return
+    if (!restoreUnavailable(generation, expected, page.dimensions)) return
     val identity = PageContentIdentity(expected, page.contentRevision, page.sha256, page.dimensions, page.byteCount)
     // Reacquiring the same verified original changes subscription ownership, not visible content.
     if (pages[expected] == identity && expected in prepared && expected !in failedReadAheadPages) return
@@ -85,9 +82,11 @@ internal fun EngineSessionRuntime.acceptPage(generation: Long, expected: PageId,
  */
 internal fun EngineSessionRuntime.handlePageFailure(id: PageId) {
     markPageFailure(id, failedReadAheadPages) { process(SessionUpdate(session.snapshot)) }
-    if (id in unavailablePages) return
     val failures = (pageFailureCounts[id] ?: 0) + 1
     pageFailureCounts[id] = failures
+    // Idle retries back off and stop after a bound; reading on reconciles again anyway.
+    armPageRetryWake(failures)
+    if (id in unavailablePages) return
     val state = session.snapshot
     if (failures < PAGE_UNAVAILABLE_FAILURES || id !in state.requiredDimensions) return
     val update = try {
@@ -99,6 +98,23 @@ internal fun EngineSessionRuntime.handlePageFailure(id: PageId) {
     }
     unavailablePages += id
     process(update)
+}
+
+/**
+ * The original of a page declared unavailable arrived after all: its dimensions replace the
+ * placeholder's so the page renders. False when the document was pruned meanwhile.
+ */
+private fun EngineSessionRuntime.restoreUnavailable(generation: Long, id: PageId, dimensions: PageDimensions): Boolean {
+    if (id !in unavailablePages) return true
+    val update = try {
+        session.dispatch(SessionEvent.DimensionsResolved(generation, id, dimensions, replacesPlaceholder = true))
+    } catch (stale: UnknownPageDimensionsException) {
+        return false
+    }
+    unavailablePages -= id
+    demandVersion++
+    process(update)
+    return true
 }
 
 /**
