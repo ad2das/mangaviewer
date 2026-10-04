@@ -81,6 +81,55 @@ class EngineTileWorkTest {
         assertEquals(0, coordinator.snapshot().subscribers)
     }
 
+    @Test fun capacityBlockedUploadDoesNotHoldTheSerializedUploadPermit() = runTest {
+        val coordinator = WorkCoordinator(this)
+        val capacityGate = CompletableDeferred<Unit>()
+        val secondTile = tile.copy(sourceTop = 300, sourceBottom = 500)
+        val events = mutableListOf<String>()
+        var key = 0L
+        val uploader = object : EngineTextureUploader {
+            override val rendererId = 1L
+            override val rendererEpoch = 1L
+            override suspend fun upload(pixels: EnginePixels, expectedEpoch: Long): EngineTexture {
+                events += "upload:${pixels.tile.sourceTop}"
+                return EngineTexture(pixels.tile, rendererId, expectedEpoch, ++key, pixels.byteCount)
+            }
+            override suspend fun prepareTexture(pixels: EnginePixels): EngineTextureUpload {
+                val actual = super.prepareTexture(pixels)
+                return object : EngineTextureUpload by actual {
+                    override suspend fun awaitCapacity(priority: () -> WorkPriority) {
+                        events += "capacity:${pixels.tile.sourceTop}"
+                        if (pixels.tile == tile) capacityGate.await()
+                    }
+                    override suspend fun close() {
+                        assertEquals(0, (pixels as Pixels).closes)
+                        events += "close:${pixels.tile.sourceTop}"
+                    }
+                }
+            }
+            override suspend fun release(texture: EngineTexture) = Unit
+        }
+        val factory = EngineTileWork(EngineImageDecoder { _, spec -> Pixels(spec) },
+            StandardTestDispatcher(testScheduler), uploader)
+        val first = coordinator.submit(factory.request(page(), tile, WorkPriority.FOCUS))
+        val second = coordinator.submit(factory.request(page(), secondTile, WorkPriority.VISIBLE))
+        try {
+            runCurrent()
+            // The first tile parks in capacity admission before it ever reaches the upload permit,
+            // so the second tile's upload completes while the first is still waiting.
+            assertEquals(listOf("capacity:100", "capacity:300", "upload:300", "close:300"), events)
+            assertEquals(secondTile, second.await().tile)
+            capacityGate.complete(Unit)
+            assertEquals(tile, first.await().tile)
+            assertEquals(listOf("upload:100", "close:100"), events.takeLast(2))
+        } finally {
+            capacityGate.complete(Unit)
+            first.close(); second.close()
+            first.awaitReleased(); second.awaitReleased(); coordinator.close()
+        }
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
     @Test fun preparedPixelsAreSharedWithViewerAndSurvivePredictionCancellationDuringUpload() = runTest {
         val coordinator = WorkCoordinator(this)
         val dispatcher = StandardTestDispatcher(testScheduler)

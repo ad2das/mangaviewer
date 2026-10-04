@@ -105,10 +105,14 @@ internal class EngineAppGraph(
         }
     val renderers = EngineRendererPreparation(scope, ioDispatcher,
         create = {
-            ml.melun.mangaview.viewer.runtime.EngineSurfaceOwner(
-                ml.melun.mangaview.engine.api.DeviceMemoryBudget.fromPhysicalRam(openingMemory.totalPhysicalBytes).glResidentBytes,
+            val metrics = context.resources.displayMetrics
+            val budgets = ml.melun.mangaview.engine.api.DeviceMemoryBudget
+                .fromPhysicalRam(openingMemory.totalPhysicalBytes)
+                .textureBudgets(metrics.widthPixels, metrics.heightPixels)
+            ml.melun.mangaview.viewer.runtime.EngineSurfaceOwner(budgets.allocationBytes,
                 {}, { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) }, {},
-                bufferedCompositor = Build.VERSION.SDK_INT >= 31)
+                bufferedCompositor = Build.VERSION.SDK_INT >= 31,
+                backgroundReserveBytes = budgets.headroomBytes)
         },         prepare = { it.prepare() }, dispose = { it.close() },
         reportFailure = { android.util.Log.w("EnginePreparation", "Renderer preparation failed", it) },
         spareWhileActive = true)

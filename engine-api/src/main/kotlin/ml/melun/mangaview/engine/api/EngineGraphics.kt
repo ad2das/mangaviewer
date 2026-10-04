@@ -65,6 +65,15 @@ data class EngineTexture(
 }
 
 interface EngineTextureUpload {
+    /**
+     * Reserves this transfer's bytes in the uploader's capacity ledger before the caller serializes
+     * on the shared upload permit, so a full texture budget parks the tile without blocking other
+     * uploads. [priority] is read live at every grant pass, so a tile the reading position promotes
+     * stops queueing as background without a second admission call. Implementations that need no
+     * capacity admission keep the default no-op. A granted reservation is settled by [upload] on
+     * success, or by [close] when the upload never happens.
+     */
+    suspend fun awaitCapacity(priority: () -> WorkPriority) = Unit
     suspend fun upload(expectedEpoch: Long): EngineTexture
     suspend fun close()
 }

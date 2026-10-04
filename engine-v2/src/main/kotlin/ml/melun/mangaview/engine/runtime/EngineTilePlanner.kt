@@ -5,6 +5,7 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.toLongExact
+import ml.melun.mangaview.engine.api.DeviceMemoryBudget
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineTileSpec
 import ml.melun.mangaview.engine.api.EpisodeAccessPlan
@@ -23,13 +24,27 @@ data class EngineTilePlan(
     val plannedTextureBytes: Long,
 )
 
-/** Pure original-resolution demand and placement; speculative tiles never displace visible tiles. */
-class EngineTilePlanner(private val textureBudgetBytes: Long, private val targetTileHeightPx: Int = 2048,
+/**
+ * Pure original-resolution demand and placement; speculative tiles never displace visible tiles.
+ *
+ * Visible demands are admitted against [textureBudgetBytes] (the texture allocation), while every
+ * speculative or retained tile is capped by [speculativeBudgetBytes] (the allocation minus the
+ * upload headroom), so preparation can never spend the bytes a visible upload needs. Visible bytes
+ * count toward the speculative running total; when the visible set alone exceeds that budget, no
+ * speculative tile is demanded.
+ */
+class EngineTilePlanner(private val textureBudgetBytes: Long,
+    private val targetTileHeightPx: Int = DeviceMemoryBudget.TARGET_TILE_HEIGHT_PX,
     private val preparationViewports: Int = 0,
     /** Optional owner-thread section timing; the default records nothing. */
     private val tracer: EngineWorkTracer = NoopEngineWorkTracer,
+    /** Cap for speculative and retained tiles; defaults to the visible budget for existing callers. */
+    private val speculativeBudgetBytes: Long = textureBudgetBytes,
 ) {
-    init { require(textureBudgetBytes > 0 && targetTileHeightPx > 2 && preparationViewports in 0..12) }
+    init {
+        require(textureBudgetBytes > 0 && targetTileHeightPx > 2 && preparationViewports in 0..12 &&
+            speculativeBudgetBytes in 1..textureBudgetBytes)
+    }
 
     fun plan(snapshot: EngineRuntimeSnapshot): EngineTilePlan {
         val visible = linkedMapOf<EngineTileSpec, WorkPriority>()
@@ -76,7 +91,7 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         require(bytes <= textureBudgetBytes) { "Visible original-resolution tiles exceed the texture budget" }
         val demands = visible.map { EngineTileDemand(it.key, it.value) }.toMutableList()
         for (tile in speculative) {
-            if (tile !in visible && tile.byteCount <= textureBudgetBytes - bytes) {
+            if (tile !in visible && tile.byteCount <= speculativeBudgetBytes - bytes) {
                 demands += EngineTileDemand(tile, WorkPriority.NEXT_IMAGE)
                 bytes += tile.byteCount
             }
@@ -152,7 +167,7 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         val demands = required.map { EngineTileDemand(it, priorities[it]?.takeUnless {
             it == WorkPriority.NEXT_IMAGE } ?: WorkPriority.VISIBLE) }.toMutableList()
         for (demand in plan.demands) {
-            if (demand.tile in required || demand.tile.byteCount > textureBudgetBytes - bytes) continue
+            if (demand.tile in required || demand.tile.byteCount > speculativeBudgetBytes - bytes) continue
             required += demand.tile
             demands += demand
             bytes += demand.tile.byteCount
@@ -168,7 +183,7 @@ class EngineTilePlanner(private val textureBudgetBytes: Long, private val target
         val wanted = demands.mapTo(linkedSetOf()) { it.tile }
         var bytes = plan.plannedTextureBytes
         for (tile in mostRecentFirst) {
-            if (tile in wanted || tile.byteCount > textureBudgetBytes - bytes) continue
+            if (tile in wanted || tile.byteCount > speculativeBudgetBytes - bytes) continue
             val page = snapshot.pages[tile.pageId] ?: continue
             if (tile.displayWidth != snapshot.session.viewport.widthPx ||
                 !matchesReadingMode(tile, page, snapshot.session.splitMode) ||

@@ -70,6 +70,11 @@ internal class EngineViewerRuntime(
     private val main = Handler.createAsync(Looper.getMainLooper())
     private val memory = ViewerMemoryEnvironment(context) { }
     private val budget = DeviceMemoryBudget.fromPhysicalRam(memory.totalPhysicalBytes)
+    // One derivation from the device display for the renderer this runtime creates; the planner
+    // always reads the split back from whichever renderer is used, so a prepared renderer and its
+    // planner cannot disagree. The larger display side covers rotation and two-pane layouts.
+    private val textureBudgets = budget.textureBudgets(context.resources.displayMetrics.widthPixels,
+        context.resources.displayMetrics.heightPixels)
     private val frameProvenance = FrameWorkProvenanceLedger()
     private val saveMutex = Mutex()
     private val closeDone = CompletableDeferred<Unit>()
@@ -80,8 +85,9 @@ internal class EngineViewerRuntime(
     private var lastSaved: Pair<SourceAnchor, Long>? = null
     private var submittedPosition: Pair<SourceAnchor, Long>? = null
     private var autosave: Job? = null
-    private val renderer: EngineSurfaceOwner = (preparedRenderer ?: EngineSurfaceOwner(budget.glResidentBytes,
-        {}, {}, {}, bufferedCompositor = android.os.Build.VERSION.SDK_INT >= 31)).also { it.bind(EngineSurfaceCallbacks(
+    private val renderer: EngineSurfaceOwner = (preparedRenderer ?: EngineSurfaceOwner(textureBudgets.allocationBytes,
+        {}, {}, {}, bufferedCompositor = android.os.Build.VERSION.SDK_INT >= 31,
+        backgroundReserveBytes = textureBudgets.headroomBytes)).also { it.bind(EngineSurfaceCallbacks(
         { value -> onMain { onPresented(value) } }, { error -> onMain { reportFailure(error) } },
         { onMain { if (!closing) { frameProvenance.noteRecovery(System.nanoTime()); graphics.rendererChanged(); forceGraphicsFrame() } } },
         { onMain { if (!closing) { disableGraphics(); surface.rendererUnavailable() } } },
@@ -99,7 +105,8 @@ internal class EngineViewerRuntime(
         // The horizon therefore does not buy residency for the rows that matter; it only lengthens the
         // queue they sit behind. Tile rows scale 29 (0) -> 40 (2) -> 76 (12) and ntk d2r p50 7.6 -> 8.8
         // -> 168.1ms, so the reader keeps zero preparation viewports.
-        EngineTilePlanner(budget.glResidentBytes, preparationViewports = 0, tracer = NoopEngineWorkTracer),
+        EngineTilePlanner(renderer.allocationBytes, speculativeBudgetBytes = renderer.plannerTextureBytes,
+            preparationViewports = 0, tracer = NoopEngineWorkTracer),
         EngineTileWork(NativeEngineImageDecoder(), decodeLanes, renderer), renderer, content::pageRequest,
         { scene -> renderer.offer(frameProvenance.attachTicket(scene)) }, renderer::clearScene, { _, failure -> reportFailure(failure) },
         waitForCompleteViewport = false, reportSceneFailure = reportFailure,

@@ -5,14 +5,17 @@ import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.engine.api.DeviceMemoryBudget
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineSessionPhase
 import ml.melun.mangaview.engine.api.EngineSessionSnapshot
+import ml.melun.mangaview.engine.api.EngineTextureBudgets
 import ml.melun.mangaview.engine.api.EngineTileSpec
 import ml.melun.mangaview.engine.api.EngineViewport
 import ml.melun.mangaview.engine.api.PageContentIdentity
 import ml.melun.mangaview.engine.api.SourceAnchor
 import ml.melun.mangaview.engine.api.VisiblePageRegion
+import ml.melun.mangaview.engine.api.WorkPriority
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -125,6 +128,68 @@ class EngineTilePlannerTest {
     @Test(expected = IllegalArgumentException::class)
     fun insufficientVisibleBudgetFailsInsteadOfReducingImageResolution() {
         EngineTilePlanner(79_999, 202).plan(snapshot(100, 1000, 100, 250 * q, 350 * q))
+    }
+
+    @Test fun visibleViewportIsAdmittedAgainstTheAllocationWhileSpeculationUsesItsOwnBudget() {
+        val budget = DeviceMemoryBudget.fromPhysicalRam(3L * 1024 * 1024 * 1024)
+        assertEquals(96L * 1024 * 1024, budget.glResidentBytes)
+        // Landscape 3200 x 1440: the planner demands whole bands, and the two tiles one viewport
+        // touches alone exceed the speculative budget, so the plan must be admitted against the
+        // allocation instead of failing the visible require.
+        val landscape = budget.textureBudgets(1440, 3200)
+        val wide = planViewport(landscape, 3200, 1440, pageHeight = 6138, top = 1000)
+        assertTrue(wide.plannedTextureBytes > landscape.plannerBytes)
+        assertTrue(wide.plannedTextureBytes <= landscape.allocationBytes)
+        assertTrue(wide.demands.none { it.priority == WorkPriority.NEXT_IMAGE })
+        // Portrait 1080 x 2400: the visible set fits the speculative budget, so preparation still
+        // proceeds under it.
+        val portrait = budget.textureBudgets(1080, 2400)
+        val tall = planViewport(portrait, 1080, 2400, pageHeight = 7200, top = 0)
+        assertTrue(tall.placements.isNotEmpty())
+        assertTrue(tall.plannedTextureBytes <= portrait.plannerBytes)
+        assertTrue(tall.demands.any { it.priority == WorkPriority.NEXT_IMAGE })
+    }
+
+    @Test fun retainedTilesStopAtTheSpeculativeBudget() {
+        val budget = DeviceMemoryBudget.fromPhysicalRam(3L * 1024 * 1024 * 1024)
+        val portrait = budget.textureBudgets(1080, 2400)
+        val page = PageContentIdentity(pageId, "1", "1".repeat(64), PageDimensions(1080, 20_000), 1)
+        val snapshot = viewportSnapshot(page, 1080, 2400, top = 0)
+        val planner = EngineTilePlanner(portrait.allocationBytes, speculativeBudgetBytes = portrait.plannerBytes)
+        val plan = planner.plan(snapshot)
+        val count = EngineTileBands.count(page, 1080)
+        val extras = (2 until count).map { EngineTileBands.tile(page, it, count, 1080) }
+        val retained = planner.retainReady(plan, snapshot, extras)
+        assertTrue(retained.plannedTextureBytes > plan.plannedTextureBytes)
+        assertTrue(retained.plannedTextureBytes <= portrait.plannerBytes)
+        assertTrue(retained.plannedTextureBytes + extras.last().byteCount > portrait.plannerBytes)
+        // Landscape: visible bytes alone spend the speculative cap, so a retained tile is refused.
+        val landscape = budget.textureBudgets(1440, 3200)
+        val widePage = PageContentIdentity(pageId, "1", "1".repeat(64), PageDimensions(3200, 6138), 1)
+        val wideSnapshot = viewportSnapshot(widePage, 3200, 1440, top = 1000)
+        val widePlanner = EngineTilePlanner(landscape.allocationBytes, speculativeBudgetBytes = landscape.plannerBytes)
+        val widePlan = widePlanner.plan(wideSnapshot)
+        val wideExtra = EngineTileBands.tile(widePage, 2, 3, 3200)
+        val wideRetained = widePlanner.retainReady(widePlan, wideSnapshot, listOf(wideExtra))
+        assertEquals(widePlan.plannedTextureBytes, wideRetained.plannedTextureBytes)
+        assertTrue(wideRetained.demands.none { it.tile == wideExtra })
+    }
+
+    private fun planViewport(budgets: EngineTextureBudgets, width: Int, height: Int, pageHeight: Int,
+        top: Int): EngineTilePlan {
+        val page = PageContentIdentity(pageId, "1", "1".repeat(64), PageDimensions(width, pageHeight), 1)
+        return EngineTilePlanner(budgets.allocationBytes, speculativeBudgetBytes = budgets.plannerBytes)
+            .plan(viewportSnapshot(page, width, height, top))
+    }
+
+    private fun viewportSnapshot(page: PageContentIdentity, width: Int, height: Int, top: Int): EngineRuntimeSnapshot {
+        val topUnits = top.toLong() * q
+        val session = EngineSessionSnapshot(1, 1, EngineSessionPhase.ACTIVE, EngineViewport(width, height),
+            SourceAnchor(page.pageId, topUnits), 1, 1, 0,
+            listOf(VisiblePageRegion(page.pageId, page.dimensions, topUnits,
+                topUnits + height.toLong() * q, 0, height.toLong() * 1024L)),
+            emptySet(), emptySet(), true)
+        return EngineRuntimeSnapshot(session, emptyMap(), mapOf(page.pageId to page))
     }
 
     @Test fun approachingPageEndPreparesNextVerifiedPageWithoutPlacingIt() {
