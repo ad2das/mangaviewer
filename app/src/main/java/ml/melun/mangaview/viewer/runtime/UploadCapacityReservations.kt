@@ -3,6 +3,10 @@ package ml.melun.mangaview.viewer.runtime
 import java.util.ArrayDeque
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import ml.melun.mangaview.engine.api.WorkPriority
 
 /**
@@ -14,11 +18,15 @@ import ml.melun.mangaview.engine.api.WorkPriority
  * granted here is guaranteed to fit when the upload later runs, which is what lets the caller wait
  * for capacity before taking the single UPLOAD permit.
  *
- * Every waiter reads its live [WorkPriority] at each grant pass, so a speculative tile the reading
- * position promotes is served as foreground work immediately. Waiters whose live priority is not
- * background are granted first, then background ones, each class in arrival order; only the
- * background class must leave [backgroundReserveBytes] free for foreground work and retirement lag.
- * A pass costs one iteration per waiter and no allocation; only waiters that actually fit complete.
+ * Every waiter holds the observable priority of the work that owns it: each grant pass reads its
+ * current value, and a waiter that cannot fit parks with one structured collector of that flow, so
+ * a promotion to foreground runs a single grant pass the moment it lands instead of waiting for
+ * the next [synchronize]. StateFlow replays its latest value, which also covers a promotion that
+ * happens between the admission check and the collector's registration; a demotion to background
+ * needs no pass. Waiters whose live priority is not background are granted first, then background
+ * ones, each class in arrival order; only the background class must leave [backgroundReserveBytes]
+ * free for foreground work and retirement lag. A pass costs one iteration per waiter and no
+ * allocation; only waiters that actually fit complete.
  * [close] fails queued waiters with [IllegalStateException], because a renderer teardown is a
  * failure, not the cancellation of the waiting tile.
  */
@@ -46,7 +54,7 @@ internal class UploadCapacityReservations(
         }
     }
 
-    private class Waiter(val priority: () -> WorkPriority, val bytes: Long) {
+    private class Waiter(val priority: StateFlow<WorkPriority>, val bytes: Long) {
         val grant = CompletableDeferred<Unit>()
         var granted = false
     }
@@ -65,12 +73,12 @@ internal class UploadCapacityReservations(
         }
     }
 
-    suspend fun reserve(priority: () -> WorkPriority, bytes: Long): Reservation {
+    suspend fun reserve(priority: StateFlow<WorkPriority>, bytes: Long): Reservation {
         require(bytes in 1..allocationLimit) { "A reservation must fit the allocation limit" }
         val waiter = Waiter(priority, bytes)
         val immediate = synchronized(lock) {
             if (closed) throw IllegalStateException("Upload capacity is closed")
-            if (fitsLocked(priority().background, bytes)) {
+            if (fitsLocked(priority.value.background, bytes)) {
                 reserved += bytes
                 true
             } else {
@@ -80,7 +88,24 @@ internal class UploadCapacityReservations(
         }
         if (immediate) return Reservation(bytes, this)
         try {
-            waiter.grant.await()
+            coroutineScope {
+                // The waiter is queued; this collector is its only promotion observer, so a change
+                // to a foreground class runs one grant pass as it lands instead of waiting for the
+                // next synchronize. A demotion needs no pass, and StateFlow's replay of the latest
+                // value also covers a promotion that lands before the collector starts.
+                val observer = launch {
+                    priority.collect { value ->
+                        if (!value.background) synchronized(lock) {
+                            if (!closed && !waiter.granted) grantLocked()
+                        }
+                    }
+                }
+                try {
+                    waiter.grant.await()
+                } finally {
+                    observer.cancel()
+                }
+            }
         } catch (cancelled: CancellationException) {
             synchronized(lock) {
                 if (waiter.granted) reserved -= bytes else waiters.remove(waiter)
@@ -124,7 +149,7 @@ internal class UploadCapacityReservations(
         val iterator = waiters.iterator()
         while (iterator.hasNext()) {
             val waiter = iterator.next()
-            if (waiter.priority().background != background) continue
+            if (waiter.priority.value.background != background) continue
             if (!fitsLocked(background, waiter.bytes)) continue
             iterator.remove()
             waiter.granted = true

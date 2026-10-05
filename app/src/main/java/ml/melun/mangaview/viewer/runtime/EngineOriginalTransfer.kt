@@ -1,6 +1,8 @@
 package ml.melun.mangaview.viewer.runtime
 
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.engine.api.EnginePixels
 import ml.melun.mangaview.engine.api.EngineTexture
@@ -9,7 +11,7 @@ import ml.melun.mangaview.engine.api.WorkPriority
 
 /** The caller retains its CPU borrow until upload/close; no per-original display buffer. */
 internal fun prepareOriginalUpload(pixels: EnginePixels, limit: Long,
-    reserve: suspend (Long, () -> WorkPriority) -> UploadCapacityReservations.Reservation,
+    reserve: suspend (Long, StateFlow<WorkPriority>) -> UploadCapacityReservations.Reservation,
     upload: suspend (NativeEnginePixels, Long, Long) -> EngineTexture,
 ): EngineTextureUpload {
     val nativePixels = pixels as? NativeEnginePixels ?: error("Native owner requires native pixels")
@@ -20,14 +22,14 @@ internal fun prepareOriginalUpload(pixels: EnginePixels, limit: Long,
 
 private class PreparedOriginalUpload(
     private val pixels: NativeEnginePixels,
-    private val reserve: suspend (Long, () -> WorkPriority) -> UploadCapacityReservations.Reservation,
+    private val reserve: suspend (Long, StateFlow<WorkPriority>) -> UploadCapacityReservations.Reservation,
     private val submit: suspend (NativeEnginePixels, Long, Long) -> EngineTexture,
 ) : EngineTextureUpload {
     private var closed = false
     private var reservation: UploadCapacityReservations.Reservation? = null
 
     /** Capacity is waited for here, before the caller serializes on the shared upload permit. */
-    override suspend fun awaitCapacity(priority: () -> WorkPriority) {
+    override suspend fun awaitCapacity(priority: StateFlow<WorkPriority>) {
         check(!closed)
         if (reservation == null) reservation = reserve(pixels.byteCount, priority)
     }
@@ -50,12 +52,13 @@ private class PreparedOriginalUpload(
 }
 
 internal suspend fun uploadOriginal(pixels: EnginePixels, limit: Long, epoch: Long,
-    reserve: suspend (Long, () -> WorkPriority) -> UploadCapacityReservations.Reservation,
+    reserve: suspend (Long, StateFlow<WorkPriority>) -> UploadCapacityReservations.Reservation,
     submit: suspend (NativeEnginePixels, Long, Long) -> EngineTexture,
 ): EngineTexture {
     val transfer = prepareOriginalUpload(pixels, limit, reserve, submit)
     try {
-        transfer.awaitCapacity { WorkPriority.VISIBLE }
+        // A direct upload has a fixed priority; no promotion can ever reach this transfer.
+        transfer.awaitCapacity(MutableStateFlow(WorkPriority.VISIBLE))
         return transfer.upload(epoch)
     } finally {
         withContext(NonCancellable) { transfer.close() }

@@ -110,8 +110,9 @@ class EngineTileWork(
         val transfer = uploader.prepareTexture(source)
         try {
             // GPU capacity admission happens before the single UPLOAD permit is taken: a tile that
-            // cannot fit yet parks here without holding the permit and blocking other uploads.
-            transfer.awaitCapacity { parent.priority.value }
+            // cannot fit yet parks here without holding the permit and blocking other uploads. The
+            // live priority is handed over observable, so a promotion wakes the ledger as it lands.
+            transfer.awaitCapacity(parent.priority)
             val uploaded = parent.withDomainPermit(WorkDomain.UPLOAD) { transfer.upload(epoch) }
             EngineStageProbe.record(tile as Any, EngineStageProbe.UPLOAD_EXIT, System.nanoTime())
             EnginePageWork.observer?.invoke("upload-done elapsedMs=${elapsed(startedAtNanos)}")

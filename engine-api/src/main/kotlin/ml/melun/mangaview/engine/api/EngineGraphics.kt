@@ -1,6 +1,7 @@
 package ml.melun.mangaview.engine.api
 
 import java.io.Closeable
+import kotlinx.coroutines.flow.StateFlow
 import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.PageId
 
@@ -68,12 +69,16 @@ interface EngineTextureUpload {
     /**
      * Reserves this transfer's bytes in the uploader's capacity ledger before the caller serializes
      * on the shared upload permit, so a full texture budget parks the tile without blocking other
-     * uploads. [priority] is read live at every grant pass, so a tile the reading position promotes
-     * stops queueing as background without a second admission call. Implementations that need no
-     * capacity admission keep the default no-op. A granted reservation is settled by [upload] on
-     * success, or by [close] when the upload never happens.
+     * uploads. [priority] is the caller's live work priority, already observable: every grant pass
+     * reads its current value, and a waiter that cannot fit may collect the flow while parked so a
+     * promotion to foreground runs one grant pass the moment it lands instead of waiting for the
+     * next per-frame pass. StateFlow replays its latest value, so a promotion that lands between
+     * the admission check and the collector's registration is still observed; a demotion to
+     * background needs no pass. Implementations that need no capacity admission keep the default
+     * no-op. A granted reservation is settled by [upload] on success, or by [close] when the upload
+     * never happens.
      */
-    suspend fun awaitCapacity(priority: () -> WorkPriority) = Unit
+    suspend fun awaitCapacity(priority: StateFlow<WorkPriority>) = Unit
     suspend fun upload(expectedEpoch: Long): EngineTexture
     suspend fun close()
 }

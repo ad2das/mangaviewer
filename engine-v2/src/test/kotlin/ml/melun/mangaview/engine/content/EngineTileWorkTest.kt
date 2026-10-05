@@ -6,6 +6,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -97,7 +98,7 @@ class EngineTileWorkTest {
             override suspend fun prepareTexture(pixels: EnginePixels): EngineTextureUpload {
                 val actual = super.prepareTexture(pixels)
                 return object : EngineTextureUpload by actual {
-                    override suspend fun awaitCapacity(priority: () -> WorkPriority) {
+                    override suspend fun awaitCapacity(priority: StateFlow<WorkPriority>) {
                         events += "capacity:${pixels.tile.sourceTop}"
                         if (pixels.tile == tile) capacityGate.await()
                     }

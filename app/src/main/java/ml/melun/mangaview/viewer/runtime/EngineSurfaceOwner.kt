@@ -17,6 +17,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.engine.api.EnginePixels
 import ml.melun.mangaview.engine.api.EngineDrawScene
@@ -588,7 +589,7 @@ internal class EngineSurfaceUploads(
     suspend fun upload(pixels: EnginePixels, expectedEpoch: Long) =
         uploadOriginal(pixels, allocationLimit, expectedEpoch, ::reserve, ::transfer)
 
-    private suspend fun reserve(bytes: Long, priority: () -> WorkPriority): UploadCapacityReservations.Reservation =
+    private suspend fun reserve(bytes: Long, priority: StateFlow<WorkPriority>): UploadCapacityReservations.Reservation =
         reservations.reserve(priority, bytes)
 
     suspend fun ownership(): EngineTextureOwnership = if (destroyed.get()) EngineTextureOwnership(0, 0, 0, 0, 0) else
