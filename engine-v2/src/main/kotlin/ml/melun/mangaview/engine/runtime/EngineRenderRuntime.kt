@@ -81,27 +81,12 @@ class EngineRenderRuntime(
     private var scheduled = false
     /** True while a real drag or fling owns the display slots; see [refreshWorkResult]. */
     private var interactionActive = false
-    /** Snapshot whose plan is already in [plannedPlan]; the planner is a pure function of it. */
-    private var plannedSnapshot: EngineRuntimeSnapshot? = null
-    private var plannedPlan: EngineTilePlan? = null
+    /** Value-keyed memoization for the plan, the retain merge, and the work-set reconcile. */
+    private val renderWork = RenderWorkCache()
     /** Plan whose demand list is already in [plannedDemands]. */
     private var demandedPlan: EngineTilePlan? = null
     private var demandedFailed: Int = -1
     private var plannedDemands: List<SessionDemand<*>> = emptyList()
-
-    /**
-     * One snapshot always plans identically, so a drain that runs again for the same snapshot (a
-     * work result set [dirty] mid-drain, or the queued delivery follows an inline one) reuses the
-     * plan instead of re-walking every visible band and the preparation horizon on the owner thread.
-     */
-    private fun planFor(snapshot: EngineRuntimeSnapshot): EngineTilePlan {
-        val cached = plannedPlan
-        if (cached != null && plannedSnapshot === snapshot) return cached
-        val plan = planner.plan(snapshot)
-        plannedSnapshot = snapshot
-        plannedPlan = plan
-        return plan
-    }
 
     /**
      * The same plan yields the same render demands: [demand] hands back its cached value whenever
@@ -141,8 +126,7 @@ class EngineRenderRuntime(
     }
 
     private fun forgetPlans() {
-        plannedSnapshot = null
-        plannedPlan = null
+        renderWork.clear()
         demandedPlan = null
         demandedFailed = -1
         plannedDemands = emptyList()
@@ -338,8 +322,9 @@ class EngineRenderRuntime(
     }
 
     private fun refreshSnapshot(snapshot: EngineRuntimeSnapshot): Boolean {
-        val candidatePlan = if (enabled) tracer.section("engine_plan") { planFor(snapshot) }
-        else EngineTilePlan(emptyList(), emptyList(), false, 0)
+        val candidatePlan = if (enabled) {
+            tracer.section("engine_plan") { renderWork.planFor(snapshot) { planner.plan(snapshot) } }
+        } else EngineTilePlan(emptyList(), emptyList(), false, 0)
         val waiting = enabled && waitForCompleteViewport && !scene(snapshot, candidatePlan).completeCoverage
         val visiblePlan = if (waiting) tracer.section("engine_retain") {
             planner.retainDisplayed(candidatePlan, displayed?.quads?.map { it.texture.tile }.orEmpty())
@@ -352,12 +337,15 @@ class EngineRenderRuntime(
         visiblePlan.placements.forEach { placement ->
             textures.remove(placement.tile)?.let { textures[placement.tile] = it }
         }
-        val plan = if (enabled) tracer.section("engine_retain") {
-            planner.retainReady(visiblePlan, snapshot, textures.keys.toList().asReversed())
-        } else visiblePlan
-        val wantedTiles = plan.demands.mapTo(linkedSetOf()) { it.tile }
-        textures.keys.retainAll(wantedTiles)
-        tileDemands.keys.retainAll(wantedTiles)
+        val plan = renderWork.retainedPlan(visiblePlan, snapshot, enabled, textures.keys) {
+            val merged = if (enabled) tracer.section("engine_retain") {
+                planner.retainReady(visiblePlan, snapshot, textures.keys.toList().asReversed())
+            } else visiblePlan
+            val wanted = merged.demands.mapTo(linkedSetOf()) { it.tile }
+            textures.keys.retainAll(wanted)
+            tileDemands.keys.retainAll(wanted)
+            merged
+        }
         if (!waiting) {
             val next = tracer.section("engine_scene") { scene(snapshot, plan) }
             // Far-away original dimensions advance geometry revision without changing the
@@ -369,8 +357,8 @@ class EngineRenderRuntime(
             displayed = next.takeIf { enabled && it.completeCoverage }
             if (enabled && next.completeCoverage) reportViewportReady(next.session)
         }
-        if (!dirty) tracer.section("engine_reconcile") {
-            work.reconcile(renderDemands(snapshot, plan))
+        if (!dirty) renderWork.reconcile(plan, snapshot, failedReadAhead, work::reconcile) {
+            tracer.section("engine_reconcile") { renderDemands(snapshot, plan) }
         }
         return true
     }
