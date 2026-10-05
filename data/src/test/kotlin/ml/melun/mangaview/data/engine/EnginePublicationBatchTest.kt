@@ -439,6 +439,121 @@ class EnginePublicationBatchTest {
         late.close()
     }
 
+    /**
+     * Deterministic map-level replay of both find-vs-eviction interleavings, mirroring the earlier
+     * ownership-lock test: a pin that lands first makes the eviction refuse and the row stays
+     * served from the mirror; an eviction that unlinked first leaves a later reader of the stale
+     * mirror entry with a missing file, never a lease for removed bytes.
+     */
+    @Test fun mirrorLookupInterleavesWithEvictionInBothOrders() = runTest {
+        // Order one: the reader pins first, so trim must refuse the unlink and the row stays served.
+        val pinnedIndex = RecordingIndex()
+        val pinnedStore = newStore(temporary.newFolder(), pinnedIndex, CountingFileOps())
+        publishEvictable(pinnedStore)
+        val pinned = checkNotNull(pinnedStore.find(evictable, "trim"))
+        assertEquals(payload.size.toLong(), pinnedStore.trimTo(0))
+        assertTrue("a pinned file must survive trim", pinned.page.file.isFile)
+        checkNotNull(pinnedStore.find(evictable, "trim")).close()
+        pinned.close()
+        assertEquals(0L, pinnedStore.trimTo(0))
+        assertNull(pinnedStore.find(evictable, "trim"))
+        assertTrue(pinnedIndex.pageRows.isEmpty())
+
+        // Order two: trim unlinked the file and is parked before its index row removal, so a
+        // lock-free find that reads the still-mirrored entry pins, then fails validation on the
+        // missing file and can never hand out a lease for removed bytes.
+        val staleIndex = RecordingIndex()
+        val staleStore = newStore(temporary.newFolder(), staleIndex, CountingFileOps())
+        publishEvictable(staleStore)
+        val (trim, gate) = parkTrim(staleStore, staleIndex)
+        assertNull("an unlinked file can never validate", staleStore.find(evictable, "trim"))
+        gate.complete(Unit)
+        trim.join()
+        assertNull(staleStore.find(evictable, "trim"))
+        assertTrue(staleIndex.pageRows.isEmpty())
+    }
+
+    @Test fun mirrorTracksTheIndexAcrossPublishDedupeTrimInvalidateAndRecovery() = runTest {
+        val root = temporary.newFolder()
+        val index = RecordingIndex()
+        val store = newStore(root, index, CountingFileOps())
+        val first = prepare(store, id(1), "v1")
+        val duplicate = prepare(store, id(1), "v1")
+        val second = prepare(store, id(2), "v1")
+        val lease = store.publish(first)
+        val deduped = store.publish(duplicate)
+        assertEquals("the duplicate resolves to the committed file", lease.page.file, deduped.page.file)
+        lease.close()
+        deduped.close()
+        store.publish(second).close()
+        val tracked = listOf(id(1), id(2), id(3)).map { it to "v1" }
+        assertMirrorMatchesTheIndex(store, index, tracked)
+
+        val firstPage = checkNotNull(store.find(id(1), "v1")).also { it.close() }.page
+        store.invalidate(firstPage)
+        assertMirrorMatchesTheIndex(store, index, tracked)
+
+        assertEquals(0L, store.trimTo(0))
+        assertMirrorMatchesTheIndex(store, index, tracked)
+
+        val restarted = newStore(root, index, CountingFileOps())
+        restarted.recover()
+        assertMirrorMatchesTheIndex(restarted, index, tracked)
+        assertTrue(index.pageRows.isEmpty())
+    }
+
+    @Test fun sameOwnerRecoveryRebuildsTheMirrorAtEveryCrashStep() = runTest {
+        for (failedAt in EnginePublicationStep.entries) {
+            val root = temporary.newFolder()
+            val index = RecordingIndex()
+            var armed = false
+            val store = newStore(root, index) { if (armed && it == failedAt) throw IOException("crash") }
+            publishEvictable(store)
+            store.publish(store.prepare(id(1), "old", BatchStream(payload).opened())).close()
+            armed = true
+            val prepared = store.prepare(id(1), "new", BatchStream(payload).opened())
+            assertTrue(
+                "case step=$failedAt must fail",
+                runCatching { store.publish(prepared) }.isFailure,
+            )
+            store.discard(prepared)
+            // The same owner already loaded its mirror during the first publish; recovery must
+            // rebuild it from the healed table instead of serving the pre-crash view.
+            store.recover()
+            val old = checkNotNull(store.find(id(1), "old"))
+            assertArrayEqualsPayload(old.page.file)
+            old.close()
+            val recovered = store.find(id(1), "new")
+            if (failedAt == EnginePublicationStep.FILE_SYNCED) {
+                assertNull("step=$failedAt must leave the new revision absent", recovered)
+            } else {
+                assertNotNull("step=$failedAt must recover the new revision", recovered)
+                assertArrayEqualsPayload(recovered!!.page.file)
+                recovered.close()
+            }
+            assertMirrorMatchesTheIndex(store, index, listOf(id(1) to "old", id(1) to "new"))
+            assertTrue(File(root, "staging").listFiles()!!.isEmpty())
+            assertTrue(index.journalRows.isEmpty())
+        }
+    }
+
+    private suspend fun assertMirrorMatchesTheIndex(
+        store: EngineRawStorage,
+        index: RecordingIndex,
+        pages: List<Pair<PageId, String>>,
+    ) {
+        assertEquals(index.pageRows.keys.toSet(), store.publishedKeysForTest())
+        for ((page, revision) in pages) {
+            val served = store.find(page, revision)
+            if (index.pageRows.containsKey(PageCacheKey.of(page) to revision)) {
+                assertNotNull("mirror must serve committed ${page.remoteKey}/$revision", served)
+                served!!.close()
+            } else {
+                assertNull("mirror must not serve evicted ${page.remoteKey}/$revision", served)
+            }
+        }
+    }
+
     private val payload = Base64.getDecoder().decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ1kAAAAASUVORK5CYII=",
     )
@@ -525,6 +640,7 @@ internal class RecordingIndex(
     }
 
     val journalRows get() = delegate.journalRows
+    val pageRows get() = delegate.pageRows
 
     override suspend fun stageAll(journals: List<EnginePublicationEntity>) {
         stageAllGate?.await()

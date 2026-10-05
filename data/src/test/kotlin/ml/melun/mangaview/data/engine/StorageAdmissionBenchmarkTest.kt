@@ -18,6 +18,8 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.data.db.EnginePageEntity
+import ml.melun.mangaview.data.db.EnginePublicationEntity
 import ml.melun.mangaview.engine.api.EnginePositionPort
 import ml.melun.mangaview.engine.api.SourceAnchor
 import ml.melun.mangaview.engine.api.WorkCoordinatorPort
@@ -47,9 +49,11 @@ class StorageAdmissionBenchmarkTest {
         val root = Files.createTempDirectory("storage-bench").toFile()
         val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         try {
+            val activity = WriterActivity()
+            val index = ContendedPageIndex(MemoryIndex(), activity)
             val store = EngineRawStorage(
-                root, MemoryIndex(), Dispatchers.IO, BenchPositions,
-                FsyncLatencyOps(FSYNC_MILLIS), System::currentTimeMillis, {},
+                root, index, Dispatchers.IO, BenchPositions,
+                FsyncLatencyOps(FSYNC_MILLIS, activity), System::currentTimeMillis, {},
             )
             val corpus = List(16) { benchId(it) }
             corpus.forEach { store.publish(store.prepare(it, REVISION, BenchStream(BENCH_PAYLOAD).opened())).close() }
@@ -57,7 +61,7 @@ class StorageAdmissionBenchmarkTest {
                 "fsyncMillis=$FSYNC_MILLIS payloadBytes=${BENCH_PAYLOAD.size}")
 
             val laneCoordinator = WorkCoordinator(scope, StorageBenchmarkAdapter.limits(4))
-            lookupsWhilePublishesStream(laneCoordinator, store)
+            lookupsWhilePublishesStream(laneCoordinator, store, index)
             publishThroughput(scope, laneCoordinator, store)
             laneCoordinator.close()
 
@@ -69,7 +73,11 @@ class StorageAdmissionBenchmarkTest {
     }
 
     /** (a) 32 lookups race 8 streaming publishes; report each lookup's submit-to-result latency. */
-    private suspend fun lookupsWhilePublishesStream(coordinator: WorkCoordinatorPort, store: EngineRawStorage) {
+    private suspend fun lookupsWhilePublishesStream(
+        coordinator: WorkCoordinatorPort,
+        store: EngineRawStorage,
+        index: ContendedPageIndex,
+    ) {
         val staged = List(8) { index ->
             store.prepare(benchId(100 + index), REVISION, BenchStream(BENCH_PAYLOAD).opened())
         }
@@ -103,8 +111,9 @@ class StorageAdmissionBenchmarkTest {
         latencies.sort()
         println(
             "[storage-bench] (a) lookupsWhilePublishesStream n=${latencies.size} " +
-                "p50=%.1fms p90=%.1fms max=%.1fms".format(
+                "p50=%.1fms p90=%.1fms max=%.1fms pageReads=%d slowPageReads=%d".format(
                     percentile(latencies, 0.50), percentile(latencies, 0.90), latencies.last(),
+                    index.pageReads.get(), index.slowPageReads.get(),
                 ),
         )
     }
@@ -204,16 +213,29 @@ class StorageAdmissionBenchmarkTest {
 
     private fun benchId(index: Int) = PageId.at(EpisodeId(SeriesId(SourceId("wfwf"), "30001"), "9"), index)
 
-    private class FsyncLatencyOps(private val fsyncMillis: Long) : EngineFilePublication {
+    private class FsyncLatencyOps(
+        private val fsyncMillis: Long,
+        private val activity: WriterActivity,
+    ) : EngineFilePublication {
         private val inner = LocalFileOps()
         override fun syncFile(file: File) {
-            Thread.sleep(fsyncMillis)
-            inner.syncFile(file)
+            activity.inFlight.incrementAndGet()
+            try {
+                Thread.sleep(fsyncMillis)
+                inner.syncFile(file)
+            } finally {
+                activity.inFlight.decrementAndGet()
+            }
         }
         override fun rename(staging: File, destination: File) = inner.rename(staging, destination)
         override fun syncDirectory(directory: File) {
-            Thread.sleep(fsyncMillis)
-            inner.syncDirectory(directory)
+            activity.inFlight.incrementAndGet()
+            try {
+                Thread.sleep(fsyncMillis)
+                inner.syncDirectory(directory)
+            } finally {
+                activity.inFlight.decrementAndGet()
+            }
         }
     }
 
@@ -233,6 +255,52 @@ class StorageAdmissionBenchmarkTest {
         }
         override fun close() = Unit
         fun opened() = OpenedPage(this, payload.size.toLong(), "image/png", null, null)
+    }
+
+    /**
+     * Reproduces the t12 lookup trace inside the JVM: an `index.page` Room read costs
+     * [SLOW_PAGE_MILLIS] while a writer is in flight -- a publish syncFile/syncDirectory or a
+     * journal/commit transaction, the spans the device trace correlated with its slow rows -- and
+     * settles back to the sub-millisecond fast path otherwise. The counters expose how many
+     * lookups paid the slow read.
+     */
+    private class ContendedPageIndex(
+        private val delegate: MemoryIndex,
+        private val activity: WriterActivity,
+    ) : EnginePublicationIndex by delegate {
+        val pageReads = AtomicInteger()
+        val slowPageReads = AtomicInteger()
+
+        override suspend fun page(cacheKey: String, revision: String): EnginePageEntity? {
+            pageReads.incrementAndGet()
+            if (activity.inFlight.get() > 0) {
+                slowPageReads.incrementAndGet()
+                Thread.sleep(SLOW_PAGE_MILLIS)
+            }
+            return delegate.page(cacheKey, revision)
+        }
+
+        override suspend fun stageAll(journals: List<EnginePublicationEntity>) {
+            activity.inFlight.incrementAndGet()
+            delegate.stageAll(journals)
+        }
+
+        override suspend fun commitAll(entries: List<Pair<String, EnginePageEntity>>) {
+            try {
+                delegate.commitAll(entries)
+            } finally {
+                activity.inFlight.decrementAndGet()
+            }
+        }
+
+        private companion object {
+            const val SLOW_PAGE_MILLIS = 10L
+        }
+    }
+
+    /** Publish work that is inside a sync or an index transaction right now. */
+    private class WriterActivity {
+        val inFlight = AtomicInteger()
     }
 
     private companion object {

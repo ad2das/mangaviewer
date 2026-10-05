@@ -41,7 +41,8 @@ class EngineRawStorage(
     private val mutex = Mutex()
     private val files = EnginePageFiles(root, fileOps)
     private val ownership = EngineStorageOwnership(this)
-    private val batcher = EnginePublicationBatcher(files, index, ownership, ioDispatcher, nowMillis, checkpoint)
+    private val published = EnginePublishedPages()
+    private val batcher = EnginePublicationBatcher(files, index, ownership, ioDispatcher, nowMillis, checkpoint, published)
     @Volatile private var initialized = false
 
     override suspend fun prepare(pageId: PageId, contentRevision: String, opened: OpenedPage): PreparedPage =
@@ -96,7 +97,11 @@ class EngineRawStorage(
         // bytes are renamed into place, and a lease pins the file against trimming, so a concurrent
         // find cannot observe a half-published page. Serializing every lookup on one lock turned the
         // read-ahead's hundreds of cache hits into a multi-second queue behind the single writer.
-        val entity = index.page(PageCacheKey.of(pageId), contentRevision) ?: return@deliver null
+        // The lookup reads the process-local mirror instead of Room: the mirror is rebuilt under the
+        // mutex after recovery and mutated under the mutex by every commit, eviction and
+        // invalidation, so the row it serves is exactly a committed row, and a lookup never queues
+        // on the writer's Room transactions.
+        val entity = published.get(PageCacheKey.of(pageId), contentRevision) ?: return@deliver null
         val page = entity.stored(files)
         check(page.pageId == pageId && page.contentRevision == contentRevision)
         val lease = ownership.acquire(page)
@@ -109,10 +114,9 @@ class EngineRawStorage(
                 lease.close()
                 return@deliver null
             }
-            // Skip the write while the recorded access is still fresh: reconcile re-runs cached page
-            // work several times per session and every redundant UPDATE is pure write amplification.
-            val now = nowMillis()
-            if (now - entity.lastAccessEpochMillis >= TOUCH_INTERVAL_MILLIS) index.touch(entity, now)
+            // Only an in-memory hint: the writer side flushes them in one batched statement, so
+            // lookups stop opening a Room UPDATE per find. The hint is still gated per page at 30 s.
+            published.recordTouch(entity, nowMillis())
             lease
         } catch (error: Throwable) {
             lease.close()
@@ -134,12 +138,13 @@ class EngineRawStorage(
     override suspend fun invalidate(page: StoredPage) = withContext(NonCancellable + ioDispatcher) {
         mutex.withLock {
             files.forgetVerified(page.file)
-            val entity = index.page(PageCacheKey.of(page.pageId), page.contentRevision) ?: return@withLock
+            val entity = published.get(PageCacheKey.of(page.pageId), page.contentRevision) ?: return@withLock
             val committed = entity.stored(files)
             files.forgetVerified(committed.file)
             // Same atomic rule as trim: never unlink a file some lease pins.
             ownership.removeUnpinned(committed.file) { files.unlink(committed.file); true } ?: return@withLock
             index.remove(entity)
+            published.remove(entity)
             files.syncDirectory(committed.file.parentFile!!)
         }
     }
@@ -208,6 +213,7 @@ class EngineRawStorage(
         mutex.withLock {
             files.initialize()
             recoverLocked()
+            published.replaceAll(index.pages())
             initialized = true
         }
     }
@@ -216,6 +222,10 @@ class EngineRawStorage(
         if (initialized) return
         files.initialize()
         recoverLocked()
+        // Load after recovery: the journals healed above are already committed to the table, so one
+        // read yields exactly the durable rows. Nothing can touch the table between the heal and the
+        // load while the mutex is held.
+        published.replaceAll(index.pages())
         initialized = true
     }
 
@@ -265,7 +275,17 @@ class EngineRawStorage(
         return withContext(NonCancellable + ioDispatcher) {
             mutex.withLock {
                 initializeLocked()
-                val pages = index.pages().sortedBy { it.lastAccessEpochMillis }
+                // Flush the pending in-memory touches in one transaction before sorting: the LRU
+                // order must see them. Losing unflushed touches to a crash is fine -- lastAccess is
+                // only an eviction hint, never durable state.
+                val flushed = published.drainTouches()
+                if (flushed.isNotEmpty()) {
+                    index.touchAll(flushed)
+                    published.confirmTouches(flushed)
+                }
+                // Merge the just-flushed durable values with hints recorded while the flush ran, so
+                // a concurrent touch cannot drop out of the order.
+                val pages = index.pages().sortedBy { published.lastAccess(it) }
                 var retained = pages.fold(0L) { sum, page -> Math.addExact(sum, page.byteCount) }
                 val pending = index.journals().mapTo(hashSetOf()) { it.destinationRelativePath }
                 val unlinkedDirectories = linkedSetOf<File>()
@@ -278,6 +298,7 @@ class EngineRawStorage(
                     // for a file this loop just removed.
                     ownership.removeUnpinned(page.file) { files.unlink(page.file); true } ?: continue
                     index.remove(entity)
+                    published.remove(entity)
                     retained -= entity.byteCount
                     unlinkedDirectories += page.file.parentFile!!
                 }
@@ -297,15 +318,13 @@ class EngineRawStorage(
     /** JVM-test observability for the digest and buffer fast paths; production never reads it. */
     internal fun pageFileStats(): EnginePageFileStats = files.stats()
 
+    /** JVM-test observability for the in-memory mirror; production never reads it. */
+    internal fun publishedKeysForTest(): Set<Pair<String, String>> = published.keys()
+
     private suspend fun deliver(block: suspend () -> StoredPageLease?): StoredPageLease? {
         var lease: StoredPageLease? = null
         try { return withContext(ioDispatcher) { block().also { lease = it } } }
         catch (error: Throwable) { lease?.close(); throw error }
-    }
-
-    private companion object {
-        /** LRU write granularity; hot pages keep a timestamp younger than this without a row write. */
-        const val TOUCH_INTERVAL_MILLIS = 30_000L
     }
 }
 

@@ -17,6 +17,7 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.SeriesId
 import ml.melun.mangaview.core.SourceId
+import ml.melun.mangaview.data.cache.PageCacheKey
 import ml.melun.mangaview.data.db.EnginePageEntity
 import ml.melun.mangaview.data.db.EnginePublicationEntity
 import ml.melun.mangaview.engine.api.EnginePositionPort
@@ -220,6 +221,56 @@ class EngineRawStorageTest {
         assertEquals(1, restarted.pageFileStats().bufferAllocations)
     }
 
+    @Test fun findServesTheMirrorWithoutReadingTheIndex() = runTest {
+        val index = MemoryIndex()
+        val store = store(temporary.newFolder(), index)
+        store.publish(store.prepare(id, "v1", Body(bytes).opened())).close()
+        val unpublished = PageId.at(EpisodeId(SeriesId(SourceId("wfwf"), "10001"), "2"), 7)
+        index.pageReads = 0
+        index.pageListReads = 0
+        repeat(4) { checkNotNull(store.find(id, "v1")).close() }
+        assertNull(store.find(unpublished, "v1"))
+        assertEquals("find must serve the mirror without Room reads", 0, index.pageReads)
+        assertEquals(0, index.pageListReads)
+    }
+
+    @Test fun pendingTouchesFlushInBatchesAndDriveTheTrimOrder() = runTest {
+        val root = temporary.newFolder()
+        val index = MemoryIndex()
+        var now = 1_000L
+        val store = store(root, index, nowMillis = { now })
+        val first = PageId.at(EpisodeId(SeriesId(SourceId("wfwf"), "10001"), "3"), 0)
+        val second = PageId.at(EpisodeId(SeriesId(SourceId("wfwf"), "10001"), "3"), 1)
+        val third = PageId.at(EpisodeId(SeriesId(SourceId("wfwf"), "10001"), "3"), 2)
+        val fourth = PageId.at(EpisodeId(SeriesId(SourceId("wfwf"), "10001"), "3"), 3)
+        for (page in listOf(first, second, third)) {
+            store.publish(store.prepare(page, "v1", Body(bytes).opened())).close()
+            now += 1_000L
+        }
+
+        // A touch recorded by a lookup is flushed by the next batch commit, not by the find.
+        now = 31_000L
+        checkNotNull(store.find(first, "v1")).close()
+        now = 32_000L
+        store.publish(store.prepare(fourth, "v1", Body(bytes).opened())).close()
+        assertEquals("the commit transaction flushes the pending touch", 31_000L,
+            index.pageRows[PageCacheKey.of(first) to "v1"]!!.lastAccessEpochMillis)
+        assertEquals(listOf(1), index.touchAllSizes)
+
+        // A touch recorded after that commit is flushed at the start of trim, and the fresh value
+        // (not the publication timestamp) decides which pages survive.
+        now = 33_000L
+        checkNotNull(store.find(second, "v1")).close()
+        assertEquals(bytes.size.toLong() * 2, store.trimTo(bytes.size.toLong() * 2))
+        assertEquals("trim flushes the second touch", 33_000L,
+            index.pageRows[PageCacheKey.of(second) to "v1"]!!.lastAccessEpochMillis)
+        assertEquals(listOf(1, 1), index.touchAllSizes)
+        checkNotNull(store.find(second, "v1")).close()
+        checkNotNull(store.find(fourth, "v1")).close()
+        assertNull(store.find(first, "v1"))
+        assertNull(store.find(third, "v1"))
+    }
+
     @Test fun decodeFailureInvalidationEvictsTheUnpinnedPublication() = runTest {
         val index = MemoryIndex()
         val store = store(temporary.newFolder(), index)
@@ -395,9 +446,10 @@ class EngineRawStorageTest {
 
     private fun TestScope.store(root: File, index: MemoryIndex,
         fileOps: EngineFilePublication = LocalFileOps(),
+        nowMillis: () -> Long = { 100L },
         checkpoint: suspend (EnginePublicationStep) -> Unit = {}) = EngineRawStorage(
         root, index, StandardTestDispatcher(testScheduler, "storage"), NoPositions,
-        fileOps, { 100L }, checkpoint,
+        fileOps, nowMillis, checkpoint,
     )
 
     private suspend inline fun <reified T : Throwable> expect(block: () -> Unit) {
@@ -436,8 +488,20 @@ internal class MemoryIndex : EnginePublicationIndex {
     val pageRows = linkedMapOf<Pair<String, String>, EnginePageEntity>()
     val journalRows = linkedMapOf<String, EnginePublicationEntity>()
     var afterStage: suspend () -> Unit = {}
-    override suspend fun page(cacheKey: String, revision: String) = pageRows[cacheKey to revision]
-    override suspend fun pages() = pageRows.values.toList()
+    var pageReads = 0
+    var pageListReads = 0
+    val touchAllSizes = mutableListOf<Int>()
+
+    override suspend fun page(cacheKey: String, revision: String): EnginePageEntity? {
+        pageReads += 1
+        return pageRows[cacheKey to revision]
+    }
+
+    override suspend fun pages(): List<EnginePageEntity> {
+        pageListReads += 1
+        return pageRows.values.toList()
+    }
+
     override suspend fun journals() = journalRows.values.toList()
     override suspend fun stage(journal: EnginePublicationEntity) {
         journalRows[journal.publicationId] = journal
@@ -451,5 +515,10 @@ internal class MemoryIndex : EnginePublicationIndex {
     override suspend fun remove(page: EnginePageEntity) { pageRows.remove(page.cacheKey to page.contentRevision) }
     override suspend fun touch(page: EnginePageEntity, timeMillis: Long) {
         pageRows[page.cacheKey to page.contentRevision] = page.copy(lastAccessEpochMillis = timeMillis)
+    }
+    override suspend fun touchAll(pages: List<EnginePageEntity>) {
+        if (pages.isEmpty()) return
+        touchAllSizes += pages.size
+        pages.forEach { touch(it, it.lastAccessEpochMillis) }
     }
 }

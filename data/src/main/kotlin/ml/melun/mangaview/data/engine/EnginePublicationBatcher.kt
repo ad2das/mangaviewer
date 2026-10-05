@@ -34,6 +34,7 @@ internal class EnginePublicationBatcher(
     private val ioDispatcher: CoroutineDispatcher,
     private val nowMillis: () -> Long,
     private val checkpoint: suspend (EnginePublicationStep) -> Unit,
+    private val published: EnginePublishedPages,
 ) {
     private val queueLock = Any()
     private val pending = ArrayDeque<PublishRequest>()
@@ -119,7 +120,11 @@ internal class EnginePublicationBatcher(
                 // transfer() digested exactly the bytes it wrote to a process-private staging name, so
                 // the cheap remaining invariant is the size the prepared body records.
                 check(handle.page.file.length() == handle.page.byteCount) { "Prepared page bytes changed before publication" }
-                val existing = index.page(PageCacheKey.of(handle.page.pageId), handle.page.contentRevision)
+                // The process-local mirror is authoritative under the storage mutex: this check and
+                // the lookup fast path see the same committed rows, and a publish candidate no
+                // longer spends a Room read. commitAll's in-transaction immutability check stays as
+                // the durable backstop.
+                val existing = published.get(PageCacheKey.of(handle.page.pageId), handle.page.contentRevision)
                 if (existing != null) {
                     val committed = existing.stored(files)
                     if (!handle.page.sameBody(committed)) throw ImmutableRevisionConflictException()
@@ -213,12 +218,21 @@ internal class EnginePublicationBatcher(
 
     /** One commit transaction for the batch; a failure leaves durable journals for recovery. */
     private suspend fun commitRenamed(renamed: List<ReadyPage>): Boolean {
+        // Piggyback the pending last-access hints on the commit transaction: the writer side
+        // flushes them inside the same Room transaction instead of a lookup opening its own UPDATE.
+        // A touch-free batch keeps the original commit call shape.
+        val touches = published.drainTouches()
         try {
-            index.commitAll(renamed.map { it.journal.publicationId to it.entity })
+            val entries = renamed.map { it.journal.publicationId to it.entity }
+            if (touches.isEmpty()) index.commitAll(entries) else index.commitAll(entries, touches)
         } catch (error: Throwable) {
             renamed.forEach { it.request.fail(error) }
             return false
         }
+        published.confirmTouches(touches)
+        // Committed rows become visible to lock-free readers here; the file behind each is renamed,
+        // directory-synced and committed, so any find that observes one validates a durable body.
+        for (page in renamed) published.put(page.entity)
         return true
     }
 

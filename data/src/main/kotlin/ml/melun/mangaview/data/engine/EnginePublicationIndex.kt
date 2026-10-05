@@ -16,6 +16,11 @@ interface EnginePublicationIndex {
     suspend fun remove(page: EnginePageEntity)
     suspend fun touch(page: EnginePageEntity, timeMillis: Long)
 
+    /** Applies every pending last-access hint; implementations that can must batch it. */
+    suspend fun touchAll(pages: List<EnginePageEntity>) {
+        for (page in pages) touch(page, page.lastAccessEpochMillis)
+    }
+
     /** Stages every journal of a batch; implementations that can must do it in one transaction. */
     suspend fun stageAll(journals: List<EnginePublicationEntity>) {
         journals.forEach { stage(it) }
@@ -24,6 +29,15 @@ interface EnginePublicationIndex {
     /** Commits every entry of a batch at once; the in-transaction immutability check still applies. */
     suspend fun commitAll(entries: List<Pair<String, EnginePageEntity>>) {
         entries.forEach { (journalId, page) -> commit(journalId, page) }
+    }
+
+    /**
+     * Commits a batch and applies its pending last-access hints in the same store transaction, so
+     * flushing touches never opens a second writer transaction beside the commit.
+     */
+    suspend fun commitAll(entries: List<Pair<String, EnginePageEntity>>, touches: List<EnginePageEntity>) {
+        commitAll(entries)
+        touchAll(touches)
     }
 }
 
@@ -51,9 +65,14 @@ class RoomEnginePublicationIndex(
         }
     }
 
-    override suspend fun commitAll(entries: List<Pair<String, EnginePageEntity>>) {
+    override suspend fun commitAll(entries: List<Pair<String, EnginePageEntity>>) = commitAll(entries, emptyList())
+
+    override suspend fun commitAll(entries: List<Pair<String, EnginePageEntity>>, touches: List<EnginePageEntity>) {
         val db = database()
         db.withTransaction {
+            // Flush the pending last-access hints first: a commit below may re-publish one of the
+            // same rows with a newer timestamp, and that newer value must win over the older hint.
+            if (touches.isNotEmpty()) db.engine().updatePages(touches)
             for ((journalId, page) in entries) {
                 val previous = db.engine().page(page.cacheKey, page.contentRevision)
                 check(previous == null || previous.copy(lastAccessEpochMillis = page.lastAccessEpochMillis,
@@ -68,4 +87,7 @@ class RoomEnginePublicationIndex(
     override suspend fun remove(page: EnginePageEntity) = database().engine().deletePage(page.cacheKey, page.contentRevision)
     override suspend fun touch(page: EnginePageEntity, timeMillis: Long) =
         database().engine().touchPage(page.cacheKey, page.contentRevision, timeMillis)
+    override suspend fun touchAll(pages: List<EnginePageEntity>) {
+        if (pages.isNotEmpty()) database().engine().updatePages(pages)
+    }
 }

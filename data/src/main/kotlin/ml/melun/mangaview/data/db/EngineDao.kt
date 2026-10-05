@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 
 @Dao
 interface EngineDao {
@@ -64,6 +65,10 @@ interface EngineDao {
     @Query("UPDATE engine_pages SET lastAccessEpochMillis = :timeMillis " +
         "WHERE cacheKey = :cacheKey AND contentRevision = :revision")
     suspend fun touchPage(cacheKey: String, revision: String, timeMillis: Long)
+
+    /** Batched last-access flush; Room runs the whole list in one transaction. */
+    @Update
+    suspend fun updatePages(pages: List<EnginePageEntity>)
 
     @Query(
         "DELETE FROM engine_pages " +
