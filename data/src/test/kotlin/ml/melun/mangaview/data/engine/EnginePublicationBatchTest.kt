@@ -44,8 +44,8 @@ import org.junit.rules.TemporaryFolder
 /**
  * Group-commit behavior of [EnginePublicationBatcher]: batching under the single storage mutex,
  * per-page crash recovery, per-page error isolation, cancellation of queued/in-batch callers,
- * the defensive commitAll immutability check, concurrent staging syncs, and the atomic eviction
- * that closes the trim-vs-find race.
+ * the defensive commitAll immutability check, concurrent staging syncs, the atomic eviction that
+ * closes the trim-vs-find race, and the same-key duplicate deferred to the next batch.
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class EnginePublicationBatchTest {
@@ -83,6 +83,84 @@ class EnginePublicationBatchTest {
         checkNotNull(store.find(id(2), "v1")).close()
         assertEquals(0, store.ownership().fileLeases)
         assertEquals(0, store.ownership().preparedPages)
+    }
+
+    /**
+     * Two publishes of one (key, revision) can be enqueued before either is in the index. The batch
+     * stages only the first; the deferred second resolves in the next batch against the committed
+     * row. With identical bodies it dedupes to the committed file and no rename ever collides.
+     */
+    @Test fun duplicatePublishInOneBatchDedupesToTheCommittedLease() = runTest {
+        val root = temporary.newFolder()
+        val index = RecordingIndex()
+        val store = newStore(root, index, CountingFileOps())
+        publishEvictable(store)
+        val first = prepare(store, id(1), "v1")
+        val second = prepare(store, id(1), "v1")
+        val (trim, gate) = parkTrim(store, index)
+        index.resetRecording()
+
+        val a = async { store.publish(first) }
+        val b = async { store.publish(second) }
+        runCurrent()
+        gate.complete(Unit)
+        val leaseA = a.await()
+        val leaseB = b.await()
+        trim.join()
+
+        assertEquals("only the first of the pair stages", listOf(1), index.stageAllSizes)
+        assertEquals(listOf(1), index.commitAllSizes)
+        assertEquals("the deferred second delegates to the committed file", leaseA.page.file, leaseB.page.file)
+        assertArrayEqualsPayload(leaseB.page.file)
+        leaseA.close()
+        leaseB.close()
+        checkNotNull(store.find(id(1), "v1")).close()
+        assertEquals(0, store.ownership().fileLeases)
+        assertEquals(0, store.ownership().preparedPages)
+        assertTrue(index.journalRows.isEmpty())
+        assertTrue(File(root, "staging").listFiles()!!.isEmpty())
+    }
+
+    /**
+     * Same forced batch, different bodies: the deferred second must fail alone with
+     * ImmutableRevisionConflictException against the committed row; the first stays durable and the
+     * batch is not failed.
+     */
+    @Test fun duplicatePublishInOneBatchConflictsOnlyTheSecond() = runTest {
+        val root = temporary.newFolder()
+        val index = RecordingIndex()
+        val store = newStore(root, index, CountingFileOps())
+        publishEvictable(store)
+        val first = prepare(store, id(1), "v1")
+        val conflicting = prepare(
+            store, id(1), "v1",
+            payload.copyOf().also { it[it.lastIndex] = (it.last() + 1).toByte() },
+        )
+        val (trim, gate) = parkTrim(store, index)
+        index.resetRecording()
+
+        val a = async { store.publish(first) }
+        val b = async { runCatching { store.publish(conflicting) } }
+        runCurrent()
+        gate.complete(Unit)
+        val leaseA = a.await()
+        val resultB = b.await()
+        trim.join()
+
+        assertTrue(
+            "only the second fails, with a revision conflict",
+            resultB.exceptionOrNull() is ImmutableRevisionConflictException,
+        )
+        assertEquals(listOf(1), index.stageAllSizes)
+        assertEquals(listOf(1), index.commitAllSizes)
+        assertArrayEqualsPayload(leaseA.page.file)
+        leaseA.close()
+        store.discard(conflicting)
+        checkNotNull(store.find(id(1), "v1")).close()
+        assertEquals(0, store.ownership().fileLeases)
+        assertEquals(0, store.ownership().preparedPages)
+        assertTrue(index.journalRows.isEmpty())
+        assertTrue(File(root, "staging").listFiles()!!.isEmpty())
     }
 
     @Test fun publisherReturnsAfterAtMostItsOwnBatchPlusTheOneInProgress() = runTest {
@@ -382,8 +460,12 @@ class EnginePublicationBatchTest {
         store.publish(store.prepare(evictable, "trim", BatchStream(payload).opened())).close()
     }
 
-    private suspend fun prepare(store: EngineRawStorage, pageId: PageId, revision: String) =
-        store.prepare(pageId, revision, BatchStream(payload).opened())
+    private suspend fun prepare(
+        store: EngineRawStorage,
+        pageId: PageId,
+        revision: String,
+        body: ByteArray = payload,
+    ) = store.prepare(pageId, revision, BatchStream(body).opened())
 
     /**
      * Publishes the evictable page first, then runs trimTo so its loop reaches the gated

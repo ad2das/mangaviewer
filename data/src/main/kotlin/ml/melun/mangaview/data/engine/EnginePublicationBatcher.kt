@@ -16,6 +16,9 @@ import ml.melun.mangaview.engine.api.StoredPageLease
  * for the storage mutex; the first one to take the lock processes exactly one batch -- every request
  * pending at that instant, which always includes its own -- and leaves. There is no drain loop and no
  * timer: a leader's latency is bounded by one batch, and kotlinx's FIFO mutex keeps waiters ordered.
+ * A request that duplicates an earlier request of the same key and revision in its batch is not
+ * staged alongside it: it goes back to the front of the queue and resolves against the committed
+ * row on the owner's next pass, exactly like the serial path.
  *
  * The batch keeps the per-page durability sequence byte-for-byte: sync each staging file, one journal
  * transaction, per-page rename (isolated), one directory sync per distinct destination directory,
@@ -37,6 +40,9 @@ internal class EnginePublicationBatcher(
 
     class PublishRequest(val handle: EnginePreparedPage) {
         val result = CompletableDeferred<StoredPageLease>()
+
+        /** True while this request is queued for a later batch instead of the one inspecting it. */
+        var deferred: Boolean = false
         val isCompleted: Boolean get() = result.isCompleted
         fun complete(lease: StoredPageLease) { result.complete(lease) }
         fun fail(error: Throwable) { result.completeExceptionally(error) }
@@ -59,9 +65,9 @@ internal class EnginePublicationBatcher(
         try {
             processBatchSteps(batch)
         } catch (error: Throwable) {
-            // A checkpoint or a batch-wide step failed mid-flight: complete every request that left
-            // the queue with this batch, so no publisher is left waiting on a request nothing owns.
-            batch.forEach { if (!it.isCompleted) it.fail(error) }
+            // A checkpoint or a batch-wide step failed mid-flight: complete every request this
+            // batch still owns. A deferred request is back in the queue and keeps its owner.
+            batch.forEach { if (!it.isCompleted && !it.deferred) it.fail(error) }
             throw error
         }
     }
@@ -81,15 +87,26 @@ internal class EnginePublicationBatcher(
         checkpoint(EnginePublicationStep.RENAMED)
         if (!syncDirectories(renamed)) return
         if (!commitRenamed(renamed)) return
+        // Consume before the checkpoint: a checkpoint failure after the commit must not leave the
+        // committed handles registered as prepared (RECOVERY), where orphan cleanup cannot reach them.
+        renamed.forEach { ownership.consume(it.handle) }
         checkpoint(EnginePublicationStep.COMMITTED)
         completeRenamed(renamed)
     }
 
-    /** Validates and dedupes each request; a page's own failure never touches its batch mates. */
+    /**
+     * Validates each request; a page's own failure never touches its batch mates. Two publishes of
+     * one (key, revision) can be enqueued before either is in the index; the batch stages only the
+     * first and puts the rest back at the front of the queue, where the owners' next passes resolve
+     * them against the committed row with exactly the serial path's semantics.
+     */
     private suspend fun stageReady(batch: List<PublishRequest>): List<ReadyPage> {
         val ready = ArrayList<ReadyPage>(batch.size)
+        val claimed = HashSet<Pair<String, String>>()
+        val deferred = ArrayList<PublishRequest>()
         for (request in batch) {
             if (request.isCompleted) continue
+            request.deferred = false
             val handle = request.handle
             try {
                 check(handle.state == EnginePreparedState.READY) { "Prepared page is no longer publishable" }
@@ -108,6 +125,11 @@ internal class EnginePublicationBatcher(
                     }
                     if (ownership.isPinned(committed.file)) throw EnginePageInUseException()
                 }
+                if (!claimed.add(PageCacheKey.of(handle.page.pageId) to handle.page.contentRevision)) {
+                    request.deferred = true
+                    deferred += request
+                    continue
+                }
                 val entity = handle.page.entity(files.destination(handle.page), nowMillis())
                 ready += ReadyPage(
                     request, handle, entity,
@@ -117,6 +139,9 @@ internal class EnginePublicationBatcher(
             } catch (error: Throwable) {
                 request.fail(error)
             }
+        }
+        if (deferred.isNotEmpty()) {
+            synchronized(queueLock) { pending.addAll(0, deferred) }
         }
         return ready
     }
@@ -188,9 +213,9 @@ internal class EnginePublicationBatcher(
         return true
     }
 
+    /** Acquires each committed file's lease and completes its publisher (handles are already consumed). */
     private suspend fun completeRenamed(renamed: List<ReadyPage>) {
         for (page in renamed) {
-            ownership.consume(page.handle)
             page.request.complete(ownership.acquire(page.entity.stored(files)))
         }
     }

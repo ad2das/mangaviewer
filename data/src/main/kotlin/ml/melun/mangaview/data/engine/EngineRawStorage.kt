@@ -171,6 +171,16 @@ class EngineRawStorage(
                         initializeLocked()
                         batcher.processBatch(batcher.takeAllPending())
                     }
+                    // A batch defers a request that duplicated an earlier request of the same key:
+                    // it must resolve against the committed row, not stage beside it. The owner is
+                    // usually still waiting here; when the owner led that batch, this pass keeps its
+                    // contract. Each pass resolves another request of the contended key, so the loop
+                    // is bounded by the duplicates already queued -- never a drain for other streams.
+                    while (!request.isCompleted) {
+                        val next = batcher.takeAllPending()
+                        if (next.isEmpty()) break
+                        batcher.processBatch(next)
+                    }
                 }
                 lease = request.result.await()
             }

@@ -27,17 +27,23 @@ import ml.melun.mangaview.engine.api.WorkRequest
 import ml.melun.mangaview.engine.work.WorkCoordinator
 import ml.melun.mangaview.source.OpenedPage
 import ml.melun.mangaview.source.PageByteStream
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
  * Reported JVM benchmark (never asserted): before/after evidence for the storage admission split.
  * Page bodies are real 1.5 MB files (1x1 PNG header + padding) so every cold lookup pays a real
  * SHA-256 over the requested size, and the fake package fsyncs cost [FSYNC_MILLIS] each, matching the
- * device's p50 publish op. Run plain and with STORAGE_BENCH_LEGACY=1 and paste both outputs into the
+ * device's p50 publish op. Gated behind STORAGE_BENCH=1 because it costs about ten seconds per run;
+ * run with that variable, plain and with STORAGE_BENCH_LEGACY=1, and paste both outputs into the
  * report; the numbers are the decision input for the final storageRead limit.
  */
 class StorageAdmissionBenchmarkTest {
     @Test fun storageAdmissionBenchmark() = runBlocking {
+        assumeTrue(
+            "set STORAGE_BENCH=1 to run the storage admission benchmark",
+            System.getenv("STORAGE_BENCH") == "1",
+        )
         val root = Files.createTempDirectory("storage-bench").toFile()
         val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         try {
