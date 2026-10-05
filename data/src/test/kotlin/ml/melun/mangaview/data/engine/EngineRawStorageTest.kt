@@ -143,6 +143,31 @@ class EngineRawStorageTest {
         replacement.close()
     }
 
+    @Test fun powerLossDamagedDestinationIsRejectedAndRepublishedByAFreshOwner() = runTest {
+        for (damage in listOf("truncate", "zero", "delete")) {
+            val root = temporary.newFolder()
+            val index = MemoryIndex()
+            val publisher = store(root, index)
+            publisher.publish(publisher.prepare(id, "v1", Body(bytes).opened())).close()
+            val committed = File(root, index.pageRows.getValue(PageCacheKey.of(id) to "v1").relativePath)
+            when (damage) {
+                "truncate" -> committed.writeBytes(bytes.copyOf(bytes.size / 2))
+                "zero" -> committed.writeBytes(ByteArray(bytes.size))
+                "delete" -> check(committed.delete()) { "cannot remove the committed body" }
+            }
+            // A fresh owner starts with an empty verification cache, exactly like the first process
+            // after a power loss: its first find re-digests and rejects the damaged body.
+            val restarted = store(root, index)
+            assertNull("damaged $damage body must never be leased", restarted.find(id, "v1"))
+            val republished = restarted.publish(restarted.prepare(id, "v1", Body(bytes).opened()))
+            assertArrayEquals(bytes, republished.page.file.readBytes())
+            republished.close()
+            checkNotNull(restarted.find(id, "v1")).use {
+                assertArrayEquals("republished $damage body must serve the original bytes", bytes, it.page.file.readBytes())
+            }
+        }
+    }
+
     @Test fun corruptLeasedFileCannotBeOverwrittenUntilRelease() = runTest {
         val store = store(temporary.newFolder(), MemoryIndex())
         val lease = store.publish(store.prepare(id, "v1", Body(bytes).opened()))
