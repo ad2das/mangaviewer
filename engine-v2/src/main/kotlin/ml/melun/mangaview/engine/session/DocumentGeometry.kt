@@ -61,22 +61,23 @@ internal class DocumentGeometry(
     /** Session-only split reading; a two-page spread then occupies two vertical page heights. */
     var splitMode: Boolean = false
 
+    private val pageMetrics = PageMetricsCache()
+
     fun applySplitMode(enabled: Boolean) {
         if (splitMode == enabled) return
         splitMode = enabled
         if (!enabled) foldAnchorOutOfTheSecondHalf()
     }
 
-    private fun splitFactor(dimensions: PageDimensions): Long =
-        if (splitMode && SpreadPages.isSpread(dimensions)) 2L else 1L
-
     /** Vertical document extent: a split spread scrolls as two stacked original-page heights. */
-    private fun documentExtent(dimensions: PageDimensions): BigInteger =
-        pageSourceExtent(dimensions.heightPx).multiply(BigInteger.valueOf(splitFactor(dimensions)))
+    private fun documentExtent(dimensions: PageDimensions): BigInteger = pageSourceExtent(dimensions.heightPx)
+        .multiply(BigInteger.valueOf(if (splitMode && SpreadPages.isSpread(dimensions)) 2L else 1L))
 
-    /** Horizontal projection width: a split half scales as its own page width. */
-    private fun scaleWidth(dimensions: PageDimensions): Int =
-        if (splitFactor(dimensions) == 2L) SpreadPages.halfWidth(dimensions) else dimensions.widthPx
+    private fun metricsFor(pageId: PageId, dimensions: PageDimensions): PageMetrics =
+        pageMetrics.forPage(pageId, dimensions, splitMode, viewport.widthPx)
+
+    /** Drops cached page metrics for pages the geometry no longer holds. */
+    internal fun pruneMetrics() = pageMetrics.retainPages(actualDimensions.keys)
 
     fun addManifest(manifest: EpisodeManifest, known: Boolean) {
         manifests[manifest.id] = manifest
@@ -84,42 +85,6 @@ internal class DocumentGeometry(
         manifest.pages.forEach { page ->
             if (!actualDimensions.containsKey(page.id)) actualDimensions[page.id] = page.dimensions
         }
-    }
-
-    /**
-     * A long in-place read crosses documents without a navigate. Keep only the documents around the
-     * reading position (and the session's target) so the maps cannot grow with every episode
-     * crossed; a pruned document is re-requested through the ordinary geometry blockers.
-     */
-    fun retainWindow(
-        anchorEpisodeId: EpisodeId?,
-        target: EpisodeId = targetEpisodeId,
-        maximum: Int = RETAINED_DOCUMENTS,
-    ) {
-        if (manifests.size <= maximum) return
-        val keep = linkedSetOf<EpisodeId>()
-        if (anchorEpisodeId != null) {
-            keep += anchorEpisodeId
-            var cursor: EpisodeId? = anchorEpisodeId
-            var steps = 0
-            while (cursor != null && steps < RETAINED_BACK_STEPS) {
-                cursor = manifests[cursor]?.previousEpisodeId
-                if (cursor != null) keep += cursor
-                steps++
-            }
-            cursor = anchorEpisodeId
-            steps = 0
-            while (cursor != null && steps < RETAINED_FORWARD_STEPS) {
-                cursor = manifests[cursor]?.nextEpisodeId
-                if (cursor != null) keep += cursor
-                steps++
-            }
-        }
-        keep += target
-        if (manifests.keys.all { it in keep }) return
-        manifests.keys.retainAll(keep)
-        navigationKnown.keys.retainAll(keep)
-        actualDimensions.keys.retainAll { it.episodeId in keep }
     }
 
     fun setDimensions(pageId: PageId, dimensions: PageDimensions) {
@@ -187,17 +152,6 @@ internal class DocumentGeometry(
             remaining = if (delta.signum() < 0) -result.remaining else result.remaining)
     }
 
-    fun requirementsForAnchor(): GeometryRequirements {
-        val value = anchor ?: return GeometryRequirements(emptySet(), setOf(targetEpisodeId), emptySet())
-        val page = page(value.pageId)
-        if (page == null) return GeometryRequirements(emptySet(), setOf(value.pageId.episodeId), emptySet())
-        val navigation = if (isNavigationKnown(value.pageId.episodeId)) emptySet() else {
-            setOf(value.pageId.episodeId)
-        }
-        if (page.dimensions == null) return GeometryRequirements(setOf(value.pageId), emptySet(), navigation)
-        return GeometryRequirements(emptySet(), emptySet(), navigation)
-    }
-
     fun visible(): VisibleResult {
         val value = anchor ?: return VisibleResult(
             emptyList(), GeometryRequirements(emptySet(), setOf(targetEpisodeId), emptySet()), false,
@@ -263,7 +217,8 @@ internal class DocumentGeometry(
                 blocker = GeometryBlocker.Episode(current.pageId.episodeId))
             val dimensions = ref.dimensions ?: return MoveResult(current, consumed, remaining,
                 blocker = GeometryBlocker.Dimension(current.pageId))
-            val extent = BigRational.of(documentExtent(dimensions))
+            val metrics = metricsFor(current.pageId, dimensions)
+            val extent = metrics.extent
             val source = current.sourceQ32
             if (source >= extent) {
                 when (val next = nextPage(current.pageId)) {
@@ -274,9 +229,9 @@ internal class DocumentGeometry(
                 }
                 continue
             }
-            val toEnd = sourceToScreenUnits(extent - source, scaleWidth(dimensions), viewport.widthPx)
+            val toEnd = (extent - source) * metrics.screenScale
             if (remaining <= toEnd) {
-                val moved = screenToSourceQ32(remaining, scaleWidth(dimensions), viewport.widthPx)
+                val moved = remaining * metrics.sourceScale
                 current = Cursor(current.pageId, source + moved)
                 return MoveResult(current, consumed + remaining, BigRational.ZERO)
             }
@@ -316,7 +271,7 @@ internal class DocumentGeometry(
                         val previousDimensions = page(previous.pageId)?.dimensions
                         if (previousDimensions == null) return BackwardWalk(current,
                             GeometryBlocker.Dimension(previous.pageId), remaining)
-                        current = Cursor(previous.pageId, BigRational.of(documentExtent(previousDimensions)))
+                        current = Cursor(previous.pageId, metricsFor(previous.pageId, previousDimensions).extent)
                     }
                     is PageStep.Missing -> return BackwardWalk(current, previous.blocker, remaining)
                     PageStep.End -> return BackwardWalk(current, null, remaining)
@@ -325,9 +280,10 @@ internal class DocumentGeometry(
             }
             val dimensions = ref.dimensions ?: return BackwardWalk(null,
                 GeometryBlocker.Dimension(current.pageId), remaining)
-            val toStart = sourceToScreenUnits(source, scaleWidth(dimensions), viewport.widthPx)
+            val metrics = metricsFor(current.pageId, dimensions)
+            val toStart = source * metrics.screenScale
             if (remaining <= toStart) {
-                val moved = screenToSourceQ32(remaining, scaleWidth(dimensions), viewport.widthPx)
+                val moved = remaining * metrics.sourceScale
                 return BackwardWalk(Cursor(current.pageId, source - moved), null)
             }
             current = Cursor(current.pageId, BigRational.ZERO)
@@ -357,14 +313,14 @@ internal class DocumentGeometry(
             val previous = previousPage(current.pageId)
             if (previous !is PageStep.Known) return null
             val previousDimensions = page(previous.pageId)?.dimensions ?: return null
-            current = Cursor(previous.pageId, BigRational.of(documentExtent(previousDimensions)))
+            current = Cursor(previous.pageId, metricsFor(previous.pageId, previousDimensions).extent)
         }
         return total + (screenDelta(current.sourceQ32 - to.sourceQ32, to.pageId) ?: return null)
     }
 
     private fun screenDelta(source: BigRational, pageId: PageId): BigRational? {
         val dimensions = page(pageId)?.dimensions ?: return null
-        return sourceToScreenUnits(source, scaleWidth(dimensions), viewport.widthPx)
+        return source * metricsFor(pageId, dimensions).screenScale
     }
 
     private fun mapForward(
@@ -389,8 +345,8 @@ internal class DocumentGeometry(
                 requirements.add(GeometryBlocker.Dimension(current.pageId))
                 return MappedRegions(regions, false)
             }
-            val documentLength = documentExtent(dimensions)
-            val extent = BigRational.of(documentLength)
+            val metrics = metricsFor(current.pageId, dimensions)
+            val extent = metrics.extent
             val source = current.sourceQ32.coerceAtLeast(BigRational.ZERO)
             if (source >= extent) {
                 when (val next = nextPage(current.pageId)) {
@@ -405,13 +361,13 @@ internal class DocumentGeometry(
                     PageStep.End -> return MappedRegions(regions, true)
                 }
             }
-            val pageRemaining = sourceToScreenUnits(extent - source, scaleWidth(dimensions), viewport.widthPx)
+            val pageRemaining = (extent - source) * metrics.screenScale
             val take = if (remaining <= pageRemaining) remaining else pageRemaining
-            val endSource = source + screenToSourceQ32(take, scaleWidth(dimensions), viewport.widthPx)
+            val endSource = source + take * metrics.sourceScale
             if (take.signum() <= 0) return MappedRegions(regions, false)
             appendRegion(
                 regions, current.pageId, dimensions, source, endSource, screen, screen + take,
-                viewportHeightUnits(), saturatingLong(documentLength),
+                viewportHeightUnits(), metrics.extent.truncToLong(),
             )
             screen += take
             remaining -= take
@@ -496,9 +452,3 @@ private fun BigRational.coerceAtLeast(other: BigRational): BigRational =
 
 private fun EpisodeId.firstPageId(): PageId = PageId(this, "p0000")
 
-// Documents kept around the reading position by retainWindow: the anchor, a deep backward chain
-// (a fast reverse burst swings the reader several episodes back before any request can run), two
-// forward links, and the session's target.
-private const val RETAINED_DOCUMENTS = 16
-private const val RETAINED_BACK_STEPS = 12
-private const val RETAINED_FORWARD_STEPS = 2

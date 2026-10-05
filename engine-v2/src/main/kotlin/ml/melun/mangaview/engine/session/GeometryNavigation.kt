@@ -60,3 +60,58 @@ internal fun DocumentGeometry.previousPage(pageId: PageId): PageStep {
         GeometryBlocker.Episode(previous))
     return PageStep.Known(page.id)
 }
+
+internal fun DocumentGeometry.requirementsForAnchor(): GeometryRequirements {
+    val value = anchor ?: return GeometryRequirements(emptySet(), setOf(targetEpisodeId), emptySet())
+    val page = page(value.pageId)
+    if (page == null) return GeometryRequirements(emptySet(), setOf(value.pageId.episodeId), emptySet())
+    val navigation = if (isNavigationKnown(value.pageId.episodeId)) emptySet() else {
+        setOf(value.pageId.episodeId)
+    }
+    if (page.dimensions == null) return GeometryRequirements(setOf(value.pageId), emptySet(), navigation)
+    return GeometryRequirements(emptySet(), emptySet(), navigation)
+}
+
+/**
+ * A long in-place read crosses documents without a navigate. Keep only the documents around the
+ * reading position (and the session's target) so the maps cannot grow with every episode
+ * crossed; a pruned document is re-requested through the ordinary geometry blockers.
+ */
+internal fun DocumentGeometry.retainWindow(
+    anchorEpisodeId: EpisodeId?,
+    target: EpisodeId = targetEpisodeId,
+    maximum: Int = RETAINED_DOCUMENTS,
+) {
+    if (manifests.size <= maximum) return
+    val keep = linkedSetOf<EpisodeId>()
+    if (anchorEpisodeId != null) {
+        keep += anchorEpisodeId
+        var cursor: EpisodeId? = anchorEpisodeId
+        var steps = 0
+        while (cursor != null && steps < RETAINED_BACK_STEPS) {
+            cursor = manifests[cursor]?.previousEpisodeId
+            if (cursor != null) keep += cursor
+            steps++
+        }
+        cursor = anchorEpisodeId
+        steps = 0
+        while (cursor != null && steps < RETAINED_FORWARD_STEPS) {
+            cursor = manifests[cursor]?.nextEpisodeId
+            if (cursor != null) keep += cursor
+            steps++
+        }
+    }
+    keep += target
+    if (manifests.keys.all { it in keep }) return
+    manifests.keys.retainAll(keep)
+    navigationKnown.keys.retainAll(keep)
+    actualDimensions.keys.retainAll { it.episodeId in keep }
+    pruneMetrics()
+}
+
+// Documents kept around the reading position by retainWindow: the anchor, a deep backward chain
+// (a fast reverse burst swings the reader several episodes back before any request can run), two
+// forward links, and the session's target.
+private const val RETAINED_DOCUMENTS = 16
+private const val RETAINED_BACK_STEPS = 12
+private const val RETAINED_FORWARD_STEPS = 2
