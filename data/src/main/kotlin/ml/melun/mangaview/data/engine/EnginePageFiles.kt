@@ -163,9 +163,17 @@ internal class EnginePageFiles(private val root: File, private val operations: E
     fun syncDirectory(directory: File) = operations.syncDirectory(directory)
 
     fun delete(file: File) {
+        unlink(file)
+        syncDirectory(file.parentFile!!)
+    }
+
+    /**
+     * Removes the directory entry only; the caller owns directory durability. Trim batches one
+     * sync per distinct directory after its loop instead of one sync per evicted file.
+     */
+    fun unlink(file: File) {
         forgetVerified(file)
         if (file.exists()) check(file.isFile && file.delete()) { "Unable to delete storage file" }
-        operations.syncDirectory(file.parentFile!!)
     }
 
     fun removeOrphans(protected: Set<String>) {

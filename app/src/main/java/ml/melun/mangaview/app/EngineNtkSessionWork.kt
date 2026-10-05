@@ -57,7 +57,7 @@ internal class EngineNtkSessionWork(
         val override = initialPosition?.takeIf { it.pageId.episodeId == episodeId }
         val exact = initialAnchor?.takeIf { it.pageId.episodeId == episodeId }
         return WorkRequest(WorkKey(principal, episodeId.toString(), "position", exact?.toString() ?: override?.toString() ?: "saved",
-            SessionPosition::class.java), WorkDomain.STORAGE, WorkPriority.FOCUS, execute = {
+            SessionPosition::class.java), WorkDomain.STORAGE_READ, WorkPriority.FOCUS, execute = {
             if (exact != null) SessionPosition(exact)
             else if (override != null) SessionPosition(null, override)
             else SessionPosition(positions.load(episodeId), loadLegacy(episodeId))

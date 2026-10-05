@@ -53,7 +53,7 @@ class EnginePageWork(
             val startedAtNanos = System.nanoTime()
             note("page-start", startedAtNanos, "priority=$priority candidates=${plan.page(pageId).candidates.size}")
             val cached = context.dependency(identity.request(
-                "lookup", PinnedPage::class.java, WorkDomain.STORAGE, context.priority.value,
+                "lookup", PinnedPage::class.java, WorkDomain.STORAGE_READ, context.priority.value,
                 dispose = { it.close() },
             ) { PinnedPage(storage.find(pageId, plan.contentRevision)) })
             val result = cached.page ?: if (plan.localOnly) throw IOException("Complete cached episode is no longer available")
@@ -81,7 +81,7 @@ class EnginePageWork(
         } })
         note("body-done", loadStartedAtNanos)
         val committed = context.dependency(identity.request(
-            "publish", PinnedPage::class.java, WorkDomain.STORAGE, context.priority.value,
+            "publish", PinnedPage::class.java, WorkDomain.STORAGE_PUBLISH, context.priority.value,
             dispose = { it.close() },
         ) { PinnedPage(storage.publish(prepared)) })
         note("published", loadStartedAtNanos, "bytes=${committed.page?.byteCount ?: -1L}")

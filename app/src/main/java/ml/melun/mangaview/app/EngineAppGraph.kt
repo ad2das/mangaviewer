@@ -68,13 +68,19 @@ internal class EngineAppGraph(
     // plumbing workers in a raster conversion starves the completion handoffs that carry every
     // record, so backgroundDecodes stays 2. decodes caps visible/interactive decodes; 3 keeps three
     // of those in flight.
-    // storage stays at 1: the horizon's repeated cached lookups are cheap individually and letting them
-    // run concurrently measurably degraded latency (measured ntk d2r p50 61.6 -> 128-175ms, and again
-    // on the GPU AVD with the whole horizon in flight: ntk d2r p95 45 -> 114ms and ntk FOCUS/VISIBLE
-    // p50 29 -> 112ms, i.e. the extra permit let the horizon's lookups run alongside the visible
-    // tile's own opening lookup on the same lane and delayed it).
+    // storage stays at 1 for the mutating storage works (position/bookmark saves, trim/invalidate):
+    // the storage mutex serializes those anyway. Page lookups no longer share that permit: they run
+    // in STORAGE_READ (2), never take the storage mutex, and the earlier measured regression (ntk
+    // d2r p50 61.6 -> 128-175ms; GPU AVD ntk d2r p95 45 -> 114ms, FOCUS/VISIBLE p50 29 -> 112ms)
+    // came from the horizon's lookups opening the same single lane as the visible tile's own lookup.
+    // The split keeps the writer isolated and still bounds concurrent reads; STORAGE_PUBLISH (4)
+    // only widens the publish queue -- every batch still executes under the storage mutex. The JVM
+    // storage benchmark's visible lookup against 12 queued horizon lookups measured 5.0-5.3ms at
+    // storageRead = 1, 4.6-5.0ms at 2 and 4.8-7.0ms at 4; width 4 loses (more concurrent 1.5 MB
+    // validations steal the visible find's first milliseconds), so the smallest width with no
+    // loss, 2, ships below.
     private val workLimits = WorkLimits(network = 16, bodies = 15, backgroundNetwork = 12, decodes = 3,
-        backgroundDecodes = 2)
+        backgroundDecodes = 2, storageRead = 2, storagePublish = 4)
     // The coordinator's own plumbing — record admission, the dependency handoffs that join a tile's
     // page/decode/upload records, the scheduler wakeups and the completion fan-out back to
     // subscribers — used to run on the application's shared source pool at BACKGROUND priority:

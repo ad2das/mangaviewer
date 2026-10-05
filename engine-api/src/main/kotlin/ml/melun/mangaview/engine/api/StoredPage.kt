@@ -46,6 +46,11 @@ interface EngineStoragePort {
     suspend fun prepareWithGeometry(pageId: PageId, contentRevision: String, opened: OpenedPage,
         reportGeometry: suspend (PageDimensions) -> Unit,
     ): PreparedPage = prepare(pageId, contentRevision, opened)
+    /**
+     * Publishes one completed body, possibly joining the current group commit. Once this call has
+     * enqueued, the page always completes durably; a caller cancelled while waiting closes the lease
+     * it would have returned and the bytes stay published.
+     */
     suspend fun publish(prepared: PreparedPage): StoredPageLease
     suspend fun discard(prepared: PreparedPage)
     suspend fun recover()

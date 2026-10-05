@@ -13,7 +13,7 @@ enum class WorkPriority {
 }
 
 /** CONTROL parents may wait for children, but never consume a physical-work permit. */
-enum class WorkDomain { CONTROL, NETWORK, BODY, DECODE, STORAGE, UPLOAD, BROWSER }
+enum class WorkDomain { CONTROL, NETWORK, BODY, DECODE, STORAGE, UPLOAD, BROWSER, STORAGE_READ, STORAGE_PUBLISH }
 
 data class WorkKey<T : Any>(
     val principal: String,
@@ -41,10 +41,23 @@ data class WorkLimits(
      * parked in a decode; the previous dedicated decode lane made the bound its thread count.
      */
     val backgroundDecodes: Int = 2,
+    /**
+     * Concurrent storage reads (page lookups, cached-session opens, position loads). Reads never take
+     * the storage mutex, so this only bounds concurrent file validation and Room reads; it lets them
+     * overtake the single writer instead of queueing behind publishes.
+     */
+    val storageRead: Int = 4,
+    /**
+     * Publish requests that may coexist in the batcher queue. Every batch still executes under the
+     * single storage mutex; this is only the batch width, so a drain amortizes the journal
+     * transactions and the directory sync across the pages that are pending together.
+     */
+    val storagePublish: Int = 4,
 ) {
     init {
         require(network > 0 && bodies in 1..network && backgroundNetwork in 1..network)
         require(decodes > 0 && backgroundDecodes > 0 && storage > 0 && uploads == 1 && queued > 0)
+        require(storageRead > 0 && storagePublish > 0)
     }
 }
 

@@ -17,6 +17,8 @@ internal class WorkAdmission(private val limits: WorkLimits) {
     private var foregroundDecodeUsed = 0
     private var backgroundDecodeUsed = 0
     private var storageUsed = 0
+    private var storageReadUsed = 0
+    private var storagePublishUsed = 0
     private var uploadUsed = 0
     private var browserUsed = 0
 
@@ -29,6 +31,12 @@ internal class WorkAdmission(private val limits: WorkLimits) {
             WorkDomain.DECODE -> acquireDecode(domain, background)
             WorkDomain.STORAGE -> acquireSingle(domain, storageUsed, limits.storage) {
                 storageUsed += 1
+            }
+            WorkDomain.STORAGE_READ -> acquireSingle(domain, storageReadUsed, limits.storageRead) {
+                storageReadUsed += 1
+            }
+            WorkDomain.STORAGE_PUBLISH -> acquireSingle(domain, storagePublishUsed, limits.storagePublish) {
+                storagePublishUsed += 1
             }
             WorkDomain.UPLOAD -> acquireUpload(domain, background)
             WorkDomain.BROWSER -> acquireSingle(domain, browserUsed, 1) { browserUsed += 1 }
@@ -54,6 +62,8 @@ internal class WorkAdmission(private val limits: WorkLimits) {
                 foregroundDecodeUsed -= 1
             }
             WorkDomain.STORAGE -> storageUsed -= 1
+            WorkDomain.STORAGE_READ -> storageReadUsed -= 1
+            WorkDomain.STORAGE_PUBLISH -> storagePublishUsed -= 1
             WorkDomain.UPLOAD -> uploadUsed -= 1
             WorkDomain.BROWSER -> browserUsed -= 1
         }
@@ -62,7 +72,10 @@ internal class WorkAdmission(private val limits: WorkLimits) {
 
     private fun verifyCounters() {
         check(networkUsed >= 0 && bodiesUsed >= 0 && backgroundNetworkUsed >= 0)
-        check(decodeUsed >= 0 && backgroundDecodeUsed >= 0 && storageUsed >= 0 && uploadUsed >= 0 && browserUsed >= 0)
+        check(
+            decodeUsed >= 0 && backgroundDecodeUsed >= 0 && storageUsed >= 0 &&
+                storageReadUsed >= 0 && storagePublishUsed >= 0 && uploadUsed >= 0 && browserUsed >= 0,
+        )
     }
 
     private fun acquireNetwork(domain: WorkDomain, background: Boolean): PermitClaim? {

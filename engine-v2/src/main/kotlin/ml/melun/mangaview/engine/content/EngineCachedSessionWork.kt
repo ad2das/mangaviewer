@@ -15,7 +15,7 @@ class EngineCachedSessionWork(
             priority, authEpoch = online.authEpoch, execute = { parent ->
                 val cached = parent.dependency(WorkRequest(
                     WorkKey(key.principal, key.resource, "episode.cache.open", key.contentRevision, Lookup::class.java),
-                    WorkDomain.STORAGE, parent.priority.value, authEpoch = online.authEpoch,
+                    WorkDomain.STORAGE_READ, parent.priority.value, authEpoch = online.authEpoch,
                     execute = { Lookup(cache.open(episodeId)) }, dispose = { it.episode?.close() }))
                 cached.episode?.plan?.also {
                     require(it.localOnly && it.manifest.id == episodeId && it.authEpoch == online.authEpoch)

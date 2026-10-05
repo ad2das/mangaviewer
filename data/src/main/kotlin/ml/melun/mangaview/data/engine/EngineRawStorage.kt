@@ -13,7 +13,6 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.data.cache.PageCacheKey
-import ml.melun.mangaview.data.db.EnginePageEntity
 import ml.melun.mangaview.data.db.EnginePublicationEntity
 import ml.melun.mangaview.engine.api.EnginePositionPort
 import ml.melun.mangaview.engine.api.EngineStoragePort
@@ -42,6 +41,7 @@ class EngineRawStorage(
     private val mutex = Mutex()
     private val files = EnginePageFiles(root, fileOps)
     private val ownership = EngineStorageOwnership(this)
+    private val batcher = EnginePublicationBatcher(files, index, ownership, ioDispatcher, nowMillis, checkpoint)
     @Volatile private var initialized = false
 
     override suspend fun prepare(pageId: PageId, contentRevision: String, opened: OpenedPage): PreparedPage =
@@ -102,6 +102,10 @@ class EngineRawStorage(
         val lease = ownership.acquire(page)
         try {
             if (!files.valid(lease.page)) {
+                // Audit: this branch drops only this lease. It deletes no file and no row, so it can
+                // never race a newer publication for the same key; the only paths that unlink are
+                // eviction (trimTo/invalidate), and those run under the ownership lock through
+                // removeUnpinned, which refuses a file any reader pins first.
                 lease.close()
                 return@deliver null
             }
@@ -133,9 +137,10 @@ class EngineRawStorage(
             val entity = index.page(PageCacheKey.of(page.pageId), page.contentRevision) ?: return@withLock
             val committed = entity.stored(files)
             files.forgetVerified(committed.file)
-            if (ownership.isPinned(committed.file)) return@withLock
-            files.delete(committed.file)
+            // Same atomic rule as trim: never unlink a file some lease pins.
+            ownership.removeUnpinned(committed.file) { files.unlink(committed.file); true } ?: return@withLock
             index.remove(entity)
+            files.syncDirectory(committed.file.parentFile!!)
         }
     }
 
@@ -149,50 +154,33 @@ class EngineRawStorage(
         return lease
     }
 
+    /**
+     * Publishes one prepared page through the group-commit batcher. Cancellation semantics: a call
+     * that has not enqueued yet does nothing; once enqueued the page always completes -- queued and
+     * in-batch pages run NonCancellable end to end -- and a caller cancelled while waiting closes
+     * the lease it would have returned, so the bytes stay durable and no ownership leaks.
+     */
     override suspend fun publish(prepared: PreparedPage): StoredPageLease = checkNotNull(deliver {
-        mutex.withLock {
+        currentCoroutineContext().ensureActive()
+        val request = batcher.enqueue(ownership.requirePrepared(prepared))
+        var lease: StoredPageLease? = null
+        try {
             withContext(NonCancellable) {
-                initializeLocked()
-                publishLocked(ownership.requirePrepared(prepared))
+                mutex.withLock {
+                    if (!request.isCompleted) {
+                        initializeLocked()
+                        batcher.processBatch(batcher.takeAllPending())
+                    }
+                }
+                lease = request.result.await()
             }
+            currentCoroutineContext().ensureActive()
+            lease
+        } catch (error: Throwable) {
+            lease?.close()
+            throw error
         }
     })
-
-    private suspend fun publishLocked(handle: EnginePreparedPage): StoredPageLease {
-        check(handle.state == EnginePreparedState.READY) { "Prepared page is no longer publishable" }
-        // transfer() digested exactly the bytes it wrote to a process-private staging name, so a
-        // second full read here re-reads every page for no new information. Length is the cheap
-        // invariant a concurrent writer would break; committed bodies are still fully verified.
-        check(handle.page.file.length() == handle.page.byteCount) { "Prepared page bytes changed before publication" }
-        val existing = index.page(PageCacheKey.of(handle.page.pageId), handle.page.contentRevision)
-        if (existing != null) {
-            val committed = existing.stored(files)
-            if (!handle.page.sameBody(committed)) throw ImmutableRevisionConflictException()
-            if (files.valid(committed)) {
-                files.delete(handle.page.file)
-                ownership.consume(handle)
-                return ownership.acquire(committed)
-            }
-            if (ownership.isPinned(committed.file)) throw EnginePageInUseException()
-        }
-        val entity = handle.page.entity(files.destination(handle.page), nowMillis())
-        val journal = entity.journal(handle.publicationId, handle.page.file.name)
-        files.syncFile(handle.page.file)
-        checkpoint(EnginePublicationStep.FILE_SYNCED)
-        handle.state = EnginePreparedState.RECOVERY
-        index.stage(journal)
-        checkpoint(EnginePublicationStep.JOURNALED)
-        val destination = entity.stored(files)
-        if (destination.file.exists()) files.delete(destination.file)
-        files.publish(handle.page.file, destination.file)
-        checkpoint(EnginePublicationStep.RENAMED)
-        files.syncDirectory(destination.file.parentFile!!)
-        checkpoint(EnginePublicationStep.DIRECTORY_SYNCED)
-        index.commit(journal.publicationId, entity)
-        ownership.consume(handle)
-        checkpoint(EnginePublicationStep.COMMITTED)
-        return ownership.acquire(destination)
-    }
 
     override suspend fun discard(prepared: PreparedPage) {
         withContext(NonCancellable + ioDispatcher) {
@@ -270,14 +258,20 @@ class EngineRawStorage(
                 val pages = index.pages().sortedBy { it.lastAccessEpochMillis }
                 var retained = pages.fold(0L) { sum, page -> Math.addExact(sum, page.byteCount) }
                 val pending = index.journals().mapTo(hashSetOf()) { it.destinationRelativePath }
+                val unlinkedDirectories = linkedSetOf<File>()
                 for (entity in pages) {
                     if (retained <= targetBytes) break
                     val page = entity.stored(files)
-                    if (ownership.isPinned(page.file) || entity.relativePath in pending) continue
-                    files.delete(page.file)
+                    if (entity.relativePath in pending) continue
+                    // The pin check and the unlink share the lease lock: a reader either pins first
+                    // (refused here) or observes the missing file during validation, never a lease
+                    // for a file this loop just removed.
+                    ownership.removeUnpinned(page.file) { files.unlink(page.file); true } ?: continue
                     index.remove(entity)
                     retained -= entity.byteCount
+                    unlinkedDirectories += page.file.parentFile!!
                 }
+                for (directory in unlinkedDirectories) files.syncDirectory(directory)
                 retained
             }
         }
@@ -348,6 +342,17 @@ internal class EngineStorageOwnership(private val owner: Any) {
         prepared.filter { it.publicationId == id }.forEach { consume(it) }
     }
     fun isPinned(file: File): Boolean = synchronized(lock) { (pins[file] ?: 0) > 0 }
+
+    /**
+     * Runs [unlink] only when [file] has no lease, atomically with the pin check under the same lock
+     * [acquire] takes. Either a reader pinned first and the removal is refused, or the unlink lands
+     * before the reader's [acquire] and its validation observes a missing file. The old
+     * check-then-delete outside this lock could interleave: check, reader pins, delete -- evicting a
+     * file a reader holds or handing out a lease for a file already removed.
+     */
+    fun <R> removeUnpinned(file: File, unlink: () -> R): R? = synchronized(lock) {
+        if ((pins[file] ?: 0) > 0) null else unlink()
+    }
     fun paths(): Set<String> = synchronized(lock) {
         (pins.keys + transferring + abandoned + prepared.map { it.page.file }).mapTo(hashSetOf()) {
             "${it.parentFile!!.name}/${it.name}"
