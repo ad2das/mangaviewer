@@ -35,10 +35,12 @@ import org.junit.Test
 /**
  * Reported JVM benchmark (never asserted): before/after evidence for the storage admission split.
  * Page bodies are real 1.5 MB files (1x1 PNG header + padding) so every cold lookup pays a real
- * SHA-256 over the requested size, and the fake package fsyncs cost [FSYNC_MILLIS] each, matching the
- * device's p50 publish op. Gated behind STORAGE_BENCH=1 because it costs about ten seconds per run;
- * run with that variable, plain and with STORAGE_BENCH_LEGACY=1, and paste both outputs into the
- * report; the numbers are the decision input for the final storageRead limit.
+ * SHA-256 over the requested size. The fake package ops still charge [FSYNC_MILLIS] per sync, so a
+ * regression that puts a sync back on the publish path keeps showing its latency; after the fsync
+ * removal the publish path performs no sync at all and the scenario end line proves it. Gated
+ * behind STORAGE_BENCH=1 because it costs about ten seconds per run; run with that variable, plain
+ * and with STORAGE_BENCH_LEGACY=1, and paste both outputs into the report; the numbers are the
+ * decision input for the final storageRead limit.
  */
 class StorageAdmissionBenchmarkTest {
     @Test fun storageAdmissionBenchmark() = runBlocking {
@@ -51,12 +53,15 @@ class StorageAdmissionBenchmarkTest {
         try {
             val activity = WriterActivity()
             val index = ContendedPageIndex(MemoryIndex(), activity)
+            val ops = FsyncLatencyOps(FSYNC_MILLIS, activity)
             val store = EngineRawStorage(
                 root, index, Dispatchers.IO, BenchPositions,
-                FsyncLatencyOps(FSYNC_MILLIS, activity), System::currentTimeMillis, {},
+                ops, System::currentTimeMillis, {},
             )
             val corpus = List(16) { benchId(it) }
             corpus.forEach { store.publish(store.prepare(it, REVISION, BenchStream(BENCH_PAYLOAD).opened())).close() }
+            // Initialization and recovery syncs are outside the publish path under measurement.
+            ops.reset()
             println("[storage-bench] legacySingleLane=${StorageBenchmarkAdapter.isLegacy()} " +
                 "fsyncMillis=$FSYNC_MILLIS payloadBytes=${BENCH_PAYLOAD.size}")
 
@@ -66,6 +71,8 @@ class StorageAdmissionBenchmarkTest {
             laneCoordinator.close()
 
             visibleLookupScenario(scope, store)
+            println("[storage-bench] publishPathSyncCalls=${ops.syncCalls()} " +
+                "(file+directory syncs during the measured scenarios; must be 0 on the fsync-free publish path)")
         } finally {
             scope.cancel()
             root.deleteRecursively()
@@ -213,12 +220,28 @@ class StorageAdmissionBenchmarkTest {
 
     private fun benchId(index: Int) = PageId.at(EpisodeId(SeriesId(SourceId("wfwf"), "30001"), "9"), index)
 
+    /**
+     * Simulates the device's per-sync cost so a sync that reappears on the publish path still
+     * shows up in the scenario timings. The publish path performs no sync after the fsync removal;
+     * the counters let a run prove that instead of asserting it.
+     */
     private class FsyncLatencyOps(
         private val fsyncMillis: Long,
         private val activity: WriterActivity,
     ) : EngineFilePublication {
         private val inner = LocalFileOps()
+        private val fileSyncs = java.util.concurrent.atomic.AtomicInteger()
+        private val directorySyncs = java.util.concurrent.atomic.AtomicInteger()
+
+        fun reset() {
+            fileSyncs.set(0)
+            directorySyncs.set(0)
+        }
+
+        fun syncCalls(): Int = fileSyncs.get() + directorySyncs.get()
+
         override fun syncFile(file: File) {
+            fileSyncs.incrementAndGet()
             activity.inFlight.incrementAndGet()
             try {
                 Thread.sleep(fsyncMillis)
@@ -229,6 +252,7 @@ class StorageAdmissionBenchmarkTest {
         }
         override fun rename(staging: File, destination: File) = inner.rename(staging, destination)
         override fun syncDirectory(directory: File) {
+            directorySyncs.incrementAndGet()
             activity.inFlight.incrementAndGet()
             try {
                 Thread.sleep(fsyncMillis)
@@ -259,8 +283,8 @@ class StorageAdmissionBenchmarkTest {
 
     /**
      * Reproduces the t12 lookup trace inside the JVM: an `index.page` Room read costs
-     * [SLOW_PAGE_MILLIS] while a writer is in flight -- a publish syncFile/syncDirectory or a
-     * journal/commit transaction, the spans the device trace correlated with its slow rows -- and
+     * [SLOW_PAGE_MILLIS] while a writer is in flight -- a journal/commit transaction, the spans
+     * the device trace correlated with its slow rows -- and
      * settles back to the sub-millisecond fast path otherwise. The counters expose how many
      * lookups paid the slow read.
      */
@@ -298,7 +322,7 @@ class StorageAdmissionBenchmarkTest {
         }
     }
 
-    /** Publish work that is inside a sync or an index transaction right now. */
+    /** Publish work that is inside an index transaction right now. */
     private class WriterActivity {
         val inFlight = AtomicInteger()
     }

@@ -115,7 +115,7 @@ class EngineRawStorageTest {
             assertArrayEquals(bytes, previous.page.file.readBytes())
             previous.close()
             val recovered = restarted.find(id, "new")
-            if (failedAt == EnginePublicationStep.FILE_SYNCED) assertNull(recovered)
+            if (failedAt == EnginePublicationStep.STAGED) assertNull(recovered)
             else {
                 assertNotNull(recovered)
                 assertArrayEquals(bytes, recovered!!.page.file.readBytes())
@@ -179,7 +179,7 @@ class EngineRawStorageTest {
         store.discard(prepared)
     }
 
-    @Test fun durablePublicationSyncsStagingDataRenamesThenTheDestinationDirectory() = runTest {
+    @Test fun publicationRenamesWithoutAnyFileOrDirectorySync() = runTest {
         val events = mutableListOf<String>()
         val ops = object : EngineFilePublication {
             override fun syncFile(file: File) { events += "fsync:${file.parentFile!!.name}/${file.name}" }
@@ -194,10 +194,10 @@ class EngineRawStorageTest {
         events.clear()
         val lease = store.publish(prepared)
         lease.close()
-        assertEquals(3, events.size)
-        assertTrue("Expected a staging-file fsync first, got ${events[0]}", events[0].startsWith("fsync:staging/"))
-        assertEquals("rename", events[1])
-        assertEquals("dirsync:pages", events[2])
+        // Initialization syncs the storage root once during prepare(); the publish path itself
+        // must touch no sync op: process-crash protection is the journal/rename/commit order.
+        assertEquals(listOf("rename"), events)
+        checkNotNull(store.find(id, "v1")).close()
     }
 
     @Test fun repeatedLookupsVerifyTheFileOnceAndReuseThePooledBuffer() = runTest {

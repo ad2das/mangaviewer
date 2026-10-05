@@ -4,17 +4,13 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.Files
 import java.util.Base64
-import java.util.concurrent.CyclicBarrier
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -73,8 +69,8 @@ class EnginePublicationBatchTest {
 
         assertEquals(listOf(2), index.stageAllSizes)
         assertEquals(listOf(2), index.commitAllSizes)
-        // One directory sync when trim unlinks its evicted file, one for the whole publish batch.
-        assertEquals(syncsBeforeRelease + 2, ops.pageDirectorySyncs)
+        // Neither the trim eviction nor the publish batch syncs a directory any more.
+        assertEquals(syncsBeforeRelease, ops.pageDirectorySyncs)
         assertTrue(leaseA.page.file.isFile)
         assertTrue(leaseB.page.file.isFile)
         leaseA.close()
@@ -224,7 +220,7 @@ class EnginePublicationBatchTest {
                     assertArrayEqualsPayload(previous.page.file)
                     previous.close()
                     val recovered = restarted.find(entity, "new")
-                    if (failedAt == EnginePublicationStep.FILE_SYNCED) {
+                    if (failedAt == EnginePublicationStep.STAGED) {
                         assertNull("size=$size step=$failedAt must leave the new revision absent", recovered)
                     } else {
                         assertNotNull("size=$size step=$failedAt must recover the new revision", recovered)
@@ -367,49 +363,27 @@ class EnginePublicationBatchTest {
         assertTrue(File(root, "staging").listFiles()!!.isEmpty())
     }
 
-    @Test fun batchStagingSyncsRunConcurrently() = runBlocking {
+    @Test fun publishPerformsNoFileOrDirectorySyncs() = runTest {
         val root = temporary.newFolder()
         val index = RecordingIndex()
-        val barrier = CyclicBarrier(2)
-        val overlapped = AtomicInteger()
-        val armed = java.util.concurrent.atomic.AtomicBoolean(false)
-        val ops = object : EngineFilePublication {
-            private val inner = LocalFileOps()
-            override fun syncFile(file: File) {
-                if (armed.get()) {
-                    barrier.await(5, TimeUnit.SECONDS)
-                    overlapped.incrementAndGet()
-                }
-                inner.syncFile(file)
-            }
-            override fun rename(staging: File, destination: File) = inner.rename(staging, destination)
-            override fun syncDirectory(directory: File) = inner.syncDirectory(directory)
-        }
-        val store = EngineRawStorage(root, index, Dispatchers.IO, BatchPositions, ops, { 100L }, {})
-        store.publish(store.prepare(evictable, "trim", BatchStream(payload).opened())).close()
-        val first = store.prepare(id(1), "v1", BatchStream(payload).opened())
-        val second = store.prepare(id(2), "v1", BatchStream(payload).opened())
-        armed.set(true)
-
-        val gate = CompletableDeferred<Unit>()
-        index.removeEntered = CompletableDeferred()
-        index.removeGate = gate
-        val trim = launch { store.trimTo(0) }
-        index.removeEntered.await()
-
-        val a = async { store.publish(first) }
-        val b = async { store.publish(second) }
-        kotlinx.coroutines.delay(200)
-        gate.complete(Unit)
-        val leaseA = a.await()
-        val leaseB = b.await()
-        trim.join()
-
-        assertEquals("both staging files must fsync on distinct threads", 2, overlapped.get())
+        val ops = SyncCountingFileOps()
+        val store = newStore(root, index, ops)
+        // One-time storage-root initialization and startup recovery may sync; only the publish
+        // path under test must stay free of sync ops.
+        store.recover()
+        ops.reset()
+        val first = prepare(store, id(1), "v1")
+        val second = prepare(store, id(2), "v1")
+        val leaseA = store.publish(first)
+        val leaseB = store.publish(second)
+        assertEquals("publish must not fsync a file", 0, ops.syncFileCalls.get())
+        assertEquals("publish must not fsync a directory", 0, ops.syncDirectoryCalls.get())
         assertArrayEqualsPayload(leaseA.page.file)
         assertArrayEqualsPayload(leaseB.page.file)
         leaseA.close()
         leaseB.close()
+        assertEquals(0, store.ownership().preparedPages)
+        assertEquals(0, store.ownership().fileLeases)
     }
 
     /**
@@ -524,7 +498,7 @@ class EnginePublicationBatchTest {
             assertArrayEqualsPayload(old.page.file)
             old.close()
             val recovered = store.find(id(1), "new")
-            if (failedAt == EnginePublicationStep.FILE_SYNCED) {
+            if (failedAt == EnginePublicationStep.STAGED) {
                 assertNull("step=$failedAt must leave the new revision absent", recovered)
             } else {
                 assertNotNull("step=$failedAt must recover the new revision", recovered)
@@ -677,6 +651,30 @@ private class CountingFileOps : EngineFilePublication {
     override fun rename(staging: File, destination: File) = inner.rename(staging, destination)
     override fun syncDirectory(directory: File) {
         if (directory.name == "pages") pageDirectorySyncs += 1
+        inner.syncDirectory(directory)
+    }
+}
+
+/** Counts every sync op so a test can prove the publish path performs none. */
+private class SyncCountingFileOps : EngineFilePublication {
+    private val inner = LocalFileOps()
+    val syncFileCalls = AtomicInteger()
+    val syncDirectoryCalls = AtomicInteger()
+
+    fun reset() {
+        syncFileCalls.set(0)
+        syncDirectoryCalls.set(0)
+    }
+
+    override fun syncFile(file: File) {
+        syncFileCalls.incrementAndGet()
+        inner.syncFile(file)
+    }
+
+    override fun rename(staging: File, destination: File) = inner.rename(staging, destination)
+
+    override fun syncDirectory(directory: File) {
+        syncDirectoryCalls.incrementAndGet()
         inner.syncDirectory(directory)
     }
 }

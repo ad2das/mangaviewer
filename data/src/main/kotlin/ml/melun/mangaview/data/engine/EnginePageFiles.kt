@@ -159,13 +159,31 @@ internal class EnginePageFiles(private val root: File, private val operations: E
     fun syncFile(file: File) = operations.syncFile(file)
 
     /**
-     * Makes a staged file visible under its immutable destination name. The durable publish
-     * sequence is syncFile(staging) -> rename -> syncDirectory(destination.parentFile): the data
-     * must be on disk before the name becomes visible, and only the destination directory entry
-     * needs syncing after. The staging directory is deliberately not synced here: its only durable
-     * content is the staging name, and a crash that loses that directory entry leaves a journal
-     * whose stage is missing — recovery treats a missing stage as an abandoned, uncommitted
-     * publication and re-fetches, which is exactly the state before the rename.
+     * Makes a staged file visible under its immutable destination name with one rename. No fsync
+     * is taken: the page cache survives a process crash, so the journal -> rename -> commit order
+     * in the publication batch is what protects against process death, and the storage row's own
+     * WAL commit never fsyncs either, so per-file fsyncs bought no end-to-end power-loss guarantee.
+     *
+     * Correctness after an OS crash or power loss rests on validation instead of fsync:
+     * - A renamed or committed file may be missing, truncated or zero-filled. [valid] re-digests a
+     *   body whenever its size/mtime stamp is not in this process's cache, and the cache starts
+     *   empty, so the first find of a new process rejects a damaged file and the page work then
+     *   re-fetches it. Publishing over an invalid unpinned committed body replaces it through the
+     *   batch's replace path.
+     * - Every reader of committed bytes holds a lease obtained from EngineRawStorage.find()
+     *   (which runs [valid] first) or from publish() in the process that digested the bytes during
+     *   [transfer]. That holds for the decoder input (EnginePageWork -> EnginePixelWork), complete
+     *   episode resume (EngineCompleteEpisodeStore.acquire -> storage.find) and the opening pixel
+     *   preparation (EngineOpeningPixels -> work.page); no export or share path reads page bytes.
+     * - Journal recovery (EngineRawStorage.recoverJournalLocked) re-validates the destination and
+     *   only heals from a staged copy that [valid] accepts; a missing stage or a torn destination
+     *   resolves to abandoned or invalid, never to a committed row serving torn bytes.
+     * - An unlink whose directory entry survives a power loss reappears as an orphan: the next
+     *   initialize()'s [removeOrphans] pass deletes it unless a journal, committed row or lease
+     *   protects it, and any row that lost its file fails [valid] on the next find.
+     *
+     * Residual risk, accepted for a cache: a localOnly complete episode can lose pages on power
+     * loss and then report "no longer available" until it is re-downloaded.
      */
     fun publish(staging: File, destination: File) {
         check(!destination.exists()) { "Immutable destination already exists" }
@@ -174,14 +192,16 @@ internal class EnginePageFiles(private val root: File, private val operations: E
 
     fun syncDirectory(directory: File) = operations.syncDirectory(directory)
 
+    /** Unlink plus a directory sync for the callers that must make the removal durable now. */
     fun delete(file: File) {
         unlink(file)
         syncDirectory(file.parentFile!!)
     }
 
     /**
-     * Removes the directory entry only; the caller owns directory durability. Trim batches one
-     * sync per distinct directory after its loop instead of one sync per evicted file.
+     * Removes the directory entry only; the caller owns directory durability. Trim and invalidate
+     * rely on validation on the next find after a power loss instead of a directory sync: a
+     * rolled-back unlink simply reappears as an orphan the next initialize() can see.
      */
     fun unlink(file: File) {
         forgetVerified(file)

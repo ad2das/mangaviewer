@@ -28,7 +28,7 @@ class EngineStorageInstrumentedTest {
         Base64.DEFAULT,
     )
 
-    @Test fun realFileSyncAndRoomRecoveryAtEveryPublicationBoundary() = runBlocking {
+    @Test fun realFileAndRoomRecoveryAtEveryPublicationBoundary() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         for (boundary in EnginePublicationStep.entries) {
             val name = "engine-storage-${System.nanoTime()}.db"
@@ -43,7 +43,7 @@ class EngineStorageInstrumentedTest {
                 val recovered = store(root, db)
                 recovered.recover()
                 val lease = recovered.find(id, "v1")
-                if (boundary == EnginePublicationStep.FILE_SYNCED) assertNull(lease)
+                if (boundary == EnginePublicationStep.STAGED) assertNull(lease)
                 else {
                     assertNotNull(lease)
                     assertArrayEquals(bytes, lease!!.page.file.readBytes())

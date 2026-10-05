@@ -2,10 +2,6 @@ package ml.melun.mangaview.data.engine
 
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import ml.melun.mangaview.data.cache.PageCacheKey
 import ml.melun.mangaview.data.db.EnginePageEntity
 import ml.melun.mangaview.data.db.EnginePublicationEntity
@@ -20,18 +16,18 @@ import ml.melun.mangaview.engine.api.StoredPageLease
  * staged alongside it: it goes back to the front of the queue and resolves against the committed
  * row on the owner's next pass, exactly like the serial path.
  *
- * The batch keeps the per-page durability sequence byte-for-byte: sync each staging file, one journal
- * transaction, per-page rename (isolated), one directory sync per distinct destination directory,
- * one commit transaction. A page's named failures (length, revision conflict, still-leased corrupt
- * body, staging sync, rename) fail only that page; the batch-wide steps (journal transaction,
- * directory sync, commit transaction) fail the pages they cover, whose journals stay durable and are
- * healed independently by recovery.
+ * The batch keeps the per-page durability sequence byte-for-byte: one journal transaction, per-page
+ * rename (isolated), one commit transaction. No fsync is taken on this path: process-crash
+ * protection is the journal/rename/commit order, and power-loss damage is rejected by digest
+ * validation on the first find in a new process (see EnginePageFiles.publish). A page's named
+ * failures (length, revision conflict, still-leased corrupt body, rename) fail only that page; the
+ * batch-wide steps (journal transaction, commit transaction) fail the pages they cover, whose
+ * journals stay durable and are healed independently by recovery.
  */
 internal class EnginePublicationBatcher(
     private val files: EnginePageFiles,
     private val index: EnginePublicationIndex,
     private val ownership: EngineStorageOwnership,
-    private val ioDispatcher: CoroutineDispatcher,
     private val nowMillis: () -> Long,
     private val checkpoint: suspend (EnginePublicationStep) -> Unit,
     private val published: EnginePublishedPages,
@@ -77,16 +73,17 @@ internal class EnginePublicationBatcher(
         val ready = stageReady(batch)
         if (ready.isEmpty()) return
 
-        val synced = syncReadyFiles(ready)
-        if (synced.isEmpty()) return
-        checkpoint(EnginePublicationStep.FILE_SYNCED)
-        synced.forEach { it.handle.state = EnginePreparedState.RECOVERY }
-        if (!stageJournals(synced)) return
+        // Staging files were already written and digested by transfer(). No fsync is taken here:
+        // the journal/rename/commit order below protects against a process crash, and the page
+        // cache survives one. A power loss can leave a torn destination, which the next process
+        // rejects on its first find because the verification cache starts empty.
+        checkpoint(EnginePublicationStep.STAGED)
+        ready.forEach { it.handle.state = EnginePreparedState.RECOVERY }
+        if (!stageJournals(ready)) return
 
-        val renamed = renameReady(synced)
+        val renamed = renameReady(ready)
         if (renamed.isEmpty()) return
         checkpoint(EnginePublicationStep.RENAMED)
-        if (!syncDirectories(renamed)) return
         if (!commitRenamed(renamed)) return
         // The committed name is visible to readers without the mutex: seed each destination's
         // verification stamp now, from the post-rename file, so the first find trusts the digest
@@ -132,7 +129,7 @@ internal class EnginePublicationBatcher(
                         // valid() proved (or its own stamp already covered) the committed body; make
                         // the seeding explicit so both resolution paths leave the same proof behind.
                         files.rememberVerified(committed.file)
-                        files.delete(handle.page.file)
+                        files.unlink(handle.page.file)
                         ownership.consume(handle)
                         request.complete(ownership.acquire(committed))
                         continue
@@ -160,21 +157,6 @@ internal class EnginePublicationBatcher(
         return ready
     }
 
-    /** Syncs staging files concurrently; syncs on distinct files are independent. */
-    private suspend fun syncReadyFiles(ready: List<ReadyPage>): List<ReadyPage> = coroutineScope {
-        ready.map { page ->
-            page to async(ioDispatcher) {
-                try {
-                    files.syncFile(page.handle.page.file)
-                    true
-                } catch (error: Throwable) {
-                    page.request.fail(error)
-                    false
-                }
-            }
-        }.mapNotNull { (page, attempt) -> if (attempt.await()) page else null }
-    }
-
     /** One journal transaction for the batch; a failure covers every page in it. */
     private suspend fun stageJournals(synced: List<ReadyPage>): Boolean {
         try {
@@ -192,7 +174,10 @@ internal class EnginePublicationBatcher(
         val renamed = ArrayList<ReadyPage>(synced.size)
         for (page in synced) {
             try {
-                if (page.destination.exists()) files.delete(page.destination)
+                // Replace path (an invalid unpinned committed body). The unlink takes no directory
+                // sync: after a power loss the stale entry reappears and the next find re-validates
+                // it, and a process crash loses nothing with the page cache intact.
+                if (page.destination.exists()) files.unlink(page.destination)
                 files.publish(page.handle.page.file, page.destination)
                 renamed += page
             } catch (error: Throwable) {
@@ -200,20 +185,6 @@ internal class EnginePublicationBatcher(
             }
         }
         return renamed
-    }
-
-    /** One directory sync per distinct destination directory; failure covers the renamed pages. */
-    private suspend fun syncDirectories(renamed: List<ReadyPage>): Boolean {
-        for (directory in renamed.mapTo(linkedSetOf()) { it.destination.parentFile!! }) {
-            try {
-                files.syncDirectory(directory)
-            } catch (error: Throwable) {
-                renamed.forEach { it.request.fail(error) }
-                return false
-            }
-        }
-        checkpoint(EnginePublicationStep.DIRECTORY_SYNCED)
-        return true
     }
 
     /** One commit transaction for the batch; a failure leaves durable journals for recovery. */
@@ -230,8 +201,8 @@ internal class EnginePublicationBatcher(
             return false
         }
         published.confirmTouches(touches)
-        // Committed rows become visible to lock-free readers here; the file behind each is renamed,
-        // directory-synced and committed, so any find that observes one validates a durable body.
+        // Committed rows become visible to lock-free readers here; the file behind each is renamed
+        // and committed, so a find that observes one re-validates the body before leasing it.
         for (page in renamed) published.put(page.entity)
         return true
     }

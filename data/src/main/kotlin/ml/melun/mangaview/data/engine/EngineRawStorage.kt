@@ -23,12 +23,23 @@ import ml.melun.mangaview.engine.api.StoredPage
 import ml.melun.mangaview.engine.api.StoredPageLease
 import ml.melun.mangaview.source.OpenedPage
 
-enum class EnginePublicationStep { FILE_SYNCED, JOURNALED, RENAMED, DIRECTORY_SYNCED, COMMITTED }
+enum class EnginePublicationStep { STAGED, JOURNALED, RENAMED, COMMITTED }
 
 class ImmutableRevisionConflictException : IllegalStateException("Content revision has a different immutable body")
 class EnginePageInUseException : IllegalStateException("Corrupt publication is still leased")
 
-/** Sole owner of publication transitions, prepared bodies and file lease admission. */
+/**
+ * Sole owner of publication transitions, prepared bodies and file lease admission.
+ *
+ * Durability against process crashes comes from the batch order: journal -> rename -> commit.
+ * No fsync is taken on the publish, trim or invalidate paths. After an OS crash or power loss a
+ * committed file may be missing, truncated or zero-filled, and every reader rejects such a body
+ * on the first find in a new process because [EnginePageFiles.valid] re-digests it (the
+ * verification cache is process-local and empty at start). Journal recovery re-validates the same
+ * way and never commits a torn body. Residual risk, accepted for a cache: an offline (localOnly)
+ * complete episode can lose pages on power loss and then reports "no longer available" until it
+ * is re-downloaded. See [EnginePageFiles.publish] for the full argument.
+ */
 class EngineRawStorage(
     root: File,
     private val index: EnginePublicationIndex,
@@ -42,7 +53,7 @@ class EngineRawStorage(
     private val files = EnginePageFiles(root, fileOps)
     private val ownership = EngineStorageOwnership(this)
     private val published = EnginePublishedPages()
-    private val batcher = EnginePublicationBatcher(files, index, ownership, ioDispatcher, nowMillis, checkpoint, published)
+    private val batcher = EnginePublicationBatcher(files, index, ownership, nowMillis, checkpoint, published)
     @Volatile private var initialized = false
 
     override suspend fun prepare(pageId: PageId, contentRevision: String, opened: OpenedPage): PreparedPage =
@@ -141,11 +152,12 @@ class EngineRawStorage(
             val entity = published.get(PageCacheKey.of(page.pageId), page.contentRevision) ?: return@withLock
             val committed = entity.stored(files)
             files.forgetVerified(committed.file)
-            // Same atomic rule as trim: never unlink a file some lease pins.
+            // Same atomic rule as trim: never unlink a file some lease pins. No directory sync:
+            // if power loss rolls the unlink back, the file reappears and the next find re-validates
+            // it (or removeOrphans removes it once its row is gone).
             ownership.removeUnpinned(committed.file) { files.unlink(committed.file); true } ?: return@withLock
             index.remove(entity)
             published.remove(entity)
-            files.syncDirectory(committed.file.parentFile!!)
         }
     }
 
@@ -288,7 +300,6 @@ class EngineRawStorage(
                 val pages = index.pages().sortedBy { published.lastAccess(it) }
                 var retained = pages.fold(0L) { sum, page -> Math.addExact(sum, page.byteCount) }
                 val pending = index.journals().mapTo(hashSetOf()) { it.destinationRelativePath }
-                val unlinkedDirectories = linkedSetOf<File>()
                 for (entity in pages) {
                     if (retained <= targetBytes) break
                     val page = entity.stored(files)
@@ -300,9 +311,11 @@ class EngineRawStorage(
                     index.remove(entity)
                     published.remove(entity)
                     retained -= entity.byteCount
-                    unlinkedDirectories += page.file.parentFile!!
                 }
-                for (directory in unlinkedDirectories) files.syncDirectory(directory)
+                // No directory sync after the loop: if power loss rolls an unlink back, the file
+                // reappears as an orphan and the next initialize()'s removeOrphans pass deletes it
+                // (no journal, row or lease protects it); a row whose file vanished fails validation
+                // on find and is re-fetched. The eviction order is an LRU hint, not durable state.
                 retained
             }
         }

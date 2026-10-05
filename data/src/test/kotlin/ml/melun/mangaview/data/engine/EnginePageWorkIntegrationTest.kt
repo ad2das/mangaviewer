@@ -230,7 +230,7 @@ class EnginePageWorkIntegrationTest {
 
     @Test fun failedPublicationCleansStagingWithoutRetryingImageTransfer() = runTest {
         val coordinator = WorkCoordinator(this)
-        val store = store { if (it == EnginePublicationStep.FILE_SYNCED) throw IOException("fsync checkpoint") }
+        val store = store { if (it == EnginePublicationStep.STAGED) throw IOException("staged checkpoint") }
         val plan = plan(mirror = true)
         var calls = 0
         val factory = factory(store, SourceTransport { calls++; response(Body()) })
