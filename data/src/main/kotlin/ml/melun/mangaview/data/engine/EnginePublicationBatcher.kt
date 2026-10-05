@@ -87,9 +87,15 @@ internal class EnginePublicationBatcher(
         checkpoint(EnginePublicationStep.RENAMED)
         if (!syncDirectories(renamed)) return
         if (!commitRenamed(renamed)) return
-        // Consume before the checkpoint: a checkpoint failure after the commit must not leave the
-        // committed handles registered as prepared (RECOVERY), where orphan cleanup cannot reach them.
-        renamed.forEach { ownership.consume(it.handle) }
+        // The committed name is visible to readers without the mutex: seed each destination's
+        // verification stamp now, from the post-rename file, so the first find trusts the digest
+        // transfer() already took instead of re-reading the body beside visible decodes. Then
+        // consume before the checkpoint: a checkpoint failure must not leave committed handles
+        // registered as prepared (RECOVERY), where orphan cleanup cannot reach them.
+        for (page in renamed) {
+            files.rememberVerified(page.destination)
+            ownership.consume(page.handle)
+        }
         checkpoint(EnginePublicationStep.COMMITTED)
         completeRenamed(renamed)
     }
@@ -118,6 +124,9 @@ internal class EnginePublicationBatcher(
                     val committed = existing.stored(files)
                     if (!handle.page.sameBody(committed)) throw ImmutableRevisionConflictException()
                     if (files.valid(committed)) {
+                        // valid() proved (or its own stamp already covered) the committed body; make
+                        // the seeding explicit so both resolution paths leave the same proof behind.
+                        files.rememberVerified(committed.file)
                         files.delete(handle.page.file)
                         ownership.consume(handle)
                         request.complete(ownership.acquire(committed))

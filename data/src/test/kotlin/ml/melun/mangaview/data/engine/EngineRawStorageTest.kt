@@ -200,13 +200,24 @@ class EngineRawStorageTest {
     }
 
     @Test fun repeatedLookupsVerifyTheFileOnceAndReuseThePooledBuffer() = runTest {
-        val store = store(temporary.newFolder(), MemoryIndex())
-        val lease = store.publish(store.prepare(id, "v1", Body(bytes).opened()))
-        lease.close()
-        assertEquals(0, store.pageFileStats().digestPasses)
-        repeat(4) { checkNotNull(store.find(id, "v1")).close() }
-        assertEquals(1, store.pageFileStats().digestPasses)
-        assertEquals(1, store.pageFileStats().bufferAllocations)
+        val root = temporary.newFolder()
+        val index = MemoryIndex()
+        val publisher = store(root, index)
+        publisher.publish(publisher.prepare(id, "v1", Body(bytes).opened())).close()
+
+        // The publishing owner seeded the stamp with the digest transfer() already took: its own
+        // lookups must not re-read the body.
+        assertEquals(0, publisher.pageFileStats().digestPasses)
+        repeat(4) { checkNotNull(publisher.find(id, "v1")).close() }
+        assertEquals(0, publisher.pageFileStats().digestPasses)
+
+        // A fresh owner on the same root has an empty verification cache, as after a process
+        // restart: its first lookup re-verifies once and the rest reuse the stamp and pooled buffer.
+        val restarted = store(root, index)
+        assertEquals(0, restarted.pageFileStats().digestPasses)
+        repeat(4) { checkNotNull(restarted.find(id, "v1")).close() }
+        assertEquals(1, restarted.pageFileStats().digestPasses)
+        assertEquals(1, restarted.pageFileStats().bufferAllocations)
     }
 
     @Test fun decodeFailureInvalidationEvictsTheUnpinnedPublication() = runTest {

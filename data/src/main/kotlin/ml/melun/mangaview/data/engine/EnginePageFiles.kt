@@ -144,6 +144,18 @@ internal class EnginePageFiles(private val root: File, private val operations: E
         synchronized(verificationLock) { verification.remove(file.path) }
     }
 
+    /**
+     * Seeds the verification stamp for a body this process produced durably. The publication path
+     * calls it after a rename and commit: transfer() digested exactly the bytes it wrote to a
+     * process-private staging name, the prepared length was checked, and rename preserved size and
+     * mtime, so a full re-read in [valid] would only repeat that digest -- and it would pay for it
+     * beside visible decodes on the same few cores. The stamp is read from [file] after the rename,
+     * so any later write changes size or mtime and forces [valid] back to a full digest.
+     */
+    fun rememberVerified(file: File) {
+        rememberVerified(file, FileStamp.of(file))
+    }
+
     fun syncFile(file: File) = operations.syncFile(file)
 
     /**
@@ -230,7 +242,12 @@ internal class EnginePageFiles(private val root: File, private val operations: E
 
     companion object {
         const val BUFFER_BYTES = 64 * 1024
-        private const val VERIFIED_CACHE_ENTRIES = 256
+
+        // The app bounds the raw page cache to 1 GiB; at the measured ~1.5 MB pages that is ~680
+        // resident files, and under 2100 even at 512 KB pages. Keep every resident file's stamp so a
+        // warm horizon never evicts an entry it will read again; an entry is a path plus two longs,
+        // so the worst case stays under a megabyte.
+        private const val VERIFIED_CACHE_ENTRIES = 2048
         private const val MAX_POOLED_BUFFERS = 4
         private val STAGING_NAME = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.part")
         private val PAGE_NAME = Regex("[0-9a-f]{64}-[0-9a-f]{64}-[0-9a-f]{64}\\.page")
