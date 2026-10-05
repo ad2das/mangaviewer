@@ -25,6 +25,8 @@ internal class RenderWorkCache {
     private var retainedBytes = 0L
     private var residentOrder: List<EngineTileSpec> = emptyList()
     private var reconcileKey: ReconcileKey? = null
+    /** The demand list last built for [reconcileKey]; a key hit re-reconciles this same instance. */
+    private var builtDemands: List<SessionDemand<*>>? = null
 
     fun clear() {
         plannedSnapshot = null
@@ -34,6 +36,7 @@ internal class RenderWorkCache {
         retainedBytes = 0L
         residentOrder = emptyList()
         reconcileKey = null
+        builtDemands = null
     }
 
     /** The same snapshot always plans identically; a drain that repeats for it reuses the plan. */
@@ -76,9 +79,9 @@ internal class RenderWorkCache {
     }
 
     /**
-     * Runs the demand rebuild and the work-set reconcile only when the merged demands, access
-     * plans, generation, or failed read-ahead set changed. A failed read-ahead always recomputes:
-     * its retry backoff lives inside the work set, and only a reconcile pass restarts it.
+     * Rebuilds the demands only when the merged demands, access plans, generation, or failed
+     * read-ahead set changed. A key hit still reconciles the previously built list instance so the
+     * work set can restart a failed tile whose retry backoff elapsed; only the rebuild is skipped.
      */
     fun reconcile(
         plan: EngineTilePlan,
@@ -87,12 +90,19 @@ internal class RenderWorkCache {
         reconcileWork: (List<SessionDemand<*>>) -> Unit,
         compute: () -> List<SessionDemand<*>>,
     ) {
-        val key = ReconcileKey(plan.demands, snapshot.plans, snapshot.session.generation, failed.toList())
         val cached = reconcileKey
-        if (failed.isEmpty() && cached != null && cached.matches(key)) return
-        val built = compute()
-        reconcileKey = key
-        reconcileWork(built)
+        val built = builtDemands
+        if (cached != null && built != null &&
+            cached.matches(plan.demands, snapshot.plans, snapshot.session.generation, failed)
+        ) {
+            reconcileWork(built)
+            return
+        }
+        val rebuilt = compute()
+        reconcileKey = ReconcileKey(plan.demands, snapshot.plans, snapshot.session.generation,
+            if (failed.isEmpty()) emptyList() else failed.toList())
+        builtDemands = rebuilt
+        reconcileWork(rebuilt)
     }
 
     private fun matchesResident(current: Collection<EngineTileSpec>): Boolean {
@@ -124,8 +134,13 @@ internal class RenderWorkCache {
         val generation: Long,
         val failed: List<EngineTileSpec>,
     ) {
-        fun matches(other: ReconcileKey): Boolean =
-            demands == other.demands && plans === other.plans && generation == other.generation &&
-                failed == other.failed
+        fun matches(
+            demands: List<EngineTileDemand>,
+            plans: Map<EpisodeId, EpisodeAccessPlan>,
+            generation: Long,
+            failed: Set<EngineTileSpec>,
+        ): Boolean =
+            this.demands == demands && this.plans === plans && this.generation == generation &&
+                this.failed.size == failed.size && failed.containsAll(this.failed)
     }
 }

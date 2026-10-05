@@ -60,9 +60,11 @@ class EngineRenderRuntime(
     private val tileTimings: EngineTileTimingObserver = NoopEngineTileTimingObserver,
     /** Optional dispatch for a demand's await/accept coroutine; null keeps the scope's. */
     private val demandDispatcher: CoroutineDispatcher? = null,
+    /** Optional work-set clock for failure-retry backoff; the default reads the system clock. */
+    private val workClock: () -> Long = System::nanoTime,
 ) {
     private val owner = Thread.currentThread()
-    private val work = SessionWorkSet(scope, coordinator, reportFailure, demandDispatcher)
+    private val work = SessionWorkSet(scope, coordinator, reportFailure, demandDispatcher, clock = workClock)
     private val textures = linkedMapOf<EngineTileSpec, EngineTexture>()
     private val tileDemands = linkedMapOf<EngineTileSpec, CachedTileDemand>()
     private val failedReadAhead = linkedSetOf<EngineTileSpec>()

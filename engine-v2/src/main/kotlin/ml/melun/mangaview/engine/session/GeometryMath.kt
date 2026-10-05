@@ -182,7 +182,7 @@ internal class BigRational private constructor(
     }
 }
 
-/** Reduced Long construction; callers guarantee denominator > 0 and the result not zero. */
+/** Reduced Long construction; callers guarantee denominator > 0. A zero numerator returns ZERO. */
 private fun canonicalLong(n: Long, d: Long): BigRational {
     if (n == 0L) return BigRational.ZERO
     if (n == Long.MIN_VALUE) {

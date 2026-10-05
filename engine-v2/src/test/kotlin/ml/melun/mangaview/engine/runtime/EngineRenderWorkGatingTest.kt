@@ -2,6 +2,7 @@ package ml.melun.mangaview.engine.runtime
 
 import java.io.File
 import java.lang.management.ManagementFactory
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -61,6 +62,31 @@ class EngineRenderWorkGatingTest {
         fixture.close()
     }
 
+    /**
+     * A visible tile that failed is retried even when the viewport never leaves its tile band: the
+     * cached reconcile still hands the work set its built demands, so the due backoff restarts it.
+     */
+    @Test
+    fun failedVisibleTileRetriesWhileTheViewportStaysInTheBand() = runTest {
+        var now = 0L
+        var failures = 0
+        val fixture = Fixture(this, pageHeight = 150, failFirstPageRead = true,
+            workClock = { now }, reportFailure = { _, _ -> failures++ })
+        fixture.update(0, 1)
+        runCurrent()
+        assertEquals("the first read fails once", 1, failures)
+        assertEquals("the failed read was attempted once", 1, fixture.pageExecutions.get())
+        assertTrue("a failed tile is not resident", fixture.resident().isEmpty())
+
+        now += 2_000_000_000L
+        fixture.update(20, 2)
+        runCurrent()
+        assertEquals("the due retry re-executes the page read", 2, fixture.pageExecutions.get())
+        assertEquals("the retried tile becomes resident", 1, fixture.resident().size)
+        assertEquals("the retry reports no new failure", 1, failures)
+        fixture.close()
+    }
+
     /** Reported JVM benchmark (never asserted): per-segment cost of same-band fling segments. */
     @Test
     fun sameBandSegmentCost() = runTest {
@@ -91,12 +117,16 @@ class EngineRenderWorkGatingTest {
         scope: TestScope,
         pageHeight: Int = 1000,
         budgetBytes: Long = 400_000,
+        failFirstPageRead: Boolean = false,
+        workClock: () -> Long = System::nanoTime,
+        reportFailure: ((WorkKey<*>, Throwable) -> Unit)? = null,
     ) {
         val tracer = RecordingTracer()
         val coordinator = WorkCoordinator(scope)
         val uploader = Uploader()
         val scenes = mutableListOf<EngineDrawScene>()
         var pageRequestBuilds = 0
+        val pageExecutions = AtomicInteger()
         private val dimensions = PageDimensions(100, pageHeight)
         private val plans = emptyMap<EpisodeId, EpisodeAccessPlan>()
         private val pages = mapOf(id to PageContentIdentity(id, "1", "1".repeat(64), dimensions, 1))
@@ -114,6 +144,8 @@ class EngineRenderWorkGatingTest {
                 WorkRequest(
                     WorkKey("test", "page", "read", "1", StoredPage::class.java), WorkDomain.STORAGE, priority,
                     execute = {
+                        val attempt = pageExecutions.incrementAndGet()
+                        if (failFirstPageRead && attempt == 1) error("transient page read failure")
                         StoredPage(id, "1", File("original.png"), 1, "1".repeat(64), dimensions, "image/png")
                     },
                     dispose = {},
@@ -124,10 +156,11 @@ class EngineRenderWorkGatingTest {
                 uploader.scene(scene.quads.map { it.texture.key }.toSet())
             },
             { uploader.scene(emptySet()) },
-            { _, failure -> error("unexpected failure: $failure") },
+            reportFailure ?: { _, failure -> error("unexpected failure: $failure") },
             waitForCompleteViewport = false,
             reportSceneFailure = { error("unexpected scene failure: $it") },
             tracer = tracer,
+            workClock = workClock,
         )
 
         fun update(anchorPx: Int, inputRevision: Long) {
@@ -146,6 +179,8 @@ class EngineRenderWorkGatingTest {
                 EngineRuntimeSnapshot(state, plans, pages),
             )
         }
+
+        fun resident(): Set<EngineTileSpec> = runtime.diagnosticSnapshot().residentTextureTiles
 
         suspend fun close() {
             runtime.close()

@@ -55,6 +55,13 @@ internal class SessionWorkSet(
     private var reconciled: List<SessionDemand<*>>? = null
     private var closed = false
     private var cleanupFailure: Throwable? = null
+    /**
+     * Earliest [Entry.retryAtNanos] among failed entries, or [Long.MAX_VALUE] when none waits. A
+     * reconcile whose failures are not yet due can then skip the retry scan entirely.
+     */
+    private var nextRetryAtNanos = Long.MAX_VALUE
+    /** Test seam: how many retry scans ran; the due check must return before any scan. */
+    internal var retryScans = 0
 
     fun reconcile(demands: List<SessionDemand<*>>) {
         checkOwner()
@@ -80,6 +87,7 @@ internal class SessionWorkSet(
         checkOwner()
         reconciled = null
         desired = emptyMap()
+        nextRetryAtNanos = Long.MAX_VALUE
         entries.values.toList().forEach(::retire)
     }
 
@@ -87,28 +95,53 @@ internal class SessionWorkSet(
         checkOwner()
         reconciled = null
         reapFinished()
+        var removed = false
         entries.values.filter { it.failed }.forEach {
-            if (it.job?.isCompleted == true) entries.remove(it.key) else it.retryRequested = true
+            if (it.job?.isCompleted == true) {
+                entries.remove(it.key)
+                removed = true
+            } else it.retryRequested = true
         }
+        if (removed) refreshNextRetry()
         desired.values.forEach(::startIfAbsent)
     }
 
     /**
      * A failed demand whose backoff elapsed restarts while it is still desired: a transient work
      * failure must not park the boundary for the rest of the session. The owning reconcile pass
-     * relaunches every desired key afterwards, so this only drops the spent entry.
+     * relaunches every desired key afterwards, so this only drops the spent entry. [nextRetryAtNanos]
+     * makes the common case — nothing due yet — a single clock read with no scan.
      */
     private fun retryDueFailures(): Boolean {
         val now = clock()
+        if (now < nextRetryAtNanos) return false
+        retryScans++
         var restarted = false
+        var earliest = Long.MAX_VALUE
         entries.values.toList().forEach { entry ->
-            if (entry.failed && entry.job?.isCompleted == true && now >= entry.retryAtNanos) {
-                if (entries[entry.key] === entry) entries.remove(entry.key)
-                System.err.println("EngineWork retry key=${entry.key}")
-                restarted = true
+            if (entry.failed && entry.job?.isCompleted == true) {
+                if (now >= entry.retryAtNanos) {
+                    if (entries[entry.key] === entry) entries.remove(entry.key)
+                    System.err.println("EngineWork retry key=${entry.key}")
+                    restarted = true
+                } else {
+                    earliest = minOf(earliest, entry.retryAtNanos)
+                }
             }
         }
+        if (restarted) nextRetryAtNanos = earliest
         return restarted
+    }
+
+    /** Recomputes [nextRetryAtNanos] after failed entries were removed or retried. */
+    private fun refreshNextRetry() {
+        var earliest = Long.MAX_VALUE
+        entries.values.forEach { entry ->
+            if (entry.failed && entry.job?.isCompleted == true) {
+                earliest = minOf(earliest, entry.retryAtNanos)
+            }
+        }
+        nextRetryAtNanos = earliest
     }
 
     fun ownership(): SessionWorkOwnership {
@@ -190,6 +223,7 @@ internal class SessionWorkSet(
             desired[entry.key]?.let(::startIfAbsent)
         } else {
             entry.retryAtNanos = clock() + retryDelayNanos
+            if (entry.retryAtNanos < nextRetryAtNanos) nextRetryAtNanos = entry.retryAtNanos
         }
     }
 
@@ -212,16 +246,20 @@ internal class SessionWorkSet(
     // run(), so finish() never removes its entry. Any completed job that isn't failed is such a
     // zombie — completed jobs that ran always removed themselves unless they failed.
     private fun reapFinished() {
+        var removed = false
         entries.values.toList().forEach { entry ->
             if (entry.job?.isCompleted == true && (!entry.failed || entry.retiring)) {
                 entries.remove(entry.key)
+                removed = true
             }
         }
+        if (removed) refreshNextRetry()
     }
 
     private fun retire(entry: Entry) {
         if (entry.job?.isCompleted == true) {
             entries.remove(entry.key)
+            if (entry.failed) refreshNextRetry()
             return
         }
         entry.retiring = true
