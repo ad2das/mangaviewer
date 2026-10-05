@@ -49,9 +49,12 @@ class HttpEngineSourceTransport(
     }
     private val timeoutExecutor: ScheduledExecutorService =
         ScheduledThreadPoolExecutor(1) { runnable ->
-            Thread(runnable, "source-http-engine-timeout").apply {
-                priority = Thread.NORM_PRIORITY - 1
-            }
+            Thread({
+                // Timeout expiry must not inherit the nice of whichever thread triggered the
+                // first request on this client (the UI thread is -10); it is a source thread.
+                Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT)
+                runnable.run()
+            }, "source-http-engine-timeout")
         }.apply { removeOnCancelPolicy = true }
     private val engineLock = Any()
     private val engines = mutableMapOf<String, EngineEntry>()
@@ -60,6 +63,7 @@ class HttpEngineSourceTransport(
     private var engineUseSequence = 0L
     private val exchanges = TransportResourceOwner<HttpEngineExchange>()
     private val bodies = TransportResourceOwner<HttpEngineBodyPageStream>()
+    private val readBuffers = DirectByteBufferPool()
     private val bodyReadScheduler = HttpEngineBodyReadScheduler(maximumSimultaneousBodyReads)
     private val closed = AtomicBoolean(false)
     private val resourcesClosed = AtomicBoolean(false)
@@ -144,6 +148,7 @@ class HttpEngineSourceTransport(
                 bodyReadScheduler = bodyReadScheduler,
                 initialPriority = sourceRequest.priority,
                 readTiming = readTiming,
+                readBuffers = readBuffers,
             )
         }.getOrElse {
             continuation.resumeWithException(it)
@@ -354,6 +359,7 @@ class HttpEngineSourceTransport(
         }
         callbackExecutor.shutdown()
         timeoutExecutor.shutdown()
+        readBuffers.close()
     }
 
     private data class EngineLease(val key: String, val engine: HttpEngine)

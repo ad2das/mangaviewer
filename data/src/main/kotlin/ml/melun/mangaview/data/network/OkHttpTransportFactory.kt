@@ -45,7 +45,9 @@ class OkHttpTransportFactory(
     ): ml.melun.mangaview.source.SourceTransport {
         val dns = EncryptedSourceDns()
         val relay = LocalTlsRelay(dns)
-        val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
+        val dispatcher = Dispatcher(defaultPriorityExecutor("source-okhttp-relay")).apply {
+            maxRequestsPerHost = 16
+        }
         val builder = OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .proxy(relay.proxy)
@@ -71,7 +73,9 @@ class OkHttpTransportFactory(
      * a host outside [ProviderImageTrust]; [ProviderImageTransport] enforces that routing.
      */
     fun createForProviderImages(cookieJar: CookieJar = CookieJar.NO_COOKIES): OkHttpSourceTransport {
-        val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
+        val dispatcher = Dispatcher(defaultPriorityExecutor("source-okhttp-provider")).apply {
+            maxRequestsPerHost = 16
+        }
         val client = OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .dns(ProviderImageDns())
@@ -96,7 +100,9 @@ class OkHttpTransportFactory(
         cookieJar: CookieJar = CookieJar.NO_COOKIES,
         headers: Map<String, String> = emptyMap(),
     ): OkHttpSourceTransport {
-        val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
+        val dispatcher = Dispatcher(defaultPriorityExecutor("source-okhttp-bunny")).apply {
+            maxRequestsPerHost = 16
+        }
         val builder = OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .dns(BunnyImageDns())
@@ -123,7 +129,7 @@ class OkHttpTransportFactory(
         protocols: List<Protocol>,
         headers: Map<String, String> = emptyMap(),
     ): OkHttpSourceTransport {
-        val dispatcher = Dispatcher().apply {
+        val dispatcher = Dispatcher(defaultPriorityExecutor("source-okhttp")).apply {
             // The engine coordinator owns admission. Its already admitted requests must not
             // wait behind a smaller transport queue inherited from the legacy page reader.
             maxRequests = parallelism + 2

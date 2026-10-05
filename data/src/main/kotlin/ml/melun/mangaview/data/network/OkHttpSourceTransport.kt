@@ -31,11 +31,11 @@ class OkHttpSourceTransport(
     private val ioDispatcher: CoroutineDispatcher,
     routeDns: ((Int) -> Dns)? = null,
 ) : SourceTransport, Closeable {
-    private val recoveryDispatcher = Dispatcher().apply {
+    private val recoveryDispatcher = Dispatcher(defaultPriorityExecutor("source-okhttp-recovery")).apply {
         maxRequests = 6
         maxRequestsPerHost = 6
     }
-    private val controlDispatcher = Dispatcher().apply {
+    private val controlDispatcher = Dispatcher(defaultPriorityExecutor("source-okhttp-control")).apply {
         maxRequests = 3
         maxRequestsPerHost = 3
     }

@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -46,6 +47,30 @@ class HttpEngineBodyPageStreamTest {
         assertEquals(1, released)
         stream.close()
         assertEquals(1, released)
+    }
+
+    @Test
+    fun finishedStreamReturnsItsReadBufferToTheOwningPool() = runTest {
+        val pool = DirectByteBufferPool()
+        val buffer = pool.borrow(HttpEngineBodyPageStream.READ_BUFFER_BYTES)
+        lateinit var stream: HttpEngineBodyPageStream
+        stream = HttpEngineBodyPageStream(
+            expectedLength = 1L,
+            requestRead = { destination ->
+                destination.put(1)
+                stream.onReadCompleted(destination)
+            },
+            cancelExchange = stream@{ failure -> stream.fail(failure) },
+            finished = {},
+            readBuffer = buffer,
+            releaseReadBuffer = pool::release,
+        )
+
+        assertEquals(1, stream.readAtMost(ByteArray(1), 0, 1))
+        stream.completeSuccess()
+        stream.close()
+
+        assertSame(buffer, pool.borrow(HttpEngineBodyPageStream.READ_BUFFER_BYTES))
     }
 
     @Test

@@ -26,6 +26,7 @@ internal class HttpEngineExchange(
     private val bodyReadScheduler: HttpEngineBodyReadScheduler,
     private val initialPriority: ml.melun.mangaview.source.PageFetchPriority,
     private val readTiming: HttpEngineReadTiming? = null,
+    private val readBuffers: DirectByteBufferPool? = null,
 ) : UrlRequest.Callback {
     private val lifecycleLock = Any()
     private val request = AtomicReference<UrlRequest?>()
@@ -94,6 +95,9 @@ internal class HttpEngineExchange(
                 requestRead = request::read,
                 cancelExchange = ::abort,
                 finished = bodyFinished,
+                readBuffer = readBuffers?.borrow(HttpEngineBodyPageStream.READ_BUFFER_BYTES)
+                    ?: ByteBuffer.allocateDirect(HttpEngineBodyPageStream.READ_BUFFER_BYTES),
+                releaseReadBuffer = { buffer -> readBuffers?.release(buffer) },
                 dispatchRead = { action -> callbackExecutor.execute(Runnable(action)) },
                 initialPriority = initialPriority,
                 readScheduler = bodyReadScheduler,

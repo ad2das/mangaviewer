@@ -66,6 +66,7 @@ internal class EngineViewerRuntime(
     private val inputObservations: EngineInputObservations = EngineInputObservations(),
     private val reportRendererClosed: (Long, Long, Long) -> Unit = { _, _, _ -> },
     preparedRenderer: EngineSurfaceOwner? = null,
+    private val onPageDecodeFailure: (StoredPage) -> Unit = {},
 ) : ViewerSurfaceSink {
     private val main = Handler.createAsync(Looper.getMainLooper())
     private val memory = ViewerMemoryEnvironment(context) { }
@@ -107,7 +108,7 @@ internal class EngineViewerRuntime(
         // -> 168.1ms, so the reader keeps zero preparation viewports.
         EngineTilePlanner(renderer.allocationBytes, speculativeBudgetBytes = renderer.plannerTextureBytes,
             preparationViewports = 0, tracer = NoopEngineWorkTracer),
-        EngineTileWork(NativeEngineImageDecoder(), decodeLanes, renderer), renderer, content::pageRequest,
+        EngineTileWork(NativeEngineImageDecoder(), decodeLanes, renderer, onPageDecodeFailure), renderer, content::pageRequest,
         { scene -> renderer.offer(frameProvenance.attachTicket(scene)) }, renderer::clearScene, { _, failure -> reportFailure(failure) },
         waitForCompleteViewport = false, reportSceneFailure = reportFailure,
         frameWorkObserver = FrameWorkObserver { kind, atNanos -> frameProvenance.noteWorkTrigger(kind, atNanos) },

@@ -56,6 +56,12 @@ interface EngineStoragePort {
     suspend fun savePosition(anchor: SourceAnchor, legacyScreenOffsetUnits: Long)
     suspend fun loadPosition(episodeId: EpisodeId): SourceAnchor?
     suspend fun ownership(): StorageOwnershipSnapshot
+    /**
+     * A decode refused bytes this port published (corrupt, truncated, unsupported). Forget any
+     * process-local verification of [page] and evict the unleased publication so the next lookup
+     * re-verifies or re-fetches instead of serving the same broken file again.
+     */
+    suspend fun invalidate(page: StoredPage) {}
 }
 
 /** Position persistence is separate from file publication and never owns page bytes. */

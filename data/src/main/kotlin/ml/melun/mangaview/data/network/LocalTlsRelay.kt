@@ -17,7 +17,7 @@ import okhttp3.Dns
 /** Private CONNECT relay on loopback; it never terminates TLS or handles decrypted HTTP. */
 internal class LocalTlsRelay(private val dns: Dns, private val basicAuthentication: Boolean = false) : Closeable {
     private val server = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
-    private val workers = Executors.newCachedThreadPool { task -> Thread(task, "source-tls-relay").apply { isDaemon = true } }
+    private val workers = Executors.newCachedThreadPool(defaultPriorityThreadFactory("source-tls-relay"))
     private val slots = Semaphore(32)
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     val username = UUID.randomUUID().toString()

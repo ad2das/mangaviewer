@@ -47,26 +47,40 @@ internal class AndroidWorkDispatcher(
 }
 
 /**
- * A decode lane whose block runs on the calling thread under [linuxPriority]. The read-ahead decode
- * used to hop onto a dedicated background-priority pool and back: measured on the GPU AVD that was
- * two real dispatcher hops (~0.14-0.29ms plus ~0.16-0.20ms of a ~5.9ms read-ahead budget). The
- * caller's worker already owns the tile record whose decode this is, so the lane runs the block
- * inline — nothing changes threads; the priority wrap is what keeps the horizon from contending with
- * the visible decode and the owner/render threads. Admission bounds how many workers may sit in a
- * decode at once.
+ * A decode lane whose block runs on the calling thread under the background nice value. The
+ * read-ahead decode used to hop onto a dedicated background-priority pool and back: measured on
+ * the GPU AVD that was two real dispatcher hops (~0.14-0.29ms plus ~0.16-0.20ms of a ~5.9ms
+ * read-ahead budget). The caller's worker already owns the tile record whose decode this is, so
+ * the lane runs the block inline — nothing changes threads; the priority wrap is what keeps the
+ * horizon from contending with the visible decode and the owner/render threads. Admission bounds
+ * how many workers may sit in a decode at once.
+ *
+ * The wrapped region is synchronous by contract (the native decode never suspends). The wrap
+ * restores the pool's DEFAULT baseline unconditionally — never a captured "previous" value:
+ * after a suspension, or after an exception escaped a wrapped region on another worker, a
+ * captured value can perpetuate, leaving plumbing workers elevated or the resumed decode
+ * running at the wrong priority.
  */
 internal class InlinePriorityLane(
-    private val linuxPriority: Int = Process.THREAD_PRIORITY_BACKGROUND,
+    private val threadPriority: ThreadPriority = AndroidThreadPriority,
 ) : DecodeLane {
     override suspend fun <R> run(block: suspend () -> R): R {
-        val previous = Process.getThreadPriority(Process.myTid())
-        Process.setThreadPriority(linuxPriority)
+        threadPriority.set(Process.THREAD_PRIORITY_BACKGROUND)
         return try {
             block()
         } finally {
-            Process.setThreadPriority(previous)
+            threadPriority.set(Process.THREAD_PRIORITY_DEFAULT)
         }
     }
+}
+
+/** Injectable scheduling port: production writes the calling thread's nice value via [Process]. */
+internal fun interface ThreadPriority {
+    fun set(linuxPriority: Int)
+}
+
+private val AndroidThreadPriority = ThreadPriority { priority ->
+    Process.setThreadPriority(priority)
 }
 
 internal class AppWorkDispatchers : Closeable {

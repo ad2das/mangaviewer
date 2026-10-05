@@ -23,12 +23,13 @@ class EngineTileWork(
     decoder: EngineImageDecoder,
     decodingLanes: (WorkPriority) -> DecodeLane,
     private val uploader: EngineTextureUploader,
+    onDecodeFailure: (StoredPage) -> Unit = {},
 ) {
     /** Single-lane construction: every priority decodes on the same dispatcher. */
     constructor(decoder: EngineImageDecoder, decodingDispatcher: CoroutineDispatcher, uploader: EngineTextureUploader)
         : this(decoder, { DispatcherDecodeLane(decodingDispatcher) }, uploader)
 
-    private val pixels = EnginePixelWork(decoder, decodingLanes)
+    private val pixels = EnginePixelWork(decoder, decodingLanes, onDecodeFailure)
 
     fun request(page: WorkRequest<StoredPage>, tile: EngineTileSpec, priority: WorkPriority): WorkRequest<EngineTexture> {
         val epoch = uploader.rendererEpoch

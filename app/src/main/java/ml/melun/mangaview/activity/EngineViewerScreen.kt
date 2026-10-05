@@ -191,6 +191,15 @@ internal class EngineViewerScreen(
             inputObservations = engineInputObservations,
             reportFailure = ::showFailure,
             preparedRenderer = rendererLease?.value,
+            onPageDecodeFailure = { page ->
+                // A decode refused these bytes; drop the cached verification and evict the
+                // unleased publication off the decode path so the next lookup re-fetches.
+                sessionScope.launch {
+                    try { engine.invalidatePage(page) } catch (failure: Throwable) {
+                        android.util.Log.w("EngineViewer", "Page invalidation failed", failure)
+                    }
+                }
+            },
         )
     }
 

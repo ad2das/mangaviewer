@@ -1,6 +1,7 @@
 package ml.melun.mangaview.source.ntk
 
 import android.content.Context
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import androidx.webkit.WebViewCompat
@@ -28,7 +29,12 @@ class NtkWebViewStartup {
         if (!accepted) return
         val startedAt = SystemClock.elapsedRealtime()
         val executor = Executors.newSingleThreadExecutor { work ->
-            Thread(work, "ntk-webview-startup").apply { isDaemon = true }
+            Thread({
+                // The startup executor is built by whichever thread starts the WebView (usually
+                // the UI thread at nice -10); keep it level with the other source workers.
+                Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT)
+                work.run()
+            }, "ntk-webview-startup").apply { isDaemon = true }
         }
         val config = WebViewStartUpConfig.Builder(executor).build()
         runCatching {

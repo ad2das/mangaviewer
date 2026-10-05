@@ -390,6 +390,12 @@ internal class EngineAppGraph(
     }
     suspend fun storageOwnership() = storage.ownership()
 
+    /**
+     * Storage-side self-heal for the viewer: a decode refusal drops the process-local verification
+     * and evicts the unleased publication, so the next lookup re-verifies or re-fetches it.
+     */
+    suspend fun invalidatePage(page: ml.melun.mangaview.engine.api.StoredPage) = storage.invalidate(page)
+
     private companion object {
         const val ENGINE_ORIGIN_PRECONNECT_TIMEOUT_MILLIS = 4_000L
     }

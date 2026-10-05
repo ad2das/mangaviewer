@@ -9,6 +9,7 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import ml.melun.mangaview.core.PageId
@@ -40,6 +41,16 @@ class PosixEngineFilePublication : EngineFilePublication {
 
 /** File format and durability operations. Contains no publication or lease registry. */
 internal class EnginePageFiles(private val root: File, private val operations: EngineFilePublication) {
+    private val verificationLock = Any()
+    private val verification = object : LinkedHashMap<String, FileStamp>(VERIFIED_CACHE_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, FileStamp>?) =
+            size > VERIFIED_CACHE_ENTRIES
+    }
+    private val bufferLock = Any()
+    private val pooledBuffers = ArrayDeque<ByteArray>()
+    private val digestPasses = AtomicLong()
+    private val bufferAllocations = AtomicLong()
+
     fun initialize() {
         if (!root.isDirectory) {
             check(root.mkdir() || root.isDirectory) { "Storage root unavailable" }
@@ -73,18 +84,22 @@ internal class EnginePageFiles(private val root: File, private val operations: E
     ): StoredPage {
         val body = EngineBodyDigest()
         var reported = false
-        val buffer = ByteArray(BUFFER_BYTES)
-        FileOutputStream(staging).use { output ->
-            while (true) {
-                currentCoroutineContext().ensureActive()
-                opened.stream.awaitReadable()
-                val count = opened.stream.readAtMost(buffer, 0, buffer.size)
-                if (count == -1) break
-                require(count in 1..buffer.size) { "Invalid stream read length" }
-                body.accept(buffer, count)
-                output.write(buffer, 0, count)
-                if (!reported) body.dimensions?.let { reported = true; reportGeometry(it) }
+        val buffer = borrowBuffer()
+        try {
+            FileOutputStream(staging).use { output ->
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    opened.stream.awaitReadable()
+                    val count = opened.stream.readAtMost(buffer, 0, buffer.size)
+                    if (count == -1) break
+                    require(count in 1..buffer.size) { "Invalid stream read length" }
+                    body.accept(buffer, count)
+                    output.write(buffer, 0, count)
+                    if (!reported) body.dimensions?.let { reported = true; reportGeometry(it) }
+                }
             }
+        } finally {
+            returnBuffer(buffer)
         }
         opened.contentLength?.let { require(it == body.length) { "Response body length mismatch" } }
         return body.page(pageId, revision, staging)
@@ -92,18 +107,28 @@ internal class EnginePageFiles(private val root: File, private val operations: E
 
     suspend fun valid(page: StoredPage): Boolean {
         if (!page.file.isFile || page.file.length() != page.byteCount) return false
+        if (isVerified(page.file, FileStamp.of(page.file))) return true
         return try {
             val body = EngineBodyDigest()
-            val buffer = ByteArray(BUFFER_BYTES)
-            FileInputStream(page.file).use { input ->
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val count = input.read(buffer)
-                    if (count == -1) break
-                    if (count > 0) body.accept(buffer, count)
+            digestPasses.incrementAndGet()
+            val buffer = borrowBuffer()
+            try {
+                FileInputStream(page.file).use { input ->
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer)
+                        if (count == -1) break
+                        if (count > 0) body.accept(buffer, count)
+                    }
                 }
+            } finally {
+                returnBuffer(buffer)
             }
-            body.page(page.pageId, page.contentRevision, page.file) == page
+            val matches = body.page(page.pageId, page.contentRevision, page.file) == page
+            // Remember only a confirmed full read: a file whose bytes no longer match keeps getting
+            // re-verified until it is evicted or overwritten, which is what self-healing needs.
+            if (matches) rememberVerified(page.file, FileStamp.of(page.file))
+            matches
         } catch (_: IOException) {
             false
         } catch (_: IllegalArgumentException) {
@@ -111,23 +136,34 @@ internal class EnginePageFiles(private val root: File, private val operations: E
         }
     }
 
-    fun syncStaging(file: File) {
-        operations.syncFile(file)
-        operations.syncDirectory(resolve("staging/probe", "staging").parentFile!!)
+    /**
+     * Drops the process-local proof that [file] held its published digest. The next [valid] then
+     * re-reads it in full instead of trusting the recorded size and mtime.
+     */
+    fun forgetVerified(file: File) {
+        synchronized(verificationLock) { verification.remove(file.path) }
     }
 
+    fun syncFile(file: File) = operations.syncFile(file)
+
+    /**
+     * Makes a staged file visible under its immutable destination name. The durable publish
+     * sequence is syncFile(staging) -> rename -> syncDirectory(destination.parentFile): the data
+     * must be on disk before the name becomes visible, and only the destination directory entry
+     * needs syncing after. The staging directory is deliberately not synced here: its only durable
+     * content is the staging name, and a crash that loses that directory entry leaves a journal
+     * whose stage is missing — recovery treats a missing stage as an abandoned, uncommitted
+     * publication and re-fetches, which is exactly the state before the rename.
+     */
     fun publish(staging: File, destination: File) {
         check(!destination.exists()) { "Immutable destination already exists" }
         operations.rename(staging, destination)
     }
 
-    fun syncPublished(destination: File) {
-        operations.syncFile(destination)
-        operations.syncDirectory(resolve("staging/probe", "staging").parentFile!!)
-        operations.syncDirectory(destination.parentFile!!)
-    }
+    fun syncDirectory(directory: File) = operations.syncDirectory(directory)
 
     fun delete(file: File) {
+        forgetVerified(file)
         if (file.exists()) check(file.isFile && file.delete()) { "Unable to delete storage file" }
         operations.syncDirectory(file.parentFile!!)
     }
@@ -143,7 +179,10 @@ internal class EnginePageFiles(private val root: File, private val operations: E
                     val namePattern = if (directory == "staging") STAGING_NAME else PAGE_NAME
                     if (relative in protected || !namePattern.matches(entry.name) || !entry.isFile) continue
                     val owned = resolve(relative, directory)
-                    if (owned.exists()) check(owned.isFile && owned.delete()) { "Unable to delete storage file" }
+                    if (owned.exists()) {
+                        forgetVerified(owned)
+                        check(owned.isFile && owned.delete()) { "Unable to delete storage file" }
+                    }
                 }
             } catch (error: Throwable) {
                 failure = error
@@ -160,10 +199,43 @@ internal class EnginePageFiles(private val root: File, private val operations: E
         }
     }
 
+    private fun borrowBuffer(): ByteArray = synchronized(bufferLock) {
+        pooledBuffers.removeLastOrNull()
+            ?: ByteArray(BUFFER_BYTES).also { bufferAllocations.incrementAndGet() }
+    }
+
+    private fun returnBuffer(buffer: ByteArray) {
+        if (buffer.size != BUFFER_BYTES) return
+        synchronized(bufferLock) {
+            if (pooledBuffers.size < MAX_POOLED_BUFFERS) pooledBuffers.addLast(buffer)
+        }
+    }
+
+    private fun isVerified(file: File, stamp: FileStamp): Boolean =
+        synchronized(verificationLock) { verification[file.path] == stamp }
+
+    private fun rememberVerified(file: File, stamp: FileStamp) =
+        synchronized(verificationLock) { verification[file.path] = stamp }
+
+    /** JVM-test observability for the fast paths; production logic never reads it. */
+    internal fun stats(): EnginePageFileStats = EnginePageFileStats(digestPasses.get(), bufferAllocations.get())
+
     companion object {
         const val BUFFER_BYTES = 64 * 1024
+        private const val VERIFIED_CACHE_ENTRIES = 256
+        private const val MAX_POOLED_BUFFERS = 4
         private val STAGING_NAME = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.part")
         private val PAGE_NAME = Regex("[0-9a-f]{64}-[0-9a-f]{64}-[0-9a-f]{64}\\.page")
+    }
+}
+
+/** Full-file digest passes and fresh buffer allocations since this file owner was created. */
+internal data class EnginePageFileStats(val digestPasses: Long, val bufferAllocations: Long)
+
+/** Size and mtime identify a file state cheaply; a changed stamp forces a full re-verification. */
+private data class FileStamp(val length: Long, val modifiedMillis: Long) {
+    companion object {
+        fun of(file: File) = FileStamp(file.length(), file.lastModified())
     }
 }
 

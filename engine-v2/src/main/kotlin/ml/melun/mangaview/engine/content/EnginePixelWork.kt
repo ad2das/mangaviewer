@@ -24,6 +24,7 @@ class DispatcherDecodeLane(private val dispatcher: CoroutineDispatcher) : Decode
 class EnginePixelWork(
     private val decoder: EngineImageDecoder,
     private val lanesFor: (WorkPriority) -> DecodeLane,
+    private val onDecodeFailure: (StoredPage) -> Unit = {},
 ) {
     /** Single-lane construction: every priority decodes on the same dispatcher. */
     constructor(decoder: EngineImageDecoder, dispatcher: CoroutineDispatcher)
@@ -78,6 +79,13 @@ class EnginePixelWork(
             }
         } catch (failure: Throwable) {
             withContext(NonCancellable) {
+                // A cancelled decode says nothing about the stored bytes; any other failure is the
+                // decoder refusing them, so the storage owner can drop its verification and refetch.
+                if (failure !is kotlinx.coroutines.CancellationException) {
+                    try { onDecodeFailure(page) } catch (cleanup: Throwable) {
+                        if (cleanup !== failure) failure.addSuppressed(cleanup)
+                    }
+                }
                 try { lane.run { owned?.close() } } catch (cleanup: Throwable) {
                     if (cleanup !== failure) failure.addSuppressed(cleanup)
                 }

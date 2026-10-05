@@ -121,6 +121,24 @@ class EngineRawStorage(
         mutex.withLock { initializeLocked() }
     }
 
+    /**
+     * A decode refused bytes this port published. Forget the process-local verification and evict
+     * the unleased publication so the next lookup re-verifies and re-fetches instead of serving
+     * the same broken file again; a leased file is only forgotten — its holders already own open
+     * descriptors and deletion is deferred until the pin is released and the page is re-fetched.
+     */
+    override suspend fun invalidate(page: StoredPage) = withContext(NonCancellable + ioDispatcher) {
+        mutex.withLock {
+            files.forgetVerified(page.file)
+            val entity = index.page(PageCacheKey.of(page.pageId), page.contentRevision) ?: return@withLock
+            val committed = entity.stored(files)
+            files.forgetVerified(committed.file)
+            if (ownership.isPinned(committed.file)) return@withLock
+            files.delete(committed.file)
+            index.remove(entity)
+        }
+    }
+
     override suspend fun pin(page: StoredPage): StoredPageLease {
         val lease = find(page.pageId, page.contentRevision)
             ?: throw IllegalArgumentException("Page is not a valid committed publication")
@@ -142,7 +160,10 @@ class EngineRawStorage(
 
     private suspend fun publishLocked(handle: EnginePreparedPage): StoredPageLease {
         check(handle.state == EnginePreparedState.READY) { "Prepared page is no longer publishable" }
-        check(files.valid(handle.page)) { "Prepared page bytes changed before publication" }
+        // transfer() digested exactly the bytes it wrote to a process-private staging name, so a
+        // second full read here re-reads every page for no new information. Length is the cheap
+        // invariant a concurrent writer would break; committed bodies are still fully verified.
+        check(handle.page.file.length() == handle.page.byteCount) { "Prepared page bytes changed before publication" }
         val existing = index.page(PageCacheKey.of(handle.page.pageId), handle.page.contentRevision)
         if (existing != null) {
             val committed = existing.stored(files)
@@ -156,7 +177,7 @@ class EngineRawStorage(
         }
         val entity = handle.page.entity(files.destination(handle.page), nowMillis())
         val journal = entity.journal(handle.publicationId, handle.page.file.name)
-        files.syncStaging(handle.page.file)
+        files.syncFile(handle.page.file)
         checkpoint(EnginePublicationStep.FILE_SYNCED)
         handle.state = EnginePreparedState.RECOVERY
         index.stage(journal)
@@ -165,7 +186,7 @@ class EngineRawStorage(
         if (destination.file.exists()) files.delete(destination.file)
         files.publish(handle.page.file, destination.file)
         checkpoint(EnginePublicationStep.RENAMED)
-        files.syncPublished(destination.file)
+        files.syncDirectory(destination.file.parentFile!!)
         checkpoint(EnginePublicationStep.DIRECTORY_SYNCED)
         index.commit(journal.publicationId, entity)
         ownership.consume(handle)
@@ -231,11 +252,11 @@ class EngineRawStorage(
                 index.forgetJournal(journal.publicationId)
                 return
             }
-            files.syncStaging(stage)
+            files.syncFile(stage)
             files.delete(destination.file)
             files.publish(stage, destination.file)
         }
-        files.syncPublished(destination.file)
+        files.syncDirectory(destination.file.parentFile!!)
         index.commit(journal.publicationId, journal.entity())
         files.delete(stage)
         ownership.completeRecovery(journal.publicationId)
@@ -268,6 +289,9 @@ class EngineRawStorage(
     override suspend fun ownership(): StorageOwnershipSnapshot = withContext(ioDispatcher) {
         mutex.withLock { ownership.snapshot(index.journals().size) }
     }
+
+    /** JVM-test observability for the digest and buffer fast paths; production never reads it. */
+    internal fun pageFileStats(): EnginePageFileStats = files.stats()
 
     private suspend fun deliver(block: suspend () -> StoredPageLease?): StoredPageLease? {
         var lease: StoredPageLease? = null

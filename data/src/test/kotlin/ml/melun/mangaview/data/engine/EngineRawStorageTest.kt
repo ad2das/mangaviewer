@@ -133,6 +133,9 @@ class EngineRawStorageTest {
         checkNotNull(store.find(id, "v1")).close()
         val corrupt = bytes.copyOf().also { it[it.lastIndex] = (it.last() + 1).toByte() }
         file.writeBytes(corrupt)
+        // The verified-fast-path compares the recorded size and mtime; make the changed content
+        // visible to it without relying on filesystem timestamp resolution.
+        file.setLastModified(file.lastModified() + 2_000L)
         assertNull(store.find(id, "v1"))
         val replacement = store.publish(store.prepare(id, "v1", Body(bytes).opened()))
         assertArrayEquals(bytes, replacement.page.file.readBytes())
@@ -162,15 +165,61 @@ class EngineRawStorageTest {
         lease.close()
     }
 
-    @Test fun modifiedStagingBytesCannotBePublishedWithTheOriginalDigest() = runTest {
+    @Test fun resizedStagingBytesCannotBePublishedWithTheOriginalDigest() = runTest {
         val index = MemoryIndex()
         val store = store(temporary.newFolder(), index)
         val prepared = store.prepare(id, "v1", Body(bytes).opened())
-        prepared.page.file.writeBytes(bytes.copyOf().also { it[it.lastIndex] = 0 })
+        // publication trusts the transfer's digest for the bytes it just wrote, so the cheap
+        // remaining invariant is the size the prepared body records.
+        prepared.page.file.appendBytes(byteArrayOf(0))
         expect<IllegalStateException> { store.publish(prepared) }
         assertTrue(index.pageRows.isEmpty())
         assertTrue(index.journalRows.isEmpty())
         store.discard(prepared)
+    }
+
+    @Test fun durablePublicationSyncsStagingDataRenamesThenTheDestinationDirectory() = runTest {
+        val events = mutableListOf<String>()
+        val ops = object : EngineFilePublication {
+            override fun syncFile(file: File) { events += "fsync:${file.parentFile!!.name}/${file.name}" }
+            override fun rename(staging: File, destination: File) {
+                events += "rename"
+                Files.move(staging.toPath(), destination.toPath())
+            }
+            override fun syncDirectory(directory: File) { events += "dirsync:${directory.name}" }
+        }
+        val store = store(temporary.newFolder(), MemoryIndex(), ops)
+        val prepared = store.prepare(id, "v1", Body(bytes).opened())
+        events.clear()
+        val lease = store.publish(prepared)
+        lease.close()
+        assertEquals(3, events.size)
+        assertTrue("Expected a staging-file fsync first, got ${events[0]}", events[0].startsWith("fsync:staging/"))
+        assertEquals("rename", events[1])
+        assertEquals("dirsync:pages", events[2])
+    }
+
+    @Test fun repeatedLookupsVerifyTheFileOnceAndReuseThePooledBuffer() = runTest {
+        val store = store(temporary.newFolder(), MemoryIndex())
+        val lease = store.publish(store.prepare(id, "v1", Body(bytes).opened()))
+        lease.close()
+        assertEquals(0, store.pageFileStats().digestPasses)
+        repeat(4) { checkNotNull(store.find(id, "v1")).close() }
+        assertEquals(1, store.pageFileStats().digestPasses)
+        assertEquals(1, store.pageFileStats().bufferAllocations)
+    }
+
+    @Test fun decodeFailureInvalidationEvictsTheUnpinnedPublication() = runTest {
+        val index = MemoryIndex()
+        val store = store(temporary.newFolder(), index)
+        val lease = store.publish(store.prepare(id, "v1", Body(bytes).opened()))
+        val page = lease.page
+        lease.close()
+        checkNotNull(store.find(id, "v1")).close()
+        store.invalidate(page)
+        assertNull(store.find(id, "v1"))
+        assertTrue(index.pageRows.isEmpty())
+        assertFalse(page.file.exists())
     }
 
     @Test fun cancellationDuringBodyReadClosesStreamAndRemovesStaging() = runTest {
