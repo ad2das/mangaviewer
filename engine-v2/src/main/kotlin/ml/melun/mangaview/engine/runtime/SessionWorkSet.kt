@@ -56,8 +56,10 @@ internal class SessionWorkSet(
     private var closed = false
     private var cleanupFailure: Throwable? = null
     /**
-     * Earliest [Entry.retryAtNanos] among failed entries, or [Long.MAX_VALUE] when none waits. A
-     * reconcile whose failures are not yet due can then skip the retry scan entirely.
+     * Earliest [Entry.retryAtNanos] among failed entries, or [Long.MAX_VALUE] when none waits.
+     * Invariant: it is never later than the retry time of any failed entry still in [entries],
+     * whether or not that entry's job has completed, so a due retry is never skipped. A stale-low
+     * value is allowed — it only costs one scan — and every scan reassigns the exact bound.
      */
     private var nextRetryAtNanos = Long.MAX_VALUE
     /** Test seam: how many retry scans ran; the due check must return before any scan. */
@@ -119,17 +121,21 @@ internal class SessionWorkSet(
         var restarted = false
         var earliest = Long.MAX_VALUE
         entries.values.toList().forEach { entry ->
-            if (entry.failed && entry.job?.isCompleted == true) {
-                if (now >= entry.retryAtNanos) {
+            if (entry.failed) {
+                if (entry.job?.isCompleted == true && now >= entry.retryAtNanos) {
                     if (entries[entry.key] === entry) entries.remove(entry.key)
                     System.err.println("EngineWork retry key=${entry.key}")
                     restarted = true
                 } else {
+                    // A failed entry whose job is still completing keeps its retry time in the
+                    // bound: the next scan must still see it, or its retry would be skipped until
+                    // an unrelated refresh lowered the bound again.
                     earliest = minOf(earliest, entry.retryAtNanos)
                 }
             }
         }
-        if (restarted) nextRetryAtNanos = earliest
+        // Always reassign: a scan that restarted nothing must still repair a stale-low bound.
+        nextRetryAtNanos = earliest
         return restarted
     }
 
@@ -137,9 +143,7 @@ internal class SessionWorkSet(
     private fun refreshNextRetry() {
         var earliest = Long.MAX_VALUE
         entries.values.forEach { entry ->
-            if (entry.failed && entry.job?.isCompleted == true) {
-                earliest = minOf(earliest, entry.retryAtNanos)
-            }
+            if (entry.failed) earliest = minOf(earliest, entry.retryAtNanos)
         }
         nextRetryAtNanos = earliest
     }

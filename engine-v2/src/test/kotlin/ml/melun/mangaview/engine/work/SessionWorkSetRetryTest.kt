@@ -1,5 +1,6 @@
 package ml.melun.mangaview.engine.work
 
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import ml.melun.mangaview.engine.api.WorkDomain
@@ -71,6 +72,45 @@ class SessionWorkSetRetryTest {
     }
 
     @Test
+    fun failedEntryWithActiveJobRetriesOnceItsJobCompletes() = runTest {
+        var now = 0L
+        val attempts = mutableMapOf<String, Int>()
+        val accepted = mutableListOf<String>()
+        val coordinator = WorkCoordinator(this)
+        val work = SessionWorkSet(this, coordinator, { _, _ -> }, clock = { now })
+        val demands = listOf(demand("a", attempts, accepted), demand("b", attempts, accepted))
+
+        work.reconcile(demands)
+        runCurrent()
+        assertEquals(1, attempts["a"])
+        assertEquals(1, attempts["b"])
+
+        // Reproduce the window where finish() has set a failed entry's retry time while its job has
+        // not completed yet: the entry is failed and due but still looks active.
+        val gate = Job()
+        suspendJobAfterRetry(work, demands[0].request.key, gate)
+
+        // B restarts first. A bound computed without the still-active failed entry would go
+        // stale-high here and never due-check A again.
+        now = 1_000_000_000L
+        work.reconcile(demands)
+        runCurrent()
+        assertEquals(2, attempts["b"])
+        assertEquals(1, attempts["a"])
+
+        // A's job completes with its retry time already due.
+        gate.complete()
+        now = 2_000_000_000L
+        work.reconcile(demands)
+        runCurrent()
+        assertEquals("a failed entry whose job completed later is still retried", 2, attempts["a"])
+        assertEquals(listOf("b", "a"), accepted)
+
+        work.close()
+        coordinator.close()
+    }
+
+    @Test
     fun reconcileWithNothingDueReturnsBeforeScanning() = runTest {
         var now = 0L
         val attempts = mutableMapOf<String, Int>()
@@ -104,6 +144,20 @@ class SessionWorkSetRetryTest {
 
         work.close()
         coordinator.close()
+    }
+
+    /**
+     * Reproduces the window where finish() has set a failed entry's retry time but its job has not
+     * completed yet: the job is swapped for one this test completes later. Reflection keeps the
+     * test compilable against the previous implementation, so it can fail there for the real
+     * reason instead of a compile error.
+     */
+    private fun suspendJobAfterRetry(work: SessionWorkSet, key: WorkKey<*>, job: Job) {
+        val entriesField = SessionWorkSet::class.java.getDeclaredField("entries").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val entries = entriesField.get(work) as Map<WorkKey<*>, Any>
+        val entry = entries[key] ?: error("No entry for $key")
+        entry.javaClass.getDeclaredField("job").apply { isAccessible = true }.set(entry, job)
     }
 
     private fun demand(
