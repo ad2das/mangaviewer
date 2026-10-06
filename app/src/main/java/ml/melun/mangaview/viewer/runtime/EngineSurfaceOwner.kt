@@ -284,13 +284,7 @@ internal class EngineSurfaceOwner(
                 onOwner {
                     synchronized(lock) { latest = null }
                     attached = false
-                    try {
-                        terminatePending(PresentationTimestampKind.CANCELLED)
-                    } finally {
-                        // A delivery callback can throw; the native owner must still be destroyed or
-                        // its context, buffers and thread outlive every owner-side reference.
-                        OwnedRendererBridge.nativeDestroy(native)
-                    }
+                    try { terminatePending(PresentationTimestampKind.CANCELLED) } finally { OwnedRendererBridge.nativeDestroy(native) }
                     destroyed.set(true)
                     uploads.closeReservations()
                     readbacks.destroyed()
