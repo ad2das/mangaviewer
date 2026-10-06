@@ -45,14 +45,13 @@ internal class ViewerSurfaceHost(
     private val dragQuantizer = PointerDeltaQuantizer()
     private val inputTrace = ViewerInputTraceLedger()
     private val dragFrame = ViewerVsyncScheduler(android.view.Choreographer.getInstance(), ::drawDrag)
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val scrollEmitter = ViewerScrollEmitter(sink, inputTrace)
     // The fling's motion steps are paced by a deadline on ViewerAnimationLooper, not by a display
     // slot callback: the platform can withhold a whole vsync event from an idle client, and a fling
     // that waits for that event never produces the step for that display period. Only the engine
     // step the deadline reveals is handed back to the main thread, in order.
     private val refreshPeriodNanos = (1_000_000_000.0 / (context.display?.refreshRate ?: 60f)).toLong()
-    private val flingPump = ViewerFlingStepPump({ message -> mainHandler.post(message) },
+    private val flingPump = ViewerFlingStepPump(ViewerFlingPumpPipeWake(),
         scrollEmitter::emitFling, ::finishInteraction)
     private val fling = ViewerFlingDriver(
         ViewerFrameSchedulerFactory { callback -> ViewerAnimationScheduler(callback) },
@@ -179,11 +178,13 @@ internal class ViewerSurfaceHost(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         setReaderFrameRate(true)
+        flingPump.attach()
         attachment.attachIfReady()
     }
 
     override fun onDetachedFromWindow() {
         cancelMotion()
+        flingPump.detach()
         attachment.detachRenderer()
         super.onDetachedFromWindow()
     }

@@ -7,10 +7,13 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
- * Reported JVM benchmark (never asserted): handler posts and allocations for 10k fast fling steps
- * under the legacy 4 ms polling pump versus the demand-driven production pump. The legacy policy is
- * a faithful copy of the pre-change pump driven by a virtual clock; the virtual queue allocates one
- * record per post, modelling the Handler message the real queue would obtain.
+ * Reported JVM benchmark (never asserted): fd wakes, handler posts and allocations for 10k fast
+ * fling steps under the legacy 4 ms polling pump versus the demand-driven production pump. The
+ * legacy policy is a faithful copy of the pre-change pump driven by a virtual clock; the virtual
+ * queue allocates one record per post, modelling the Handler message the real queue would obtain.
+ * The demand policy drives the production pump through an inline [ViewerFlingPumpWake]: the animation
+ * side writes one fd wake per disarmed -> armed transition and the listener consumes it immediately,
+ * modelling a main looper that drains each step inside the display period.
  *
  * Gated behind FLING_PUMP_BENCH=1 because a run costs a few seconds: set that variable and paste
  * the [fling-pump-bench] lines into review.
@@ -25,11 +28,12 @@ class FlingPumpBenchmarkTest {
             driveDemandDriven()
             driveLegacyPolling()
         }
-        val demand = measure("demand-driven", ::driveDemandDriven)
-        val legacy = measure("legacy-polling", ::driveLegacyPolling)
+        val demand = measure("demand-fd-wake", "wakes", ::driveDemandDriven)
+        val legacy = measure("legacy-polling", "posts", ::driveLegacyPolling)
         println(
-            "[fling-pump-bench] steps=$STEPS posts ratio legacy/demand=%.2f".format(
-                legacy.first.toDouble() / demand.first.toDouble(),
+            ("[fling-pump-bench] steps=$STEPS legacyPosts=%d demandWakes=%d " +
+                "ratio legacyPosts/demandWakes=%.2f").format(
+                legacy.first, demand.first, legacy.first.toDouble() / demand.first.toDouble(),
             ),
         )
     }
@@ -115,27 +119,39 @@ class FlingPumpBenchmarkTest {
         fun drain(): List<Double> = segments.toList().also { segments.clear() }
     }
 
-    private fun measure(label: String, run: () -> Long): Pair<Long, Long> {
+    private fun measure(label: String, unit: String, run: () -> Long): Pair<Long, Long> {
         val allocatedBefore = threadAllocatedBytes()
         val startedAt = System.nanoTime()
-        val posts = run()
+        val units = run()
         val elapsedNanos = System.nanoTime() - startedAt
         val allocated = threadAllocatedBytes() - allocatedBefore
         println(
-            "[fling-pump-bench] policy=$label steps=$STEPS posts=$posts " +
+            "[fling-pump-bench] policy=$label steps=$STEPS $unit=$units " +
                 "elapsedMs=%.1f allocatedBytes=%d allocBytesPerStep=%.1f".format(
                     elapsedNanos / 1_000_000.0, allocated, allocated.toDouble() / STEPS,
                 ),
         )
         assertTrue("elapsed time must be observable", elapsedNanos > 0L)
-        return posts to allocated
+        return units to allocated
     }
 
+    /**
+     * Drives the production pump through [VirtualWake] for one step per display period. Each wake
+     * runs the listener inline, so the step is delivered before the next one is dispatched and the
+     * wake count is the exact number of fd writes the animation looper would issue.
+     */
     private fun driveDemandDriven(): Long {
-        val queue = VirtualQueue()
-        val pump = ViewerFlingStepPump({ message -> queue.post(message, 0L) }, { _, _, _, _, _ -> true }, {})
-        driveFling(queue, { pump.dispatch(1.0, 0.0, queue.nowNanos, 0L, 0L) }, pump::finish)
-        return queue.posts
+        val wake = VirtualWake()
+        val pump = ViewerFlingStepPump(wake, { _, _, _, _, _ -> true }, {})
+        pump.attach()
+        var nowNanos = 0L
+        repeat(STEPS) {
+            nowNanos += STEP_PERIOD_NANOS
+            pump.dispatch(1.0, 0.0, nowNanos, 0L, 0L)
+        }
+        pump.finish()
+        pump.detach()
+        return wake.wakes
     }
 
     private fun driveLegacyPolling(): Long {
@@ -158,6 +174,29 @@ class FlingPumpBenchmarkTest {
         finish()
         queue.nowNanos = nowNanos + TAIL_NANOS
         queue.runDue()
+    }
+
+    /**
+     * Inline wake for the demand side: records the fd write and runs the main-side listener on the
+     * caller, modelling a main looper that consumes the wake before the next step is dispatched.
+     */
+    private class VirtualWake : ViewerFlingPumpWake {
+        private var listener: (() -> Unit)? = null
+        var wakes = 0L
+            private set
+
+        override fun start(onWake: () -> Unit) {
+            listener = onWake
+        }
+
+        override fun stop() {
+            listener = null
+        }
+
+        override fun wake() {
+            wakes++
+            listener?.invoke()
+        }
     }
 
     /** Faithful copy of the pre-change polling pump: 4 ms re-arm, 500 ms liveness timeout. */

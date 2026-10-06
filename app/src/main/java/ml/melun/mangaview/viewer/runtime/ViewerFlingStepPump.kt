@@ -3,27 +3,61 @@ package ml.melun.mangaview.viewer.runtime
 import java.util.ArrayDeque
 
 /**
- * Queues animation-looper fling steps for ordered main-thread delivery.
+ * Queues animation-looper fling steps for ordered main-thread delivery through [wake] only.
  *
- * Delivery is demand-driven: the animation looper appends under the private lock and posts the pump
- * only when it is not already armed, and the pump disarms itself as soon as a drain leaves the queue
- * empty. No periodic wake-up is scheduled, so an idle fling costs nothing: a step is delivered on
- * the post its own dispatch made instead of waiting for a poll period. A fling that ends without
- * [finish] needs no liveness timeout either; with no queued steps there is nothing left to deliver,
- * so the pump has already stopped by construction.
+ * Invariant: the animation looper never acquires the main MessageQueue monitor. Posting from that
+ * thread would block on the monitor while main is busy and delay the vsync the step exists to
+ * consume, so the production wake source is a non-blocking pipe observed by a main-looper file
+ * descriptor listener ([ViewerFlingPumpPipeWake]). Delivery is demand-driven around that wake:
+ * the pump writes one wake only on the disarmed -> armed transition, and the main-side listener
+ * drains every queued step and then disarms under the same lock, so each step is delivered exactly
+ * once, in FIFO order:
+ *
+ *  - a step queued while the listener drains is collected by the same listener pass;
+ *  - a step queued after the drain's final poll but before the disarm is seen by the atomic
+ *    empty-check, which drains again instead of disarming;
+ *  - a step queued after the disarm finds the pump disarmed and arms a fresh wake itself.
+ *
+ * [finish] rides the same path: the true finish instant is parked under the lock, and the same
+ * listener drains every queued step ahead of it before [onFinished] runs on the main thread.
  */
 internal class ViewerFlingStepPump(
-    private val postToMain: (Runnable) -> Boolean,
+    private val wake: ViewerFlingPumpWake,
     private val emitStep: (Double, Double, Long, Long, Long) -> Boolean,
     private val onFinished: (Long) -> Unit,
 ) {
     private val steps = ArrayDeque<FlingStep>()
     private val lock = Any()
-    private var pumpArmed = false
-    private val pump = object : Runnable {
-        override fun run() {
-            pumpSteps()
+    private var armed = false
+    private var closed = true
+    private var finishPending = false
+    private var finishAtNanos = 0L
+    private var attached = false
+
+    /**
+     * Registers the main-side wake listener, then enables dispatch; must run on the main thread.
+     * The wake source is live before any step can arm it, so no wake can be raised against a
+     * missing listener; a dispatch during the attach instant itself is dropped by [closed].
+     * Re-attachable.
+     */
+    fun attach() {
+        if (attached) return
+        wake.start(::onWoken)
+        synchronized(lock) { closed = false }
+        attached = true
+    }
+
+    /** Releases the wake source; dispatches after this are dropped until the next [attach]. */
+    fun detach() {
+        if (!attached) return
+        attached = false
+        synchronized(lock) {
+            closed = true
+            armed = false
+            steps.clear()
+            finishPending = false
         }
+        wake.stop()
     }
 
     /** Appends one step under the private lock; the animation looper must never post to main. */
@@ -37,31 +71,47 @@ internal class ViewerFlingStepPump(
         val step = FlingStep(deltaPixels, velocityPixelsPerSecond, frameTimeNanos,
             expectedPresentationTimeNanos, frameTimelineVsyncId)
         val arm = synchronized(lock) {
+            if (closed) return false
             steps.addLast(step)
-            if (pumpArmed) false else { pumpArmed = true; true }
+            if (armed) false else { armed = true; true }
         }
-        if (arm) postToMain(pump)
+        if (arm) wake.wake()
         return true
     }
 
-    /** Ends the fling at its true instant, then drains the queued steps ahead of the boundary. */
+    /** Ends the fling at its true instant; queued steps drain ahead of the boundary on main. */
     fun finish() {
         val finishedAtNanos = System.nanoTime()
-        postToMain {
-            drain()
-            onFinished(finishedAtNanos)
+        val arm = synchronized(lock) {
+            finishPending = true
+            finishAtNanos = finishedAtNanos
+            if (closed || armed) false else { armed = true; true }
         }
+        if (arm) wake.wake()
     }
 
-    private fun pumpSteps() {
-        drain()
-        // The re-arm decision is atomic with the queue check. A step added concurrently either
-        // finds the pump still armed and is covered by this repost, or finds it disarmed and posts
-        // the pump itself; no interleaving can strand a step with no armed pump.
-        val repost = synchronized(lock) {
-            if (steps.isNotEmpty()) true else { pumpArmed = false; false }
+    private fun onWoken() {
+        var finishedAt = NO_FINISH
+        while (true) {
+            drain()
+            val decision = synchronized(lock) {
+                when {
+                    steps.isNotEmpty() -> Decision.DRAIN
+                    finishPending -> {
+                        finishPending = false
+                        armed = false
+                        finishedAt = finishAtNanos
+                        Decision.FINISH
+                    }
+                    else -> {
+                        armed = false
+                        Decision.STOP
+                    }
+                }
+            }
+            if (decision != Decision.DRAIN) break
         }
-        if (repost) postToMain(pump)
+        if (finishedAt != NO_FINISH) onFinished(finishedAt)
     }
 
     private fun drain() {
@@ -72,6 +122,8 @@ internal class ViewerFlingStepPump(
         }
     }
 
+    private enum class Decision { DRAIN, FINISH, STOP }
+
     private data class FlingStep(
         val deltaPixels: Double,
         val velocityPixelsPerSecond: Double,
@@ -79,4 +131,8 @@ internal class ViewerFlingStepPump(
         val expectedPresentationTimeNanos: Long,
         val frameTimelineVsyncId: Long,
     )
+
+    private companion object {
+        const val NO_FINISH = -1L
+    }
 }
