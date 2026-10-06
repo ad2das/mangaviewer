@@ -1,19 +1,25 @@
 package ml.melun.mangaview.viewer.runtime
 
-import android.os.Handler
 import java.util.ArrayDeque
 
-/** Queues animation-looper fling steps for ordered main-thread delivery and keeps the pump armed. */
+/**
+ * Queues animation-looper fling steps for ordered main-thread delivery.
+ *
+ * Delivery is demand-driven: the animation looper appends under the private lock and posts the pump
+ * only when it is not already armed, and the pump disarms itself as soon as a drain leaves the queue
+ * empty. No periodic wake-up is scheduled, so an idle fling costs nothing: a step is delivered on
+ * the post its own dispatch made instead of waiting for a poll period. A fling that ends without
+ * [finish] needs no liveness timeout either; with no queued steps there is nothing left to deliver,
+ * so the pump has already stopped by construction.
+ */
 internal class ViewerFlingStepPump(
-    private val mainHandler: Handler,
+    private val postToMain: (Runnable) -> Boolean,
     private val emitStep: (Double, Double, Long, Long, Long) -> Boolean,
     private val onFinished: (Long) -> Unit,
 ) {
     private val steps = ArrayDeque<FlingStep>()
     private val lock = Any()
     private var pumpArmed = false
-    private var live = false
-    private var lastStepNanos = 0L
     private val pump = object : Runnable {
         override fun run() {
             pumpSteps()
@@ -31,20 +37,17 @@ internal class ViewerFlingStepPump(
         val step = FlingStep(deltaPixels, velocityPixelsPerSecond, frameTimeNanos,
             expectedPresentationTimeNanos, frameTimelineVsyncId)
         val arm = synchronized(lock) {
-            live = true
-            lastStepNanos = System.nanoTime()
             steps.addLast(step)
             if (pumpArmed) false else { pumpArmed = true; true }
         }
-        if (arm) mainHandler.post(pump)
+        if (arm) postToMain(pump)
         return true
     }
 
     /** Ends the fling at its true instant, then drains the queued steps ahead of the boundary. */
     fun finish() {
         val finishedAtNanos = System.nanoTime()
-        synchronized(lock) { live = false }
-        mainHandler.post {
+        postToMain {
             drain()
             onFinished(finishedAtNanos)
         }
@@ -52,11 +55,13 @@ internal class ViewerFlingStepPump(
 
     private fun pumpSteps() {
         drain()
-        val rearm = synchronized(lock) {
-            val current = live && System.nanoTime() - lastStepNanos < FLING_PUMP_TIMEOUT_NANOS
-            if (current) true else { pumpArmed = false; false }
+        // The re-arm decision is atomic with the queue check. A step added concurrently either
+        // finds the pump still armed and is covered by this repost, or finds it disarmed and posts
+        // the pump itself; no interleaving can strand a step with no armed pump.
+        val repost = synchronized(lock) {
+            if (steps.isNotEmpty()) true else { pumpArmed = false; false }
         }
-        if (rearm) mainHandler.postDelayed(pump, FLING_PUMP_DELAY_MILLIS)
+        if (repost) postToMain(pump)
     }
 
     private fun drain() {
@@ -74,12 +79,4 @@ internal class ViewerFlingStepPump(
         val expectedPresentationTimeNanos: Long,
         val frameTimelineVsyncId: Long,
     )
-
-    private companion object {
-        /** How often the armed pump re-checks while a fling is live; well inside one refresh period. */
-        const val FLING_PUMP_DELAY_MILLIS = 4L
-
-        /** A live fling that produced no motion step for this long has ended without its finish call. */
-        const val FLING_PUMP_TIMEOUT_NANOS = 500_000_000L
-    }
 }

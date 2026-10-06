@@ -52,7 +52,8 @@ internal class ViewerSurfaceHost(
     // that waits for that event never produces the step for that display period. Only the engine
     // step the deadline reveals is handed back to the main thread, in order.
     private val refreshPeriodNanos = (1_000_000_000.0 / (context.display?.refreshRate ?: 60f)).toLong()
-    private val flingPump = ViewerFlingStepPump(mainHandler, scrollEmitter::emitFling, ::finishInteraction)
+    private val flingPump = ViewerFlingStepPump({ message -> mainHandler.post(message) },
+        scrollEmitter::emitFling, ::finishInteraction)
     private val fling = ViewerFlingDriver(
         ViewerFrameSchedulerFactory { callback -> ViewerAnimationScheduler(callback) },
         refreshPeriodNanos,
