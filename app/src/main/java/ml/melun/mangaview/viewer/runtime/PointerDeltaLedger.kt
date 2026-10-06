@@ -4,12 +4,16 @@ package ml.melun.mangaview.viewer.runtime
  * Main-thread ledger that preserves every observed pointer delta exactly once.
  *
  * Segments live in a primitive ring so the hot drain path neither boxes each delta nor copies the
- * queue into a new list. [drainEach] is inlined at the call site and visits the segments in order
- * before clearing the ledger.
+ * queue into a new list. Draining double-buffers the two arrays: the buffers are swapped and the
+ * count is reset to zero before the drained buffer is visited, so the ledger is already clear when
+ * a visitor runs. A visitor that throws cannot get its segments back on the next drain, and a
+ * visitor that re-entrantly appends writes into the next active buffer, leaving the iframe under
+ * visit untouched, so the append is delivered on the next drain exactly once.
  */
 internal class PointerDeltaLedger {
     @PublishedApi internal var segments = DoubleArray(INITIAL_CAPACITY)
     @PublishedApi internal var size = 0
+    @PublishedApi internal var drainedSegments = DoubleArray(INITIAL_CAPACITY)
     val pendingPixels: Double get() {
         var sum = 0.0
         for (index in 0 until size) sum += segments[index]
@@ -37,17 +41,25 @@ internal class PointerDeltaLedger {
         return delta
     }
 
-    /** Allocation-free drain: visits every pending segment in order, then clears the ledger. */
+    /** Allocation-free drain: swaps the buffers first, so the ledger is clear before visiting. */
     inline fun drainEach(action: (Double) -> Unit) {
-        for (index in 0 until size) action(segments[index])
+        val visiting = segments
+        val count = size
+        segments = drainedSegments
+        drainedSegments = visiting
         size = 0
+        for (index in 0 until count) action(visiting[index])
     }
 
     /** Collecting form used by tests and diagnostics; the runtime hot path uses [drainEach]. */
     fun drain(): List<Double> {
-        val drained = ArrayList<Double>(size)
-        for (index in 0 until size) drained.add(segments[index])
+        val visiting = segments
+        val count = size
+        segments = drainedSegments
+        drainedSegments = visiting
         size = 0
+        val drained = ArrayList<Double>(count)
+        for (index in 0 until count) drained.add(visiting[index])
         return drained
     }
 

@@ -2,6 +2,7 @@ package ml.melun.mangaview.viewer.runtime
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PointerDeltaLedgerDrainTest {
@@ -62,5 +63,57 @@ class PointerDeltaLedgerDrainTest {
 
         assertEquals(0, visits)
         assertFalse(ledger.hasPending)
+    }
+
+    @Test fun reEntrantAppendDuringDrainIsDeliveredByTheNextDrainExactlyOnce() {
+        val ledger = PointerDeltaLedger()
+        ledger.begin(100f)
+        ledger.append(90f)
+        ledger.append(80f)
+
+        val first = mutableListOf<Double>()
+        ledger.drainEach { delta ->
+            first += delta
+            if (delta == 20.0) ledger.append(70f)
+        }
+
+        assertEquals("only the pre-drain segment is visited", listOf(20.0), first)
+        assertEquals("the re-entrant append waits for the next drain", 10.0, ledger.pendingPixels, 0.0)
+        val second = mutableListOf<Double>()
+        ledger.drainEach { second += it }
+        assertEquals(listOf(10.0), second)
+        assertFalse(ledger.hasPending)
+        var third = 0
+        ledger.drainEach { third++ }
+        assertEquals("no segment is ever delivered twice", 0, third)
+    }
+
+    @Test fun aThrowDuringTheDrainDropsTheVisitedSegmentsWithoutRedelivery() {
+        val ledger = PointerDeltaLedger()
+        ledger.begin(100f)
+        ledger.append(90f)
+        ledger.append(95f)
+
+        val visited = mutableListOf<Double>()
+        val failure = runCatching {
+            ledger.drainEach { delta ->
+                visited += delta
+                if (delta == 10.0) throw IllegalStateException("visitor failed")
+            }
+        }
+
+        assertTrue(failure.isFailure)
+        assertEquals(listOf(10.0), visited)
+        assertFalse("the buffers swapped before visiting, so the ledger is already clear",
+            ledger.hasPending)
+        assertEquals(0.0, ledger.pendingPixels, 0.0)
+        var redelivered = 0
+        ledger.drainEach { redelivered++ }
+        assertEquals("visited segments are never re-delivered", 0, redelivered)
+
+        ledger.append(90f)
+        val next = mutableListOf<Double>()
+        ledger.drainEach { next += it }
+        assertEquals(listOf(5.0), next)
     }
 }
