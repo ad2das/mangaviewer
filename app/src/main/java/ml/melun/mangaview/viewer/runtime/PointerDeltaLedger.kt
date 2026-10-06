@@ -1,10 +1,21 @@
 package ml.melun.mangaview.viewer.runtime
 
-/** Main-thread ledger that preserves every observed pointer delta exactly once. */
+/**
+ * Main-thread ledger that preserves every observed pointer delta exactly once.
+ *
+ * Segments live in a primitive ring so the hot drain path neither boxes each delta nor copies the
+ * queue into a new list. [drainEach] is inlined at the call site and visits the segments in order
+ * before clearing the ledger.
+ */
 internal class PointerDeltaLedger {
-    private val segments = ArrayDeque<Double>()
-    val pendingPixels: Double get() = segments.sum()
-    val hasPending: Boolean get() = segments.isNotEmpty()
+    @PublishedApi internal var segments = DoubleArray(INITIAL_CAPACITY)
+    @PublishedApi internal var size = 0
+    val pendingPixels: Double get() {
+        var sum = 0.0
+        for (index in 0 until size) sum += segments[index]
+        return sum
+    }
+    val hasPending: Boolean get() = size > 0
     private var lastY = 0f
 
     fun begin(y: Float) {
@@ -15,19 +26,36 @@ internal class PointerDeltaLedger {
     fun append(y: Float): Double {
         val delta = (lastY - y).toDouble()
         if (delta != 0.0) {
-            val last = segments.lastOrNull()
-            if (last != null && (last > 0.0) == (delta > 0.0)) {
-                segments.removeLast()
-                segments.addLast(last + delta)
-            } else segments.addLast(delta)
+            if (size > 0 && (segments[size - 1] > 0.0) == (delta > 0.0)) {
+                segments[size - 1] += delta
+            } else {
+                if (size == segments.size) segments = segments.copyOf(size * 2)
+                segments[size++] = delta
+            }
         }
         lastY = y
         return delta
     }
 
-    fun drain(): List<Double> = segments.toList().also { segments.clear() }
+    /** Allocation-free drain: visits every pending segment in order, then clears the ledger. */
+    inline fun drainEach(action: (Double) -> Unit) {
+        for (index in 0 until size) action(segments[index])
+        size = 0
+    }
+
+    /** Collecting form used by tests and diagnostics; the runtime hot path uses [drainEach]. */
+    fun drain(): List<Double> {
+        val drained = ArrayList<Double>(size)
+        for (index in 0 until size) drained.add(segments[index])
+        size = 0
+        return drained
+    }
 
     fun rebase(y: Float) {
         lastY = y
+    }
+
+    private companion object {
+        const val INITIAL_CAPACITY = 8
     }
 }

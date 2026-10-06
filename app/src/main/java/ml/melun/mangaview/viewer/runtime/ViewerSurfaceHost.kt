@@ -347,7 +347,7 @@ internal class ViewerSurfaceHost(
         var moved = false
         val traceSegments = inputTrace.drain()
         var traceIndex = 0
-        pointerDeltas.drain().forEach { delta ->
+        pointerDeltas.drainEach { delta ->
             val elapsed = (frameTime - previousFrameNanos).coerceAtLeast(1L)
             val velocity = latestVelocity.takeIf { it != 0.0 }
                 ?: delta * NANOS_PER_SECOND / elapsed
@@ -384,7 +384,7 @@ internal class ViewerSurfaceHost(
         dragScheduled = false
         val traceSegments = inputTrace.drain()
         var traceIndex = 0
-        pointerDeltas.drain().forEach { delta ->
+        pointerDeltas.drainEach { delta ->
             scrollEmitter.emitTouch(delta, dragQuantizer.apply(delta), 0.0, System.nanoTime(), 0L, -1L,
                 traceSegments.getOrNull(traceIndex++))
         }

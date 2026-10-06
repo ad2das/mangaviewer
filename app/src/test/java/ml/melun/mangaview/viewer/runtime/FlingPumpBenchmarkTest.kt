@@ -34,6 +34,87 @@ class FlingPumpBenchmarkTest {
         )
     }
 
+    @Test fun ledgerDrainBenchmark() {
+        assumeTrue(
+            "set FLING_PUMP_BENCH=1 to run the ledger drain benchmark",
+            System.getenv("FLING_PUMP_BENCH") == "1",
+        )
+        repeat(WARMUP_RUNS) {
+            driveLegacyBoxedLedger()
+            drivePrimitiveLedger()
+        }
+        reportLedger("legacy-boxed", ::driveLegacyBoxedLedger)
+        reportLedger("primitive", ::drivePrimitiveLedger)
+    }
+
+    /** One begin, three appends and one drain per cycle; four segments per cycle. */
+    private fun driveLegacyBoxedLedger(): Int {
+        val ledger = LegacyBoxedLedger()
+        var visited = 0
+        repeat(LEDGER_CYCLES) {
+            ledger.begin(1_000f)
+            ledger.append(900f)
+            ledger.append(700f)
+            ledger.append(1_100f)
+            visited += ledger.drain().size
+        }
+        return visited
+    }
+
+    private fun drivePrimitiveLedger(): Int {
+        val ledger = PointerDeltaLedger()
+        var visited = 0
+        repeat(LEDGER_CYCLES) {
+            ledger.begin(1_000f)
+            ledger.append(900f)
+            ledger.append(700f)
+            ledger.append(1_100f)
+            ledger.drainEach { visited++ }
+        }
+        return visited
+    }
+
+    private fun reportLedger(label: String, run: () -> Int) {
+        val allocatedBefore = threadAllocatedBytes()
+        val startedAt = System.nanoTime()
+        val segments = run()
+        val elapsedNanos = System.nanoTime() - startedAt
+        val allocated = threadAllocatedBytes() - allocatedBefore
+        println(
+            "[fling-pump-bench] ledger=$label cycles=$LEDGER_CYCLES segments=$segments " +
+                "elapsedMs=%.1f allocatedBytes=%d allocBytesPerSegment=%.2f".format(
+                    elapsedNanos / 1_000_000.0, allocated, allocated.toDouble() / segments,
+                ),
+        )
+        assertTrue("elapsed time must be observable", elapsedNanos > 0L)
+    }
+
+    /** Faithful copy of the pre-change boxed ledger: ArrayDeque<Double> plus a toList copy per drain. */
+    private class LegacyBoxedLedger {
+        private val segments = ArrayDeque<Double>()
+        private var lastY = 0f
+
+        fun begin(y: Float) {
+            check(segments.isEmpty())
+            lastY = y
+        }
+
+        fun append(y: Float): Double {
+            val delta = (lastY - y).toDouble()
+            if (delta != 0.0) {
+                val last = segments.lastOrNull()
+                if (last != null && (last > 0.0) == (delta > 0.0)) {
+                    segments.removeLast()
+                    segments.addLast(last + delta)
+                } else segments.addLast(delta)
+            }
+            lastY = y
+            return delta
+        }
+
+        fun drain(): List<Double> = segments.toList().also { segments.clear() }
+    }
+
     private fun measure(label: String, run: () -> Long): Pair<Long, Long> {
         val allocatedBefore = threadAllocatedBytes()
         val startedAt = System.nanoTime()
@@ -186,6 +267,7 @@ class FlingPumpBenchmarkTest {
 
     private companion object {
         const val STEPS = 10_000
+        const val LEDGER_CYCLES = 10_000
         const val STEP_PERIOD_NANOS = 16_666_667L
         const val TAIL_NANOS = 100_000_000L
         const val WARMUP_RUNS = 2
