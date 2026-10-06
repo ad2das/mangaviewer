@@ -16,6 +16,13 @@ internal data class BackwardWalk(
     val remaining: BigRational = BigRational.ZERO,
 )
 
+/** Result of a backward distance walk that may stop early; see DocumentGeometry.distanceBackwardWithin. */
+internal sealed interface BackwardDistance {
+    data class Exact(val value: BigRational) : BackwardDistance
+    data object Exceeds : BackwardDistance
+    data object Unknown : BackwardDistance
+}
+
 internal data class MappedRegions(val regions: List<VisiblePageRegion>, val complete: Boolean)
 
 internal sealed interface PageStep {

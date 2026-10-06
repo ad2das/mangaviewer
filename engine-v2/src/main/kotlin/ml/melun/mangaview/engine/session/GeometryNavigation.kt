@@ -28,7 +28,7 @@ internal fun DocumentGeometry.terminalPageResult(): PageResult {
 internal fun DocumentGeometry.nextPage(pageId: PageId): PageStep {
     val manifest = manifests[pageId.episodeId] ?: return PageStep.Missing(
         GeometryBlocker.Episode(pageId.episodeId))
-    val index = manifest.pages.indexOfFirst { it.id == pageId }
+    val index = pageIndices.indexOf(manifest, pageId)
     if (index < 0) return PageStep.Missing(GeometryBlocker.Episode(pageId.episodeId))
     if (index + 1 < manifest.pages.size) return PageStep.Known(manifest.pages[index + 1].id)
     val next = manifest.nextEpisodeId ?: return if (isNavigationKnown(manifest.id)) {
@@ -45,7 +45,7 @@ internal fun DocumentGeometry.nextPage(pageId: PageId): PageStep {
 internal fun DocumentGeometry.previousPage(pageId: PageId): PageStep {
     val manifest = manifests[pageId.episodeId] ?: return PageStep.Missing(
         GeometryBlocker.Episode(pageId.episodeId))
-    val index = manifest.pages.indexOfFirst { it.id == pageId }
+    val index = pageIndices.indexOf(manifest, pageId)
     if (index < 0) return PageStep.Missing(GeometryBlocker.Episode(pageId.episodeId))
     if (index > 0) return PageStep.Known(manifest.pages[index - 1].id)
     if (pageId.episodeId == targetEpisodeId) return PageStep.End
@@ -107,6 +107,7 @@ internal fun DocumentGeometry.retainWindow(
     navigationKnown.keys.retainAll(keep)
     actualDimensions.keys.retainAll { it.episodeId in keep }
     pruneMetrics()
+    prunePageIndex()
 }
 
 // Documents kept around the reading position by retainWindow: the anchor, a deep backward chain

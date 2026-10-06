@@ -249,6 +249,7 @@ class EngineSession(
         geometry.navigationKnown.clear()
         geometry.actualDimensions.clear()
         geometry.pruneMetrics()
+        geometry.prunePageIndex()
         geometry.anchor = null
         positionResolved = true
         pendingLegacyPosition = null

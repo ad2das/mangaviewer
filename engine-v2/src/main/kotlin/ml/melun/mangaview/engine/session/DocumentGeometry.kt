@@ -62,6 +62,11 @@ internal class DocumentGeometry(
     var splitMode: Boolean = false
 
     private val pageMetrics = PageMetricsCache()
+    internal val pageIndices = PageIndexCache()
+
+    /** Test-only cost evidence: pages stepped by bounded backward walks, never read in production. */
+    internal var backwardWalkPages: Long = 0L
+        private set
 
     fun applySplitMode(enabled: Boolean) {
         if (splitMode == enabled) return
@@ -78,6 +83,9 @@ internal class DocumentGeometry(
 
     /** Drops cached page metrics for pages the geometry no longer holds. */
     internal fun pruneMetrics() = pageMetrics.retainPages(actualDimensions.keys)
+
+    /** Drops cached page indices for episodes the geometry no longer holds. */
+    internal fun prunePageIndex() = pageIndices.retainEpisodes(manifests.keys)
 
     fun addManifest(manifest: EpisodeManifest, known: Boolean) {
         manifests[manifest.id] = manifest
@@ -197,12 +205,14 @@ internal class DocumentGeometry(
             blocker = GeometryBlocker.Dimension(cursor.pageId))
         val limit = startLimit()
         if (limit.blocker == null && limit.cursor != null) {
-            val toLimit = distanceBackward(cursor, limit.cursor)
-            if (toLimit != null) {
-                if (toLimit <= BigRational.ZERO) return MoveResult(cursor, BigRational.ZERO, distance,
-                    boundary = DocumentBoundary.START)
-                if (distance > toLimit) return MoveResult(limit.cursor, toLimit, distance - toLimit,
-                    boundary = DocumentBoundary.START)
+            when (val toLimit = distanceBackwardWithin(cursor, limit.cursor, distance)) {
+                is BackwardDistance.Exact -> {
+                    if (toLimit.value <= BigRational.ZERO) return MoveResult(cursor, BigRational.ZERO, distance,
+                        boundary = DocumentBoundary.START)
+                    if (distance > toLimit.value) return MoveResult(limit.cursor, toLimit.value,
+                        distance - toLimit.value, boundary = DocumentBoundary.START)
+                }
+                BackwardDistance.Exceeds, BackwardDistance.Unknown -> Unit
             }
         }
         return walkBackwardForInput(cursor, distance, limit.blocker)
@@ -301,21 +311,43 @@ internal class DocumentGeometry(
         return Limit(walked.cursor, null)
     }
 
-    private fun distanceBackward(from: Cursor, to: Cursor): BigRational? {
-        if (from.pageId == to.pageId) return screenDelta(from.sourceQ32 - to.sourceQ32, from.pageId)
+    /**
+     * Screen distance from [from] back to [to], walked exactly like the uncapped reference but
+     * stopping with [BackwardDistance.Exceeds] once the accumulated total is strictly greater than
+     * [cap] (the caller's backlog distance). Every remaining segment is non-negative, so the final
+     * value is also greater than the cap, and the caller's decisions are identical to the uncapped
+     * walk:
+     * - [BackwardDistance.Exceeds] can only hide a final value greater than `distance`, so neither
+     *   `toLimit <= 0` (START boundary) nor `distance > toLimit` (clamp at the limit) could fire;
+     *   the caller falls through to the bounded input walk, exactly as the old null did.
+     * - A value equal to `distance` is still [BackwardDistance.Exact]: the walk only stops strictly
+     *   over the cap, so `distance == toLimit` falls through as it did before.
+     * - [BackwardDistance.Unknown] replaces every path where the uncapped walk returned null before
+     *   the cap was exceeded.
+     */
+    private fun distanceBackwardWithin(from: Cursor, to: Cursor, cap: BigRational): BackwardDistance {
+        if (from.pageId == to.pageId) {
+            val value = screenDelta(from.sourceQ32 - to.sourceQ32, from.pageId)
+                ?: return BackwardDistance.Unknown
+            return if (value > cap) BackwardDistance.Exceeds else BackwardDistance.Exact(value)
+        }
         var current = from
         var total = BigRational.ZERO
         while (current.pageId != to.pageId) {
-            val page = page(current.pageId) ?: return null
-            page.dimensions ?: return null
-            val segment = screenDelta(current.sourceQ32, current.pageId) ?: return null
+            val page = page(current.pageId) ?: return BackwardDistance.Unknown
+            page.dimensions ?: return BackwardDistance.Unknown
+            val segment = screenDelta(current.sourceQ32, current.pageId) ?: return BackwardDistance.Unknown
             total += segment
+            if (total > cap) return BackwardDistance.Exceeds
             val previous = previousPage(current.pageId)
-            if (previous !is PageStep.Known) return null
-            val previousDimensions = page(previous.pageId)?.dimensions ?: return null
+            if (previous !is PageStep.Known) return BackwardDistance.Unknown
+            val previousDimensions = page(previous.pageId)?.dimensions ?: return BackwardDistance.Unknown
             current = Cursor(previous.pageId, metricsFor(previous.pageId, previousDimensions).extent)
+            backwardWalkPages++
         }
-        return total + (screenDelta(current.sourceQ32 - to.sourceQ32, to.pageId) ?: return null)
+        val value = total + (screenDelta(current.sourceQ32 - to.sourceQ32, to.pageId)
+            ?: return BackwardDistance.Unknown)
+        return if (value > cap) BackwardDistance.Exceeds else BackwardDistance.Exact(value)
     }
 
     private fun screenDelta(source: BigRational, pageId: PageId): BigRational? {
