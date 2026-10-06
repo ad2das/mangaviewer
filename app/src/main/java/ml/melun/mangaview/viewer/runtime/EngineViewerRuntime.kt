@@ -129,6 +129,7 @@ internal class EngineViewerRuntime(
                 tileTimings = tileTimings,
                 demandDispatcher = ViewerMainQueueDispatcher)
             surface = ViewerSurfaceHost(context, this)
+            disableGraphics()
         } catch (failure: Throwable) {
             if (preparedRenderer == null) {
                 runCatching { runBlocking { renderer.close() } }.onFailure(failure::addSuppressed)
@@ -136,8 +137,6 @@ internal class EngineViewerRuntime(
             throw failure
         }
     }
-
-    init { disableGraphics() }
 
     fun open() { if (!closing) content.open() }
     fun snapshot(): EngineRuntimeSnapshot = content.snapshot
