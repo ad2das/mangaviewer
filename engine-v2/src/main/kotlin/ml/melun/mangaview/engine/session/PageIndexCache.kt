@@ -15,7 +15,7 @@ internal class PageIndexCache {
     private class Entry(val manifest: EpisodeManifest) {
         val indices: HashMap<PageId, Int> = HashMap(manifest.pages.size)
         init {
-            manifest.pages.forEachIndexed { index, page -> indices[page.id] = index }
+            manifest.pages.forEachIndexed { index, page -> indices.putIfAbsent(page.id, index) }
         }
     }
 

@@ -211,7 +211,7 @@ internal class ReferenceGeometryMove(private val geometry: DocumentGeometry) {
         return PageResult(PageRef(page.id, geometry.actualDimensions[page.id]), null)
     }
 
-    private fun nextPage(pageId: PageId): PageStep {
+    internal fun nextPage(pageId: PageId): PageStep {
         val manifest = geometry.manifests[pageId.episodeId] ?: return PageStep.Missing(
             GeometryBlocker.Episode(pageId.episodeId))
         indexScanSteps += manifest.pages.size
@@ -229,7 +229,7 @@ internal class ReferenceGeometryMove(private val geometry: DocumentGeometry) {
         return PageStep.Known(page.id)
     }
 
-    private fun previousPage(pageId: PageId): PageStep {
+    internal fun previousPage(pageId: PageId): PageStep {
         val manifest = geometry.manifests[pageId.episodeId] ?: return PageStep.Missing(
             GeometryBlocker.Episode(pageId.episodeId))
         indexScanSteps += manifest.pages.size

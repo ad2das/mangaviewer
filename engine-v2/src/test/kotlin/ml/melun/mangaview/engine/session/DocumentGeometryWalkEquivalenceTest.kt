@@ -47,6 +47,38 @@ class DocumentGeometryWalkEquivalenceTest {
         assertTrue("checked $cases cases", cases >= 2_000)
     }
 
+    @Test
+    fun duplicatedPageIdUsesTheFirstOccurrenceScanLikeTheReference() {
+        val series = SeriesId(SourceId("test"), "walk-equivalence")
+        val episode = EpisodeId(series, "dup")
+        val nextEpisode = EpisodeId(series, "dup-next")
+        val pages = mutableListOf(
+            PageSpec(PageId.at(episode, 0), 0, PageDimensions(720, 4000)),
+            PageSpec(PageId.at(episode, 1), 1, PageDimensions(720, 4000)),
+        )
+        val manifest = EpisodeManifest(episode, "duplicate", pages, nextEpisodeId = nextEpisode)
+        val geometry = DocumentGeometry(episode, EngineViewport(1080, 1920))
+        geometry.addManifest(manifest, known = true)
+        geometry.addManifest(
+            EpisodeManifest(
+                nextEpisode, "duplicate-next",
+                listOf(PageSpec(PageId.at(nextEpisode, 0), 0, PageDimensions(720, 4000))),
+            ),
+            known = true,
+        )
+        // The manifest API forbids repeated ids, so repeat the first PageId in its backing list
+        // after construction: the cache must answer exactly like indexOfFirst, first index wins.
+        pages[1] = PageSpec(pages[0].id, 1)
+        val duplicated = pages[0].id
+        val reference = ReferenceGeometryMove(geometry)
+
+        assertEquals(0, geometry.pageIndices.indexOf(manifest, duplicated))
+        assertEquals(PageStep.End, geometry.previousPage(duplicated))
+        assertEquals(PageStep.Known(duplicated), geometry.nextPage(duplicated))
+        assertEquals(reference.nextPage(duplicated), geometry.nextPage(duplicated))
+        assertEquals(reference.previousPage(duplicated), geometry.previousPage(duplicated))
+    }
+
     private class Fixture(val geometry: DocumentGeometry, val reference: ReferenceGeometryMove)
 
     private fun fixture(rng: Random): Fixture {
