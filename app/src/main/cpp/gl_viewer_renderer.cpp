@@ -368,6 +368,9 @@ EGLint GlViewerRenderer::selectPresentationTimestamp() const noexcept {
 
 void GlViewerRenderer::detach() noexcept {
     if (!onOwnerThread()) return;
+    // Release-fence and compositor cleanup below delete context objects; bind the owner context
+    // first. makeOffscreenCurrent only reports failure, so detach still runs in every case.
+    makeOffscreenCurrent();
     if (buffered_) buffered_->detach();
     cancelReadbacks(GlReadbackStatus::kCancelled);
     if (display_ == EGL_NO_DISPLAY) return;
@@ -375,7 +378,6 @@ void GlViewerRenderer::detach() noexcept {
         callback_->presented(frame.token, 0, -2, frame.frameId);
     }
     pendingFrames_.clear();
-    makeOffscreenCurrent();
     if (windowSurface_ != EGL_NO_SURFACE) eglDestroySurface(display_, windowSurface_);
     windowSurface_ = EGL_NO_SURFACE;
     if (window_ != nullptr) ANativeWindow_release(window_);

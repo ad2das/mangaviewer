@@ -107,6 +107,7 @@ struct CompletionQueue {
 struct Ticket {
     std::shared_ptr<CompletionQueue> queue;
     std::shared_ptr<GlPresentationCallback> callback;
+    std::shared_ptr<std::atomic<int>> outstanding;
     ASurfaceControl* layer;
     std::int64_t token;
     int previous;
@@ -116,6 +117,7 @@ struct Ticket {
 };
 void completed(void* opaque, ASurfaceTransactionStats* stats) {
     const std::unique_ptr<Ticket> ticket(static_cast<Ticket*>(opaque));
+    ticket->outstanding->fetch_sub(1, std::memory_order_relaxed);
     const auto latch = ASurfaceTransactionStats_getLatchTime(stats);
     const int fence = ticket->previous < 0 ? -1 : ASurfaceTransactionStats_getPreviousReleaseFenceFd(stats, ticket->layer);
     const int presentFence = ASurfaceTransactionStats_getPresentFenceFd(stats);
@@ -139,19 +141,23 @@ struct CommitGate {
 struct CommitTicket {
     std::shared_ptr<CommitGate> gate;
     std::shared_ptr<GlPresentationCallback> callback;
+    std::shared_ptr<std::atomic<int>> outstanding;
 };
 void committed(void* opaque, ASurfaceTransactionStats*) {
     const std::unique_ptr<CommitTicket> ticket(static_cast<CommitTicket*>(opaque));
+    ticket->outstanding->fetch_sub(1, std::memory_order_relaxed);
     ticket->gate->outstanding.store(false, std::memory_order_release);
     ticket->callback->completionPending();
 }
 // Arm one outstanding uncommitted transaction; absent setOnCommit keeps the pending fallback.
 void armCommitGate(const Functions& functions, ASurfaceTransaction* transaction,
-    const std::shared_ptr<CommitGate>& gate, const std::shared_ptr<GlPresentationCallback>& callback) noexcept {
+    const std::shared_ptr<CommitGate>& gate, const std::shared_ptr<GlPresentationCallback>& callback,
+    const std::shared_ptr<std::atomic<int>>& outstanding) noexcept {
     if (!functions.setOnCommit) return;
     gate->armedAtNanos.store(monotonicNanos(), std::memory_order_release);
     gate->outstanding.store(true, std::memory_order_release);
-    functions.setOnCommit(transaction, new CommitTicket{gate, callback}, committed);
+    outstanding->fetch_add(1, std::memory_order_relaxed);
+    functions.setOnCommit(transaction, new CommitTicket{gate, callback, outstanding}, committed);
 }
 
 enum class FenceState { Signaled, Pending, Invalid };
@@ -560,6 +566,10 @@ struct BufferedFrameCompositor::State {
     std::shared_ptr<GlPresentationCallback> callback;
     std::shared_ptr<CompletionQueue> completions = std::make_shared<CompletionQueue>();
     std::shared_ptr<CommitGate> commitGate = std::make_shared<CommitGate>();
+    // Observability only: a non-zero count at detach means the platform never delivered a
+    // completion/commit callback. Tickets hold their own reference, so late callbacks settle the
+    // old attachment's counter even after a fresh attach replaces this one.
+    std::shared_ptr<std::atomic<int>> outstandingTickets = std::make_shared<std::atomic<int>>(0);
     std::array<FrameBuffer, 3> frames;
     // One-shot looper registrations, one stable slot per frame buffer.
     std::array<ReleaseFenceWatcher, 3> watchers;
@@ -576,6 +586,9 @@ BufferedFrameCompositor::BufferedFrameCompositor(std::shared_ptr<GlPresentationC
     : state_(std::make_unique<State>(std::move(callback))) {}
 BufferedFrameCompositor::~BufferedFrameCompositor() { detach(); }
 bool BufferedFrameCompositor::supported() const noexcept { return state_->functions.valid(); }
+int BufferedFrameCompositor::outstandingTickets() const noexcept {
+    return state_->outstandingTickets->load(std::memory_order_relaxed);
+}
 
 bool BufferedFrameCompositor::attach(ANativeWindow* window, int width, int height) noexcept {
     detach();
@@ -584,6 +597,7 @@ bool BufferedFrameCompositor::attach(ANativeWindow* window, int width, int heigh
     state.retained = RetainedFenceList{};
     state.gpuRetained = RetainedFenceList{};
     ++state.generation;
+    state.outstandingTickets = std::make_shared<std::atomic<int>>(0);
     state.retained.generation = state.generation;
     state.gpuRetained.generation = state.generation;
     state.width = width; state.height = height;
@@ -611,14 +625,24 @@ bool BufferedFrameCompositor::attach(ANativeWindow* window, int width, int heigh
 void BufferedFrameCompositor::detach() noexcept {
     auto& state = *state_;
     state.transactions.flush();
+    if (ATrace_isEnabled()) {
+        const int outstanding = state.outstandingTickets->load(std::memory_order_relaxed);
+        if (outstanding > 0) {
+            char label[64]{};
+            std::snprintf(label, sizeof(label), "engine_ticket_outstanding:%d", outstanding);
+            ATrace_beginSection(label); ATrace_endSection();
+        }
+    }
     finalizeRetainedFences(state.retained, FenceKind::Present, &state.pending, state.callback);
     finalizeRetainedFences(state.gpuRetained, FenceKind::Gpu, nullptr, state.callback);
     if (state.layer) {
         auto* transaction = ASurfaceTransaction_create();
-        ASurfaceTransaction_setVisibility(transaction, state.layer, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
-        ASurfaceTransaction_reparent(transaction, state.layer, nullptr);
-        ASurfaceTransaction_apply(transaction);
-        ASurfaceTransaction_delete(transaction);
+        if (transaction != nullptr) {
+            ASurfaceTransaction_setVisibility(transaction, state.layer, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
+            ASurfaceTransaction_reparent(transaction, state.layer, nullptr);
+            ASurfaceTransaction_apply(transaction);
+            ASurfaceTransaction_delete(transaction);
+        }
         ASurfaceControl_release(state.layer);
         state.layer = nullptr;
     }
@@ -733,6 +757,11 @@ bool BufferedFrameCompositor::presentReady(std::int64_t token) noexcept {
         ScopedTraceSection phase("engine_transaction_create");
         transaction = ASurfaceTransaction_create();
     }
+    if (transaction == nullptr) {
+        if (gpuFence >= 0) close(gpuFence);
+        if (ATrace_isEnabled()) traceGpuFenceMissing(state.generation, token, bufferId, "transaction");
+        return false;
+    }
     if (ATrace_isEnabled()) {
         char label[128]{};
         std::snprintf(label, sizeof(label), "engine_buffer:%lld:%llu", static_cast<long long>(token),
@@ -748,13 +777,15 @@ bool BufferedFrameCompositor::presentReady(std::int64_t token) noexcept {
         ASurfaceTransaction_setVisibility(transaction, state.layer, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
         state.functions.pressure(transaction, state.layer, true);
         state.functions.acquire(state.layer);
+        state.outstandingTickets->fetch_add(1, std::memory_order_relaxed);
         ASurfaceTransaction_setOnComplete(transaction,
-            new Ticket{state.completions, state.callback, state.layer, token, state.current, bufferId, state.generation}, completed);
+            new Ticket{state.completions, state.callback, state.outstandingTickets, state.layer, token,
+                       state.current, bufferId, state.generation}, completed);
     }
     frame.busy = true;
     state.current = state.drawing; state.drawing = -1;
     state.pending.insert(token);
-    armCommitGate(state.functions, transaction, state.commitGate, state.callback);
+    armCommitGate(state.functions, transaction, state.commitGate, state.callback, state.outstandingTickets);
     {
         ScopedTraceSection phase("engine_transaction_enqueue");
         state.transactions.submit(transaction);
@@ -772,7 +803,9 @@ void BufferedFrameCompositor::hide() noexcept {
     finalizeRetainedFences(state_->retained, FenceKind::Present, &state_->pending, state_->callback);
     finalizeRetainedFences(state_->gpuRetained, FenceKind::Gpu, nullptr, state_->callback);
     auto* transaction = ASurfaceTransaction_create();
-    ASurfaceTransaction_setVisibility(transaction, state_->layer, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
-    ASurfaceTransaction_apply(transaction);
-    ASurfaceTransaction_delete(transaction);
+    if (transaction != nullptr) {
+        ASurfaceTransaction_setVisibility(transaction, state_->layer, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
+        ASurfaceTransaction_apply(transaction);
+        ASurfaceTransaction_delete(transaction);
+    }
 }

@@ -50,6 +50,8 @@ public:
     bool valid() const noexcept;
     bool enableBufferedCompositor() noexcept;
     bool canSubmit() noexcept;
+    /** Diagnostic only: presenter tickets still awaiting a platform callback; 0 when unbuffered. */
+    int outstandingTickets() const noexcept;
     bool contextLost() const noexcept { return contextLost_; }
     bool recreateContext() noexcept;
     void injectGlContextLossForVerification() noexcept { verificationGlContextLoss_ = true; }

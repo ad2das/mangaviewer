@@ -105,7 +105,6 @@ private:
         std::int64_t swapCompletedNanos = 0;
         GlReadbackStatus status = GlReadbackStatus::kOk;
         bool swapKnown = false;
-        bool requiresContextDestroy = false;
     };
 
     struct RequestSlot final {

@@ -42,6 +42,7 @@ internal object OwnedRendererBridge {
     external fun nativeClearScene(renderer: Long): Boolean
     external fun nativeHasTexture(renderer: Long, textureKey: Long): Boolean
     external fun nativeTextureCounts(renderer: Long): LongArray
+    external fun nativeOutstandingTickets(renderer: Long): Int
 
     external fun nativeSubmit(
         renderer: Long,

@@ -74,3 +74,10 @@ Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativeTextureCounts(
     env->SetLongArrayRegion(result, 0, static_cast<jsize>(values.size()), values.data());
     return result;
 }
+
+extern "C" JNIEXPORT jint JNICALL
+Java_ml_melun_mangaview_viewer_runtime_OwnedRendererBridge_nativeOutstandingTickets(
+    JNIEnv*, jobject, jlong handle) {
+    auto* value = renderer(handle);
+    return value != nullptr ? value->outstandingTickets() : -1;
+}

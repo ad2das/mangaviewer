@@ -20,6 +20,8 @@ public:
     bool presentReady(std::int64_t token) noexcept;
     void hide() noexcept;
     void poll() noexcept;
+    /** Diagnostic only: tickets whose platform callback has not been delivered yet. */
+    int outstandingTickets() const noexcept;
 private:
     struct State;
     std::unique_ptr<State> state_;

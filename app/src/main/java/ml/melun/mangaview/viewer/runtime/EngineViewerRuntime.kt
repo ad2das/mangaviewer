@@ -93,30 +93,49 @@ internal class EngineViewerRuntime(
         { onMain { if (!closing) { frameProvenance.noteRecovery(System.nanoTime()); graphics.rendererChanged(); forceGraphicsFrame() } } },
         { onMain { if (!closing) { disableGraphics(); surface.rendererUnavailable() } } },
         { value -> onMain { onSubmitted(value) } })) }
-    private val reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime)
-    private val content: EngineSessionRuntime = EngineSessionRuntime(scope, coordinator, reducer, source, episodeId,
-        { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },
-        { _, failure -> reportFailure(failure) }, awaitInitialPresentation = true)
-    private val refreshQueue = HandlerRefreshMessageQueue(Handler.createAsync(Looper.getMainLooper()))
-    private val refreshScheduler = HandlerRefreshScheduler(refreshQueue) { onGraphicsRefreshFrame() }
+    private val reducer: EngineSession
+    private val content: EngineSessionRuntime
+    private val refreshQueue: HandlerRefreshMessageQueue
+    private val refreshScheduler: HandlerRefreshScheduler
     private val tileTimings = EngineTileTimingLedger()
-    private val graphics: EngineRenderRuntime = EngineRenderRuntime(scope, coordinator,
-        // Measured across cold boots: every speculative band is a page lookup plus a decode queued on
-        // the same lanes, and the recorded demandToResident metric counts only a tile's FIRST demand.
-        // The horizon therefore does not buy residency for the rows that matter; it only lengthens the
-        // queue they sit behind. Tile rows scale 29 (0) -> 40 (2) -> 76 (12) and ntk d2r p50 7.6 -> 8.8
-        // -> 168.1ms, so the reader keeps zero preparation viewports.
-        EngineTilePlanner(renderer.allocationBytes, speculativeBudgetBytes = renderer.plannerTextureBytes,
-            preparationViewports = 0, tracer = NoopEngineWorkTracer),
-        EngineTileWork(NativeEngineImageDecoder(), decodeLanes, renderer, onPageDecodeFailure), renderer, content::pageRequest,
-        { scene -> renderer.offer(frameProvenance.attachTicket(scene)) }, renderer::clearScene, { _, failure -> reportFailure(failure) },
-        waitForCompleteViewport = false, reportSceneFailure = reportFailure,
-        frameWorkObserver = FrameWorkObserver { kind, atNanos -> frameProvenance.noteWorkTrigger(kind, atNanos) },
-        refreshScheduler = refreshScheduler,
-        tracer = NoopEngineWorkTracer,
-        tileTimings = tileTimings,
-        demandDispatcher = ViewerMainQueueDispatcher)
-    val surface = ViewerSurfaceHost(context, this)
+    private val graphics: EngineRenderRuntime
+    val surface: ViewerSurfaceHost
+
+    // Every initializer after the renderer can fail; close an owner this runtime created so a failed
+    // construction cannot strand its GL context, buffers and thread for the process lifetime. A
+    // prepared renderer belongs to the pool lease and is closed by that lease instead.
+    init {
+        try {
+            reducer = EngineSession(nextSession.incrementAndGet(), episodeId, initialViewport, System::nanoTime)
+            content = EngineSessionRuntime(scope, coordinator, reducer, source, episodeId,
+                { value, receipts -> inputObservations.record(value.session, receipts); onContent(value) },
+                { _, failure -> reportFailure(failure) }, awaitInitialPresentation = true)
+            refreshQueue = HandlerRefreshMessageQueue(Handler.createAsync(Looper.getMainLooper()))
+            refreshScheduler = HandlerRefreshScheduler(refreshQueue) { onGraphicsRefreshFrame() }
+            graphics = EngineRenderRuntime(scope, coordinator,
+                // Measured across cold boots: every speculative band is a page lookup plus a decode queued on
+                // the same lanes, and the recorded demandToResident metric counts only a tile's FIRST demand.
+                // The horizon therefore does not buy residency for the rows that matter; it only lengthens the
+                // queue they sit behind. Tile rows scale 29 (0) -> 40 (2) -> 76 (12) and ntk d2r p50 7.6 -> 8.8
+                // -> 168.1ms, so the reader keeps zero preparation viewports.
+                EngineTilePlanner(renderer.allocationBytes, speculativeBudgetBytes = renderer.plannerTextureBytes,
+                    preparationViewports = 0, tracer = NoopEngineWorkTracer),
+                EngineTileWork(NativeEngineImageDecoder(), decodeLanes, renderer, onPageDecodeFailure), renderer, content::pageRequest,
+                { scene -> renderer.offer(frameProvenance.attachTicket(scene)) }, renderer::clearScene, { _, failure -> reportFailure(failure) },
+                waitForCompleteViewport = false, reportSceneFailure = reportFailure,
+                frameWorkObserver = FrameWorkObserver { kind, atNanos -> frameProvenance.noteWorkTrigger(kind, atNanos) },
+                refreshScheduler = refreshScheduler,
+                tracer = NoopEngineWorkTracer,
+                tileTimings = tileTimings,
+                demandDispatcher = ViewerMainQueueDispatcher)
+            surface = ViewerSurfaceHost(context, this)
+        } catch (failure: Throwable) {
+            if (preparedRenderer == null) {
+                runCatching { runBlocking { renderer.close() } }.onFailure(failure::addSuppressed)
+            }
+            throw failure
+        }
+    }
 
     init { disableGraphics() }
 

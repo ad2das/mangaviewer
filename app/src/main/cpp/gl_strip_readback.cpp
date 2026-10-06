@@ -208,12 +208,11 @@ void GlStripReadback::issue(
     slot.value.eglFrameId = eglFrameId;
     slot.value.captureIssuedNanos = monotonicNanos();
     if (!allocateGpuCapture(&slot.value)) {
-        slot.value.status = GlReadbackStatus::kGlError;
-        slot.value.requiresContextDestroy = slot.value.fence == nullptr && slot.value.pbo != 0;
-        if (slot.value.pbo == 0 && slot.value.fence == nullptr) {
-            slot.used = false;
-            retainFailure(request, width, eglFrameId, GlReadbackStatus::kGlError, 0, 0, 0);
-        }
+        // issue() runs with the owner context current (directly behind bind/submit), so a partial
+        // capture can be destroyed now instead of pinning its PBO and fence until context loss.
+        destroyCapture(&slot.value);
+        slot.used = false;
+        retainFailure(request, width, eglFrameId, GlReadbackStatus::kGlError, 0, 0, 0);
     }
 }
 
@@ -413,7 +412,7 @@ std::optional<GlReadbackPacket> GlStripReadback::take(std::int64_t token) {
 }
 
 std::optional<GlReadbackPacket> GlStripReadback::takeCapture(Capture* capture) {
-    if (capture == nullptr || capture->requiresContextDestroy || !capture->swapKnown) {
+    if (capture == nullptr || !capture->swapKnown) {
         return std::nullopt;
     }
     if (!fenceSignaled(capture)) return std::nullopt;

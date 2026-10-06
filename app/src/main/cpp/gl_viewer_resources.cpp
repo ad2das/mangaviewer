@@ -82,6 +82,10 @@ bool GlViewerRenderer::canSubmit() noexcept {
     return onOwnerThread() && (!buffered_ || buffered_->ready());
 }
 
+int GlViewerRenderer::outstandingTickets() const noexcept {
+    return buffered_ ? buffered_->outstandingTickets() : 0;
+}
+
 bool GlViewerRenderer::offscreenContextIsCurrent() const noexcept {
     // Fast path for bindSubmitSurface: skip makeOffscreenCurrent only when this thread provably
     // already holds the offscreen pbuffer current. The live EGL queries are the authority; nothing
