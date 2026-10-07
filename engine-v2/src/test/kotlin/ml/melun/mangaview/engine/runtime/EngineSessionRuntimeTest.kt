@@ -38,6 +38,8 @@ import ml.melun.mangaview.engine.api.WorkKey
 import ml.melun.mangaview.engine.api.WorkLimits
 import ml.melun.mangaview.engine.api.WorkPriority
 import ml.melun.mangaview.engine.api.WorkRequest
+import ml.melun.mangaview.engine.content.PageHttpException
+import ml.melun.mangaview.engine.content.PageMissingException
 import ml.melun.mangaview.engine.session.EngineSession
 import ml.melun.mangaview.engine.work.WorkCoordinator
 import ml.melun.mangaview.source.AdjacentEpisodes
@@ -919,6 +921,135 @@ class EngineSessionRuntimeTest {
             assertEquals(PageDimensions(100, 250), runtime.snapshot.pages[unavailable]?.dimensions)
             assertTrue(runtime.snapshot.session.completeViewport)
             assertEquals(unavailable, runtime.snapshot.session.anchor!!.pageId)
+            assertTrue(failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun definitiveMissOn404Or410DeclaresThePlaceholderOnTheFirstFailureAndTheReaderMovesPast() = runTest {
+        for (status in listOf(404, 410)) {
+            val source = Source()
+            val missing = PageId.at(episode, 0)
+            var attempts = 0
+            source.beforePage = { id -> if (id == missing) { attempts++; throw PageMissingException(status) } }
+            val receipts = mutableListOf<InputReceipt>()
+            val failures = mutableListOf<Throwable>()
+            val (runtime, coordinator) = runtime(source, receipts = receipts, failures = failures)
+            try {
+                runtime.open()
+                runCurrent()
+                assertEquals("status $status", 1, attempts)
+                assertTrue("status $status: a definitive miss must complete the viewport on the first failure",
+                    runtime.snapshot.session.completeViewport)
+                assertTrue("status $status", missing in runtime.unavailablePages)
+                assertFalse("status $status: the placeholder is geometry, not a page", missing in runtime.snapshot.pages)
+                val input = InputSample(1, 1, 0, 150 * 1_024L)
+                runtime.input(input)
+                runCurrent()
+                assertEquals("status $status", InputOutcome.APPLIED,
+                    receipts.last { it.sample.sequence == input.sequence }.outcome)
+                assertEquals("status $status", 0, runtime.snapshot.session.pendingInputCount)
+                assertTrue("status $status: $failures", failures.isEmpty())
+            } finally {
+                runtime.close()
+                coordinator.close()
+            }
+            assertEquals(0, source.livePages)
+            assertEquals(0, coordinator.snapshot().subscribers)
+        }
+    }
+
+    @Test fun transientHttpFailuresStillNeedTheFailureBound() = runTest {
+        for (status in listOf(502, 503, 504)) {
+            val source = Source()
+            val unavailable = PageId.at(episode, 0)
+            var attempts = 0
+            source.beforePage = { id -> if (id == unavailable) { attempts++; throw PageHttpException(status) } }
+            val failures = mutableListOf<Throwable>()
+            var retryClock = 0L
+            val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
+            try {
+                runtime.open()
+                runCurrent()
+                assertEquals("status $status", 1, attempts)
+                assertFalse("status $status must not bypass the bound", runtime.snapshot.session.completeViewport)
+                retryClock += 2_000_000_000L
+                runtime.resize(EngineViewport(100, 100))
+                runCurrent()
+                assertEquals("status $status", 2, attempts)
+                assertFalse("status $status must not bypass the bound", runtime.snapshot.session.completeViewport)
+                retryClock += 2_000_000_000L
+                runtime.resize(EngineViewport(100, 100))
+                runCurrent()
+                assertEquals("status $status", 3, attempts)
+                assertTrue("status $status", runtime.snapshot.session.completeViewport)
+                assertTrue("status $status", unavailable in runtime.unavailablePages)
+                assertTrue("status $status: $failures", failures.isEmpty())
+            } finally {
+                runtime.close()
+                coordinator.close()
+            }
+            assertEquals(0, source.livePages)
+            assertEquals(0, coordinator.snapshot().subscribers)
+        }
+    }
+
+    @Test fun recoveredDefinitiveMissReplacesItsPlaceholder() = runTest {
+        val source = Source()
+        val missing = PageId.at(episode, 0)
+        var attempts = 0
+        var outage = true
+        source.beforePage = { id -> if (id == missing) { attempts++; if (outage) throw PageMissingException(404) } }
+        source.pageDimensions = { id -> if (id == missing) PageDimensions(100, 250) else PageDimensions(100, 100) }
+        val failures = mutableListOf<Throwable>()
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(1, attempts)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertFalse(missing in runtime.snapshot.pages)
+            assertTrue(missing in runtime.unavailablePages)
+            outage = false
+            // No input: the idle runtime wakes itself for the retry once the backoff elapsed.
+            retryClock += 10_000_000_000L
+            advanceTimeBy(40_000L)
+            runCurrent()
+            assertEquals(2, attempts)
+            assertEquals(PageDimensions(100, 250), runtime.snapshot.pages[missing]?.dimensions)
+            assertFalse(missing in runtime.unavailablePages)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertEquals(missing, runtime.snapshot.session.anchor!!.pageId)
+            assertTrue(failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun definitiveMissOnAnOffScreenReadAheadPagePublishesNoPlaceholder() = runTest {
+        val source = Source()
+        val offScreen = PageId.at(episode, 1)
+        var attempts = 0
+        source.beforePage = { id -> if (id == offScreen) { attempts++; throw PageMissingException(410) } }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures)
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(1, attempts)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertFalse("an off-screen miss must not publish placeholder geometry",
+                offScreen in runtime.unavailablePages)
+            assertFalse(offScreen in runtime.snapshot.pages)
+            assertEquals(1, runtime.pageFailureCounts[offScreen])
             assertTrue(failures.isEmpty())
         } finally {
             runtime.close()

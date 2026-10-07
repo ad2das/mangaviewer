@@ -24,6 +24,7 @@ import ml.melun.mangaview.engine.api.WorkRequest
 import ml.melun.mangaview.engine.content.EnginePageWork
 import ml.melun.mangaview.engine.content.EngineEpisodeWork
 import ml.melun.mangaview.engine.content.PageHttpException
+import ml.melun.mangaview.engine.content.PageMissingException
 import ml.melun.mangaview.engine.work.WorkCoordinator
 import ml.melun.mangaview.source.PageByteStream
 import ml.melun.mangaview.source.PageFetchPriority
@@ -190,6 +191,106 @@ class EnginePageWorkIntegrationTest {
         assertNull(store.find(plan.pages.single().pageId, plan.contentRevision))
         assertEquals(0, store.ownership().preparedPages)
         coordinator.close()
+    }
+
+    @Test fun everyCandidateAnswering404Or410IsADefinitiveMiss() = runTest {
+        for (status in listOf(404, 410)) {
+            val coordinator = WorkCoordinator(this)
+            val store = store()
+            val plan = plan(mirror = true)
+            val requests = mutableListOf<String>()
+            val factory = factory(store, SourceTransport { requests += it.url; response(Body(), status) })
+            val failure = try {
+                coordinator.acquire(factory.request(plan, plan.pages.single().pageId, WorkPriority.FOCUS))
+                null
+            } catch (caught: Throwable) { caught }
+            assertTrue("status $status: expected a definitive miss, got $failure", failure is PageMissingException)
+            assertEquals(status, (failure as PageMissingException).statusCode)
+            assertEquals("status $status: every declared mirror must be attempted",
+                listOf("https://images.test/original.png", "https://mirror.test/original.png"), requests)
+            assertEquals("status $status: the suppressed attempt chain must survive",
+                1, failure.suppressed.size)
+            assertTrue("status $status", failure.suppressed.single() is PageHttpException)
+            assertEquals(0, store.ownership().preparedPages)
+            assertEquals(0, coordinator.snapshot().retainedResults)
+            coordinator.close()
+        }
+    }
+
+    @Test fun transientHttpStatusesAreNotDefinitiveMisses() = runTest {
+        for (status in listOf(502, 503, 504)) {
+            val coordinator = WorkCoordinator(this)
+            val store = store()
+            val plan = plan(mirror = true)
+            val requests = mutableListOf<String>()
+            val factory = factory(store, SourceTransport { requests += it.url; response(Body(), status) })
+            val failure = try {
+                coordinator.acquire(factory.request(plan, plan.pages.single().pageId, WorkPriority.FOCUS))
+                null
+            } catch (caught: Throwable) { caught }
+            assertTrue("status $status must stay a transient failure, got $failure",
+                failure is PageHttpException && failure !is PageMissingException)
+            assertEquals(status, (failure as PageHttpException).statusCode)
+            assertEquals("status $status: every declared mirror is still attempted", 2, requests.size)
+            coordinator.close()
+        }
+    }
+
+    @Test fun aMixOf404AndTransientMirrorsIsNotADefinitiveMiss() = runTest {
+        val coordinator = WorkCoordinator(this)
+        val store = store()
+        val plan = plan(mirror = true)
+        val requests = mutableListOf<String>()
+        val factory = factory(store, SourceTransport {
+            requests += it.url
+            if (requests.size == 1) response(Body(), 404) else response(Body(), 503)
+        })
+        val failure = try {
+            coordinator.acquire(factory.request(plan, plan.pages.single().pageId, WorkPriority.FOCUS))
+            null
+        } catch (caught: Throwable) { caught }
+        assertTrue("a mixed mirror answer must stay transient, got $failure",
+            failure is PageHttpException && failure !is PageMissingException)
+        assertEquals(503, (failure as PageHttpException).statusCode)
+        assertEquals(2, requests.size)
+        coordinator.close()
+    }
+
+    @Test fun aBodyStreamFailureIsNotADefinitiveMissEvenWhenTheFreshRouteAnswers404() = runTest {
+        val coordinator = WorkCoordinator(this)
+        val store = store()
+        val plan = plan()
+        val requests = mutableListOf<String>()
+        val factory = factory(store, SourceTransport {
+            requests += it.url
+            if (requests.size == 1) response(Body { throw IOException("stream reset") })
+            else response(Body(), 404)
+        })
+        val failure = try {
+            coordinator.acquire(factory.request(plan, plan.pages.single().pageId, WorkPriority.FOCUS))
+            null
+        } catch (caught: Throwable) { caught }
+        assertTrue("a body failure followed by 404 must stay non-definitive, got $failure",
+            failure is PageHttpException && failure !is PageMissingException)
+        assertEquals(404, (failure as PageHttpException).statusCode)
+        assertEquals("the failed candidate still gets its fresh-route retry", 2, requests.size)
+        assertEquals(0, store.ownership().preparedPages)
+        coordinator.close()
+    }
+
+    @Test fun throttlingAndAuthorizationStatusesStillRethrowWithoutTryingTheMirror() = runTest {
+        for (status in listOf(401, 429)) {
+            val coordinator = WorkCoordinator(this)
+            val store = store()
+            val plan = plan(mirror = true)
+            var calls = 0
+            val factory = factory(store, SourceTransport { calls++; response(Body(), status) })
+            expect<PageHttpException> {
+                coordinator.acquire(factory.request(plan, plan.pages.single().pageId, WorkPriority.FOCUS))
+            }
+            assertEquals("status $status must rethrow before the mirror is attempted", 1, calls)
+            coordinator.close()
+        }
     }
 
     @Test fun cancellationDuringBodyReadClosesStreamAndRemovesStaging() = runTest {
