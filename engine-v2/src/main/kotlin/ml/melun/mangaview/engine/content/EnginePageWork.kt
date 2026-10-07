@@ -93,6 +93,10 @@ class EnginePageWork(
     ): PreparedPage {
         val candidates = plan.page(pageId).candidates
         var failure: IOException? = null
+        // Every candidate must be attempted and every attempt must have answered 404/410 before the
+        // provider's silence is definitive: a 5xx, a transport failure or a body that died mid-stream
+        // is transient, never evidence that the original does not exist.
+        var definitiveMiss = true
         for (candidate in candidates.indices) {
             val opened = try {
                 val request = planner.pageRequest(plan, pageId, candidate, context.priority.value)
@@ -104,6 +108,7 @@ class EnginePageWork(
             } catch (error: IOException) {
                 // Authentication and throttling are not evidence that an image mirror is missing.
                 if (error is PageHttpException && error.statusCode !in setOf(404, 410, 502, 503, 504)) throw error
+                if (error !is PageHttpException || error.statusCode !in MISSING_PAGE_STATUSES) definitiveMiss = false
                 failure = suppressed(failure, error)
                 continue
             }
@@ -115,6 +120,7 @@ class EnginePageWork(
                 // The connection can die while the body streams (an HTTP/2 reset): that is not the
                 // mirror's answer, so this candidate gets one fresh-connection attempt before the
                 // next mirror. prepareWithPromotion already released the failed body.
+                definitiveMiss = false
                 failure = suppressed(failure, error)
                 System.err.println("EnginePageWork page-body-fail id=$pageId candidate=$candidate " +
                     "url=${planner.pageRequest(plan, pageId, candidate, context.priority.value).url} error=${error.message}")
@@ -127,6 +133,7 @@ class EnginePageWork(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: IOException) {
+                if (error !is PageHttpException || error.statusCode !in MISSING_PAGE_STATUSES) definitiveMiss = false
                 failure = suppressed(failure, error)
                 continue
             }
@@ -135,12 +142,24 @@ class EnginePageWork(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: IOException) {
+                definitiveMiss = false
                 failure = suppressed(failure, error)
                 continue
             }
         }
-        throw checkNotNull(failure).also {
-            System.err.println("EnginePageWork page-failed id=$pageId error=${it.message}")
+        val last = checkNotNull(failure)
+        System.err.println("EnginePageWork page-failed id=$pageId error=${last.message}")
+        throw if (definitiveMiss) last.asDefinitiveMiss() else last
+    }
+
+    /**
+     * Re-keys a 404/410 failure as [PageMissingException] without losing the accumulated suppressed
+     * chain: the message and the full attempt history stay exactly what they were.
+     */
+    private fun IOException.asDefinitiveMiss(): IOException {
+        val http = this as? PageHttpException ?: return this
+        return PageMissingException(http.statusCode).also { missing ->
+            http.suppressed?.forEach(missing::addSuppressed)
         }
     }
 
@@ -207,7 +226,16 @@ class EnginePageWork(
     }
 }
 
-class PageHttpException(val statusCode: Int) : IOException("Page request returned HTTP $statusCode")
+open class PageHttpException(val statusCode: Int) : IOException("Page request returned HTTP $statusCode")
+
+/**
+ * Every candidate was attempted and every attempt answered 404/410: the provider has no original
+ * for this page. A definitive miss lets the reader treat the page as unavailable at the first
+ * round trip instead of waiting out the transient-failure bound.
+ */
+class PageMissingException(statusCode: Int) : PageHttpException(statusCode)
+
+private val MISSING_PAGE_STATUSES = setOf(404, 410)
 
 private class PageWorkIdentity(
     private val principal: String,
