@@ -1059,6 +1059,218 @@ class EngineSessionRuntimeTest {
         assertEquals(0, coordinator.snapshot().subscribers)
     }
 
+    @Test fun readAheadDefinitiveMissPublishesItsPlaceholderTheMomentThePageIsRequired() = runTest {
+        val source = Source()
+        val missing = PageId.at(episode, 1)
+        val gate = CompletableDeferred<Unit>()
+        var attempts = 0
+        var gateNextFetch = false
+        source.beforePage = { id ->
+            if (id == missing) {
+                attempts++
+                if (gateNextFetch) gate.await()
+                throw PageMissingException(404)
+            }
+        }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures)
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(1, attempts)
+            assertTrue("the read-ahead miss must be remembered", missing in runtime.missingPages)
+            assertFalse("and must not publish a placeholder while off screen", missing in runtime.unavailablePages)
+            // The reader moves onto the already-failed page. The placeholder must come from the
+            // stored miss in the same reconcile; the fresh visible demand is gated so a fetch
+            // completion cannot be what published it.
+            gateNextFetch = true
+            runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
+            runCurrent()
+            assertTrue("promotion must publish the placeholder in the same reconcile",
+                missing in runtime.unavailablePages)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertTrue("the miss stays definitive until an original arrives", missing in runtime.missingPages)
+            gate.complete(Unit)
+            runCurrent()
+            assertTrue("the retry racing the promotion must not remove the placeholder",
+                missing in runtime.unavailablePages)
+            assertTrue(failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun transientReadAheadFailureStillWaitsForTheBoundOnceRequired() = runTest {
+        val source = Source()
+        val page = PageId.at(episode, 1)
+        var attempts = 0
+        source.beforePage = { id -> if (id == page) { attempts++; throw PageHttpException(503) } }
+        val failures = mutableListOf<Throwable>()
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(1, attempts)
+            assertTrue(runtime.missingPages.isEmpty())
+            runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
+            runCurrent()
+            assertFalse("a transient failure must never promote a placeholder", page in runtime.unavailablePages)
+            assertTrue(runtime.missingPages.isEmpty())
+            var guard = 0
+            while (page !in runtime.unavailablePages && guard++ < 5) {
+                retryClock += 2_000_000_000L
+                runtime.resize(EngineViewport(100, 100))
+                runCurrent()
+            }
+            assertTrue("the old strike bound must still declare the page unavailable",
+                page in runtime.unavailablePages)
+            assertEquals("the placeholder still waits for the third distinct failure", 3, attempts)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            assertTrue(failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun definitiveReadAheadMissIsForgottenWhenTheOriginalArrivesBeforeRequired() = runTest {
+        val source = Source()
+        val missing = PageId.at(episode, 1)
+        var attempts = 0
+        var outage = true
+        source.beforePage = { id -> if (id == missing) { attempts++; if (outage) throw PageMissingException(404) } }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures)
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(1, attempts)
+            assertTrue(missing in runtime.missingPages)
+            // The original arrives through a path other than the failed demand (early transfer or
+            // cached body) before the geometry ever requires the page.
+            outage = false
+            val generation = runtime.snapshot.session.generation
+            val plan = runtime.plans.getValue(episode)
+            runtime.acceptPage(generation, missing, plan,
+                StoredPage(missing, plan.contentRevision, File("recovered-${missing.remoteKey}.png"), 1,
+                    "1".repeat(64), PageDimensions(100, 250), "image/png"))
+            runCurrent()
+            assertFalse("acceptance must clear the definitive miss", missing in runtime.missingPages)
+            // Becoming required now publishes no placeholder: the real page is already resident.
+            runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
+            runCurrent()
+            assertFalse(missing in runtime.unavailablePages)
+            assertEquals(PageDimensions(100, 250), runtime.snapshot.pages[missing]?.dimensions)
+            assertTrue(failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun repeatedDefinitiveMissAfterRecoveryKeepsRetryingWithoutANewPlaceholder() = runTest {
+        val source = Source()
+        val missing = PageId.at(episode, 0)
+        var attempts = 0
+        var outage = true
+        source.beforePage = { id -> if (id == missing) { attempts++; if (outage) throw PageMissingException(404) } }
+        val failures = mutableListOf<Throwable>()
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(1, attempts)
+            assertTrue(missing in runtime.unavailablePages)
+            // The original arrives; its geometry replaces the placeholder (existing recovery).
+            outage = false
+            retryClock += 10_000_000_000L
+            advanceTimeBy(40_000L)
+            runCurrent()
+            assertEquals(2, attempts)
+            assertFalse(missing in runtime.unavailablePages)
+            assertFalse(missing in runtime.missingPages)
+            // The provider flaps back to 404. A page-scrubber jump churns the subscription so the
+            // demand executes again: the repeated miss is remembered, but no second placeholder is
+            // declared. The accepted original's dimensions are already resident, so the layout
+            // never needs placeholder geometry again; the failed body keeps retrying on the
+            // work-set backoff instead (chosen semantics, consistent with a miss on known geometry).
+            outage = true
+            runtime.seekPage(PageId.at(episode, 2))
+            runCurrent()
+            runtime.seekPage(PageId.at(episode, 0))
+            runCurrent()
+            assertEquals("the demand must be re-executed after the churn", 3, attempts)
+            assertTrue("the repeated miss stays remembered", missing in runtime.missingPages)
+            assertFalse("resident geometry leaves no placeholder to declare",
+                missing in runtime.unavailablePages)
+            assertTrue(runtime.snapshot.session.completeViewport)
+            retryClock += 2_000_000_000L
+            runtime.resize(EngineViewport(100, 100))
+            runCurrent()
+            assertEquals("the failed body keeps retrying on its own backoff", 4, attempts)
+            assertTrue(failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun resetPathsForgetDefinitiveMisses() = runTest {
+        val navigateSource = Source().apply { nextEpisode = episode.copy(remoteKey = "2") }
+        val navigateMiss = PageId.at(episode, 1)
+        navigateSource.beforePage = { id -> if (id == navigateMiss) throw PageMissingException(404) }
+        val (navigateRuntime, navigateCoordinator) = runtime(navigateSource)
+        try {
+            navigateRuntime.open()
+            runCurrent()
+            assertTrue(navigateMiss in navigateRuntime.missingPages)
+            navigateRuntime.navigate(navigateSource.nextEpisode!!)
+            assertTrue("a new document must forget the previous miss", navigateRuntime.missingPages.isEmpty())
+        } finally {
+            navigateRuntime.close()
+            navigateCoordinator.close()
+        }
+        assertEquals(0, navigateSource.livePages)
+
+        val retrySource = Source()
+        val retryMiss = PageId.at(episode, 1)
+        val gate = CompletableDeferred<Unit>()
+        var gateFetch = false
+        retrySource.beforePage = { id ->
+            if (id == retryMiss) {
+                if (gateFetch) gate.await()
+                throw PageMissingException(404)
+            }
+        }
+        val (retryRuntime, retryCoordinator) = runtime(retrySource)
+        try {
+            retryRuntime.open()
+            runCurrent()
+            assertTrue(retryMiss in retryRuntime.missingPages)
+            gateFetch = true
+            retryRuntime.retryFailures()
+            runCurrent()
+            assertTrue("an explicit failure reset must forget the miss", retryRuntime.missingPages.isEmpty())
+            gate.complete(Unit)
+            runCurrent()
+        } finally {
+            retryRuntime.close()
+            retryCoordinator.close()
+        }
+        assertEquals(0, retrySource.livePages)
+    }
+
     @Test fun nextManifestFailureWaitsForExplicitRetryWithoutInterruptingCurrentEpisode() = runTest {
         val source = Source().apply { nextEpisode = episode.copy(remoteKey = "2") }
         var attempts = 0
