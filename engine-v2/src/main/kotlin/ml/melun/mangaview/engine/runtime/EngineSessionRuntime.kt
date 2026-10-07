@@ -63,6 +63,7 @@ internal data class DemandKey(
     val prepared: Set<PageId>,
     val failedPages: Set<PageId>,
     val unavailablePages: Set<PageId>,
+    val missingPages: Set<PageId>,
     val failedEpisodes: Set<EpisodeId>,
 )
 
@@ -112,6 +113,13 @@ class EngineSessionRuntime(
     internal val failedReadAheadPages = linkedSetOf<PageId>()
     /** Required pages declared unavailable for this session once the failure bound was reached. */
     internal val unavailablePages = linkedSetOf<PageId>()
+    /**
+     * Pages whose every candidate answered 404/410 while the demand was solved. Definitive until
+     * an original is accepted: a later 5xx or transport failure for the same id never clears it,
+     * and a page that failed while only read-ahead publishes its placeholder the moment the
+     * geometry requires it instead of paying another round trip.
+     */
+    internal val missingPages = linkedSetOf<PageId>()
     /** Distinct failed fetch attempts per page; a demand that keeps bouncing must not reset it. */
     internal val pageFailureCounts = mutableMapOf<PageId, Int>()
     private val failedReadAheadEpisodes = linkedSetOf<EpisodeId>()
@@ -204,6 +212,7 @@ class EngineSessionRuntime(
         earlyTransfers.clear()
         failedReadAheadPages.clear()
         unavailablePages.clear()
+        missingPages.clear()
         pageFailureCounts.clear()
         failedReadAheadEpisodes.clear()
         failedEpisodeRetryAt.clear()
@@ -229,6 +238,7 @@ class EngineSessionRuntime(
         if (!closed) {
             failedReadAheadPages.clear()
             unavailablePages.clear()
+            missingPages.clear()
             pageFailureCounts.clear()
             failedReadAheadEpisodes.clear()
             failedEpisodeRetryAt.clear()
@@ -335,7 +345,8 @@ class EngineSessionRuntime(
             initialPresented, lead, demandVersion, state.anchor?.pageId,
             state.visibleRegions.mapTo(linkedSetOf()) { it.pageId }, state.requiredDimensions,
             state.requiredEpisodes, state.requiredNavigation, plans, pages,
-            prepared.toSet(), failedReadAheadPages.toSet(), unavailablePages.toSet(), failedReadAheadEpisodes.toSet())
+            prepared.toSet(), failedReadAheadPages.toSet(), unavailablePages.toSet(),
+            missingPages.toSet(), failedReadAheadEpisodes.toSet())
         return demandCache.get(key) { demands(state, lead) }
     }
 
@@ -349,6 +360,10 @@ class EngineSessionRuntime(
                 process(session.dispatch(SessionEvent.PositionResolved(generation, position.anchor, position.legacy)))
             }
         }
+        // A page whose read-ahead fetch already proved the original missing is promoted before its
+        // demand is rebuilt: becoming required publishes the placeholder in this same reconcile
+        // instead of paying another 404 round trip on the visible path.
+        promoteDefinitiveMisses(state)
         val wantedPages = pagePriorities(
             state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, interactionActive,
             lead, earlyTransfers,

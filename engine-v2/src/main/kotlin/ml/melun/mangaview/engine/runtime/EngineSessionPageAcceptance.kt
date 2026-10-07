@@ -64,6 +64,7 @@ internal fun EngineSessionRuntime.acceptPage(generation: Long, expected: PageId,
     horizon.fetchLatency.complete(expected) { observationClock() }
     prepared += expected
     failedReadAheadPages -= expected
+    missingPages -= expected
     pageFailureCounts -= expected
     val update = try {
         session.dispatch(SessionEvent.DimensionsResolved(generation, expected, page.dimensions))
@@ -90,6 +91,10 @@ internal fun EngineSessionRuntime.handlePageFailure(id: PageId, cause: Throwable
     horizon.fetchLatency.abandon(id)
     val failures = (pageFailureCounts[id] ?: 0) + 1
     pageFailureCounts[id] = failures
+    // A definitive miss is knowledge about the provider, not about this demand: remember it even
+    // while the page is only read-ahead, so the demand that later makes it required publishes the
+    // placeholder immediately instead of retrying the 404.
+    if (cause is PageMissingException) missingPages += id
     // Idle retries back off and stop after a bound; reading on reconciles again anyway.
     armPageRetryWake(failures)
     if (id in unavailablePages) return
@@ -99,15 +104,40 @@ internal fun EngineSessionRuntime.handlePageFailure(id: PageId, cause: Throwable
     // Anything else keeps the ordinary transient-failure semantics.
     if (cause !is PageMissingException && failures < PAGE_UNAVAILABLE_FAILURES) return
     if (id !in state.requiredDimensions) return
+    declareUnavailable(id, state)
+}
+
+/**
+ * Publishes placeholder geometry for a page the provider cannot serve and stops demanding it until
+ * an original is accepted. False when the document was pruned before the dispatch.
+ */
+internal fun EngineSessionRuntime.declareUnavailable(id: PageId, state: EngineSessionSnapshot): Boolean {
+    if (id in unavailablePages) return false
     val update = try {
         session.dispatch(
             SessionEvent.DimensionsResolved(state.generation, id, unavailableDimensions(id, state)),
         )
     } catch (stale: UnknownPageDimensionsException) {
-        return
+        return false
     }
     unavailablePages += id
     process(update)
+    return true
+}
+
+/**
+ * Pages whose definitive miss arrived while they were only read-ahead: the geometry requires them
+ * now, so publish the already-known placeholder before the demand rebuild asks the provider again.
+ * Called from the reconcile path. [declareUnavailable] marks the runtime dirty instead of
+ * reconciling, so the enclosing process loop discards the stale demand list it is building and
+ * re-runs against the updated snapshot: no demand ever reaches the work set carrying a page the
+ * placeholder already covers.
+ */
+internal fun EngineSessionRuntime.promoteDefinitiveMisses(state: EngineSessionSnapshot) {
+    if (missingPages.isEmpty()) return
+    state.requiredDimensions.forEach { id ->
+        if (id in missingPages) declareUnavailable(id, state)
+    }
 }
 
 /**
@@ -122,6 +152,7 @@ private fun EngineSessionRuntime.restoreUnavailable(generation: Long, id: PageId
         return false
     }
     unavailablePages -= id
+    missingPages -= id
     demandVersion++
     process(update)
     return true
