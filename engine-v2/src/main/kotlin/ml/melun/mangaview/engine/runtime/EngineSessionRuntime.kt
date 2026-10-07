@@ -104,7 +104,7 @@ class EngineSessionRuntime(
     private val retainedCachedPlans = linkedMapOf<EpisodeId, CachedPlan>()
     private val pageDemands = SessionPageDemands(source, this::acceptPageGeometry,
         { generation, id, plan, page -> if (isCurrent(generation)) acceptPage(generation, id, plan, page) },
-        { id -> handlePageFailure(id) })
+        { id, cause -> handlePageFailure(id, cause) })
     internal var pages: Map<PageId, PageContentIdentity> = emptyMap()
     internal val prepared = linkedSetOf<PageId>()
     internal val earlyTransfers = EarlyOriginalTransfers()

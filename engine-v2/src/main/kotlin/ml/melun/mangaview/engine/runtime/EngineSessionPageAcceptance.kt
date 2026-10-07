@@ -6,6 +6,7 @@ import ml.melun.mangaview.core.EpisodeId
 import ml.melun.mangaview.core.EpisodeManifest
 import ml.melun.mangaview.core.PageDimensions
 import ml.melun.mangaview.core.PageId
+import ml.melun.mangaview.engine.content.PageMissingException
 import ml.melun.mangaview.engine.api.EngineRuntimeSnapshot
 import ml.melun.mangaview.engine.api.EngineSessionPort
 import ml.melun.mangaview.engine.api.EngineSessionSnapshot
@@ -84,7 +85,7 @@ internal fun EngineSessionRuntime.acceptPage(generation: Long, expected: PageId,
  * counter survives the reader bouncing away, so a boundary stall cannot reset the decision; it
  * clears only when the original is actually accepted.
  */
-internal fun EngineSessionRuntime.handlePageFailure(id: PageId) {
+internal fun EngineSessionRuntime.handlePageFailure(id: PageId, cause: Throwable) {
     markPageFailure(id, failedReadAheadPages) { process(SessionUpdate(session.snapshot)) }
     horizon.fetchLatency.abandon(id)
     val failures = (pageFailureCounts[id] ?: 0) + 1
@@ -93,7 +94,11 @@ internal fun EngineSessionRuntime.handlePageFailure(id: PageId) {
     armPageRetryWake(failures)
     if (id in unavailablePages) return
     val state = session.snapshot
-    if (failures < PAGE_UNAVAILABLE_FAILURES || id !in state.requiredDimensions) return
+    // A definitive miss (every candidate answered 404/410) means the provider has no original:
+    // declare the placeholder at the first round trip instead of waiting out the failure bound.
+    // Anything else keeps the ordinary transient-failure semantics.
+    if (cause !is PageMissingException && failures < PAGE_UNAVAILABLE_FAILURES) return
+    if (id !in state.requiredDimensions) return
     val update = try {
         session.dispatch(
             SessionEvent.DimensionsResolved(state.generation, id, unavailableDimensions(id, state)),

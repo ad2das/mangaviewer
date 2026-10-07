@@ -12,7 +12,7 @@ internal class SessionPageDemands(
     private val source: EngineSessionWork,
     private val metadata: (Long, PageId, EpisodeAccessPlan, WorkMetadata) -> Unit,
     private val accept: (Long, PageId, EpisodeAccessPlan, StoredPage) -> Unit,
-    private val failed: (PageId) -> Unit,
+    private val failed: (PageId, Throwable) -> Unit,
 ) {
     private class Cached(val generation: Long, val plan: EpisodeAccessPlan,
         val priority: WorkPriority, val demand: SessionDemand<StoredPage>)
@@ -30,7 +30,7 @@ internal class SessionPageDemands(
         // the geometry still needs it. A visible page whose candidates are all transiently
         // unavailable is a provider outage, not a session error.
         return SessionDemand(source.page(plan, id, priority),
-            onFailure = { _: Throwable -> failed(id) },
+            onFailure = { cause: Throwable -> failed(id, cause) },
             onMetadata = { value -> metadata(generation, id, plan, value) },
         ) { page -> accept(generation, id, plan, page) }.also {
             entries[id] = Cached(generation, plan, priority, it)
