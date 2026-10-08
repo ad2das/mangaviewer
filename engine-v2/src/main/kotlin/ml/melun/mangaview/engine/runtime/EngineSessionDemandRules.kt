@@ -241,16 +241,18 @@ internal fun matchesVerifiedGeometry(known: PageContentIdentity?, geometry: Work
 internal fun readAheadAnchor(state: EngineSessionSnapshot, target: EpisodeId): PageId? =
     state.anchor?.pageId ?: state.requiredDimensions.firstOrNull { it.episodeId == target }
 
-// Keep the first adjacent authorization independent of legacy geometry. After the
-// current originals and viewport are ready, use the control slot for one further
-// document while the adjacent bodies load. This never starts that document's bodies
-// or recursively walks its navigation links.
+// Use the spare control slot for one further document as soon as the adjacent plan is held
+// and the opening screen has been presented. The gate is monotonic: presenting the first
+// screen only ever turns it on, so a 10-20 s document body started here is never cancelled
+// by a pause or a reverse -- the demand stays present while the anchor stays in the current
+// episode (see the demand-key contract in EngineSessionRuntime.cachedDemands). This never
+// starts that document's bodies or recursively walks its navigation links.
 internal fun nextDocumentToPrepare(manifest: EpisodeManifest, plans: Map<EpisodeId, EpisodeAccessPlan>,
-    prepared: Set<PageId>, initialPresented: Boolean, failed: Set<EpisodeId>,
+    initialPresented: Boolean, failed: Set<EpisodeId>,
 ): EpisodeId? {
     val next = manifest.nextEpisodeId?.takeUnless { it in failed } ?: return null
     val nextPlan = plans[next] ?: return next
-    if (!initialPresented || manifest.pages.any { it.id !in prepared }) return null
+    if (!initialPresented) return null
     return nextPlan.manifest.nextEpisodeId?.takeUnless { it in plans || it in failed }
 }
 
@@ -354,13 +356,11 @@ internal fun adjacentPrefetch(
     positionResolved: Boolean,
     plans: Map<EpisodeId, EpisodeAccessPlan>,
     targetEpisode: EpisodeId,
-    prepared: Set<PageId>,
     initialPresented: Boolean,
     failed: Set<EpisodeId>,
 ): EpisodeId? {
     if (!positionResolved) return null
     val episode = state.anchor?.pageId?.episodeId ?: targetEpisode
     val plan = plans[episode] ?: return null
-    return nextDocumentToPrepare(plan.manifest, plans, prepared,
-        initialPresented, failed)
+    return nextDocumentToPrepare(plan.manifest, plans, initialPresented, failed)
 }

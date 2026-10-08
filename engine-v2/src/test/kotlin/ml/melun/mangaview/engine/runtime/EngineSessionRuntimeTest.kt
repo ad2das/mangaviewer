@@ -558,7 +558,7 @@ class EngineSessionRuntimeTest {
         }
     }
 
-    @Test fun preparedCurrentEpisodeAuthorizesOneFurtherDocumentWhileNextBodiesArePending() = runTest {
+    @Test fun heldNextPlanAuthorizesTheGrandchildWhileCurrentBodiesAreUnprepared() = runTest {
         val next = episode.copy(remoteKey = "2")
         val further = episode.copy(remoteKey = "3")
         val source = Source().apply { nextEpisode = next; followingEpisode = further }
@@ -578,13 +578,17 @@ class EngineSessionRuntimeTest {
             runtime.open()
             runCurrent()
             assertTrue(next in source.requestedEpisodes)
-            assertFalse(further in source.requestedEpisodes)
-            currentGate.complete(Unit)
-            runCurrent()
-            assertTrue(activeNext > 0)
-            assertTrue(further in source.requestedEpisodes)
+            // The monotonic gate: the held adjacent plan plus the presented opening screen is
+            // enough. No current page needs to be prepared, and no directional motion is required.
+            assertTrue("the grandchild plan must start before any current page is prepared",
+                further in source.requestedEpisodes)
+            assertEquals("the current document must still be unprepared",
+                0, runtime.prepared.count { it.episodeId == episode })
             assertEquals(3, source.requestedEpisodes.size)
             assertTrue(source.startedPriorities.keys.none { it.episodeId == further })
+            currentGate.complete(Unit)
+            runCurrent()
+            assertTrue("the next document's bodies must already be streaming", activeNext > 0)
             assertEquals(PageId.at(episode, 0), runtime.snapshot.session.anchor!!.pageId)
             assertTrue(failures.toString(), failures.isEmpty())
         } finally {
@@ -594,6 +598,109 @@ class EngineSessionRuntimeTest {
             assertEquals(0, coordinator.snapshot().subscribers)
             coordinator.close()
         }
+    }
+
+    @Test fun grandchildDocumentDemandSurvivesPauseAndReverseWithoutCancellingTheFetch() = runTest {
+        val next = episode.copy(remoteKey = "2")
+        val grandchild = episode.copy(remoteKey = "3")
+        val fourth = episode.copy(remoteKey = "4")
+        val source = Source().apply {
+            pageCount = 40
+            earlyGeometry = true
+            nextEpisode = next
+            followingEpisode = grandchild
+            thirdEpisode = fourth
+        }
+        val currentGate = CompletableDeferred<Unit>()
+        val grandchildGate = CompletableDeferred<Unit>()
+        var grandchildCancelled = false
+        source.beforePage = { id -> if (id.episodeId == episode) currentGate.await() }
+        source.beforeEpisode = { id ->
+            if (id == grandchild) {
+                try { grandchildGate.await() } finally { grandchildCancelled = !grandchildGate.isCompleted }
+            }
+        }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures,
+            observationClock = { testScheduler.currentTime * 1_000_000L })
+        try {
+            runtime.open()
+            runCurrent()
+            assertTrue(next in source.requestedEpisodes)
+            assertTrue("the held next plan must authorize the grandchild",
+                grandchild in source.requestedEpisodes)
+            assertFalse("the grandchild document fetch is in flight", grandchildGate.isCompleted)
+            assertEquals("the current document must still be unprepared",
+                0, runtime.prepared.count { it.episodeId == episode })
+            // A forward step, then a reverse, then a pause longer than the trailing velocity
+            // window. The old instantaneous-direction gate dropped the demand on any of these.
+            runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
+            runCurrent()
+            advanceTimeBy(150)
+            runtime.input(InputSample(2, 1, 0, -150 * 1_024L))
+            runCurrent()
+            advanceTimeBy(2_000)
+            runtime.resize(EngineViewport(100, 100))
+            runCurrent()
+            assertFalse("a pause or reverse must not cancel the in-flight grandchild document",
+                grandchildCancelled)
+            assertFalse(grandchildGate.isCompleted)
+            assertEquals("a direction change must not re-request the document",
+                1, source.requestedEpisodes.count { it == grandchild })
+            grandchildGate.complete(Unit)
+            runCurrent()
+            assertTrue("the fetched grandchild must stay in the plan window",
+                grandchild in runtime.snapshot.plans)
+            assertEquals("the completed fetch must not be re-demanded",
+                1, source.requestedEpisodes.count { it == grandchild })
+            assertFalse("the prefetch must not chain past the grandchild", fourth in source.requestedEpisodes)
+            assertTrue(failures.toString(), failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun grandchildIsNotRequestedBeforeTheFirstScreenIsPresented() = runTest {
+        val next = episode.copy(remoteKey = "2")
+        val grandchild = episode.copy(remoteKey = "3")
+        val source = Source().apply {
+            pageCount = 40
+            earlyGeometry = true
+            nextEpisode = next
+            followingEpisode = grandchild
+        }
+        val currentGate = CompletableDeferred<Unit>()
+        source.beforePage = { id -> if (id.episodeId == episode) currentGate.await() }
+        val failures = mutableListOf<Throwable>()
+        val coordinator = WorkCoordinator(this)
+        val session = EngineSession(1, episode, EngineViewport(100, 100)) { testScheduler.currentTime * 1_000_000L }
+        val runtime = EngineSessionRuntime(this, coordinator, session, source, episode,
+            { _, _ -> }, { _, failure -> failures += failure }, awaitInitialPresentation = true)
+        try {
+            runtime.open()
+            runCurrent()
+            assertTrue("the adjacent plan must be requested and held", next in source.requestedEpisodes)
+            assertTrue(next in runtime.snapshot.plans)
+            assertFalse("the grandchild must wait for the first presented screen",
+                grandchild in source.requestedEpisodes)
+            assertEquals("the current document must still be unprepared",
+                0, runtime.prepared.count { it.episodeId == episode })
+            runtime.initialViewportSubmitted(session.snapshot.generation)
+            runCurrent()
+            assertTrue("presenting the first screen alone must start the grandchild",
+                grandchild in source.requestedEpisodes)
+            assertEquals("the grandchild starts before the current pages are prepared",
+                0, runtime.prepared.count { it.episodeId == episode })
+            assertTrue(failures.toString(), failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
     }
 
     @Test fun twoOriginalWindowAdvancesPastOneSlowBodyAndClosesBothActiveBodies() = runTest {

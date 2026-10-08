@@ -111,7 +111,13 @@ private fun planWindowToDrop(
     val protectedEpisodes = mutableSetOf(anchor, targetEpisode)
     plans[anchor]?.manifest?.let { manifest ->
         manifest.previousEpisodeId?.let(protectedEpisodes::add)
-        manifest.nextEpisodeId?.let(protectedEpisodes::add)
+        manifest.nextEpisodeId?.let { next ->
+            protectedEpisodes += next
+            // The forward prefetch starts the next-next document's plan before the reader
+            // crosses; keep it inside the window while the anchor sits behind it, or the
+            // overflow can drop it right after the fetch and the demand rebuild re-fetches it.
+            plans[next]?.manifest?.nextEpisodeId?.let(protectedEpisodes::add)
+        }
     }
     protectedEpisodes += pages.keys.mapTo(mutableSetOf()) { it.episodeId }
     protectedEpisodes += state.requiredEpisodes

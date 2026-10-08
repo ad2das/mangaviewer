@@ -383,8 +383,14 @@ class EngineSessionRuntime(
         wantedPages.forEach { (id, priority) ->
             if (id.episodeId !in plans) wantedEpisodes[id.episodeId] = priority
         }
-        // One forward document uses the spare control slot; its image bodies remain background work.
-        adjacentPrefetch(state, positionResolved, plans, targetEpisode, prepared, initialPresented, failedReadAheadEpisodes)
+        // One further document uses the spare control slot; its image bodies remain background
+        // work. Once the adjacent plan is held and the opening screen has been presented, the
+        // slot starts the next-next document's plan as well (never chained further), so a slow
+        // boundary body is already streaming long before the reader arrives. The gate is
+        // monotonic: a pause or reverse cannot retract it while the anchor stays in the current
+        // episode, so the in-flight document fetch is never cancelled by a direction change.
+        adjacentPrefetch(state, positionResolved, plans, targetEpisode, initialPresented,
+            failedReadAheadEpisodes)
             ?.let { if (it !in plans) wantedEpisodes.putIfAbsent(it, WorkPriority.INTERACTIVE) }
         wantedEpisodes.forEach { (id, priority) ->
             if (id !in plans) {
