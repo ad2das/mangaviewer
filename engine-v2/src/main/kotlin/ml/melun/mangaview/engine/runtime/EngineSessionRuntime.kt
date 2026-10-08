@@ -114,6 +114,11 @@ class EngineSessionRuntime(
     /** Required pages declared unavailable for this session once the failure bound was reached. */
     internal val unavailablePages = linkedSetOf<PageId>()
     /**
+     * Immutable view of [unavailablePages] carried by the published snapshot. Recomputed only when
+     * the set actually changes, so a scroll sample never allocates a new set.
+     */
+    private var publishedUnavailablePages: Set<PageId> = emptySet()
+    /**
      * Pages whose every candidate answered 404/410 while the demand was solved. Definitive until
      * an original is accepted: a later 5xx or transport failure for the same id never clears it,
      * and a page that failed while only read-ahead publishes its placeholder the moment the
@@ -151,7 +156,7 @@ class EngineSessionRuntime(
 
     val snapshot: EngineRuntimeSnapshot get() {
         checkOwner()
-        return EngineRuntimeSnapshot(session.snapshot, plans, pages)
+        return EngineRuntimeSnapshot(session.snapshot, plans, pages, publishedUnavailablePages)
     }
 
     fun open() {
@@ -212,6 +217,7 @@ class EngineSessionRuntime(
         earlyTransfers.clear()
         failedReadAheadPages.clear()
         unavailablePages.clear()
+        republishUnavailablePages()
         missingPages.clear()
         pageFailureCounts.clear()
         failedReadAheadEpisodes.clear()
@@ -238,6 +244,7 @@ class EngineSessionRuntime(
         if (!closed) {
             failedReadAheadPages.clear()
             unavailablePages.clear()
+            republishUnavailablePages()
             missingPages.clear()
             pageFailureCounts.clear()
             failedReadAheadEpisodes.clear()
@@ -488,6 +495,11 @@ class EngineSessionRuntime(
     }
 
     internal fun isCurrent(generation: Long) = !closed && generation == session.snapshot.generation
+
+    /** Recomputes the immutable set carried by [snapshot]; call after mutating [unavailablePages]. */
+    internal fun republishUnavailablePages() {
+        publishedUnavailablePages = if (unavailablePages.isEmpty()) emptySet() else unavailablePages.toSet()
+    }
 
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
 }

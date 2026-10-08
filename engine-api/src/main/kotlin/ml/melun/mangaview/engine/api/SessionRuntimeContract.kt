@@ -29,6 +29,8 @@ data class EngineRuntimeSnapshot(
     val session: EngineSessionSnapshot,
     val plans: Map<EpisodeId, EpisodeAccessPlan>,
     val pages: Map<PageId, PageContentIdentity>,
+    /** Pages currently rendered from unavailable placeholder geometry, mirrored immutably. */
+    val unavailablePages: Set<PageId> = emptySet(),
 )
 
 data class SessionWorkOwnership(

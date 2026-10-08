@@ -150,11 +150,13 @@ internal class EngineViewerRuntime(
 
     fun chromeSnapshot(): ViewerChromeState? {
         val position = readingPosition() ?: return null
-        val manifest = content.snapshot.plans[position.pageId.episodeId]?.manifest ?: return null
+        val runtime = content.snapshot
+        val manifest = runtime.plans[position.pageId.episodeId]?.manifest ?: return null
         val index = manifest.pages.indexOfFirst { it.id == position.pageId }
         if (index < 0) return null
         return ViewerChromeState(manifest.id, manifest.title, index + 1, manifest.pages.size, position,
-            manifest.previousEpisodeId, manifest.nextEpisodeId, content.snapshot.session.splitMode)
+            manifest.previousEpisodeId, manifest.nextEpisodeId, runtime.session.splitMode,
+            runtime.unavailablePages.filterTo(linkedSetOf()) { it.episodeId == manifest.id })
     }
 
     fun bookmarkSnapshot(): Pair<SourceAnchor, ReadingPosition>? = position()?.let {

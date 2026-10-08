@@ -133,6 +133,7 @@ internal fun EngineSessionRuntime.declareUnavailable(id: PageId, state: EngineSe
         return false
     }
     unavailablePages += id
+    republishUnavailablePages()
     process(update)
     return true
 }
@@ -168,6 +169,7 @@ private fun EngineSessionRuntime.restoreUnavailable(generation: Long, id: PageId
     unavailablePages -= id
     missingPages -= id
     demandVersion++
+    republishUnavailablePages()
     process(update)
     return true
 }

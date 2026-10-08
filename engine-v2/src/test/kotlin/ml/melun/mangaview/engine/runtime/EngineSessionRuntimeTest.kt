@@ -1141,6 +1141,36 @@ class EngineSessionRuntimeTest {
         assertEquals(0, coordinator.snapshot().subscribers)
     }
 
+    @Test fun snapshotPublishesUnavailablePagesAndDropsThemAfterRecovery() = runTest {
+        val source = Source()
+        val missing = PageId.at(episode, 0)
+        var attempts = 0
+        var outage = true
+        source.beforePage = { id -> if (id == missing) { attempts++; if (outage) throw PageMissingException(404) } }
+        source.pageDimensions = { id -> if (id == missing) PageDimensions(100, 250) else PageDimensions(100, 100) }
+        val failures = mutableListOf<Throwable>()
+        var retryClock = 0L
+        val (runtime, coordinator) = runtime(source, failures = failures, workClock = { retryClock })
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(setOf(missing), runtime.snapshot.unavailablePages)
+            assertNotSame("the published set must be an immutable copy", runtime.unavailablePages,
+                runtime.snapshot.unavailablePages)
+            assertSame("an unchanged set must not be reallocated per sample",
+                runtime.snapshot.unavailablePages, runtime.snapshot.unavailablePages)
+            outage = false
+            retryClock += 10_000_000_000L
+            advanceTimeBy(40_000L)
+            runCurrent()
+            assertEquals(2, attempts)
+            assertTrue("recovery must clear the published placeholder", runtime.snapshot.unavailablePages.isEmpty())
+            assertTrue(failures.isEmpty())
+        } finally { runtime.close(); coordinator.close() }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
     @Test fun definitiveMissOnANonRequiredPagePublishesItsPlaceholderImmediately() = runTest {
         val source = Source()
         val offScreen = PageId.at(episode, 1)

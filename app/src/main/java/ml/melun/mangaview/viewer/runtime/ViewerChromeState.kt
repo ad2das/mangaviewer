@@ -1,6 +1,7 @@
 package ml.melun.mangaview.viewer.runtime
 
 import ml.melun.mangaview.core.EpisodeId
+import ml.melun.mangaview.core.PageId
 import ml.melun.mangaview.core.ReadingPosition
 
 internal data class ViewerChromeState(
@@ -12,6 +13,8 @@ internal data class ViewerChromeState(
     val previousEpisodeId: EpisodeId?,
     val nextEpisodeId: EpisodeId?,
     val splitMode: Boolean = false,
+    /** Pages of this episode the engine renders from unavailable placeholder geometry. */
+    val unavailablePageIds: Set<PageId> = emptySet(),
 ) {
     init {
         require(title.isNotBlank())

@@ -192,6 +192,7 @@ internal class SessionViewerRuntime(
             position,
             manifest.previousEpisodeId,
             manifest.nextEpisodeId,
+            unavailablePageIds = emptySet(),
         )
     }
 
