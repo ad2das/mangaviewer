@@ -365,8 +365,8 @@ class EngineSessionRuntime(
         // instead of paying another 404 round trip on the visible path.
         promoteDefinitiveMisses(state)
         val wantedPages = pagePriorities(
-            state, plans, targetEpisode, prepared, failedReadAheadPages, initialPresented, interactionActive,
-            lead, earlyTransfers,
+            state, plans, targetEpisode, prepared, failedReadAheadPages, missingPages, initialPresented,
+            interactionActive, lead, earlyTransfers,
         )
         // A page declared unavailable keeps the layout walkable through its placeholder geometry.
         // Off screen it owns no demand; on screen it keeps retrying on the work set's backoff, so a

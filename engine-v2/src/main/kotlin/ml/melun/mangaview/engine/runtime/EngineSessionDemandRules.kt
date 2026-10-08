@@ -302,6 +302,7 @@ internal fun pagePriorities(
     targetEpisode: EpisodeId,
     prepared: Set<PageId>,
     failedReadAheadPages: Set<PageId>,
+    missingPages: Set<PageId>,
     initialPresented: Boolean,
     interactionActive: Boolean,
     lead: Int,
@@ -319,12 +320,18 @@ internal fun pagePriorities(
             val manifest = plans[blocked.episodeId]?.manifest ?: return@forEach
             val index = manifest.pages.indexOfFirst { it.id == blocked }
             if (index < 0) return@forEach
+            // The speculative window skips pages whose fetch already failed or whose provider
+            // definitively has no original: re-demanding them only re-arms wakes and floods the
+            // connection pool while the walk waits on the blocker anyway. Required (FOCUS) and
+            // visible pages are added unfiltered above and below, so nothing needed is lost.
             for (offset in 1..BLOCKED_DIMENSION_WINDOW) {
                 val id = manifest.pages.getOrNull(index + offset)?.id ?: break
+                if (id in failedReadAheadPages || id in missingPages) continue
                 result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
             }
             for (offset in 1..BLOCKED_DIMENSION_BACKWARD_WINDOW) {
                 val id = manifest.pages.getOrNull(index - offset)?.id ?: break
+                if (id in failedReadAheadPages || id in missingPages) continue
                 result.putIfAbsent(id, WorkPriority.NEXT_IMAGE)
             }
         }

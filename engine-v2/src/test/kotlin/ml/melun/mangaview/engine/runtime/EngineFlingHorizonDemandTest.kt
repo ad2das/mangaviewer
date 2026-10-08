@@ -15,6 +15,7 @@ import ml.melun.mangaview.engine.api.PageAccessPlan
 import ml.melun.mangaview.engine.api.SourceAnchor
 import ml.melun.mangaview.engine.api.WorkPriority
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class EngineFlingHorizonDemandTest {
@@ -29,11 +30,11 @@ class EngineFlingHorizonDemandTest {
             specs.map { PageAccessPlan(it.id, it.ordinal.toString(), listOf(URI("https://test.example/page.png"))) })
     }
 
-    private fun state(index: Int): EngineSessionSnapshot = EngineSessionSnapshot(
+    private fun state(index: Int, required: Set<PageId> = emptySet()): EngineSessionSnapshot = EngineSessionSnapshot(
         sessionId = 1, generation = 1, phase = EngineSessionPhase.ACTIVE,
         viewport = EngineViewport(100, 100), anchor = SourceAnchor(PageId.at(episode, index), 0L),
         geometryRevision = 1, inputRevision = 1, pendingInputCount = 0,
-        visibleRegions = emptyList(), requiredDimensions = emptySet(),
+        visibleRegions = emptyList(), requiredDimensions = required,
         requiredEpisodes = setOf(episode), completeViewport = true,
     )
 
@@ -41,13 +42,15 @@ class EngineFlingHorizonDemandTest {
         lead: Int,
         prepared: Set<PageId> = emptySet(),
         failed: Set<PageId> = emptySet(),
+        missing: Set<PageId> = emptySet(),
         initialPresented: Boolean = true,
         interactionActive: Boolean = true,
         index: Int = 0,
         plans: Map<EpisodeId, EpisodeAccessPlan> = mapOf(episode to plan(episode, 40)),
+        required: Set<PageId> = emptySet(),
     ): LinkedHashMap<PageId, WorkPriority> = pagePriorities(
-        state(index), plans, episode, prepared, failed, initialPresented, interactionActive, lead,
-        EarlyOriginalTransfers(),
+        state(index, required), plans, episode, prepared, failed, missing, initialPresented,
+        interactionActive, lead, EarlyOriginalTransfers(),
     )
 
     /** Demand entries the interaction horizon itself owns (the other sources keep their priorities). */
@@ -115,5 +118,45 @@ class EngineFlingHorizonDemandTest {
         assertEquals(WorkPriority.VISIBLE, wanted[PageId.at(episode, 2)])
         assertEquals(WorkPriority.NEXT_IMAGE, wanted[PageId.at(episode, 3)])
         assertEquals(WorkPriority.NEXT_IMAGE, wanted[PageId.at(episode, 8)])
+    }
+
+    @Test
+    fun blockedWindowSkipsDefinitivelyMissingAndFailedPages() {
+        val blocked = PageId.at(episode, 5)
+        val wanted = demanded(
+            lead = PAGES_AHEAD_WHILE_INTERACTING,
+            failed = setOf(PageId.at(episode, 7), PageId.at(episode, 39)),
+            missing = setOf(PageId.at(episode, 3)),
+            index = 5,
+            required = setOf(blocked),
+        )
+        assertEquals(WorkPriority.FOCUS, wanted[blocked])
+        assertNull("a definitively missing page in the blocked window must not be re-demanded",
+            wanted[PageId.at(episode, 3)])
+        assertNull("a failed page in the blocked window must not be re-demanded",
+            wanted[PageId.at(episode, 7)])
+        // The window continues past a skipped page: only the skipped ids are gone.
+        assertEquals(WorkPriority.NEXT_IMAGE, wanted[PageId.at(episode, 4)])
+        assertEquals(WorkPriority.NEXT_IMAGE, wanted[PageId.at(episode, 6)])
+        assertEquals(WorkPriority.NEXT_IMAGE, wanted[PageId.at(episode, 8)])
+    }
+
+    @Test
+    fun requiredPagesStayDemandedEvenWhenFailedOrMissing() {
+        val blocked = PageId.at(episode, 5)
+        val transient = PageId.at(episode, 1)
+        val missing = PageId.at(episode, 3)
+        val wanted = demanded(
+            lead = PAGES_AHEAD_WHILE_INTERACTING,
+            failed = setOf(transient, PageId.at(episode, 39)),
+            missing = setOf(missing),
+            index = 5,
+            required = setOf(blocked, transient, missing),
+        )
+        assertEquals("a transiently failed (503) required page must stay demanded",
+            WorkPriority.FOCUS, wanted[transient])
+        assertEquals("a definitively missing required page must stay demanded until its placeholder is published",
+            WorkPriority.FOCUS, wanted[missing])
+        assertEquals(WorkPriority.FOCUS, wanted[blocked])
     }
 }
