@@ -11,7 +11,21 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface ViewerDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun saveProgress(progress: ReadingProgressEntity)
+    suspend fun insertProgress(progress: ReadingProgressEntity)
+
+    /**
+     * Replaces the series' progress row. A null title never erases a title already stored for the
+     * same episode; a row for a different episode replaces the previous one with what the caller
+     * passed, title included.
+     */
+    @Transaction
+    suspend fun saveProgress(progress: ReadingProgressEntity) {
+        val existing = progress(progress.sourceKey, progress.seriesKey)
+        val next = if (progress.episodeTitle == null && existing?.episodeKey == progress.episodeKey) {
+            progress.copy(episodeTitle = existing.episodeTitle)
+        } else progress
+        insertProgress(next)
+    }
 
     @Query("SELECT * FROM reading_progress WHERE sourceKey = :sourceKey AND seriesKey = :seriesKey")
     suspend fun progress(sourceKey: String, seriesKey: String): ReadingProgressEntity?

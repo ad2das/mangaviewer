@@ -372,9 +372,16 @@ internal class EngineViewerRuntime(
     private suspend fun persist(value: Pair<SourceAnchor, Long>?) {
         if (value == null) return
         saveMutex.withLock {
-            if (lastSaved != value) { positions.save(value.first, value.second); lastSaved = value }
+            if (lastSaved != value) {
+                positions.save(value.first, value.second, episodeTitle(value.first.pageId.episodeId))
+                lastSaved = value
+            }
         }
     }
+
+    /** The provider title of the anchor's episode while its plan is still held. */
+    private fun episodeTitle(episodeId: EpisodeId): String? =
+        content.snapshot.plans[episodeId]?.manifest?.title
 
     fun readingPosition(): ReadingPosition? = position()?.let { ReadingPosition(it.first.pageId, it.second, it.first.viewportOffsetUnits) }
     private fun onMain(block: () -> Unit) { if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block) }

@@ -68,7 +68,7 @@ internal class LibraryActions(
             withContext(ioDispatcher) {
                 if (restoresHistory && recent != null) {
                     library.recordOpened(id, recent.series.title, recent.series.thumbnailKey, recent.episodeId)
-                    library.saveProgress(recent.pageId, recent.offsetInPageUnits)
+                    library.saveProgress(recent.pageId, recent.offsetInPageUnits, recent.episodeTitle)
                 }
                 if (restoresFavorite && favorite != null) library.setFavorite(id, favorite.title, favorite.thumbnailKey, true)
                 if (item.tab == SavedTab.BOOKMARKS) marks.forEach { library.addBookmark(it.pageId, it.offsetInPageUnits) }

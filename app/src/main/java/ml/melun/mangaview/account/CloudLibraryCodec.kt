@@ -40,6 +40,7 @@ internal object CloudLibraryCodec {
         record("progress", item.updatedAtEpochMillis,
             position(item.sourceKey, item.seriesKey, item.episodeKey, item.pageKey, item.offsetInPageUnits).apply {
                 if (anchor != null) native(anchor.sourceYQ32, anchor.viewportOffsetUnits)
+                item.episodeTitle?.let { addProperty("episodeTitle", it) }
             })
 
     fun bookmark(item: BookmarkEntity, anchor: EngineBookmarkAnchorEntity? = null): CloudLibraryRecord =
@@ -58,7 +59,8 @@ internal object CloudLibraryCodec {
 
     fun progress(record: CloudLibraryRecord): ReadingProgressEntity = record.payload.let { p ->
         ReadingProgressEntity(p.text("source"), p.text("series"), p.text("episode"), p.text("page"),
-            p.get("offset").asLong, record.updatedAt)
+            p.get("offset").asLong, record.updatedAt,
+            p.get("episodeTitle")?.takeUnless { it.isJsonNull }?.asString)
     }
 
     fun bookmark(record: CloudLibraryRecord): BookmarkEntity = record.payload.let { p ->

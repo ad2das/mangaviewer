@@ -66,6 +66,9 @@ private class DeferredViewerDao(
     override suspend fun touchMatchingReadingAnchor(source: String, series: String, at: Long) =
         database().viewer().touchMatchingReadingAnchor(source, series, at)
 
+    override suspend fun insertProgress(progress: ReadingProgressEntity) =
+        database().viewer().insertProgress(progress)
+
     override suspend fun saveProgress(progress: ReadingProgressEntity) =
         database().viewer().saveProgress(progress)
 

@@ -41,7 +41,10 @@ class EnginePositionStore(
         )
     }
 
-    override suspend fun save(anchor: SourceAnchor, legacyScreenOffsetUnits: Long) {
+    override suspend fun save(anchor: SourceAnchor, legacyScreenOffsetUnits: Long) =
+        save(anchor, legacyScreenOffsetUnits, episodeTitle = null)
+
+    override suspend fun save(anchor: SourceAnchor, legacyScreenOffsetUnits: Long, episodeTitle: String?) {
         require(legacyScreenOffsetUnits >= 0L) {
             "Legacy screen offset must not be negative"
         }
@@ -61,6 +64,7 @@ class EnginePositionStore(
                         pageKey = pageId.remoteKey,
                         offsetInPageUnits = legacyScreenOffsetUnits,
                         updatedAtEpochMillis = timestamp,
+                        episodeTitle = episodeTitle,
                     ),
                 )
                 db.engine().upsertReadingAnchor(

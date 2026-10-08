@@ -31,6 +31,8 @@ data class ReadingProgressEntity(
     val pageKey: String,
     val offsetInPageUnits: Long,
     val updatedAtEpochMillis: Long,
+    /** Provider episode name for the home card; null on rows migrated before titles were stored. */
+    val episodeTitle: String? = null,
 )
 
 @Entity(

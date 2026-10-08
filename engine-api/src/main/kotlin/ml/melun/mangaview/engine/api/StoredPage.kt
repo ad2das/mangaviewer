@@ -72,5 +72,12 @@ interface EngineStoragePort {
 /** Position persistence is separate from file publication and never owns page bytes. */
 interface EnginePositionPort {
     suspend fun save(anchor: SourceAnchor, legacyScreenOffsetUnits: Long)
+    /**
+     * Saves the same anchor plus the episode's provider title for the library resume row. Ports
+     * that only implement [save] ignore the title; a null title never erases one already stored.
+     */
+    suspend fun save(anchor: SourceAnchor, legacyScreenOffsetUnits: Long, episodeTitle: String?) {
+        save(anchor, legacyScreenOffsetUnits)
+    }
     suspend fun load(episodeId: EpisodeId): SourceAnchor?
 }

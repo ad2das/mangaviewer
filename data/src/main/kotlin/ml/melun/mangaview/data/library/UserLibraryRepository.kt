@@ -66,13 +66,14 @@ class UserLibraryRepository(
         dao.removeHistory(seriesId.sourceId.value, seriesId.remoteKey, removeFavorite, clock())
     }
 
-    suspend fun saveProgress(pageId: PageId, offsetInPageUnits: Long) {
+    suspend fun saveProgress(pageId: PageId, offsetInPageUnits: Long, episodeTitle: String? = null) {
         require(offsetInPageUnits >= 0L)
         val now = clock()
         dao.saveProgress(
             progress(pageId.episodeId, now).copy(
                 pageKey = pageId.remoteKey,
                 offsetInPageUnits = offsetInPageUnits,
+                episodeTitle = episodeTitle,
             ),
         )
         dao.saveReadEpisode(readEpisode(pageId.episodeId, now))
@@ -176,6 +177,7 @@ private fun recentReading(entity: ReadingProgressEntity, library: LibraryEntryEn
         PageId(episode, entity.pageKey),
         entity.offsetInPageUnits,
         entity.updatedAtEpochMillis,
+        entity.episodeTitle,
     )
 }
 

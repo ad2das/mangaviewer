@@ -4,6 +4,14 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 object EngineDatabaseMigration {
+    val FROM_3_TO_4: Migration = object : Migration(3, 4) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                "ALTER TABLE `reading_progress` ADD COLUMN `episodeTitle` TEXT",
+            )
+        }
+    }
+
     val FROM_2_TO_3: Migration = object : Migration(2, 3) {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL(

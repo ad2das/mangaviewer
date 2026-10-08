@@ -19,6 +19,8 @@ data class RecentReading(
     val pageId: PageId,
     val offsetInPageUnits: Long,
     val updatedAtEpochMillis: Long,
+    /** Provider episode name when one was stored with the progress row. */
+    val episodeTitle: String? = null,
 )
 
 data class SavedBookmark(
