@@ -92,20 +92,32 @@ internal fun EngineSessionRuntime.handlePageFailure(id: PageId, cause: Throwable
     val failures = (pageFailureCounts[id] ?: 0) + 1
     pageFailureCounts[id] = failures
     // A definitive miss is knowledge about the provider, not about this demand: remember it even
-    // while the page is only read-ahead, so the demand that later makes it required publishes the
-    // placeholder immediately instead of retrying the 404.
+    // while the page is only read-ahead, so no later demand retries the 404.
     if (cause is PageMissingException) missingPages += id
     // Idle retries back off and stop after a bound; reading on reconciles again anyway.
     armPageRetryWake(failures)
     if (id in unavailablePages) return
     val state = session.snapshot
-    // A definitive miss (every candidate answered 404/410) means the provider has no original:
-    // declare the placeholder at the first round trip instead of waiting out the failure bound.
-    // Anything else keeps the ordinary transient-failure semantics.
-    if (cause !is PageMissingException && failures < PAGE_UNAVAILABLE_FAILURES) return
+    if (cause is PageMissingException) {
+        // A definitive miss (every candidate answered 404/410) means the provider has no original:
+        // declare the placeholder at the first round trip, required or not, so the walk never pays
+        // a block -> declare -> replay cycle on a page it cannot get. A page whose dimensions are
+        // already known (an accepted original or manifest metadata) is exempt: the layout does not
+        // need placeholder geometry, and announcing one could conflict with the resident
+        // dimensions; its failed body parks and retries exactly like a miss on known geometry.
+        if (id !in pages && planPageDimensions(id) == null) declareUnavailable(id, state)
+        return
+    }
+    // Anything else keeps the ordinary transient-failure semantics: the strike bound and a page
+    // the geometry currently needs.
+    if (failures < PAGE_UNAVAILABLE_FAILURES) return
     if (id !in state.requiredDimensions) return
     declareUnavailable(id, state)
 }
+
+/** Manifest-provided dimensions for [id], when its plan already carries them. */
+private fun EngineSessionRuntime.planPageDimensions(id: PageId): PageDimensions? =
+    plans[id.episodeId]?.manifest?.pages?.firstOrNull { it.id == id }?.dimensions
 
 /**
  * Publishes placeholder geometry for a page the provider cannot serve and stops demanding it until
@@ -126,12 +138,14 @@ internal fun EngineSessionRuntime.declareUnavailable(id: PageId, state: EngineSe
 }
 
 /**
- * Pages whose definitive miss arrived while they were only read-ahead: the geometry requires them
- * now, so publish the already-known placeholder before the demand rebuild asks the provider again.
- * Called from the reconcile path. [declareUnavailable] marks the runtime dirty instead of
- * reconciling, so the enclosing process loop discards the stale demand list it is building and
- * re-runs against the updated snapshot: no demand ever reaches the work set carrying a page the
- * placeholder already covers.
+ * Pages whose definitive miss arrived before the geometry held their document (or after it was
+ * pruned while the failure was in flight): the geometry holds them now, so publish the
+ * already-known placeholder before the demand rebuild asks the provider again. An ordinary
+ * definitive miss publishes immediately in [handlePageFailure]; this covers only that
+ * not-yet-in-the-document window. Called from the reconcile path. [declareUnavailable] marks the
+ * runtime dirty instead of reconciling, so the enclosing process loop discards the stale demand
+ * list it is building and re-runs against the updated snapshot: no demand ever reaches the work
+ * set carrying a page the placeholder already covers.
  */
 internal fun EngineSessionRuntime.promoteDefinitiveMisses(state: EngineSessionSnapshot) {
     if (missingPages.isEmpty()) return

@@ -1034,7 +1034,7 @@ class EngineSessionRuntimeTest {
         assertEquals(0, coordinator.snapshot().subscribers)
     }
 
-    @Test fun definitiveMissOnAnOffScreenReadAheadPagePublishesNoPlaceholder() = runTest {
+    @Test fun definitiveMissOnANonRequiredPagePublishesItsPlaceholderImmediately() = runTest {
         val source = Source()
         val offScreen = PageId.at(episode, 1)
         var attempts = 0
@@ -1046,10 +1046,12 @@ class EngineSessionRuntimeTest {
             runCurrent()
             assertEquals(1, attempts)
             assertTrue(runtime.snapshot.session.completeViewport)
-            assertFalse("an off-screen miss must not publish placeholder geometry",
+            assertTrue("a definitive miss must publish its placeholder even off screen",
                 offScreen in runtime.unavailablePages)
-            assertFalse(offScreen in runtime.snapshot.pages)
+            assertFalse("the placeholder is geometry, not a page", offScreen in runtime.snapshot.pages)
             assertEquals(1, runtime.pageFailureCounts[offScreen])
+            repeat(3) { runtime.resize(EngineViewport(100, 100)); runCurrent() }
+            assertEquals("a declared off-screen miss must not be re-demanded", 1, attempts)
             assertTrue(failures.isEmpty())
         } finally {
             runtime.close()
@@ -1059,9 +1061,9 @@ class EngineSessionRuntimeTest {
         assertEquals(0, coordinator.snapshot().subscribers)
     }
 
-    @Test fun readAheadDefinitiveMissPublishesItsPlaceholderTheMomentThePageIsRequired() = runTest {
-        val source = Source()
-        val missing = PageId.at(episode, 1)
+    @Test fun definitiveMissForAPageItsDocumentDoesNotHoldIsPromotedWhenRequired() = runTest {
+        val source = Source().apply { pageCount = 6 }
+        val missing = PageId.at(episode, 4)
         val gate = CompletableDeferred<Unit>()
         var attempts = 0
         var gateNextFetch = false
@@ -1075,25 +1077,66 @@ class EngineSessionRuntimeTest {
         val failures = mutableListOf<Throwable>()
         val (runtime, coordinator) = runtime(source, failures = failures)
         try {
+            // A read-ahead demand can outlive its document: the failure arrives while the geometry
+            // holds no manifest for the page, so the miss is remembered without a placeholder.
+            runtime.handlePageFailure(missing, PageMissingException(404))
+            runCurrent()
+            assertEquals("reporting a failure is not a fetch", 0, attempts)
+            assertTrue("the miss must be remembered while the document is absent",
+                missing in runtime.missingPages)
+            assertFalse("there is no geometry to publish against", missing in runtime.unavailablePages)
             runtime.open()
             runCurrent()
-            assertEquals(1, attempts)
-            assertTrue("the read-ahead miss must be remembered", missing in runtime.missingPages)
-            assertFalse("and must not publish a placeholder while off screen", missing in runtime.unavailablePages)
-            // The reader moves onto the already-failed page. The placeholder must come from the
-            // stored miss in the same reconcile; the fresh visible demand is gated so a fetch
-            // completion cannot be what published it.
             gateNextFetch = true
-            runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
+            runtime.seekPage(missing)
             runCurrent()
+            // The page is required now: the remembered miss publishes its placeholder in the same
+            // reconcile; the gated re-fetch must not be what completes the geometry.
             assertTrue("promotion must publish the placeholder in the same reconcile",
                 missing in runtime.unavailablePages)
+            assertEquals(missing, runtime.snapshot.session.anchor?.pageId)
             assertTrue(runtime.snapshot.session.completeViewport)
-            assertTrue("the miss stays definitive until an original arrives", missing in runtime.missingPages)
+            assertEquals("the visible demand starts its own fetch after promotion", 1, attempts)
             gate.complete(Unit)
             runCurrent()
             assertTrue("the retry racing the promotion must not remove the placeholder",
                 missing in runtime.unavailablePages)
+            assertTrue(failures.isEmpty())
+        } finally {
+            runtime.close()
+            coordinator.close()
+        }
+        assertEquals(0, source.livePages)
+        assertEquals(0, coordinator.snapshot().subscribers)
+    }
+
+    @Test fun earlyDeclaredDefinitiveMissIsRestoredWhenTheOriginalArrives() = runTest {
+        val source = Source()
+        val missing = PageId.at(episode, 1)
+        var attempts = 0
+        var outage = true
+        source.beforePage = { id -> if (id == missing) { attempts++; if (outage) throw PageMissingException(404) } }
+        source.pageDimensions = { id -> if (id == missing) PageDimensions(100, 250) else PageDimensions(100, 100) }
+        val failures = mutableListOf<Throwable>()
+        val (runtime, coordinator) = runtime(source, failures = failures)
+        try {
+            runtime.open()
+            runCurrent()
+            assertEquals(1, attempts)
+            assertTrue("an early declaration publishes the placeholder off screen",
+                missing in runtime.unavailablePages)
+            assertFalse(missing in runtime.snapshot.pages)
+            // The reader walks onto the page: the visible demand retries and the accepted
+            // original's dimensions replace the placeholder.
+            outage = false
+            runtime.input(InputSample(1, 1, 0, 150 * 1_024L))
+            runCurrent()
+            assertEquals(2, attempts)
+            assertFalse("acceptance must clear the placeholder", missing in runtime.unavailablePages)
+            assertFalse("acceptance must clear the definitive miss", missing in runtime.missingPages)
+            assertEquals(PageDimensions(100, 250), runtime.snapshot.pages[missing]?.dimensions)
+            assertEquals(missing, runtime.snapshot.session.anchor?.pageId)
+            assertTrue(runtime.snapshot.session.completeViewport)
             assertTrue(failures.isEmpty())
         } finally {
             runtime.close()
