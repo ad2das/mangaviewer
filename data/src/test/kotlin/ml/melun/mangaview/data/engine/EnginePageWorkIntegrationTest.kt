@@ -293,7 +293,7 @@ class EnginePageWorkIntegrationTest {
         }
     }
 
-    @Test fun cancellationDuringBodyReadClosesStreamAndRemovesStaging() = runTest {
+    @Test fun lastSubscriberDepartureKeepsTheStreamingBodyUntilCoordinatorCloses() = runTest {
         val coordinator = WorkCoordinator(this)
         val store = store()
         val plan = plan()
@@ -302,12 +302,16 @@ class EnginePageWorkIntegrationTest {
         val factory = factory(store, SourceTransport { response(body) })
         val subscription = coordinator.submit(factory.request(plan, plan.pages.single().pageId, WorkPriority.NEXT_IMAGE))
         reading.await()
+        // The page record opts into orphan retention: a mid-stream departure releases the subscriber
+        // but must not cancel the transfer.
         subscription.awaitReleased()
+        assertEquals(0, body.closes)
+        // Cancelling the orphan still closes the stream and removes staging.
+        coordinator.close()
         assertEquals(1, body.closes)
         assertEquals(0, store.ownership().preparedPages)
         assertEquals(0, store.ownership().fileLeases)
         assertEquals(0, coordinator.snapshot().subscribers)
-        coordinator.close()
     }
 
     @Test fun anOpenBodyReceivesParentPriorityPromotion() = runTest {

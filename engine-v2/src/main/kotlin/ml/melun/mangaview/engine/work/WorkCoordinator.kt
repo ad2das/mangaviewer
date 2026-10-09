@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.engine.api.WorkCoordinatorPort
+import ml.melun.mangaview.engine.api.WorkDomain
 import ml.melun.mangaview.engine.api.WorkLease
 import ml.melun.mangaview.engine.api.WorkLimits
 import ml.melun.mangaview.engine.api.WorkOwnershipSnapshot
@@ -70,6 +71,7 @@ class WorkCoordinator(
     }
 
     init {
+        registry.admission.onForegroundPermitDenied = { evictOldestOrphanLocked(it) }
         schedulerJob = workerScope.launch(start = CoroutineStart.UNDISPATCHED) {
             val lane = schedulerDispatcher
             if (lane == null) orderedAdmission.schedulerLoop()
@@ -221,6 +223,10 @@ class WorkCoordinator(
             }
             validateCompatible(existing, request)
             promoteLocked(existing, request.priority)
+            // A demand that lands while the record still runs — including one kept alive by the
+            // opt-in orphan path — adopts the existing execution and clears the orphan mark, so a
+            // later departure decides afresh whether another retention is allowed.
+            existing.orphaned = false
             val subscriber = WorkSubscriber().also(existing.subscribers::add)
             if (existing.state == WorkRecordState.READY) {
                 subscriber.ready.complete(checkNotNull(existing.result).value)
@@ -345,7 +351,11 @@ class WorkCoordinator(
             return TransitionActions()
         }
         record.cleanupSubscribers += subscriber
-        val actions = transitionLastSubscriberLocked(record, execution)
+        val actions = transitionLastSubscriberLocked(record, execution, canOrphanLocked(record))
+        if (actions.orphaned) {
+            record.cleanupSubscribers.remove(subscriber)
+            subscriber.releaseDone.complete(Unit)
+        }
         signalLocked()
         return actions
     }
@@ -365,7 +375,11 @@ class WorkCoordinator(
             return TransitionActions()
         }
         record.cleanupSubscribers += subscriber
-        val actions = transitionLastSubscriberLocked(record, execution)
+        val actions = transitionLastSubscriberLocked(record, execution, canOrphanLocked(record))
+        if (actions.orphaned) {
+            record.cleanupSubscribers.remove(subscriber)
+            subscriber.releaseDone.complete(Unit)
+        }
         signalLocked()
         return actions
     }
@@ -379,6 +393,40 @@ class WorkCoordinator(
             record.dependencies.values.forEach { promoteLocked(it, requested) }
             signalLocked()
         }
+    }
+
+    /**
+     * Eligibility for the opt-in orphan path, evaluated under the registry mutex when the last
+     * subscriber leaves. The record must be RUNNING, its request must have opted in, and one of its
+     * borrowed BODY children must already be past admission — RUNNING and holding its permit, so the
+     * body transfer is actually streaming. A record still waiting on its lookup (no BODY child yet),
+     * a BODY child still QUEUED for a permit, or a body whose permit was already released does not
+     * qualify and cancels as before. At most [ml.melun.mangaview.engine.api.WorkLimits.backgroundNetwork]
+     * records may be orphaned at once; once the cap is reached, the extra departure cancels too.
+     */
+    private fun canOrphanLocked(record: WorkRecord): Boolean {
+        if (record.state != WorkRecordState.RUNNING || !record.request.finishWhenOrphaned) return false
+        if (!record.hasStreamingBody()) return false
+        return records.values.count { it.orphaned } < registry.limits.backgroundNetwork
+    }
+
+    /**
+     * Admission-failure hook. [WorkAdmission] invokes this synchronously under the registry mutex
+     * when a foreground NETWORK/BODY acquisition finds no headroom: an orphan is kept alive only
+     * while it does not starve foreground demand, so the oldest orphan holding capacity for the
+     * denied domain is evicted. Cancelling its worker releases the permit through the normal
+     * failure path, which signals the scheduler and lets the foreground record proceed. Runs with
+     * the registry mutex held and never suspends. The records map is insertion-ordered, so the
+     * first match is the oldest orphan.
+     */
+    private fun evictOldestOrphanLocked(denied: WorkDomain) {
+        val orphans = records.values.filter { it.orphaned && it.state == WorkRecordState.RUNNING }
+        val victim = orphans.firstOrNull { it.holdsPermitIn(denied) }
+            ?: orphans.firstOrNull { it.holdsNetworkCapacity() }
+            ?: return
+        victim.cancelRequested = true
+        victim.worker?.cancel(CancellationException("Orphaned work was evicted for foreground demand"))
+        signalLocked()
     }
 
     private fun checkOpenLocked() {
@@ -424,15 +472,23 @@ private fun checkSubscriptionLive(subscriber: WorkSubscriber) {
 private fun transitionLastSubscriberLocked(
     record: WorkRecord,
     execution: WorkExecution,
+    orphanAllowed: Boolean,
 ): TransitionActions {
     return when (record.state) {
         WorkRecordState.QUEUED -> {
             execution.removeRecordLocked(record)
             TransitionActions()
         }
-        WorkRecordState.RUNNING,
-        WorkRecordState.RETRY_WAIT,
-        -> {
+        WorkRecordState.RUNNING -> {
+            if (orphanAllowed) {
+                record.orphaned = true
+                TransitionActions(orphaned = true)
+            } else {
+                record.cancelRequested = true
+                TransitionActions(job = record.worker)
+            }
+        }
+        WorkRecordState.RETRY_WAIT -> {
             record.cancelRequested = true
             TransitionActions(job = record.worker)
         }
@@ -447,4 +503,6 @@ private fun transitionLastSubscriberLocked(
 private data class TransitionActions(
     val job: Job? = null,
     val disposal: DisposalPlan? = null,
+    /** True when the record was kept running as an orphan instead of being cancelled. */
+    val orphaned: Boolean = false,
 )

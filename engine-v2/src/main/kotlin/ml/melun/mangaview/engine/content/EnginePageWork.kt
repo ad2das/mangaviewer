@@ -49,7 +49,8 @@ class EnginePageWork(
         require(plan.manifest.id.seriesId.sourceId == planner.sourceId)
         plan.page(pageId)
         val identity = PageWorkIdentity(principal, plan, pageId)
-        return identity.request("page", StoredPage::class.java, WorkDomain.CONTROL, priority) { context ->
+        return identity.request("page", StoredPage::class.java, WorkDomain.CONTROL, priority,
+            finishWhenOrphaned = true) { context ->
             val startedAtNanos = System.nanoTime()
             note("page-start", startedAtNanos, "priority=$priority candidates=${plan.page(pageId).candidates.size}")
             val cached = context.dependency(identity.request(
@@ -254,9 +255,11 @@ private class PageWorkIdentity(
         domain: WorkDomain,
         priority: WorkPriority,
         dispose: suspend (T) -> Unit = {},
+        finishWhenOrphaned: Boolean = false,
         execute: suspend (WorkContext) -> T,
     ) = WorkRequest(WorkKey(principal, resource, "content.$operation", revision, type), domain, priority,
-        authEpoch = plan.authEpoch, execute = execute, dispose = dispose)
+        authEpoch = plan.authEpoch, execute = execute, dispose = dispose,
+        finishWhenOrphaned = finishWhenOrphaned)
 
     /**
      * Identical digest to hashing the concatenated `"${length}:$field"` sequence, but each field

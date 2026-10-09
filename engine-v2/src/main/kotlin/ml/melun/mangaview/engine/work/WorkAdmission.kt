@@ -22,7 +22,25 @@ internal class WorkAdmission(private val limits: WorkLimits) {
     private var uploadUsed = 0
     private var browserUsed = 0
 
+    /**
+     * Installed by the coordinator. Invoked synchronously under the registry mutex whenever a
+     * foreground NETWORK/BODY acquisition is refused, so the coordinator can evict an orphan record
+     * still holding capacity for that demand. Implementations must not suspend, must not take the
+     * registry mutex (the caller already holds it) and must not re-enter [tryAcquire].
+     */
+    var onForegroundPermitDenied: ((WorkDomain) -> Unit)? = null
+
     fun tryAcquire(domain: WorkDomain, priority: WorkPriority): PermitClaim? {
+        val claim = tryAcquireHeadroom(domain, priority)
+        if (claim == null && !priority.background &&
+            (domain == WorkDomain.NETWORK || domain == WorkDomain.BODY)
+        ) {
+            onForegroundPermitDenied?.invoke(domain)
+        }
+        return claim
+    }
+
+    private fun tryAcquireHeadroom(domain: WorkDomain, priority: WorkPriority): PermitClaim? {
         val background = priority.background
         return when (domain) {
             WorkDomain.CONTROL -> PermitClaim(domain, background = false)

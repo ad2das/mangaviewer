@@ -122,6 +122,13 @@ class WorkRequest<T : Any>(
     val dispose: suspend (T) -> Unit = {},
     /** Diagnostic identity for the temporary stage probe; never affects scheduling. */
     val probe: Any? = null,
+    /**
+     * Opt-in orphan retention. When true and this RUNNING record's last subscriber leaves while its
+     * BODY child is already past admission and streaming, the record keeps running to completion
+     * instead of being cancelled; a later demand of the same key subscribes to it instead of paying
+     * for a refetch. Default false: every other request keeps cancel-on-last-departure behaviour.
+     */
+    val finishWhenOrphaned: Boolean = false,
 ) {
     val retryDelaysMillis: List<Long> = retryDelaysMillis.toList()
 

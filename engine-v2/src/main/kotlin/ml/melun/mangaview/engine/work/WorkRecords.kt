@@ -51,6 +51,8 @@ internal interface WorkRecord {
     var permit: PermitClaim?
     var result: OwnedWorkResult?
     var cancelRequested: Boolean
+    /** Last subscriber left while the opt-in body was streaming; kept running to completion. */
+    var orphaned: Boolean
     var retryReady: Boolean
     var disposeStarted: Boolean
     var attempt: Int
@@ -77,6 +79,7 @@ internal class TypedWorkRecord<T : Any>(
     override var permit: PermitClaim? = null
     override var result: OwnedWorkResult? = null
     override var cancelRequested = false
+    override var orphaned = false
     override var retryReady = false
     override var disposeStarted = false
     override var attempt = 0
@@ -99,3 +102,23 @@ internal data class CancelActions(
 )
 
 internal fun WorkRecord.isLive(): Boolean = state != WorkRecordState.DONE
+
+/**
+ * True when this record's borrowed BODY child is past admission: RUNNING and holding its permit, so
+ * the body transfer is actually streaming. A BODY child still QUEUED for a permit, a record still
+ * waiting on its lookup (no BODY child), or a body whose permit was already released is not counted.
+ * Registry mutex required.
+ */
+internal fun WorkRecord.hasStreamingBody(): Boolean = dependencies.values.any {
+    it.requestDomain == WorkDomain.BODY && it.state == WorkRecordState.RUNNING && it.permit != null
+}
+
+/** True when some borrowed child currently holds a permit of exactly [domain]. Registry mutex required. */
+internal fun WorkRecord.holdsPermitIn(domain: WorkDomain): Boolean =
+    dependencies.values.any { it.permit?.domain == domain }
+
+/** True when some borrowed child currently holds network capacity (a NETWORK or BODY permit). */
+internal fun WorkRecord.holdsNetworkCapacity(): Boolean = dependencies.values.any {
+    val permit = it.permit ?: return@any false
+    permit.domain == WorkDomain.NETWORK || permit.domain == WorkDomain.BODY
+}
