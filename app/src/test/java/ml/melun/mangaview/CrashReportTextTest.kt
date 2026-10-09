@@ -46,4 +46,10 @@ class CrashReportTextTest {
         assertTrue(preview.endsWith("(전체 내용은 복사와 리포트에 포함됩니다)"))
         assertEquals("kind=exit\nsummary=z\ntail", CrashReportText.preview("kind=exit\nsummary=z\ntail"))
     }
+
+    @Test
+    fun headlineNamesAFreezeSeparatelyFromACrash() {
+        assertEquals("앱이 응답하지 않아 종료됐어요", CrashReportText.headline("kind=exit\nreason=anr (6)\n"))
+        assertEquals("앱이 예기치 않게 종료됐어요", CrashReportText.headline("kind=crash\nsummary=boom\n"))
+    }
 }

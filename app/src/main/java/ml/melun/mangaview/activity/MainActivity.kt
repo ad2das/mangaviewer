@@ -3,6 +3,7 @@ package ml.melun.mangaview.activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -109,7 +110,7 @@ class MainActivity : ComponentActivity() {
                 var wasReading = false
                 reader.visible.collectLatest { reading ->
                     if (!reading) {
-                        applySystemBars(viewModel.state.value.saved.settings.darkTheme)
+                        applySystemBars(viewModel.state.value.saved.settings.darkTheme(systemDark()))
                         if (wasReading) graph.engine.renderers.warm()
                         viewModel.foreground(true)
                     }
@@ -179,10 +180,19 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(scannedReport) {
                 if (scannedReport != null && crashReport == null) crashReport = scannedReport
             }
-            val colors = rememberLibraryColors(state.saved.settings.darkTheme)
+            val dark = state.saved.settings.darkTheme(androidx.compose.foundation.isSystemInDarkTheme())
+            val colors = rememberLibraryColors(dark)
             UpdateInstallEffect(updateState, reading, updates)
-            LaunchedEffect(state.saved.settings.darkTheme) {
-                if (readerScreen() == null) applySystemBars(state.saved.settings.darkTheme)
+            var updateAnnounced by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+            LaunchedEffect(updateState.phase, updateState.visible, reading) {
+                if (!updateAnnounced && !reading && !updateState.visible &&
+                    updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE) {
+                    updateAnnounced = true
+                    messages.show("새 버전이 나왔어요", actionLabel = "업데이트", action = updates::reveal)
+                }
+            }
+            LaunchedEffect(dark) {
+                if (readerScreen() == null) applySystemBars(dark)
             }
             LibraryEffects(viewModel, graph)
             val haptics = LocalHapticFeedback.current
@@ -311,6 +321,9 @@ class MainActivity : ComponentActivity() {
     }
 
     @Suppress("DEPRECATION")
+    private fun systemDark(): Boolean =
+        resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+
     private fun applySystemBars(dark: Boolean) {
         // Keep the window chrome on the same palette the Compose surfaces use.
         val background = Color.parseColor(if (dark) "#090A10" else "#F5F7FA")

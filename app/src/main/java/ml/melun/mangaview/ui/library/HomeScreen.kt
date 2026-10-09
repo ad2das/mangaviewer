@@ -1,5 +1,8 @@
 package ml.melun.mangaview.ui.library
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
@@ -16,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,7 +94,11 @@ private fun HomeList(
         state = scroll,
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
-        item { HomeHeading(colors, resuming = state.saved.recent.isNotEmpty()) }
+        // With history the "이어서 읽기" row already says what this screen offers; the greeting is
+        // for a first visit, when there is nothing to resume yet.
+        item {
+            if (state.saved.recent.isEmpty()) HomeHeading(colors) else Spacer(Modifier.height(8.dp))
+        }
         item { HomeContinuations(state.saved.recent, artworkLoader, colors, accept) }
         if (showKindSelector) {
             item { KindSelector(state.homeKind, colors, accept) }
@@ -121,7 +129,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.homeRows(
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
 ) {
-    val heroes = (home.popular.take(5).ifEmpty { home.latest.take(5) }).ifEmpty { home.new.take(5) }
+    // The spotlight shows what the ranked row right below does not: new series first, then recent
+    // updates, and the ranking itself only when the source offers nothing else.
+    val ranked = home.popular.take(10).mapTo(hashSetOf()) { it.id }
+    val heroes = sequenceOf(home.new, home.latest).flatten().filter { it.id !in ranked }
+        .distinctBy { it.id }.take(5).toList().ifEmpty { home.popular.take(5) }
     if (heroes.isNotEmpty()) {
         item { HeroCarousel(heroes, loader, colors, accept) }
     }
@@ -244,13 +256,12 @@ private fun GenreFailure(message: String, colors: LibraryColors, accept: (Librar
 }
 
 @Composable
-private fun HomeHeading(colors: LibraryColors, resuming: Boolean) {
-    // The greeting speaks to what the reader can actually do here: resume, or start something.
+private fun HomeHeading(colors: LibraryColors) {
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 18.dp)) {
-        BasicText(if (resuming) "이어서 읽어볼까요?" else "오늘 읽을 작품을 찾아보세요", style = displayStyle(colors, 23))
+        BasicText("오늘 읽을 작품을 찾아보세요", style = displayStyle(colors, 23))
         Spacer(Modifier.height(5.dp))
         BasicText(
-            if (resuming) "읽던 회차, 실시간 인기 랭킹, 최신 연재작을 한곳에서" else "실시간 인기 랭킹과 최신 연재작을 모았어요",
+            "실시간 인기 랭킹과 최신 연재작을 모았어요",
             style = hintStyle(colors, 13),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -260,45 +271,15 @@ private fun HomeHeading(colors: LibraryColors, resuming: Boolean) {
 
 @Composable
 private fun KindSelector(selected: SeriesKind, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth()
-            .padding(horizontal = 18.dp)
-            .height(52.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(colors.mutedSurface)
-            .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp))
-            .padding(4.dp),
-    ) {
-        KindButton("웹툰", SeriesKind.WEBTOON, selected, colors, accept)
-        KindButton("만화", SeriesKind.COMIC, selected, colors, accept)
-    }
-}
-
-@Composable
-private fun androidx.compose.foundation.layout.RowScope.KindButton(
-    label: String,
-    kind: SeriesKind,
-    selected: SeriesKind,
-    colors: LibraryColors,
-    accept: (LibraryIntent) -> Unit,
-) {
-    val active = kind == selected
-    Box(
-        Modifier.weight(1f).fillMaxHeight()
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (active) colors.accentGradient else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent)))
-            .then(if (active) Modifier.shadow(4.dp, RoundedCornerShape(12.dp), spotColor = colors.accent.copy(alpha = 0.35f)) else Modifier)
-            .clickable { accept(LibraryIntent.HomeKindSelected(kind)) },
-        contentAlignment = Alignment.Center,
-    ) {
-        BasicText(
-            label,
-            style = bodyStyle(colors, 14).copy(
-                color = if (active) Color.White else colors.secondary,
-                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-            ),
-        )
-    }
+    SlidingSegments(
+        listOf(SeriesKind.WEBTOON, SeriesKind.COMIC),
+        selected,
+        { if (it == SeriesKind.WEBTOON) "웹툰" else "만화" },
+        colors,
+        Modifier.padding(horizontal = 18.dp),
+        height = 52.dp,
+        accent = true,
+    ) { accept(LibraryIntent.HomeKindSelected(it)) }
 }
 
 @Composable
@@ -309,6 +290,11 @@ private fun HomeTabs(selected: HomeTab, colors: LibraryColors, accept: (LibraryI
     ) {
         HomeTab.entries.forEach { tab ->
             val active = tab == selected
+            val underline by animateDpAsState(
+                if (active) 32.dp else 0.dp,
+                tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut),
+                label = "homeTabUnderline",
+            )
             Column(
                 Modifier.weight(1f).fillMaxHeight().clickable { accept(LibraryIntent.HomeTabSelected(tab)) },
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -323,10 +309,10 @@ private fun HomeTabs(selected: HomeTab, colors: LibraryColors, accept: (LibraryI
                 )
                 Spacer(Modifier.height(6.dp))
                 Box(
-                    Modifier.width(if (active) 32.dp else 0.dp)
+                    Modifier.width(underline)
                         .height(3.dp)
                         .clip(CircleShape)
-                        .background(if (active) colors.accentGradient else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))),
+                        .background(colors.accentGradient),
                 )
             }
         }
@@ -362,11 +348,21 @@ private fun HeroCarousel(
             ) {
                 repeat(items.size) { index ->
                     val active = pagerState.currentPage == index
+                    val width by animateDpAsState(
+                        if (active) 22.dp else 6.dp,
+                        tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut),
+                        label = "heroDot",
+                    )
+                    val dot by animateColorAsState(
+                        if (active) colors.accent else colors.muted.copy(alpha = 0.35f),
+                        tween(LibraryMotion.Medium),
+                        label = "heroDotColor",
+                    )
                     Box(
                         Modifier.padding(horizontal = 3.dp)
-                            .size(width = if (active) 22.dp else 6.dp, height = 6.dp)
+                            .size(width = width, height = 6.dp)
                             .clip(CircleShape)
-                            .background(if (active) colors.accent else colors.muted.copy(alpha = 0.35f)),
+                            .background(dot),
                     )
                 }
             }
@@ -385,13 +381,19 @@ private fun SectionHeader(title: String, action: String, colors: LibraryColors, 
             Spacer(Modifier.width(8.dp))
             BasicText(title, style = sectionStyle(colors, 19))
         }
-        val actionModifier = Modifier.clip(RoundedCornerShape(12.dp))
-            .background(colors.accentSurface)
-            .then(if (click == null) Modifier else Modifier.clickable(onClick = click))
-            .heightIn(min = 48.dp)
-            .padding(horizontal = 12.dp)
-        Box(actionModifier, contentAlignment = Alignment.Center) {
-            BasicText(action, style = labelStyle(colors, true).copy(fontSize = 12.sp, fontWeight = FontWeight.Bold))
+        if (click == null) {
+            BasicText(action, style = hintStyle(colors, 12))
+        } else {
+            Box(
+                Modifier.clip(RoundedCornerShape(12.dp))
+                    .background(colors.accentSurface)
+                    .clickable(onClick = click)
+                    .heightIn(min = 48.dp)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                BasicText(action, style = labelStyle(colors, true).copy(fontSize = 12.sp, fontWeight = FontWeight.Bold))
+            }
         }
     }
 }

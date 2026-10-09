@@ -35,7 +35,7 @@ class AppUpdateViewModelTest {
         return AppUpdateViewModel(application, AppUpdateRepository(application) { client })
     }
 
-    @Test fun automaticCheckOnlyPromptsForAnUpgradeAndDoesNotReopenAfterDismissal() = runBlocking {
+    @Test fun automaticCheckFindsAnUpgradeSilentlyAndOpensOnlyWhenRevealed() = runBlocking {
         withContext(Dispatchers.Main) {
             val current = model(installed)
             current.checkAutomatically()
@@ -44,6 +44,9 @@ class AppUpdateViewModelTest {
             val newer = model(installed + 1)
             newer.checkAutomatically()
             assertEquals(UpdatePhase.AVAILABLE, newer.state.value.phase)
+            // The library announces it with a notice; the modal opens only from that action.
+            assertFalse(newer.state.value.visible)
+            newer.reveal()
             assertTrue(newer.state.value.visible)
             newer.dismiss()
             newer.checkAutomatically()

@@ -195,7 +195,9 @@ internal class ViewerEpisodeSheet(context: Context) : FrameLayout(context) {
         search.clear()
         jumpCurrent.visibility = if (currentIndex >= 0) View.VISIBLE else View.GONE
         list.adapter = EpisodeSheetAdapter(titles, currentIndex, palette)
-        list.isFastScrollAlwaysVisible = titles.size >= FAST_SCROLL_FROM
+        // Long lists get the drag thumb, but only while the list moves: a permanent full-height
+        // track reads as an unfinished control beside the titles.
+        list.isFastScrollEnabled = titles.size >= FAST_SCROLL_FROM
         (list.layoutParams as LinearLayout.LayoutParams).height =
             (resources.displayMetrics.heightPixels * LIST_HEIGHT_FRACTION).toInt()
         list.requestLayout()

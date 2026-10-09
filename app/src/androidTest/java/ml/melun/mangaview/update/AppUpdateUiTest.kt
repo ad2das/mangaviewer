@@ -22,10 +22,10 @@ class AppUpdateUiTest {
             requireNotNull(device.wait(Until.findObject(By.desc("계정")), 15_000)).click()
             requireNotNull(device.wait(Until.findObject(By.text(Pattern.compile("업데이트 확인|새 업데이트 있음"))), 5_000)).click()
             assertTrue("The live release check did not complete inside the app",
-                device.wait(Until.hasObject(By.text(Pattern.compile("최신 버전입니다|새 업데이트가 있습니다"))), 30_000))
+                device.wait(Until.hasObject(By.text(Pattern.compile("최신 버전이에요|새 버전이 나왔어요"))), 30_000))
             assertEquals(instrumentation.targetContext.packageName, device.currentPackageName)
             assertTrue(device.takeScreenshot(File(instrumentation.targetContext.getExternalFilesDir(null), "app-update-ui.png")))
-            requireNotNull(device.findObject(By.text("닫기"))).click()
+            requireNotNull(device.findObject(By.text(Pattern.compile("닫기|나중에")))).click()
         }
     }
 }

@@ -10,16 +10,19 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -46,6 +49,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -64,7 +68,7 @@ internal fun LibraryScreen(
     updateAvailable: Boolean = false,
     onOpenCrashReport: () -> Unit = {},
 ) {
-    val colors = rememberLibraryColors(state.saved.settings.darkTheme)
+    val colors = rememberLibraryColors(state.saved.settings.darkTheme(isSystemInDarkTheme()))
     val focus = LocalFocusManager.current
     val screenState = rememberSaveableStateHolder()
     LaunchedEffect(state.destination, state.activeSeries, state.settingsVisible, state.sourcePickerVisible) {
@@ -274,7 +278,18 @@ private fun MainShell(
                 }
             }
         }
-        MainBottomNavigation(state.destination, colors, accept)
+        // Typing owns the bottom of the screen: the tab bar steps aside for the keyboard instead
+        // of floating over the results above it.
+        @OptIn(ExperimentalLayoutApi::class)
+        val typing = WindowInsets.isImeVisible
+        AnimatedVisibility(
+            visible = !typing,
+            enter = fadeIn(tween(LibraryMotion.Fast)) + expandVertically(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut)),
+            exit = fadeOut(tween(LibraryMotion.Fast)) + shrinkVertically(tween(LibraryMotion.Fast)),
+            label = "bottomNavigation",
+        ) {
+            MainBottomNavigation(state.destination, colors, accept)
+        }
     }
 }
 
@@ -380,22 +395,33 @@ private fun MainSourceChip(
 
 @Composable
 private fun MainAccountButton(colors: LibraryColors, accept: (LibraryIntent) -> Unit, updateAvailable: Boolean) {
+    // The badge sits outside the clipped circle so it is never cut by the button's own edge.
     Box(
         Modifier.size(48.dp)
-            .semantics { contentDescription = "계정" }
-            .shadow(2.dp, CircleShape, spotColor = Color.Black.copy(alpha = 0.05f))
-            .clip(CircleShape)
-            .background(colors.card)
-            .border(1.dp, colors.cardBorder, CircleShape)
-            .clickable { accept(LibraryIntent.ToggleSettings) },
-        contentAlignment = Alignment.Center,
+            .semantics {
+                contentDescription = "계정"
+                if (updateAvailable) stateDescription = "새 버전 있음"
+            },
     ) {
-        LibraryIconView(LibraryIcon.PROFILE, colors.accent, Modifier.size(22.dp))
+        Box(
+            Modifier.fillMaxSize()
+                .shadow(2.dp, CircleShape, spotColor = Color.Black.copy(alpha = 0.05f))
+                .clip(CircleShape)
+                .background(colors.card)
+                .border(1.dp, colors.cardBorder, CircleShape)
+                .clickable { accept(LibraryIntent.ToggleSettings) },
+            contentAlignment = Alignment.Center,
+        ) {
+            LibraryIconView(LibraryIcon.PROFILE, colors.accent, Modifier.size(22.dp))
+        }
         if (updateAvailable) {
             Box(
-                Modifier.size(9.dp)
-                    .align(Alignment.TopEnd)
-                    .padding(top = 2.dp, end = 2.dp)
+                Modifier.align(Alignment.TopEnd)
+                    .padding(top = 3.dp, end = 3.dp)
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background(colors.background)
+                    .padding(2.dp)
                     .clip(CircleShape)
                     .background(colors.favoriteActive),
             )

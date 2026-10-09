@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import ml.melun.mangaview.ViewerApplication
+import ml.melun.mangaview.data.settings.ThemeMode
 import ml.melun.mangaview.data.settings.ViewerSettings
 import ml.melun.mangaview.viewer.runtime.EngineViewerRuntime
 
@@ -114,7 +115,8 @@ internal class ViewerScreenUi(
 
     private fun applyReaderPreferences(settings: ViewerSettings) {
         if (appliedSettings == settings) return
-        if (appliedSettings?.darkTheme != settings.darkTheme) applyPalette(ViewerPalette.of(settings.darkTheme))
+        val dark = settings.darkTheme(systemDark())
+        if (appliedSettings?.darkTheme(systemDark()) != dark) applyPalette(ViewerPalette.of(dark))
         appliedSettings = settings
         volumeKeysEnabled = settings.volumeKeyNavigation
         if (::autoScroller.isInitialized) autoScroller.speed = settings.autoScrollSpeed
@@ -144,7 +146,7 @@ internal class ViewerScreenUi(
             settingsPanel.dismiss()
             if (::chrome.isInitialized) chrome.setAutoHidePaused(false)
         } else {
-            settingsPanel.open(appliedSettings ?: ViewerSettings())
+            settingsPanel.open(appliedSettings ?: ViewerSettings(), systemDark())
             if (::chrome.isInitialized) chrome.setAutoHidePaused(true)
         }
     }
@@ -295,7 +297,10 @@ internal class ViewerScreenUi(
             onDimCommitted = { percent -> persistSettings { it.copy(readerDimPercent = percent) } }
             onKeepScreenOn = { enabled -> persistSettings { it.copy(keepScreenOn = enabled) } }
             onVolumeKeys = { enabled -> persistSettings { it.copy(volumeKeyNavigation = enabled) } }
-            onDarkTheme = { enabled -> persistSettings { it.copy(darkTheme = enabled) } }
+            // The reader's switch is an explicit choice; the library's settings can return to "system".
+            onDarkTheme = { enabled ->
+                persistSettings { it.copy(themeMode = if (enabled) ThemeMode.DARK else ThemeMode.LIGHT) }
+            }
             onTapPaging = { enabled -> persistSettings { it.copy(tapPaging = enabled) } }
             onAutoScrollSpeed = { speed -> persistSettings { it.copy(autoScrollSpeed = speed) } }
             onClose = { toggleSettingsPanel() }
@@ -369,6 +374,9 @@ internal class ViewerScreenUi(
         }
         return false
     }
+
+    private fun systemDark(): Boolean = activity.resources.configuration.uiMode and
+        android.content.res.Configuration.UI_MODE_NIGHT_MASK == android.content.res.Configuration.UI_MODE_NIGHT_YES
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 

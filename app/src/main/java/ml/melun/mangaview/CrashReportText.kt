@@ -31,6 +31,13 @@ internal object CrashReportText {
         }
     }
 
+    /** The dialog's headline: a freeze that the system ended reads differently from a crash. */
+    fun headline(report: String): String {
+        val reason = report.lineSequence().map { it.trim() }.firstOrNull { it.startsWith(REASON_PREFIX) }
+        return if (reason?.removePrefix(REASON_PREFIX)?.startsWith("anr") == true) "앱이 응답하지 않아 종료됐어요"
+        else "앱이 예기치 않게 종료됐어요"
+    }
+
     /** What the dialog displays; the full report still reaches the clipboard and the issue body. */
     fun preview(report: String): String =
         if (report.length <= MAX_PREVIEW_CHARS) report

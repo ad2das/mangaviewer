@@ -19,7 +19,7 @@ internal class LibraryUiActions(
     fun persistSettings(intent: LibraryIntent) {
         when (intent) {
             is LibraryIntent.StartTabChanged -> actions.updateSettings { it.copy(startTab = intent.value) }
-            is LibraryIntent.DarkThemeChanged -> actions.updateSettings { it.copy(darkTheme = intent.enabled) }
+            is LibraryIntent.ThemeModeChanged -> actions.updateSettings { it.copy(themeMode = intent.mode) }
             LibraryIntent.ClearSearchHistory -> actions.updateSettings { it.copy(recentQueries = emptyList()) }
             is LibraryIntent.RemoveSearchHistory -> actions.updateSettings { settings ->
                 settings.copy(recentQueries = settings.recentQueries.filterNot { it == intent.value })

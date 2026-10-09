@@ -29,10 +29,13 @@ internal class SeriesArtworkLoader(
     }
     private val requests = ArtworkRequests<CacheEntry?>(scope, ioDispatcher)
 
+    /** The already-decoded cover for this slot size, without touching the network. */
+    fun cached(series: SourceSeries, targetEdgePx: Int): ImageBitmap? =
+        cacheKey(series, targetEdgePx)?.let { cache.get(it)?.image }
+
     suspend fun load(series: SourceSeries, targetEdgePx: Int): ImageBitmap? {
-        val artwork = series.thumbnailKey?.takeIf(String::isNotBlank) ?: return null
+        val key = cacheKey(series, targetEdgePx) ?: return null
         val edge = bucketEdge(targetEdgePx)
-        val key = "${series.id.sourceId.value}:${series.id.remoteKey}:$artwork@$edge"
         cache.get(key)?.let { return it.image }
         return try {
             requests.load(key) {
@@ -45,6 +48,11 @@ internal class SeriesArtworkLoader(
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun cacheKey(series: SourceSeries, targetEdgePx: Int): String? {
+        val artwork = series.thumbnailKey?.takeIf(String::isNotBlank) ?: return null
+        return "${series.id.sourceId.value}:${series.id.remoteKey}:$artwork@${bucketEdge(targetEdgePx)}"
     }
 
     private suspend fun fetchAndDecode(series: SourceSeries, edge: Int): ImageBitmap? {

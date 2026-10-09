@@ -1,5 +1,7 @@
 package ml.melun.mangaview.ui.library
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -7,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -16,6 +19,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.TextStyle
@@ -47,23 +51,32 @@ internal fun SeriesArtwork(
                 .filter { it > 0 }
                 .distinctUntilChanged()
                 .collectLatest { edge ->
+                    // A memory hit draws at once; only a cover that had to be fetched fades in,
+                    // so scrolling back over seen covers never flickers.
+                    loader.cached(series, edge)?.let { hit ->
+                        value = ArtworkState.Ready(hit, fadeIn = false)
+                        return@collectLatest
+                    }
                     val loaded = loader.load(series, edge)
                     value = when {
-                        loaded != null -> ArtworkState.Ready(loaded)
+                        loaded != null -> ArtworkState.Ready(loaded, fadeIn = value !is ArtworkState.Ready)
                         value is ArtworkState.Ready -> value
                         else -> ArtworkState.Missing
                     }
                     if (loaded == null && !series.thumbnailKey.isNullOrBlank()) {
                         retryArtworkLoad(ARTWORK_RETRY_ATTEMPTS, ARTWORK_RETRY_FIRST_DELAY_MS) {
                             loader.load(series, edge)
-                        }?.let { value = ArtworkState.Ready(it) }
+                        }?.let { value = ArtworkState.Ready(it, fadeIn = true) }
                     }
                 }
         }
     }
     Box(modifier.onSizeChanged { bounds = it }) {
         when (val state = artwork) {
-            is ArtworkState.Ready -> Image(state.image, series.title, Modifier.matchParentSize(), contentScale = contentScale)
+            is ArtworkState.Ready -> {
+                Box(Modifier.matchParentSize().background(colors.mutedSurface))
+                ArtworkImage(state, series.title, contentScale)
+            }
             ArtworkState.Loading -> Box(Modifier.matchParentSize().background(colors.mutedSurface))
             ArtworkState.Missing -> MissingArtwork(series.title, colors)
         }
@@ -74,8 +87,29 @@ internal fun SeriesArtwork(
 private sealed interface ArtworkState {
     object Loading : ArtworkState
     object Missing : ArtworkState
-    class Ready(val image: ImageBitmap) : ArtworkState
+    class Ready(val image: ImageBitmap, val fadeIn: Boolean) : ArtworkState
 }
+
+/** The fade runs in the draw phase only; the image never recomposes while it settles. */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.ArtworkImage(
+    state: ArtworkState.Ready,
+    description: String,
+    contentScale: ContentScale,
+) {
+    val alpha = remember(state) { Animatable(if (state.fadeIn) 0f else 1f) }
+    if (state.fadeIn) {
+        LaunchedEffect(state) { alpha.animateTo(1f, tween(ARTWORK_FADE_MS, easing = LibraryMotion.EaseOut)) }
+    }
+    Image(
+        state.image,
+        description,
+        Modifier.matchParentSize().graphicsLayer { this.alpha = alpha.value },
+        contentScale = contentScale,
+    )
+}
+
+private const val ARTWORK_FADE_MS = 220
 
 /** Placeholder initial for works whose provider has no usable thumbnail. */
 @Composable

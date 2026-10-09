@@ -5,21 +5,24 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ml.melun.mangaview.data.settings.ThemeMode
 
 @Composable
 internal fun PreferencesOverlay(
@@ -56,8 +59,8 @@ internal fun PreferencesOverlay(
                         accept(LibraryIntent.StartTabChanged((state.saved.settings.startTab + 1) % MainDestination.entries.size))
                     }
                     Box(Modifier.fillMaxWidth().height(1.dp).background(colors.outline))
-                    PreferenceSwitch("어두운 테마", state.saved.settings.darkTheme, colors) {
-                        accept(LibraryIntent.DarkThemeChanged(!state.saved.settings.darkTheme))
+                    ThemeModeRow(state.saved.settings.themeMode, colors) { mode ->
+                        accept(LibraryIntent.ThemeModeChanged(mode))
                     }
                 }
             }
@@ -73,6 +76,8 @@ internal fun PreferencesOverlay(
                     PreferenceRow("오류 리포트 보내기", "", colors, onOpenCrashReport)
                     Box(Modifier.fillMaxWidth().height(1.dp).background(colors.outline))
                     PreferenceRow("오픈소스 라이선스", "", colors) { accept(LibraryIntent.OpenLicenses) }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(colors.outline))
+                    VersionRow(colors)
                 }
             }
         }
@@ -90,49 +95,80 @@ private fun PreferenceSection(label: String, colors: LibraryColors) {
 
 @Composable
 private fun PreferenceRow(label: String, value: String, colors: LibraryColors, click: () -> Unit) {
+    // Every row that opens something carries the same chevron, valued or not.
     Row(
-        Modifier.fillMaxWidth().height(60.dp).clickable(onClick = click).padding(horizontal = 16.dp),
+        Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(onClick = click).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        BasicText(label, style = bodyStyle(colors, 15).copy(fontWeight = FontWeight.Medium))
+        BasicText(label, Modifier.weight(1f), style = bodyStyle(colors, 15).copy(fontWeight = FontWeight.Medium))
         if (value.isNotEmpty()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                BasicText(
-                    value,
-                    style = labelStyle(colors, true).copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
-                )
-                Spacer(Modifier.width(6.dp))
-                LibraryIconView(LibraryIcon.CHEVRON, colors.muted, Modifier.size(18.dp))
+            BasicText(
+                value,
+                style = labelStyle(colors, true).copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        LibraryIconView(LibraryIcon.CHEVRON, colors.muted, Modifier.size(18.dp))
+    }
+}
+
+@Composable
+private fun VersionRow(colors: LibraryColors) {
+    val context = LocalContext.current
+    val version = remember(context) {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
+    } ?: return
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BasicText("앱 버전", Modifier.weight(1f), style = bodyStyle(colors, 15).copy(fontWeight = FontWeight.Medium))
+        BasicText(version, style = hintStyle(colors, 13))
+    }
+}
+
+/** Three-way theme choice; "시스템" follows the device's dark-theme setting. */
+@Composable
+private fun ThemeModeRow(selected: ThemeMode, colors: LibraryColors, select: (ThemeMode) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BasicText("테마", Modifier.weight(1f), bodyStyle(colors, 15).copy(fontWeight = FontWeight.Medium))
+        Row(
+            Modifier.height(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.mutedSurface)
+                .padding(3.dp),
+        ) {
+            THEME_CHOICES.forEach { (mode, label) ->
+                val active = mode == selected
+                Box(
+                    Modifier.fillMaxHeight()
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (active) colors.segmentThumb else Color.Transparent)
+                        .selectable(selected = active, role = Role.RadioButton) { select(mode) }
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    BasicText(
+                        label,
+                        style = labelStyle(colors, active).copy(
+                            color = if (active) colors.text else colors.secondary,
+                            fontSize = 13.sp,
+                        ),
+                    )
+                }
             }
         }
     }
 }
 
-@Composable
-private fun PreferenceSwitch(label: String, checked: Boolean, colors: LibraryColors, click: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().height(60.dp)
-            .toggleable(value = checked, role = Role.Switch, onValueChange = { click() })
-            .padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        BasicText(label, style = bodyStyle(colors, 15).copy(fontWeight = FontWeight.Medium))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.clip(RoundedCornerShape(10.dp))
-                    .background(if (checked) colors.accentSurface else colors.mutedSurface)
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-            ) {
-                BasicText(
-                    if (checked) "켜짐" else "꺼짐",
-                    style = labelStyle(colors, checked).copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
-                )
-            }
-        }
-    }
-}
+private val THEME_CHOICES = listOf(
+    ThemeMode.SYSTEM to "시스템",
+    ThemeMode.LIGHT to "밝게",
+    ThemeMode.DARK to "어둡게",
+)
 
 @Composable
 private fun PreferencesHeader(colors: LibraryColors, accept: (LibraryIntent) -> Unit) {

@@ -70,7 +70,7 @@ internal enum class MainDestination(val label: String) {
 }
 
 internal enum class HomeTab(val label: String) {
-    HOME("홈"),
+    HOME("추천"),
     POPULAR("인기"),
     NEW("신작"),
     GENRES("장르"),
@@ -181,7 +181,7 @@ internal sealed interface LibraryIntent {
     data class RemoveOfflineEpisode(val episodeId: EpisodeId) : LibraryIntent
     data object ConfirmOfflineRemoval : LibraryIntent
     data object CancelOfflineRemoval : LibraryIntent
-    data class DarkThemeChanged(val enabled: Boolean) : LibraryIntent
+    data class ThemeModeChanged(val mode: ml.melun.mangaview.data.settings.ThemeMode) : LibraryIntent
     data object Back : LibraryIntent
 }
 

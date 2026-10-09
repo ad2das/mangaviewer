@@ -139,42 +139,8 @@ private fun SavedSearch(query: String, colors: LibraryColors, accept: (LibraryIn
 
 @Composable
 private fun SavedTabs(selected: SavedTab, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp)
-            .shadow(2.dp, RoundedCornerShape(15.dp), spotColor = Color.Black.copy(alpha = 0.04f))
-            .clip(RoundedCornerShape(15.dp))
-            .background(colors.mutedSurface)
-            .padding(3.dp),
-    ) {
-        SavedTab.entries.forEach { tab ->
-            val active = tab == selected
-            val surface by animateColorAsState(
-                targetValue = if (active) colors.card else Color.Transparent,
-                animationSpec = tween(LibraryMotion.Fast),
-                label = "savedTabSurface",
-            )
-            val labelColor by animateColorAsState(
-                targetValue = if (active) colors.text else colors.secondary,
-                animationSpec = tween(LibraryMotion.Fast),
-                label = "savedTabLabel",
-            )
-            Box(
-                Modifier.weight(1f).fillMaxHeight()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(surface)
-                    .then(if (active) Modifier.shadow(3.dp, RoundedCornerShape(12.dp), spotColor = Color.Black.copy(alpha = 0.10f)) else Modifier)
-                    .clickable { accept(LibraryIntent.SavedTabSelected(tab)) },
-                contentAlignment = Alignment.Center,
-            ) {
-                BasicText(
-                    tab.label,
-                    style = bodyStyle(colors, 13).copy(
-                        color = labelColor,
-                        fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-                    ),
-                )
-            }
-        }
+    SlidingSegments(SavedTab.entries, selected, { it.label }, colors, Modifier.padding(horizontal = 16.dp)) {
+        accept(LibraryIntent.SavedTabSelected(it))
     }
 }
 
@@ -235,7 +201,8 @@ private fun RecentSaved(
             val sourceSeries = SourceSeries(item.series.id, item.series.title, thumbnailKey = item.series.thumbnailKey)
             SavedSourceSeriesCard(
                 series = sourceSeries,
-                subtitle = "이어보기 위치 저장됨",
+                subtitle = continuationEpisodeLabel(item)?.let { "$it · ${libraryRelativeTime(item.updatedAtEpochMillis)}" }
+                    ?: "${libraryRelativeTime(item.updatedAtEpochMillis)} 읽음",
                 badge = "이어보기 ›",
                 loader = loader,
                 colors = colors,

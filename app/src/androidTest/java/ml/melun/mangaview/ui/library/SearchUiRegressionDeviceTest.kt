@@ -1,5 +1,6 @@
 package ml.melun.mangaview.ui.library
 
+import ml.melun.mangaview.data.settings.ThemeMode
 import android.content.Intent
 import android.os.SystemClock
 import androidx.lifecycle.ViewModelProvider
@@ -48,8 +49,8 @@ class SearchUiRegressionDeviceTest {
         await(scenario) { it.destination == MainDestination.SEARCH }
         assertEquals(comics.searchContent, state(scenario).searchContent)
         assertNotNull(find(By.text("생존게임")))
-        intent(scenario, LibraryIntent.DarkThemeChanged(true))
-        await(scenario) { it.saved.settings.darkTheme }
+        intent(scenario, LibraryIntent.ThemeModeChanged(ThemeMode.DARK))
+        await(scenario) { it.saved.settings.themeMode == ThemeMode.DARK }
         screenshot("ntk-survival-comic-dark")
         tap(By.desc("검색어 지우기"))
         await(scenario) { it.query.isEmpty() && it.searchContent == LibraryContent.Empty }
@@ -121,16 +122,16 @@ class SearchUiRegressionDeviceTest {
 
     private fun launch(block: (ActivityScenario<MainActivity>) -> Unit) {
         val scenario = ActivityScenario.launch<MainActivity>(Intent(instrumentation.targetContext, MainActivity::class.java))
-        val previous = state(scenario).saved.settings.darkTheme
+        val previous = state(scenario).saved.settings.themeMode
         try {
             dismissAutomaticUpdateNotice(device)
-            intent(scenario, LibraryIntent.DarkThemeChanged(false))
+            intent(scenario, LibraryIntent.ThemeModeChanged(ThemeMode.LIGHT))
             block(scenario)
         } catch (failure: Throwable) {
             screenshot("failure-${System.currentTimeMillis()}")
             throw failure
         } finally {
-            intent(scenario, LibraryIntent.DarkThemeChanged(previous))
+            intent(scenario, LibraryIntent.ThemeModeChanged(previous))
             scenario.close()
         }
     }

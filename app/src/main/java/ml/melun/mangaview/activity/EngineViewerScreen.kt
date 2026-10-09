@@ -106,6 +106,8 @@ internal class EngineViewerScreen(
     private var rendererLease: ml.melun.mangaview.app.EngineRendererPreparation<
         ml.melun.mangaview.viewer.runtime.EngineSurfaceOwner>.Lease? = null
     private var openingReleased = false
+    /** Episodes whose missing originals the reader was already told about. */
+    private val unavailableNotified = HashSet<EpisodeId>()
     private var firstFrameReported = false
     private var viewerOpenedAtMillis = 0L
     private val engineClosed = CompletableDeferred<Unit>()
@@ -178,6 +180,7 @@ internal class EngineViewerScreen(
             reportSnapshot = { snapshot ->
                 engineDiagnostics.snapshot(snapshot, System.nanoTime())
                 onViewerOpened()
+                noticeUnavailablePages(snapshot)
             },
             reportPresented = { presented ->
                 engineDiagnostics.presented(presented)
@@ -389,6 +392,22 @@ internal class EngineViewerScreen(
         }
     }
 
+    /**
+     * A page the provider no longer serves stays a blank gap in the strip; say so once per episode
+     * instead of leaving the reader to wonder whether it is still loading.
+     */
+    private fun noticeUnavailablePages(snapshot: EngineRuntimeSnapshot) {
+        val unavailable = snapshot.unavailablePages
+        if (unavailable.isEmpty() || !::ui.isInitialized) return
+        val episode = snapshot.session.anchor?.pageId?.episodeId ?: return
+        if (episode in unavailableNotified || unavailable.none { it.episodeId == episode }) return
+        unavailableNotified += episode
+        ui.showMessage("이 회차의 일부 이미지를 제공처에서 불러올 수 없어요", ViewerSnackbar.Tone.ERROR, "다시 시도") {
+            unavailableNotified -= episode
+            runtime?.retryFailures()
+        }
+    }
+
     private fun navigateAdjacent(next: Boolean) {
         val state = runtime?.chromeSnapshot() ?: return
         val target = if (next) state.nextEpisodeId else state.previousEpisodeId
@@ -508,10 +527,31 @@ internal class EpisodePickerController(
             return
         }
         val currentIndex = episodes.indexOfFirst { it.id == current.episodeId }
-        screen.showEpisodes(episodes.map(SourceEpisode::title), currentIndex) { position ->
+        screen.showEpisodes(withoutSharedSeriesName(episodes.map(SourceEpisode::title)), currentIndex) { position ->
             val target = episodes.getOrNull(position)?.id
             if (target != null && target != current.episodeId) launchEpisode(target)
         }
     }
 
+}
+
+/**
+ * Every title of a series usually starts with the series name, which the sheet's reader already
+ * knows. Take the word-aligned prefix the first and last titles share (a notice or a special
+ * episode in between may be named differently) and strip it wherever it actually appears, as long
+ * as most titles carry it; cutting at a space keeps "레벨업 289화" and "레벨업 288화" from losing the
+ * shared "2" of the number.
+ */
+internal fun withoutSharedSeriesName(titles: List<String>): List<String> {
+    if (titles.size < 2) return titles
+    val first = titles.first()
+    val last = titles.last()
+    var length = 0
+    val limit = minOf(first.length, last.length)
+    while (length < limit && first[length] == last[length]) length++
+    val cut = first.lastIndexOf(' ', length - 1) + 1
+    if (cut <= 0) return titles
+    val prefix = first.substring(0, cut)
+    if (titles.count { it.startsWith(prefix) } * 2 < titles.size) return titles
+    return titles.map { title -> if (title.startsWith(prefix)) title.substring(cut).trim().ifEmpty { title } else title }
 }

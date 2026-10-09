@@ -36,7 +36,7 @@ internal fun HomeContinuations(
     accept: (LibraryIntent) -> Unit,
 ) {
     if (recent.isEmpty()) return
-    Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
+    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
         ContinuationHeader(colors, accept)
         LazyRow(
             modifier = Modifier.semantics { contentDescription = "홈 이어보기 목록" },
@@ -82,11 +82,14 @@ private fun ContinuationHeader(colors: LibraryColors, accept: (LibraryIntent) ->
 @Composable
 private fun ContinuationCard(item: RecentReading, loader: SeriesArtworkLoader, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
     Row(
-        Modifier.width(320.dp).height(118.dp)
+        Modifier.width(320.dp).heightIn(min = 118.dp)
             .clip(ContinuationCardShape)
             .background(colors.card)
             .border(1.dp, colors.cardBorder, ContinuationCardShape)
-            .semantics { contentDescription = "이어보기: ${item.series.title}" }
+            .semantics {
+                contentDescription = "이어보기: ${item.series.title}" +
+                    (continuationEpisodeLabel(item)?.let { ", $it" } ?: "")
+            }
             .clickable { accept(LibraryIntent.ResumeEpisode(item.episodeId)) }
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -125,7 +128,14 @@ private fun ContinuationDescription(item: RecentReading, colors: LibraryColors, 
             overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.height(4.dp))
-        BasicText("마지막으로 읽던 위치부터", style = hintStyle(colors, 12))
+        val episode = continuationEpisodeLabel(item)
+        BasicText(
+            episode ?: "마지막으로 읽던 위치부터",
+            style = if (episode != null) bodyStyle(colors, 13).copy(color = colors.accent, fontWeight = FontWeight.SemiBold)
+            else hintStyle(colors, 12),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         Spacer(Modifier.height(8.dp))
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -149,3 +159,7 @@ private fun ContinuationDescription(item: RecentReading, colors: LibraryColors, 
         }
     }
 }
+
+/** The stored provider episode name, without the series name it usually repeats. */
+internal fun continuationEpisodeLabel(item: RecentReading): String? =
+    item.episodeTitle?.trim()?.takeIf(String::isNotEmpty)?.let { shortEpisodeTitle(item.series.title, it) }

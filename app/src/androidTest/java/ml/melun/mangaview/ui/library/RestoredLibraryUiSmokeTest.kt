@@ -184,8 +184,8 @@ class RestoredLibraryUiSmokeTest {
      */
     private fun dismissUpdateNoticeIfPresent(device: UiDevice) {
         try {
-            if (device.findObject(By.text("새 업데이트가 있습니다")) == null) return
-            val dismiss = device.findObject(By.text("닫기")) ?: return
+            if (device.findObject(By.text("새 버전이 나왔어요")) == null) return
+            val dismiss = device.findObject(By.text("나중에")) ?: return
             dismiss.click()
         } catch (_: StaleObjectException) {
             // Notice was replaced while resolving; the next poll reacquires it.

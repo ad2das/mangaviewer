@@ -63,7 +63,12 @@ internal class AccountSync(
                     else runSession(auth, user)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { mutableState.value = AccountState(message = "계정 연결을 시작하지 못했습니다. 다시 시도해 주세요") }
+            catch (failure: Exception) {
+                // A background session restore the reader never asked for is not theirs to fix:
+                // stay signed out quietly. An explicit sign-in reports its own failure.
+                android.util.Log.w("AccountSync", "session restore unavailable", failure)
+                mutableState.value = AccountState()
+            }
         }
     }
 

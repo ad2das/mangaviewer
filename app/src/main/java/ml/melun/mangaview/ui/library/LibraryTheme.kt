@@ -63,6 +63,8 @@ internal data class LibraryColors(
     val newGradient: Brush = Brush.horizontalGradient(listOf(Color(0xFF00E676), Color(0xFF00B0FF)))
     val vipGradient: Brush = Brush.horizontalGradient(listOf(Color(0xFF7C5CFF), Color(0xFF00F2FE)))
     val cardBorder: Color = if (dark) Color(0x28FFFFFF) else Color(0x0E000000)
+    /** The raised thumb of a segmented control: lighter than its track in both themes. */
+    val segmentThumb: Color = if (dark) Color(0xFF2C3447) else Color.White
     val cardHighlight: Color = if (dark) Color(0x18FFFFFF) else Color(0x40FFFFFF)
     val heroOverlayGradient: Brush = Brush.verticalGradient(
         listOf(

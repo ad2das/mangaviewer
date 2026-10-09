@@ -1,18 +1,31 @@
 package ml.melun.mangaview.ui.library
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -163,41 +176,71 @@ private fun DetailBody(
     val offlineIds = remember(state.offlineEpisodes) {
         state.offlineEpisodes.mapTo(hashSetOf()) { it.episode.id }
     }
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 28.dp),
-    ) {
-        val resuming = quickRead != null && state.saved.recent.any { it.episodeId == quickRead.id }
-        item { DetailHeader(series, quickRead, resuming, state.activeSeriesDetails, loader, colors, accept) }
-        item { DetailTabs(state.detailTab, colors, accept) }
-        if (state.detailTab != DetailTab.EPISODES) {
-            item { DetailInformation(state.detailTab, series, episodes.size, state.activeSeriesDetails, colors, content.complete) }
+    // Sources list newest first; readers starting a series want the first episode on top.
+    var oldestFirst by rememberSaveable(series.id) { mutableStateOf(false) }
+    val ordered = remember(episodes, oldestFirst) { if (oldestFirst) episodes.asReversed() else episodes }
+    val sourceLabel = state.sources.firstOrNull { it.id == series.id.sourceId }?.label
+    val resuming = quickRead != null && state.saved.recent.any { it.episodeId == quickRead.id }
+    val list = rememberLazyListState()
+    // Once the header's read button scrolls away, the same action docks at the bottom.
+    val docked by remember(list) { derivedStateOf { list.firstVisibleItemIndex > 0 } }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = list,
+            contentPadding = PaddingValues(bottom = if (quickRead != null) 104.dp else 28.dp),
+        ) {
+            item { DetailHeader(series, quickRead, resuming, state.activeSeriesDetails, loader, colors, accept) }
+            item { DetailTabs(state.detailTab, colors, accept) }
+            if (state.detailTab != DetailTab.EPISODES) {
+                item {
+                    DetailInformation(state.detailTab, series, sourceLabel, episodes.size,
+                        state.activeSeriesDetails, colors, content.complete)
+                }
+            }
+            item { EpisodeCountHeader(content, oldestFirst, colors, accept) { oldestFirst = !oldestFirst } }
+            item { EpisodeRefreshStatus(content, colors) }
+            if (episodes.isEmpty()) {
+                item { LibraryMessage("등록된 회차가 없습니다", colors, Modifier.height(220.dp)) }
+            } else {
+                val resume = state.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
+                    ?.let { id -> episodes.firstOrNull { it.id == id } }
+                items(ordered, key = { it.id.remoteKey }) { episode ->
+                    val saved = episode.id in offlineIds
+                    EpisodeCard(
+                        episode = episode,
+                        title = shortEpisodeTitle(series.title, episode.title),
+                        readState = episodeReadState(episode, resume, readEpisodes),
+                        saved = saved,
+                        downloadState = state.downloadStates[episode.id],
+                        colors = colors,
+                        open = { accept(LibraryIntent.EpisodeSelected(episode.id)) },
+                        storageAction = {
+                            if (saved) {
+                                accept(LibraryIntent.RemoveOfflineEpisode(episode.id))
+                            } else {
+                                accept(LibraryIntent.DownloadEpisode(series, episode))
+                            }
+                        },
+                        modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
+                    )
+                }
+            }
         }
-        item { EpisodeCountHeader(content, colors, accept) }
-        item { EpisodeRefreshStatus(content, colors) }
-        if (episodes.isEmpty()) {
-            item { LibraryMessage("등록된 회차가 없습니다", colors, Modifier.height(220.dp)) }
-        } else {
-            val resume = state.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
-                ?.let { id -> episodes.firstOrNull { it.id == id } }
-            items(episodes, key = { it.id.remoteKey }) { episode ->
-                val saved = episode.id in offlineIds
-                EpisodeCard(
-                    episode = episode,
-                    readState = episodeReadState(episode, resume, readEpisodes),
-                    saved = saved,
-                    downloadState = state.downloadStates[episode.id],
-                    colors = colors,
-                    open = { accept(LibraryIntent.EpisodeSelected(episode.id)) },
-                    storageAction = {
-                        if (saved) {
-                            accept(LibraryIntent.RemoveOfflineEpisode(episode.id))
-                        } else {
-                            accept(LibraryIntent.DownloadEpisode(series, episode))
-                        }
-                    },
-                    modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
-                )
+        AnimatedVisibility(
+            visible = docked && quickRead != null,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = fadeIn(tween(LibraryMotion.Fast)) +
+                slideInVertically(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut)) { it / 2 },
+            exit = fadeOut(tween(LibraryMotion.Fast)) + slideOutVertically(tween(LibraryMotion.Fast)) { it / 2 },
+            label = "dockedRead",
+        ) {
+            Box(
+                Modifier.fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(colors.background.copy(alpha = 0f), colors.background)))
+                    .padding(start = 18.dp, end = 18.dp, top = 20.dp, bottom = 16.dp),
+            ) {
+                DetailReadingActions(quickRead, series.title, resuming, colors, accept)
             }
         }
     }
@@ -231,7 +274,7 @@ private fun DetailHeader(
             }
         }
         Spacer(Modifier.height(20.dp))
-        DetailReadingActions(firstEpisode, resuming, colors, accept)
+        DetailReadingActions(firstEpisode, series.title, resuming, colors, accept)
     }
 }
 
@@ -249,42 +292,8 @@ private fun TagChip(label: String, colors: LibraryColors) {
 
 @Composable
 private fun DetailTabs(selected: DetailTab, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(48.dp)
-            .shadow(3.dp, RoundedCornerShape(15.dp), spotColor = Color.Black.copy(alpha = 0.05f))
-            .clip(RoundedCornerShape(15.dp))
-            .background(colors.mutedSurface)
-            .padding(3.dp),
-    ) {
-        DetailTab.entries.forEach { tab ->
-            val active = tab == selected
-            val surface by animateColorAsState(
-                targetValue = if (active) colors.card else Color.Transparent,
-                animationSpec = tween(LibraryMotion.Fast),
-                label = "detailTabSurface",
-            )
-            val labelColor by animateColorAsState(
-                targetValue = if (active) colors.text else colors.secondary,
-                animationSpec = tween(LibraryMotion.Fast),
-                label = "detailTabLabel",
-            )
-            Box(
-                Modifier.weight(1f).fillMaxHeight()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(surface)
-                    .then(if (active) Modifier.shadow(3.dp, RoundedCornerShape(12.dp), spotColor = Color.Black.copy(alpha = 0.10f)) else Modifier)
-                    .clickable { accept(LibraryIntent.DetailTabSelected(tab)) },
-                contentAlignment = Alignment.Center,
-            ) {
-                BasicText(
-                    tab.label,
-                    style = bodyStyle(colors, 13).copy(
-                        color = labelColor,
-                        fontWeight = if (active) FontWeight.ExtraBold else FontWeight.Medium,
-                    ),
-                )
-            }
-        }
+    SlidingSegments(DetailTab.entries, selected, { it.label }, colors, Modifier.padding(horizontal = 18.dp)) {
+        accept(LibraryIntent.DetailTabSelected(it))
     }
 }
 
@@ -292,39 +301,50 @@ private fun DetailTabs(selected: DetailTab, colors: LibraryColors, accept: (Libr
 private fun DetailInformation(
     tab: DetailTab,
     series: SourceSeries,
+    sourceLabel: String?,
     episodeCount: Int,
     details: SourceSeriesDetails?,
     colors: LibraryColors,
     complete: Boolean,
 ) {
-    val text = when (tab) {
-        DetailTab.INTRO -> details?.description?.takeIf(String::isNotBlank)
-            ?: series.subtitle?.takeIf(String::isNotBlank)
-            ?: "등록된 소개가 없습니다."
-        DetailTab.INFO -> buildString {
-            append("출처: ${series.id.sourceId.value.uppercase()}")
-            details?.status?.let { append("\n상태: ${it.label()}") }
-            details?.authors?.takeIf(String::isNotBlank)?.let { append("\n작가: $it") }
-            append("\n${if (complete) "총 회차" else "불러온 회차"}: ${episodeCount}개")
-            append("\n원작 식별자: ${series.id.remoteKey}")
+    val card = Modifier.fillMaxWidth().padding(start = 18.dp, top = 14.dp, end = 18.dp)
+        .shadow(3.dp, RoundedCornerShape(18.dp), spotColor = Color.Black.copy(alpha = 0.06f))
+        .clip(RoundedCornerShape(18.dp))
+        .background(colors.card)
+        .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp))
+    when (tab) {
+        DetailTab.INTRO -> Box(card.padding(18.dp)) {
+            BasicText(
+                details?.description?.takeIf(String::isNotBlank)
+                    ?: series.subtitle?.takeIf(String::isNotBlank)
+                    ?: "등록된 소개가 없습니다.",
+                style = bodyStyle(colors, 14).copy(color = colors.secondary, lineHeight = 22.sp),
+            )
         }
-        DetailTab.EPISODES -> return
-    }
-    Box(
-        Modifier.fillMaxWidth().padding(start = 18.dp, top = 14.dp, end = 18.dp)
-            .shadow(3.dp, RoundedCornerShape(18.dp), spotColor = Color.Black.copy(alpha = 0.06f))
-            .clip(RoundedCornerShape(18.dp))
-            .background(colors.card)
-            .border(1.dp, colors.cardBorder, RoundedCornerShape(18.dp))
-            .padding(18.dp),
-    ) {
-        BasicText(text, style = bodyStyle(colors, 14).copy(color = colors.secondary))
+        DetailTab.INFO -> Column(card.padding(horizontal = 18.dp, vertical = 8.dp)) {
+            // A label column and a value column, the way a spec sheet reads, not a run of "key: value".
+            val rows = buildList {
+                details?.authors?.takeIf(String::isNotBlank)?.let { add("작가" to it) }
+                details?.status?.let { add("상태" to it.label()) }
+                add((if (complete) "회차" else "불러온 회차") to "${episodeCount}화")
+                add("제공" to (sourceLabel ?: series.id.sourceId.value))
+            }
+            rows.forEachIndexed { index, (label, value) ->
+                if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(colors.cardBorder))
+                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BasicText(label, Modifier.width(84.dp), style = hintStyle(colors, 13))
+                    BasicText(value, Modifier.weight(1f), style = bodyStyle(colors, 14).copy(fontWeight = FontWeight.SemiBold))
+                }
+            }
+        }
+        DetailTab.EPISODES -> Unit
     }
 }
 
 @Composable
 private fun EpisodeCard(
     episode: SourceEpisode,
+    title: String,
     readState: EpisodeReadState?,
     saved: Boolean,
     downloadState: EpisodeDownloadState?,
@@ -333,13 +353,15 @@ private fun EpisodeCard(
     storageAction: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Episodes already read step back so the unread ones carry the list.
+    val read = readState == EpisodeReadState.READ
     Row(
-        modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).height(88.dp)
+        modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).heightIn(min = 88.dp)
             .clip(EpisodeCardShape)
             .background(colors.card)
             .border(1.dp, colors.cardBorder, EpisodeCardShape)
             .clickable(onClick = open)
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -348,13 +370,16 @@ private fun EpisodeCard(
                 .background(colors.mutedSurface),
             contentAlignment = Alignment.Center,
         ) {
-            LibraryIconView(LibraryIcon.PLAY, colors.accent, Modifier.size(16.dp))
+            LibraryIconView(LibraryIcon.PLAY, if (read) colors.muted else colors.accent, Modifier.size(16.dp))
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             BasicText(
-                episode.title,
-                style = bodyStyle(colors, 14).copy(fontWeight = FontWeight.Bold),
+                title,
+                style = bodyStyle(colors, 15).copy(
+                    color = if (read) colors.muted else colors.text,
+                    fontWeight = if (read) FontWeight.Medium else FontWeight.Bold,
+                ),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -438,6 +463,7 @@ private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd")
 @Composable
 private fun DetailReadingActions(
     episode: SourceEpisode?,
+    seriesTitle: String,
     resuming: Boolean,
     colors: LibraryColors,
     accept: (LibraryIntent) -> Unit,
@@ -463,7 +489,7 @@ private fun DetailReadingActions(
                     style = bodyStyle(colors, 16).copy(color = Color.White, fontWeight = FontWeight.Bold),
                 )
                 if (episode != null) BasicText(
-                    episode.title,
+                    shortEpisodeTitle(seriesTitle, episode.title),
                     style = hintStyle(colors, 12).copy(color = Color.White.copy(alpha = 0.82f)),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -552,7 +578,13 @@ private fun EpisodeStorageAction(episode: SourceEpisode, saved: Boolean, downloa
 }
 
 @Composable
-private fun EpisodeCountHeader(content: LibraryContent.Episodes, colors: LibraryColors, accept: (LibraryIntent) -> Unit) {
+private fun EpisodeCountHeader(
+    content: LibraryContent.Episodes,
+    oldestFirst: Boolean,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+    toggleOrder: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().padding(start = 18.dp, top = 22.dp, end = 18.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -567,6 +599,21 @@ private fun EpisodeCountHeader(content: LibraryContent.Episodes, colors: Library
         Spacer(Modifier.width(8.dp))
         BasicText("${content.items.size}개${if (content.complete) "" else " 불러옴"}", style = hintStyle(colors, 13))
         Spacer(Modifier.weight(1f))
+        Box(
+            Modifier.heightIn(min = 48.dp)
+                .semantics {
+                    contentDescription = if (oldestFirst) "1화부터 정렬됨, 최신순으로 바꾸기" else "최신순 정렬됨, 1화부터로 바꾸기"
+                }
+                .clip(EpisodeActionShape)
+                .clickable(onClick = toggleOrder)
+                .padding(horizontal = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            BasicText(
+                if (oldestFirst) "1화부터" else "최신순",
+                style = labelStyle(colors, true).copy(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+            )
+        }
         IconButton(LibraryIcon.REFRESH, "회차 새로고침", colors.accent, enabled = !content.refreshing) {
             accept(LibraryIntent.RetryDetail)
         }

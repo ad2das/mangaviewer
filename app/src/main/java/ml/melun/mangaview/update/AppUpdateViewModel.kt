@@ -56,8 +56,10 @@ internal class AppUpdateViewModel(application: Application, private val reposito
             // A manual check/download takes precedence over an automatic result arriving later.
             if (generation != checkGeneration) return
             mutable.value = AppUpdateState(if (release.newerThan(installedVersion)) UpdatePhase.AVAILABLE else UpdatePhase.CURRENT,
-                visible = !silent || release.newerThan(installedVersion), release = release,
-                message = "현재 버전: $installedLabel\n배포 버전: ${release.label}")
+                // An automatic result never opens a modal on its own: it would land under the
+                // reader's finger mid-tap. The library announces it with a dismissible notice.
+                visible = !silent, release = release,
+                message = "현재 $installedLabel · 최신 ${release.label}")
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             if (!silent) mutable.value = AppUpdateState(UpdatePhase.FAILED, visible = true,
@@ -88,5 +90,8 @@ internal class AppUpdateViewModel(application: Application, private val reposito
         pendingAutomaticInstall = false
         return true
     }
+    /** Opens the dialog for a result the automatic check found silently. */
+    fun reveal() { mutable.update { it.copy(visible = true) } }
+
     fun installationFailure(message: String) { mutable.update { it.copy(visible = true, message = message) } }
 }

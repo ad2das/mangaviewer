@@ -144,9 +144,9 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
         card.setPadding(pad, context.dp(10), pad, context.dp(18) + bottomInset)
     }
 
-    fun open(settings: ViewerSettings) {
+    fun open(settings: ViewerSettings, systemDark: Boolean) {
         binding = true
-        darkTheme.isChecked = settings.darkTheme
+        darkTheme.isChecked = settings.darkTheme(systemDark)
         keepScreenOn.isChecked = settings.keepScreenOn
         volumeKeys.isChecked = settings.volumeKeyNavigation
         tapPaging.isChecked = settings.tapPaging
@@ -229,7 +229,10 @@ internal class ViewerReaderSettingsPanel(context: Context) : FrameLayout(context
     private fun tintSwitch(control: Switch, value: ViewerPalette) {
         val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
         control.thumbTintList = ColorStateList(states, intArrayOf(Color.WHITE, if (value.dark) 0xFFB6BDCC.toInt() else Color.WHITE))
-        control.trackTintList = ColorStateList(states, intArrayOf(value.accent, value.track))
+        // The slider's faint rail is too weak behind a white thumb: an off switch needs a track
+        // that still reads as a control on a white sheet.
+        val offTrack = androidx.core.graphics.ColorUtils.setAlphaComponent(value.text, if (value.dark) 0x52 else 0x3D)
+        control.trackTintList = ColorStateList(states, intArrayOf(value.accent, offTrack))
         control.trackTintMode = android.graphics.PorterDuff.Mode.SRC
     }
 

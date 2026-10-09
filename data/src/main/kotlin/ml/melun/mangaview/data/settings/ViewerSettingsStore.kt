@@ -14,8 +14,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CoroutineScope
 
+/** Which palette the app draws with; [SYSTEM] follows the device's dark-theme setting. */
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
 data class ViewerSettings(
-    val darkTheme: Boolean = false,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val rightToLeft: Boolean = false,
     val stretchToWidth: Boolean = true,
     val startTab: Int = 0,
@@ -30,7 +33,14 @@ data class ViewerSettings(
     /** Auto-scroll speed step, 1 (slowest) to [MAX_AUTO_SCROLL_SPEED]. */
     val autoScrollSpeed: Int = DEFAULT_AUTO_SCROLL_SPEED,
     val recentQueries: List<String> = emptyList(),
-)
+) {
+    /** The palette to draw with now, given whether the device is currently in dark theme. */
+    fun darkTheme(systemDark: Boolean): Boolean = when (themeMode) {
+        ThemeMode.SYSTEM -> systemDark
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+}
 
 const val DEFAULT_AUTO_SCROLL_SPEED = 2
 const val MAX_AUTO_SCROLL_SPEED = 5
@@ -47,7 +57,7 @@ class ViewerSettingsStore(
     }
 
     private fun decode(preferences: Preferences): ViewerSettings = ViewerSettings(
-        darkTheme = preferences[DARK_THEME] ?: false,
+        themeMode = decodeThemeMode(preferences),
         rightToLeft = preferences[RIGHT_TO_LEFT] ?: false,
         stretchToWidth = preferences[STRETCH_TO_WIDTH] ?: true,
         startTab = preferences[START_TAB] ?: 0,
@@ -64,7 +74,9 @@ class ViewerSettingsStore(
     )
 
     private fun encode(preferences: androidx.datastore.preferences.core.MutablePreferences, value: ViewerSettings) {
-        preferences[DARK_THEME] = value.darkTheme
+        preferences[THEME_MODE] = value.themeMode.name
+        // Older builds read only this key; keep it meaningful for a downgrade.
+        preferences[DARK_THEME] = value.themeMode == ThemeMode.DARK
         preferences[RIGHT_TO_LEFT] = value.rightToLeft
         preferences[STRETCH_TO_WIDTH] = value.stretchToWidth
         preferences[START_TAB] = value.startTab
@@ -78,6 +90,15 @@ class ViewerSettingsStore(
         preferences[AUTO_SCROLL_SPEED] = value.autoScrollSpeed.coerceIn(1, MAX_AUTO_SCROLL_SPEED)
         preferences[RECENT_QUERIES] = encodeRecentQueries(value.recentQueries)
     }
+
+    /**
+     * Builds before [ThemeMode] stored only a dark flag, written as false with every settings save,
+     * so a stored false cannot be told apart from "never chosen": only an explicit dark choice
+     * survives, everything else follows the system.
+     */
+    private fun decodeThemeMode(preferences: Preferences): ThemeMode =
+        preferences[THEME_MODE]?.let { stored -> ThemeMode.entries.firstOrNull { it.name == stored } }
+            ?: if (preferences[DARK_THEME] == true) ThemeMode.DARK else ThemeMode.SYSTEM
 
     private fun decodeRecentQueries(raw: String?): List<String> = raw
         ?.split(RECENT_QUERY_SEPARATOR)
@@ -98,6 +119,7 @@ class ViewerSettingsStore(
         const val MAX_RECENT_QUERIES = 10
         const val RECENT_QUERY_SEPARATOR = "\n"
         val DARK_THEME = booleanPreferencesKey("dark_theme")
+        val THEME_MODE = stringPreferencesKey("theme_mode")
         val RIGHT_TO_LEFT = booleanPreferencesKey("right_to_left")
         val STRETCH_TO_WIDTH = booleanPreferencesKey("stretch_to_width")
         val START_TAB = intPreferencesKey("start_tab")
