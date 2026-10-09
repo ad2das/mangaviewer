@@ -3,8 +3,10 @@ package ml.melun.mangaview.engine.work
 import java.util.Random
 import kotlin.system.measureTimeMillis
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -23,6 +25,8 @@ import ml.melun.mangaview.engine.api.WorkRequest
 import ml.melun.mangaview.engine.api.WorkSubscription
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -42,6 +46,17 @@ class PermitHandoffTest {
         decodes = 1,
         queued = queued,
     )
+
+    /** A RUNNING parent record for tests that drive [DomainPermitWaiter] without a coordinator. */
+    private fun runningParent(id: String): TypedWorkRecord<String> = TypedWorkRecord(
+        WorkRequest(
+            key = WorkKey("principal", id, "waiter.parent", "revision", String::class.java),
+            domain = WorkDomain.CONTROL,
+            priority = WorkPriority.VISIBLE,
+            execute = { "parent" },
+        ),
+        0L,
+    ).apply { state = WorkRecordState.RUNNING }
 
     /** A CONTROL record that borrows one physical permit for the block and releases it every time. */
     private fun permitRequest(
@@ -117,14 +132,14 @@ class PermitHandoffTest {
             coordinator.submit(permitRequest("storm-$index", WorkDomain.DECODE, WorkPriority.VISIBLE, release = never))
         }
         runCurrent()
-        assertEquals(0L, coordinator.registry.grantResumeCount)
+        assertEquals(0L, coordinator.registry.grantResumeCount.get())
 
         holderGate.complete(Unit)
         runCurrent()
         assertEquals(
             "one released permit must resume one waiter, not the whole queue",
             1L,
-            coordinator.registry.grantResumeCount,
+            coordinator.registry.grantResumeCount.get(),
         )
 
         waiters.forEach { it.close() }
@@ -201,6 +216,107 @@ class PermitHandoffTest {
         upload.close()
         holder.await().close()
         coordinator.close()
+    }
+
+    @Test
+    fun aPromotedWaiterGetsItsPermitWithoutAnyRelease() = runTest {
+        val coordinator = WorkCoordinator(
+            this,
+            WorkLimits(network = 2, bodies = 1, backgroundNetwork = 1, decodes = 2),
+        )
+        try {
+            val holderGate = CompletableDeferred<Unit>()
+            val holderStarted = CompletableDeferred<Unit>()
+            val holder = coordinator.submit(
+                permitRequest("promotion-capacity", WorkDomain.NETWORK, WorkPriority.NEXT_IMAGE, release = holderGate) {
+                    holderStarted.complete(Unit)
+                },
+            )
+            runCurrent()
+            assertTrue(holderStarted.isCompleted)
+
+            val granted = CompletableDeferred<Unit>()
+            val waiter = coordinator.submit(
+                permitRequest("promotion-waiter", WorkDomain.NETWORK, WorkPriority.NEXT_IMAGE) {
+                    granted.complete(Unit)
+                },
+            )
+            runCurrent()
+            assertFalse(
+                "a second speculative network transfer must wait for the background sub-limit",
+                granted.isCompleted,
+            )
+
+            waiter.promote(WorkPriority.VISIBLE)
+            runCurrent()
+            assertTrue(
+                "promotion must re-evaluate the waiters immediately, with no permit released",
+                granted.isCompleted,
+            )
+            waiter.close()
+            holder.close()
+        } finally {
+            coordinator.close()
+        }
+    }
+
+    @Test
+    fun aDeliveryFailureBeforeBindCancelsTheAwaitingCoroutineInsteadOfHanging() = runTest {
+        val registry = WorkRegistry(WorkLimits(decodes = 1))
+        val waiter = DomainPermitWaiter(runningParent("delivery-failure"), WorkDomain.DECODE, 0L)
+        val cause = CancellationException("Parent work is no longer running")
+        waiter.cancelDelivery(cause)
+
+        val awaiting = async(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                withTimeout(1_000) {
+                    suspendCancellableCoroutine<PermitClaim> { continuation ->
+                        when (val result = waiter.bind(continuation)) {
+                            is PermitWaitResult.Granted -> continuation.resume(result.claim) { _, _, _ -> }
+                            is PermitWaitResult.Failed -> continuation.cancel(result.cause)
+                            PermitWaitResult.Pending -> Unit
+                        }
+                    }
+                }
+                null
+            } catch (failure: CancellationException) {
+                failure
+            }
+        }
+        val failure = awaiting.await()
+        assertEquals("the stored delivery failure must cancel the wait", cause.message, failure?.message)
+        assertFalse("the wait must not fall through to the withTimeout", failure is TimeoutCancellationException)
+        assertEquals(0, registry.admission.usedPermits(WorkDomain.DECODE))
+    }
+
+    @Test
+    fun aClaimGrantedBeforeBindIsDeliveredExactlyOnce() = runTest {
+        val registry = WorkRegistry(WorkLimits(decodes = 1))
+        val returned = mutableListOf<PermitClaim>()
+        registry.claimReturn = { claim -> returned += claim }
+        val waiter = DomainPermitWaiter(runningParent("grant-before-bind"), WorkDomain.DECODE, 0L)
+        val claim = checkNotNull(registry.admission.tryAcquire(WorkDomain.DECODE, WorkPriority.FOCUS))
+        assertNull("an unbound grant stores the claim instead of resuming", waiter.grant(claim))
+
+        var deliveries = 0
+        val delivered = async(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine<PermitClaim> { continuation ->
+                when (val result = waiter.bind(continuation)) {
+                    is PermitWaitResult.Granted -> {
+                        deliveries += 1
+                        continuation.resume(result.claim) { _, _, _ -> }
+                    }
+                    is PermitWaitResult.Failed -> continuation.cancel(result.cause)
+                    PermitWaitResult.Pending -> Unit
+                }
+            }
+        }
+        runCurrent()
+        assertEquals("the stored claim must be delivered exactly once", 1, deliveries)
+        assertSame(claim, delivered.await())
+        assertTrue("a delivered claim must not also come back", returned.isEmpty())
+        registry.mutex.withLock { registry.releaseClaimLocked(claim) }
+        assertEquals(0, registry.admission.usedPermits(WorkDomain.DECODE))
     }
 
     @Test

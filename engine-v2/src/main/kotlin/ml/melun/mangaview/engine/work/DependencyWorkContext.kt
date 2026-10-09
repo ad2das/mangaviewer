@@ -155,14 +155,18 @@ internal class DependencyWorkContext(
             recordUploadPermitProbe(domain)
             return it
         }
-        // Enrolled before the continuation exists; bind hands over a claim the walk already stored.
+        // Enrolled before the continuation exists; bind delivers a stored claim, a refusal the walk
+        // recorded in the window before the continuation existed, or leaves the waiter pending.
         val enrolled = checkNotNull(waiter)
         val claim = suspendCancellableCoroutine<PermitClaim> { continuation ->
             continuation.invokeOnCancellation { enrolled.cancelled = true }
-            val pending = enrolled.bind(continuation)
-            if (pending != null) {
-                state.grantResumeCount += 1
-                continuation.resume(pending) { _, value, _ -> state.claimReturn?.invoke(value) }
+            when (val result = enrolled.bind(continuation)) {
+                is PermitWaitResult.Granted -> {
+                    state.grantResumeCount.incrementAndGet()
+                    continuation.resume(result.claim) { _, value, _ -> state.claimReturn?.invoke(value) }
+                }
+                is PermitWaitResult.Failed -> continuation.cancel(result.cause)
+                PermitWaitResult.Pending -> Unit
             }
         }
         recordUploadPermitProbe(domain)

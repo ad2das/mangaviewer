@@ -1,5 +1,6 @@
 package ml.melun.mangaview.engine.work
 
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -10,11 +11,28 @@ import ml.melun.mangaview.engine.api.WorkLimits
 import ml.melun.mangaview.engine.api.WorkPriority
 
 /**
+ * What [DomainPermitWaiter.bind] found on the ticket: a claim already granted before the
+ * continuation existed, a delivery failure recorded by the grant walk, or nothing yet (the waiter
+ * stays suspended until [DomainPermitWaiter.grant] or [DomainPermitWaiter.cancelDelivery]).
+ */
+internal sealed interface PermitWaitResult {
+    class Granted(val claim: PermitClaim) : PermitWaitResult
+    class Failed(val cause: CancellationException) : PermitWaitResult
+    data object Pending : PermitWaitResult
+}
+
+/**
  * One permit waiter. It is enrolled under the registry mutex before its continuation exists: the
  * claim is stored on the ticket and delivered only when the waiting coroutine calls [bind], so no
  * lock acquisition is ever needed from inside the non-suspending bind/grant handoff. The
  * handoff is guarded by the ticket's own monitor, which grants and binds in O(1) without touching
  * the registry mutex; the registry-side [cancelled] flag is volatile so grant walks read it safely.
+ *
+ * A walk can decide a waiter must fail in the window between enrollment and bind, when no
+ * continuation exists yet to cancel. [cancelDelivery] records that decision as [failure] so [bind]
+ * can hand it back; without that the coroutine would suspend forever on a ticket the walk already
+ * removed. [cancelled] stays the continuation's own signal ("the coroutine gave up first") and is
+ * kept separate from [failure] ("the walk refused delivery").
  */
 internal class DomainPermitWaiter(
     val parent: WorkRecord,
@@ -27,11 +45,18 @@ internal class DomainPermitWaiter(
 
     private var continuation: CancellableContinuation<PermitClaim>? = null
     private var claim: PermitClaim? = null
+    private var failure: CancellationException? = null
 
-    /** Registers the waiting continuation; returns a claim granted before the bind, if any. */
-    fun bind(continuation: CancellableContinuation<PermitClaim>): PermitClaim? = synchronized(this) {
+    /** Registers the waiting continuation and reports what the ticket already knows. */
+    fun bind(continuation: CancellableContinuation<PermitClaim>): PermitWaitResult = synchronized(this) {
         this.continuation = continuation
-        claim
+        val failed = failure
+        val granted = claim
+        when {
+            failed != null -> PermitWaitResult.Failed(failed)
+            granted != null -> PermitWaitResult.Granted(granted)
+            else -> PermitWaitResult.Pending
+        }
     }
 
     /** Stores the claim and returns the continuation when one is already bound. */
@@ -40,11 +65,19 @@ internal class DomainPermitWaiter(
         continuation
     }
 
-    /** Fails a waiter whose parent stopped running; a bound continuation is cancelled at once. */
+    /**
+     * Fails a waiter whose parent stopped running. A bound continuation is cancelled at once; an
+     * unbound one records the failure for [bind]. A claim that was already granted wins: the walk
+     * never grants and fails the same ticket, and should that ever change, bind delivers the claim
+     * and the awaiter's release path returns it rather than stranding it.
+     */
     fun cancelDelivery(cause: CancellationException) {
         val bound = synchronized(this) {
             cancelled = true
-            continuation
+            if (claim != null) null else {
+                failure = cause
+                continuation
+            }
         }
         bound?.cancel(cause)
     }
@@ -73,14 +106,23 @@ internal class WorkRegistry(val limits: WorkLimits) {
     private var granting = false
 
     /** Test seam: counts how many permit waiters a grant walk actually resumed. */
-    internal var grantResumeCount = 0L
+    internal val grantResumeCount = AtomicLong()
 
     /** Installed by the coordinator; releases a claim whose continuation was cancelled first. */
     internal var claimReturn: ((PermitClaim) -> Unit)? = null
 
+    /**
+     * Every eligibility-changing transition in the coordinator signals while holding the registry
+     * mutex: a release, a promotion, a record leaving RUNNING, a close. The grant walk runs here so
+     * those transitions reach the waiters immediately instead of waiting for the next release — a
+     * promotion therefore applies at once, and a waiter whose parent just stopped is failed at once.
+     * The [grantLocked] reentrancy guard keeps a nested signal (an eviction hook inside a walk) from
+     * recursing; a signal costs one O(W log W) walk with no coroutine resumes.
+     */
     fun signalLocked() {
         if (!wakeup.isCompleted) wakeup.complete(Unit)
         wakeup = CompletableDeferred()
+        grantLocked()
     }
 
     fun completeCloseLocked() {
@@ -163,7 +205,7 @@ internal class WorkRegistry(val limits: WorkLimits) {
 
     private fun resumeWaiter(waiter: DomainPermitWaiter, claim: PermitClaim) {
         val continuation = waiter.grant(claim) ?: return
-        grantResumeCount += 1
+        grantResumeCount.incrementAndGet()
         continuation.resume(claim) { _, value, _ ->
             claimReturn?.invoke(value)
         }
