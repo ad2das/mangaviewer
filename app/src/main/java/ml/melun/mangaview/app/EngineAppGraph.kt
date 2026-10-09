@@ -328,6 +328,9 @@ internal class EngineAppGraph(
     // the geometry already read must not pay another provider round trip.
     private val wfwfDocumentCache = EpisodeDocumentDiskCache(
         File(context.cacheDir, "wfwf_episode_docs_v1"), 60 * 60_000L)
+    // Host-only memory of WFWF's rotating image CDNs, written when a plan completes and read at
+    // the next session start to open the image legs while the document fetch is still in flight.
+    private val wfwfImageHostStore = WfwfImageHostStore(context)
     private val ntkBrowser by lazy {
         NtkEngineBrowserClient(context, userAgent, ntkIdentity,
             captureEvidence = { ntkAuthorizationEvidenceObserver != null }) {
@@ -337,9 +340,16 @@ internal class EngineAppGraph(
 
     fun session(spec: ViewerLaunchSpec): EngineViewerWork {
         val live = when (spec.sourceId.value) {
-            "wfwf" -> EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
-                parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
-                wfwfOriginProbe, { origins.remember("wfwf", it.toString()) }, documentStore = wfwfDocumentCache)
+            "wfwf" -> {
+                // Image hosts are only known after a document, so the remembered hosts are the
+                // earliest hint available. The HEADs race the document fetch and are never awaited.
+                preconnectImageHosts(scope, ioDispatcher, transport, { wfwfImageHostStore.hosts("wfwf") },
+                    ENGINE_IMAGE_HOST_PRECONNECT_TIMEOUT_MILLIS)
+                EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
+                    parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
+                    wfwfOriginProbe, { origins.remember("wfwf", it.toString()) }, documentStore = wfwfDocumentCache,
+                    imageHosts = wfwfImageHostStore)
+            }
             "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent, URI(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
@@ -414,5 +424,6 @@ internal class EngineAppGraph(
 
     private companion object {
         const val ENGINE_ORIGIN_PRECONNECT_TIMEOUT_MILLIS = 4_000L
+        const val ENGINE_IMAGE_HOST_PRECONNECT_TIMEOUT_MILLIS = 4_000L
     }
 }

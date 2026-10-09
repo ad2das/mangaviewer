@@ -2,6 +2,7 @@ package ml.melun.mangaview.app
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import ml.melun.mangaview.source.PageFetchPriority
 import ml.melun.mangaview.source.SourceHttpMethod
@@ -36,3 +37,41 @@ internal fun preconnectOrigin(
         }
     }
 }
+
+/**
+ * WFWF page bodies live on CDN hosts that are unknown until the episode document arrives, so the
+ * remembered image hosts are the only pre-request knowledge available. A bodyless HEAD to the bare
+ * host root opens DNS, TCP and TLS in parallel with the document fetch; it touches no path and no
+ * signed URL, so a wrong or dead host is only an abandoned hint.
+ */
+internal fun preconnectImageHosts(
+    scope: CoroutineScope,
+    dispatcher: CoroutineDispatcher,
+    transport: SourceTransport,
+    hosts: () -> List<String>,
+    timeoutMillis: Long,
+) {
+    scope.launch(dispatcher) {
+        val remembered = hosts().take(IMAGE_HOST_PRECONNECT_LIMIT)
+        coroutineScope {
+            remembered.forEach { host ->
+                launch {
+                    runCatching {
+                        transport.execute(
+                            SourceRequest(
+                                url = "https://$host/",
+                                method = SourceHttpMethod.HEAD,
+                                headers = mapOf("Accept" to "image/avif,image/webp,image/*,*/*;q=0.8"),
+                                totalTimeoutMillis = timeoutMillis,
+                                preferQuic = false,
+                                priority = PageFetchPriority.BACKGROUND,
+                            ),
+                        ).close()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private const val IMAGE_HOST_PRECONNECT_LIMIT = 2

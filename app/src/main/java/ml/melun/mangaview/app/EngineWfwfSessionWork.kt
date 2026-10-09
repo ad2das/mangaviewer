@@ -37,6 +37,8 @@ internal class EngineWfwfSessionWork(
      * trip (a cold fetch otherwise costs seconds on the emulator network).
      */
     private val documentStore: EpisodeDocumentStore? = null,
+    /** Host-only memory of the image CDNs this provider served pages from, shared across sessions. */
+    private val imageHosts: WfwfImageHostStore? = null,
 ) : EngineViewerWork {
     private val principal = "wfwf:public"
     private val planner = WfwfAccessPlanner(userAgent)
@@ -44,6 +46,9 @@ internal class EngineWfwfSessionWork(
     private val origins = EngineWfwfOriginWork(origin, onOriginResolved,
         (originProbe ?: WfwfOriginResolver(transport, userAgent, probeParallelism = 4))::resolve)
     private val episodes = EngineEpisodeWork(principal, planner, transport, parsingDispatcher, observer = observer,
+        onPlan = { plan -> imageHosts?.remember("wfwf", plan.pages.flatMap { page ->
+            page.candidates.mapNotNull { it.host }
+        }) },
         documentStore = documentStore)
     private val pages = EnginePageWork(principal, planner, transport, storage) { _, _, _ ->
         error("WFWF returned an unsupported access prerequisite")
