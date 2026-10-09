@@ -108,6 +108,7 @@ internal class EngineViewerScreen(
     private var openingReleased = false
     /** Episodes whose missing originals the reader was already told about. */
     private val unavailableNotified = HashSet<EpisodeId>()
+    private val unavailableExplained = HashSet<EpisodeId>()
     private var firstFrameReported = false
     private var viewerOpenedAtMillis = 0L
     private val engineClosed = CompletableDeferred<Unit>()
@@ -399,13 +400,28 @@ internal class EngineViewerScreen(
     private fun noticeUnavailablePages(snapshot: EngineRuntimeSnapshot) {
         val unavailable = snapshot.unavailablePages
         if (unavailable.isEmpty() || !::ui.isInitialized) return
-        val episode = snapshot.session.anchor?.pageId?.episodeId ?: return
-        if (episode in unavailableNotified || unavailable.none { it.episodeId == episode }) return
-        unavailableNotified += episode
-        ui.showMessage("이 회차의 일부 이미지를 제공처에서 불러올 수 없어요", ViewerSnackbar.Tone.ERROR, "다시 시도") {
+        val anchor = snapshot.session.anchor?.pageId ?: return
+        val episode = anchor.episodeId
+        if (unavailable.none { it.episodeId == episode }) return
+        val retryUnavailable = {
             unavailableNotified -= episode
+            unavailableExplained -= episode
             runtime?.retryFailures()
+            Unit
         }
+        // The opening page itself is missing: no complete frame can replace the spinner, so the
+        // failure card takes over. Checked on every snapshot rather than once, because a later
+        // page often fails before the opening one does and the message alone would then stick.
+        if (anchor in unavailable && ui.loadingActive) {
+            if (unavailableExplained.add(episode)) {
+                unavailableNotified += episode
+                ui.showUnavailable(retryUnavailable)
+            }
+            return
+        }
+        if (!unavailableNotified.add(episode)) return
+        ui.showMessage("이 회차의 일부 이미지를 제공처에서 불러올 수 없어요", ViewerSnackbar.Tone.ERROR, "다시 시도",
+            retryUnavailable)
     }
 
     private fun navigateAdjacent(next: Boolean) {

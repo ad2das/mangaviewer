@@ -41,7 +41,7 @@ internal class ViewerFailureCard(
             addView(title, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = context.dp(10) })
         }
         icon.setImageResource(ml.melun.mangaview.R.drawable.ic_error_fill1)
-        title.text = "페이지를 표시하지 못했습니다"
+        title.text = DEFAULT_HEADING
         addView(header)
         addView(detail, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
             topMargin = context.dp(6)
@@ -70,8 +70,13 @@ internal class ViewerFailureCard(
         applyPalette(ViewerPalette.of(dark = true))
     }
 
-    fun bind(message: String) {
+    fun bind(message: String, heading: String = DEFAULT_HEADING) {
+        title.text = heading
         detail.text = message
+    }
+
+    private companion object {
+        const val DEFAULT_HEADING = "페이지를 표시하지 못했습니다"
     }
 
     fun applyPalette(value: ViewerPalette) {

@@ -34,11 +34,13 @@ internal class ViewerLoadingOverlay(context: Context) : FrameLayout(context) {
             }
         }
         content.addView(spinner, LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt()))
+        // Explicit wrap params: the vertical layout's default is match_parent, which pinned the
+        // label to the spinner's width and cut the sentence down to its first word.
         content.addView(label.apply {
             text = "페이지를 불러오는 중…"
             gravity = Gravity.CENTER
             setPadding(0, (12 * density).toInt(), 0, 0)
-        })
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         applyPalette(ViewerPalette.of(dark = true))
         addView(content, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
     }

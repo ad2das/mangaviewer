@@ -37,6 +37,8 @@ internal class ViewerScreenUi(
     var volumeKeysEnabled = false
         private set
     private var foreground = false
+    /** Set while the failure card explains unavailable pages; its retry re-asks the provider. */
+    private var unavailableRetry: (() -> Unit)? = null
     private lateinit var chrome: ViewerChromeController
     private lateinit var autoScroller: ViewerAutoScroller
 
@@ -71,9 +73,33 @@ internal class ViewerScreenUi(
         snackbar.show(text, tone, actionLabel, action)
     }
 
+    /** True until the first complete frame replaces the loading UI. */
+    val loadingActive: Boolean get() = ::loading.isInitialized && loading.active
+
     fun showFailure(failure: Throwable) {
+        unavailableRetry = null
         loading.failed()
         failureCard.bind(viewerFailureMessage(failure))
+        revealFailureCard()
+    }
+
+    /**
+     * The page the reader opens on cannot be served, so no complete frame will ever arrive: the
+     * spinner gives way to an explanation and the reader's own controls become reachable again.
+     */
+    fun showUnavailable(retryUnavailable: () -> Unit) {
+        unavailableRetry = retryUnavailable
+        loading.failed()
+        // The card replaces any earlier "some pages" message; both would sit in the same place.
+        if (::snackbar.isInitialized) snackbar.hide()
+        failureCard.bind(
+            "제공처에서 이 회차의 이미지를 찾지 못했어요. 잠시 후 다시 시도하거나 다른 회차를 읽어 보세요.",
+            heading = "이미지를 불러올 수 없어요",
+        )
+        revealFailureCard()
+    }
+
+    private fun revealFailureCard() {
         failureCard.animate().cancel()
         if (failureCard.visibility != View.VISIBLE) {
             failureCard.alpha = 0f
@@ -174,7 +200,9 @@ internal class ViewerScreenUi(
     private fun retryFromFailure() {
         hideFailureCard()
         loading.restart()
-        retry()
+        val unavailable = unavailableRetry
+        unavailableRetry = null
+        if (unavailable != null) unavailable() else retry()
     }
 
     private fun applyKeepScreenOn(enabled: Boolean) {
