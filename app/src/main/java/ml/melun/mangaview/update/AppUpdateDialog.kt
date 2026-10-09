@@ -38,45 +38,14 @@ internal fun AppUpdateDialog(state: AppUpdateState, colors: LibraryColors, dismi
                 .padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            val failed = state.phase == UpdatePhase.FAILED
-            val tint = if (failed) colors.error else colors.accent
-            Box(
-                Modifier.size(56.dp).clip(CircleShape).background(tint.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                LibraryIconView(
-                    when (state.phase) {
-                        UpdatePhase.FAILED -> LibraryIcon.ERROR
-                        UpdatePhase.CURRENT, UpdatePhase.READY -> LibraryIcon.CHECK_CIRCLE
-                        else -> LibraryIcon.DOWNLOAD
-                    },
-                    tint,
-                    Modifier.size(28.dp),
-                )
-            }
+            AppUpdateIcon(state.phase, colors)
             Spacer(Modifier.height(16.dp))
             BasicText(
                 state.phase.title(),
                 style = titleStyle(colors, 19).copy(fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
             )
             Spacer(Modifier.height(8.dp))
-            // A plain sentence first; the version numbers are supporting detail, set smaller.
-            state.phase.lead()?.let { lead ->
-                BasicText(lead, style = hintStyle(colors, 14).copy(textAlign = TextAlign.Center, lineHeight = 21.sp))
-            }
-            val detail = when (state.phase) {
-                UpdatePhase.DOWNLOADING -> state.percent?.let { "$it%" } ?: "파일을 받고 있어요"
-                UpdatePhase.CHECKING -> null
-                else -> state.message.takeIf(String::isNotBlank)
-            }
-            if (state.phase == UpdatePhase.DOWNLOADING) {
-                Spacer(Modifier.height(16.dp))
-                DownloadProgressBar(state.percent, colors)
-            }
-            detail?.let {
-                Spacer(Modifier.height(10.dp))
-                BasicText(it, style = hintStyle(colors, 12).copy(color = colors.muted, textAlign = TextAlign.Center))
-            }
+            AppUpdatePhaseDetails(state, colors)
             Spacer(Modifier.height(22.dp))
             when (state.phase) {
                 UpdatePhase.AVAILABLE -> PrimaryUpdateButton("업데이트", colors, download)
@@ -94,6 +63,47 @@ internal fun AppUpdateDialog(state: AppUpdateState, colors: LibraryColors, dismi
                 dismiss,
             )
         }
+    }
+}
+
+@Composable
+private fun AppUpdateIcon(phase: UpdatePhase, colors: LibraryColors) {
+    val failed = phase == UpdatePhase.FAILED
+    val tint = if (failed) colors.error else colors.accent
+    Box(
+        Modifier.size(56.dp).clip(CircleShape).background(tint.copy(alpha = 0.12f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        LibraryIconView(
+            when (phase) {
+                UpdatePhase.FAILED -> LibraryIcon.ERROR
+                UpdatePhase.CURRENT, UpdatePhase.READY -> LibraryIcon.CHECK_CIRCLE
+                else -> LibraryIcon.DOWNLOAD
+            },
+            tint,
+            Modifier.size(28.dp),
+        )
+    }
+}
+
+@Composable
+private fun AppUpdatePhaseDetails(state: AppUpdateState, colors: LibraryColors) {
+    // A plain sentence first; the version numbers are supporting detail, set smaller.
+    state.phase.lead()?.let { lead ->
+        BasicText(lead, style = hintStyle(colors, 14).copy(textAlign = TextAlign.Center, lineHeight = 21.sp))
+    }
+    val detail = when (state.phase) {
+        UpdatePhase.DOWNLOADING -> state.percent?.let { "$it%" } ?: "파일을 받고 있어요"
+        UpdatePhase.CHECKING -> null
+        else -> state.message.takeIf(String::isNotBlank)
+    }
+    if (state.phase == UpdatePhase.DOWNLOADING) {
+        Spacer(Modifier.height(16.dp))
+        DownloadProgressBar(state.percent, colors)
+    }
+    detail?.let {
+        Spacer(Modifier.height(10.dp))
+        BasicText(it, style = hintStyle(colors, 12).copy(color = colors.muted, textAlign = TextAlign.Center))
     }
 }
 

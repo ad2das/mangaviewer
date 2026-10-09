@@ -106,9 +106,7 @@ internal class EngineViewerScreen(
     private var rendererLease: ml.melun.mangaview.app.EngineRendererPreparation<
         ml.melun.mangaview.viewer.runtime.EngineSurfaceOwner>.Lease? = null
     private var openingReleased = false
-    /** Episodes whose missing originals the reader was already told about. */
-    private val unavailableNotified = HashSet<EpisodeId>()
-    private val unavailableExplained = HashSet<EpisodeId>()
+    private val unavailablePages = UnavailablePagesNotifier()
     private var firstFrameReported = false
     private var viewerOpenedAtMillis = 0L
     private val engineClosed = CompletableDeferred<Unit>()
@@ -393,35 +391,9 @@ internal class EngineViewerScreen(
         }
     }
 
-    /**
-     * A page the provider no longer serves stays a blank gap in the strip; say so once per episode
-     * instead of leaving the reader to wonder whether it is still loading.
-     */
     private fun noticeUnavailablePages(snapshot: EngineRuntimeSnapshot) {
-        val unavailable = snapshot.unavailablePages
-        if (unavailable.isEmpty() || !::ui.isInitialized) return
-        val anchor = snapshot.session.anchor?.pageId ?: return
-        val episode = anchor.episodeId
-        if (unavailable.none { it.episodeId == episode }) return
-        val retryUnavailable = {
-            unavailableNotified -= episode
-            unavailableExplained -= episode
-            runtime?.retryFailures()
-            Unit
-        }
-        // The opening page itself is missing: no complete frame can replace the spinner, so the
-        // failure card takes over. Checked on every snapshot rather than once, because a later
-        // page often fails before the opening one does and the message alone would then stick.
-        if (anchor in unavailable && ui.loadingActive) {
-            if (unavailableExplained.add(episode)) {
-                unavailableNotified += episode
-                ui.showUnavailable(retryUnavailable)
-            }
-            return
-        }
-        if (!unavailableNotified.add(episode)) return
-        ui.showMessage("이 회차의 일부 이미지를 제공처에서 불러올 수 없어요", ViewerSnackbar.Tone.ERROR, "다시 시도",
-            retryUnavailable)
+        if (!::ui.isInitialized) return
+        unavailablePages.notify(snapshot, { runtime }, ui)
     }
 
     private fun navigateAdjacent(next: Boolean) {
@@ -570,4 +542,44 @@ internal fun withoutSharedSeriesName(titles: List<String>): List<String> {
     val prefix = first.substring(0, cut)
     if (titles.count { it.startsWith(prefix) } * 2 < titles.size) return titles
     return titles.map { title -> if (title.startsWith(prefix)) title.substring(cut).trim().ifEmpty { title } else title }
+}
+
+/**
+ * Tracks the pages of an episode the provider no longer serves and says so once per episode
+ * instead of leaving the reader to wonder whether a blank gap is still loading.
+ */
+private class UnavailablePagesNotifier {
+    private val notified = HashSet<EpisodeId>()
+    private val explained = HashSet<EpisodeId>()
+
+    fun notify(
+        snapshot: EngineRuntimeSnapshot,
+        runtime: () -> EngineViewerRuntime?,
+        ui: ViewerScreenUi,
+    ) {
+        val unavailable = snapshot.unavailablePages
+        if (unavailable.isEmpty()) return
+        val anchor = snapshot.session.anchor?.pageId ?: return
+        val episode = anchor.episodeId
+        if (unavailable.none { it.episodeId == episode }) return
+        val retryUnavailable = {
+            notified -= episode
+            explained -= episode
+            runtime()?.retryFailures()
+            Unit
+        }
+        // The opening page itself is missing: no complete frame can replace the spinner, so the
+        // failure card takes over. Checked on every snapshot rather than once, because a later
+        // page often fails before the opening one does and the message alone would then stick.
+        if (anchor in unavailable && ui.loadingActive) {
+            if (explained.add(episode)) {
+                notified += episode
+                ui.showUnavailable(retryUnavailable)
+            }
+            return
+        }
+        if (!notified.add(episode)) return
+        ui.showMessage("이 회차의 일부 이미지를 제공처에서 불러올 수 없어요", ViewerSnackbar.Tone.ERROR, "다시 시도",
+            retryUnavailable)
+    }
 }

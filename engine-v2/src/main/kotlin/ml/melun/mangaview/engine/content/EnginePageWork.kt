@@ -93,64 +93,100 @@ class EnginePageWork(
         reportGeometry: suspend (PageDimensions) -> Unit,
     ): PreparedPage {
         val candidates = plan.page(pageId).candidates
-        var failure: IOException? = null
         // Every candidate must be attempted and every attempt must have answered 404/410 before the
         // provider's silence is definitive: a 5xx, a transport failure or a body that died mid-stream
         // is transient, never evidence that the original does not exist.
-        var definitiveMiss = true
+        val failures = TransferFailures()
         for (candidate in candidates.indices) {
-            val opened = try {
-                val request = planner.pageRequest(plan, pageId, candidate, context.priority.value)
-                val response = checkedResponse(transport.execute(request))
-                OpenedPage(response.body, response.contentLength, response.contentType,
-                    response.header("ETag"), response.header("Last-Modified"))
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: IOException) {
-                // Authentication and throttling are not evidence that an image mirror is missing.
-                if (error is PageHttpException && error.statusCode !in setOf(404, 410, 502, 503, 504)) throw error
-                if (error !is PageHttpException || error.statusCode !in MISSING_PAGE_STATUSES) definitiveMiss = false
-                failure = suppressed(failure, error)
-                continue
-            }
-            try {
-                return prepareWithPromotion(context, plan, pageId, opened, reportGeometry)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: IOException) {
-                // The connection can die while the body streams (an HTTP/2 reset): that is not the
-                // mirror's answer, so this candidate gets one fresh-connection attempt before the
-                // next mirror. prepareWithPromotion already released the failed body.
-                definitiveMiss = false
-                failure = suppressed(failure, error)
-                System.err.println("EnginePageWork page-body-fail id=$pageId candidate=$candidate " +
-                    "url=${planner.pageRequest(plan, pageId, candidate, context.priority.value).url} error=${error.message}")
-            }
-            val retried = try {
-                val request = planner.pageRequest(plan, pageId, candidate, context.priority.value)
-                val response = checkedResponse(transport.executeOnFreshRoute(request))
-                OpenedPage(response.body, response.contentLength, response.contentType,
-                    response.header("ETag"), response.header("Last-Modified"))
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: IOException) {
-                if (error !is PageHttpException || error.statusCode !in MISSING_PAGE_STATUSES) definitiveMiss = false
-                failure = suppressed(failure, error)
-                continue
-            }
-            try {
-                return prepareWithPromotion(context, plan, pageId, retried, reportGeometry)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: IOException) {
-                definitiveMiss = false
-                failure = suppressed(failure, error)
-                continue
-            }
+            attemptTransfer(context, plan, pageId, candidate, reportGeometry, failures)?.let { return it }
         }
-        val last = checkNotNull(failure)
+        val last = checkNotNull(failures.last)
         System.err.println("EnginePageWork page-failed id=$pageId error=${last.message}")
-        throw if (definitiveMiss) last.asDefinitiveMiss() else last
+        throw if (failures.definitiveMiss) last.asDefinitiveMiss() else last
+    }
+
+    private suspend fun attemptTransfer(
+        context: WorkContext,
+        plan: EpisodeAccessPlan,
+        pageId: PageId,
+        candidate: Int,
+        reportGeometry: suspend (PageDimensions) -> Unit,
+        failures: TransferFailures,
+    ): PreparedPage? {
+        val opened = try {
+            openPage(plan, pageId, candidate, context.priority.value, freshRoute = false)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IOException) {
+            // Authentication and throttling are not evidence that an image mirror is missing.
+            if (error is PageHttpException && error.statusCode !in setOf(404, 410, 502, 503, 504)) throw error
+            failures.recordOpenFailure(error)
+            return null
+        }
+        try {
+            return prepareWithPromotion(context, plan, pageId, opened, reportGeometry)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IOException) {
+            // The connection can die while the body streams (an HTTP/2 reset): that is not the
+            // mirror's answer, so this candidate gets one fresh-connection attempt before the
+            // next mirror. prepareWithPromotion already released the failed body.
+            failures.recordTransient(error)
+            System.err.println("EnginePageWork page-body-fail id=$pageId candidate=$candidate " +
+                "url=${planner.pageRequest(plan, pageId, candidate, context.priority.value).url} error=${error.message}")
+        }
+        val retried = try {
+            openPage(plan, pageId, candidate, context.priority.value, freshRoute = true)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IOException) {
+            failures.recordOpenFailure(error)
+            return null
+        }
+        return try {
+            prepareWithPromotion(context, plan, pageId, retried, reportGeometry)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IOException) {
+            failures.recordTransient(error)
+            null
+        }
+    }
+
+    /** Opens one candidate; [freshRoute] retries it over a new connection instead of the pooled one. */
+    private suspend fun openPage(
+        plan: EpisodeAccessPlan,
+        pageId: PageId,
+        candidate: Int,
+        priority: WorkPriority,
+        freshRoute: Boolean,
+    ): OpenedPage {
+        val request = planner.pageRequest(plan, pageId, candidate, priority)
+        val response = checkedResponse(if (freshRoute) transport.executeOnFreshRoute(request) else transport.execute(request))
+        return OpenedPage(response.body, response.contentLength, response.contentType,
+            response.header("ETag"), response.header("Last-Modified"))
+    }
+
+    /** Accumulates candidate failures across one transfer, keeping the newest as the primary. */
+    private class TransferFailures {
+        var last: IOException? = null
+        var definitiveMiss = true
+
+        fun recordOpenFailure(error: IOException) {
+            if (error !is PageHttpException || error.statusCode !in MISSING_PAGE_STATUSES) definitiveMiss = false
+            record(error)
+        }
+
+        fun recordTransient(error: IOException) {
+            definitiveMiss = false
+            record(error)
+        }
+
+        private fun record(error: IOException) {
+            val previous = last
+            if (previous != null && previous !== error) error.addSuppressed(previous)
+            last = error
+        }
     }
 
     /**

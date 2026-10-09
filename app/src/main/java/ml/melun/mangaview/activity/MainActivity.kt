@@ -183,14 +183,7 @@ class MainActivity : ComponentActivity() {
             val dark = state.saved.settings.darkTheme(androidx.compose.foundation.isSystemInDarkTheme())
             val colors = rememberLibraryColors(dark)
             UpdateInstallEffect(updateState, reading, updates)
-            var updateAnnounced by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
-            LaunchedEffect(updateState.phase, updateState.visible, reading) {
-                if (!updateAnnounced && !reading && !updateState.visible &&
-                    updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE) {
-                    updateAnnounced = true
-                    messages.show("새 버전이 나왔어요", actionLabel = "업데이트", action = updates::reveal)
-                }
-            }
+            UpdateAnnouncementEffect(updateState, reading)
             LaunchedEffect(dark) {
                 if (readerScreen() == null) applySystemBars(dark)
             }
@@ -229,6 +222,21 @@ class MainActivity : ComponentActivity() {
                     CrashLog.consumePending(this@MainActivity)
                     crashReport = null
                 }
+            }
+        }
+    }
+
+    @Composable
+    private fun UpdateAnnouncementEffect(
+        updateState: ml.melun.mangaview.update.AppUpdateState,
+        reading: Boolean,
+    ) {
+        var updateAnnounced by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(updateState.phase, updateState.visible, reading) {
+            if (!updateAnnounced && !reading && !updateState.visible &&
+                updateState.phase == ml.melun.mangaview.update.UpdatePhase.AVAILABLE) {
+                updateAnnounced = true
+                messages.show("새 버전이 나왔어요", actionLabel = "업데이트", action = updates::reveal)
             }
         }
     }

@@ -185,63 +185,115 @@ private fun DetailBody(
     // Once the header's read button scrolls away, the same action docks at the bottom.
     val docked by remember(list) { derivedStateOf { list.firstVisibleItemIndex > 0 } }
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            state = list,
-            contentPadding = PaddingValues(bottom = if (quickRead != null) 104.dp else 28.dp),
-        ) {
-            item { DetailHeader(series, quickRead, resuming, state.activeSeriesDetails, loader, colors, accept) }
-            item { DetailTabs(state.detailTab, colors, accept) }
-            if (state.detailTab != DetailTab.EPISODES) {
-                item {
-                    DetailInformation(state.detailTab, series, sourceLabel, episodes.size,
-                        state.activeSeriesDetails, colors, content.complete)
-                }
-            }
-            item { EpisodeCountHeader(content, oldestFirst, colors, accept) { oldestFirst = !oldestFirst } }
-            item { EpisodeRefreshStatus(content, colors) }
-            if (episodes.isEmpty()) {
-                item { LibraryMessage("등록된 회차가 없습니다", colors, Modifier.height(220.dp)) }
-            } else {
-                val resume = state.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
-                    ?.let { id -> episodes.firstOrNull { it.id == id } }
-                items(ordered, key = { it.id.remoteKey }) { episode ->
-                    val saved = episode.id in offlineIds
-                    EpisodeCard(
-                        episode = episode,
-                        title = shortEpisodeTitle(series.title, episode.title),
-                        readState = episodeReadState(episode, resume, readEpisodes),
-                        saved = saved,
-                        downloadState = state.downloadStates[episode.id],
-                        colors = colors,
-                        open = { accept(LibraryIntent.EpisodeSelected(episode.id)) },
-                        storageAction = {
-                            if (saved) {
-                                accept(LibraryIntent.RemoveOfflineEpisode(episode.id))
-                            } else {
-                                accept(LibraryIntent.DownloadEpisode(series, episode))
-                            }
-                        },
-                        modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
-                    )
-                }
+        DetailEpisodeList(state, content, series, quickRead, resuming, loader, colors, accept,
+            episodes, ordered, readEpisodes, offlineIds, sourceLabel, oldestFirst, list) {
+            oldestFirst = !oldestFirst
+        }
+        DetailDockedReadBar(docked && quickRead != null, quickRead, series.title, resuming, colors, accept,
+            Modifier.align(Alignment.BottomCenter))
+    }
+}
+
+@Composable
+private fun DetailEpisodeList(
+    state: LibraryState,
+    content: LibraryContent.Episodes,
+    series: SourceSeries,
+    quickRead: SourceEpisode?,
+    resuming: Boolean,
+    loader: SeriesArtworkLoader,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+    episodes: List<SourceEpisode>,
+    ordered: List<SourceEpisode>,
+    readEpisodes: Set<ml.melun.mangaview.core.EpisodeId>,
+    offlineIds: Set<ml.melun.mangaview.core.EpisodeId>,
+    sourceLabel: String?,
+    oldestFirst: Boolean,
+    list: androidx.compose.foundation.lazy.LazyListState,
+    onToggleOrder: () -> Unit,
+) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        state = list,
+        contentPadding = PaddingValues(bottom = if (quickRead != null) 104.dp else 28.dp),
+    ) {
+        item { DetailHeader(series, quickRead, resuming, state.activeSeriesDetails, loader, colors, accept) }
+        item { DetailTabs(state.detailTab, colors, accept) }
+        if (state.detailTab != DetailTab.EPISODES) {
+            item {
+                DetailInformation(state.detailTab, series, sourceLabel, episodes.size,
+                    state.activeSeriesDetails, colors, content.complete)
             }
         }
-        AnimatedVisibility(
-            visible = docked && quickRead != null,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = fadeIn(tween(LibraryMotion.Fast)) +
-                slideInVertically(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut)) { it / 2 },
-            exit = fadeOut(tween(LibraryMotion.Fast)) + slideOutVertically(tween(LibraryMotion.Fast)) { it / 2 },
-            label = "dockedRead",
+        item { EpisodeCountHeader(content, oldestFirst, colors, accept, onToggleOrder) }
+        item { EpisodeRefreshStatus(content, colors) }
+        if (episodes.isEmpty()) {
+            item { LibraryMessage("등록된 회차가 없습니다", colors, Modifier.height(220.dp)) }
+        } else {
+            DetailEpisodeCards(state, series, episodes, ordered, readEpisodes, offlineIds, colors, accept)
+        }
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.DetailEpisodeCards(
+    state: LibraryState,
+    series: SourceSeries,
+    episodes: List<SourceEpisode>,
+    ordered: List<SourceEpisode>,
+    readEpisodes: Set<ml.melun.mangaview.core.EpisodeId>,
+    offlineIds: Set<ml.melun.mangaview.core.EpisodeId>,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+) {
+    val resume = state.saved.recent.firstOrNull { it.series.id == series.id }?.episodeId
+        ?.let { id -> episodes.firstOrNull { it.id == id } }
+    items(ordered, key = { it.id.remoteKey }) { episode ->
+        val saved = episode.id in offlineIds
+        EpisodeCard(
+            episode = episode,
+            title = shortEpisodeTitle(series.title, episode.title),
+            readState = episodeReadState(episode, resume, readEpisodes),
+            saved = saved,
+            downloadState = state.downloadStates[episode.id],
+            colors = colors,
+            open = { accept(LibraryIntent.EpisodeSelected(episode.id)) },
+            storageAction = {
+                if (saved) {
+                    accept(LibraryIntent.RemoveOfflineEpisode(episode.id))
+                } else {
+                    accept(LibraryIntent.DownloadEpisode(series, episode))
+                }
+            },
+            modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
+        )
+    }
+}
+
+@Composable
+private fun DetailDockedReadBar(
+    visible: Boolean,
+    quickRead: SourceEpisode?,
+    seriesTitle: String,
+    resuming: Boolean,
+    colors: LibraryColors,
+    accept: (LibraryIntent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        modifier = modifier,
+        enter = fadeIn(tween(LibraryMotion.Fast)) +
+            slideInVertically(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut)) { it / 2 },
+        exit = fadeOut(tween(LibraryMotion.Fast)) + slideOutVertically(tween(LibraryMotion.Fast)) { it / 2 },
+        label = "dockedRead",
+    ) {
+        Box(
+            Modifier.fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(colors.background.copy(alpha = 0f), colors.background)))
+                .padding(start = 18.dp, end = 18.dp, top = 20.dp, bottom = 16.dp),
         ) {
-            Box(
-                Modifier.fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(colors.background.copy(alpha = 0f), colors.background)))
-                    .padding(start = 18.dp, end = 18.dp, top = 20.dp, bottom = 16.dp),
-            ) {
-                DetailReadingActions(quickRead, series.title, resuming, colors, accept)
-            }
+            DetailReadingActions(quickRead, seriesTitle, resuming, colors, accept)
         }
     }
 }

@@ -385,35 +385,11 @@ class EngineSessionRuntime(
         // set keeps growing across a long read that walks past many documents.
         prepared.retainAll(pages.keys)
         horizon.track(wantedPages, prepared)
-        val wantedEpisodes = linkedMapOf<EpisodeId, WorkPriority>()
-        state.requiredEpisodes.forEach { wantedEpisodes[it] = WorkPriority.FOCUS }
-        wantedPages.forEach { (id, priority) ->
-            if (id.episodeId !in plans) wantedEpisodes[id.episodeId] = priority
-        }
-        // One further document uses the spare control slot; its image bodies remain background
-        // work. Once the adjacent plan is held and the opening screen has been presented, the
-        // slot starts the next-next document's plan as well (never chained further), so a slow
-        // boundary body is already streaming long before the reader arrives. The gate is
-        // monotonic: a pause or reverse cannot retract it while the anchor stays in the current
-        // episode, so the in-flight document fetch is never cancelled by a direction change.
-        adjacentPrefetch(state, positionResolved, plans, targetEpisode, initialPresented,
-            failedReadAheadEpisodes)
-            ?.let { if (it !in plans) wantedEpisodes.putIfAbsent(it, WorkPriority.INTERACTIVE) }
-        wantedEpisodes.forEach { (id, priority) ->
-            if (id !in plans) {
-                result += episodeDemand(generation, id, priority)
-            } else if (id in state.requiredEpisodes) {
-                // The session prunes its own manifest window around the reading position, but a
-                // document the geometry still requires can be gone from it while this runtime keeps
-                // the plan. The plan map then suppresses the episode demand and the boundary waits
-                // forever. Accepting the held plan again re-dispatches only its manifest.
-                result += SessionDemand(source.episode(id, WorkPriority.FOCUS),
-                    onFailure = { _: Throwable -> markEpisodeFailure(id) }) { plan ->
-                    if (isCurrent(generation)) acceptPlan(generation, id, plan)
-                }
-            }
-        }
-        navigationDemands(state, generation, result)
+        collectEpisodeDemands(state, generation, wantedPages, plans, targetEpisode, positionResolved,
+            initialPresented, failedReadAheadEpisodes, result, source, ::episodeDemand, ::markEpisodeFailure,
+            ::isCurrent, ::acceptPlan)
+        collectNavigationDemands(state, generation, result, targetEpisode, plans, source, ::isCurrent,
+            ::acceptNavigation)
         pageDemands.retain(wantedPages.keys)
         wantedPages.forEach { (id, priority) ->
             val plan = plans[id.episodeId] ?: return@forEach
@@ -421,30 +397,6 @@ class EngineSessionRuntime(
         }
         result += cachedPlanPins(retainedCachedPlans)
         return result
-    }
-
-    /**
-     * Navigation documents whose plans lack adjacency: first the anchor document's, the boundary
-     * the reader is heading toward (resolving it as soon as the plan exists gives a slow catalog
-     * the whole chapter of headroom instead of racing the reader at the end), then every boundary
-     * the geometry still requires.
-     */
-    private fun navigationDemands(
-        state: EngineSessionSnapshot,
-        generation: Long,
-        result: MutableList<SessionDemand<*>>,
-    ) {
-        val anchorEpisode = state.anchor?.pageId?.episodeId ?: targetEpisode
-        val wanted = state.requiredNavigation.toMutableList()
-        if (anchorEpisode !in state.requiredNavigation) wanted.add(0, anchorEpisode)
-        wanted.forEach { id ->
-            if (plans[id]?.navigationKnown == false) {
-                result += SessionDemand(source.navigation(id, WorkPriority.INTERACTIVE),
-                    onFailure = { _: Throwable -> }) { navigation ->
-                    if (isCurrent(generation)) acceptNavigation(generation, id, navigation)
-                }
-            }
-        }
     }
 
     private fun episodeDemand(generation: Long, id: EpisodeId, priority: WorkPriority): SessionDemand<EpisodeAccessPlan> {
@@ -502,6 +454,81 @@ class EngineSessionRuntime(
     }
 
     private fun checkOwner() = check(Thread.currentThread() === owner) { "Session runtime is owner-thread confined" }
+}
+
+private fun collectEpisodeDemands(
+    state: EngineSessionSnapshot,
+    generation: Long,
+    wantedPages: Map<PageId, WorkPriority>,
+    plans: Map<EpisodeId, EpisodeAccessPlan>,
+    targetEpisode: EpisodeId,
+    positionResolved: Boolean,
+    initialPresented: Boolean,
+    failedReadAheadEpisodes: Set<EpisodeId>,
+    result: MutableList<SessionDemand<*>>,
+    source: EngineSessionWork,
+    episodeDemand: (Long, EpisodeId, WorkPriority) -> SessionDemand<EpisodeAccessPlan>,
+    markEpisodeFailure: (EpisodeId) -> Unit,
+    isCurrent: (Long) -> Boolean,
+    acceptPlan: (Long, EpisodeId, EpisodeAccessPlan) -> Unit,
+) {
+    val wantedEpisodes = linkedMapOf<EpisodeId, WorkPriority>()
+    state.requiredEpisodes.forEach { wantedEpisodes[it] = WorkPriority.FOCUS }
+    wantedPages.forEach { (id, priority) ->
+        if (id.episodeId !in plans) wantedEpisodes[id.episodeId] = priority
+    }
+    // One further document uses the spare control slot; its image bodies remain background
+    // work. Once the adjacent plan is held and the opening screen has been presented, the
+    // slot starts the next-next document's plan as well (never chained further), so a slow
+    // boundary body is already streaming long before the reader arrives. The gate is
+    // monotonic: a pause or reverse cannot retract it while the anchor stays in the current
+    // episode, so the in-flight document fetch is never cancelled by a direction change.
+    adjacentPrefetch(state, positionResolved, plans, targetEpisode, initialPresented,
+        failedReadAheadEpisodes)
+        ?.let { if (it !in plans) wantedEpisodes.putIfAbsent(it, WorkPriority.INTERACTIVE) }
+    wantedEpisodes.forEach { (id, priority) ->
+        if (id !in plans) {
+            result += episodeDemand(generation, id, priority)
+        } else if (id in state.requiredEpisodes) {
+            // The session prunes its own manifest window around the reading position, but a
+            // document the geometry still requires can be gone from it while this runtime keeps
+            // the plan. The plan map then suppresses the episode demand and the boundary waits
+            // forever. Accepting the held plan again re-dispatches only its manifest.
+            result += SessionDemand(source.episode(id, WorkPriority.FOCUS),
+                onFailure = { _: Throwable -> markEpisodeFailure(id) }) { plan ->
+                if (isCurrent(generation)) acceptPlan(generation, id, plan)
+            }
+        }
+    }
+}
+
+/**
+ * Navigation documents whose plans lack adjacency: first the anchor document's, the boundary
+ * the reader is heading toward (resolving it as soon as the plan exists gives a slow catalog
+ * the whole chapter of headroom instead of racing the reader at the end), then every boundary
+ * the geometry still requires.
+ */
+private fun collectNavigationDemands(
+    state: EngineSessionSnapshot,
+    generation: Long,
+    result: MutableList<SessionDemand<*>>,
+    targetEpisode: EpisodeId,
+    plans: Map<EpisodeId, EpisodeAccessPlan>,
+    source: EngineSessionWork,
+    isCurrent: (Long) -> Boolean,
+    acceptNavigation: (Long, EpisodeId, AdjacentEpisodes) -> Unit,
+) {
+    val anchorEpisode = state.anchor?.pageId?.episodeId ?: targetEpisode
+    val wanted = state.requiredNavigation.toMutableList()
+    if (anchorEpisode !in state.requiredNavigation) wanted.add(0, anchorEpisode)
+    wanted.forEach { id ->
+        if (plans[id]?.navigationKnown == false) {
+            result += SessionDemand(source.navigation(id, WorkPriority.INTERACTIVE),
+                onFailure = { _: Throwable -> }) { navigation ->
+                if (isCurrent(generation)) acceptNavigation(generation, id, navigation)
+            }
+        }
+    }
 }
 
 /**

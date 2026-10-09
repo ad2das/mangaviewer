@@ -73,59 +73,8 @@ internal fun CrashReportDialog(
                 .padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Box(
-                Modifier.size(56.dp).clip(CircleShape).background(colors.error.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                LibraryIconView(LibraryIcon.ERROR, colors.error, Modifier.size(28.dp))
-            }
-            Spacer(Modifier.height(16.dp))
-            BasicText(
-                CrashReportText.headline(report),
-                style = titleStyle(colors, 19).copy(fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
-            )
-            Spacer(Modifier.height(8.dp))
-            BasicText(
-                "불편을 드려 죄송해요. 오류 정보를 보내 주시면 같은 문제가 다시 생기지 않도록 고칠게요.",
-                style = hintStyle(colors, 14).copy(textAlign = TextAlign.Center, lineHeight = 21.sp),
-            )
-            Spacer(Modifier.height(14.dp))
-            Row(
-                Modifier.clip(RoundedCornerShape(12.dp))
-                    .clickable { detailsShown = !detailsShown }
-                    .heightIn(min = 40.dp)
-                    .padding(horizontal = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                BasicText(
-                    if (detailsShown) "오류 정보 접기" else "오류 정보 보기",
-                    style = hintStyle(colors, 13).copy(fontWeight = FontWeight.SemiBold),
-                )
-                Spacer(Modifier.width(4.dp))
-                LibraryIconView(LibraryIcon.CHEVRON, colors.muted, Modifier.size(14.dp).rotate(chevronTurn))
-            }
-            AnimatedVisibility(
-                visible = detailsShown,
-                enter = fadeIn(tween(LibraryMotion.Fast)) + expandVertically(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut)),
-                exit = fadeOut(tween(LibraryMotion.Fast)) + shrinkVertically(tween(LibraryMotion.Fast)),
-                label = "crashDetails",
-            ) {
-                Box(
-                    Modifier.padding(top = 6.dp).fillMaxWidth().heightIn(max = 200.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.mutedSurface)
-                        .padding(12.dp)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    BasicText(
-                        CrashReportText.preview(report),
-                        style = bodyStyle(colors, 11).copy(
-                            color = colors.secondary,
-                            fontFamily = FontFamily.Monospace,
-                        ),
-                    )
-                }
-            }
+            CrashDialogHeader(report, colors)
+            CrashDetailsSection(detailsShown, chevronTurn, report, colors) { detailsShown = !detailsShown }
             Spacer(Modifier.height(18.dp))
             CrashPrimaryAction("GitHub에 오류 보고하기", colors, onGitHub)
             Spacer(Modifier.height(6.dp))
@@ -133,6 +82,73 @@ internal fun CrashReportDialog(
                 CrashTextAction("내용 복사", colors, onCopy, Modifier.weight(1f))
                 CrashTextAction("닫기", colors, onDismiss, Modifier.weight(1f))
             }
+        }
+    }
+}
+
+@Composable
+private fun CrashDialogHeader(report: String, colors: LibraryColors) {
+    Box(
+        Modifier.size(56.dp).clip(CircleShape).background(colors.error.copy(alpha = 0.12f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        LibraryIconView(LibraryIcon.ERROR, colors.error, Modifier.size(28.dp))
+    }
+    Spacer(Modifier.height(16.dp))
+    BasicText(
+        CrashReportText.headline(report),
+        style = titleStyle(colors, 19).copy(fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
+    )
+    Spacer(Modifier.height(8.dp))
+    BasicText(
+        "불편을 드려 죄송해요. 오류 정보를 보내 주시면 같은 문제가 다시 생기지 않도록 고칠게요.",
+        style = hintStyle(colors, 14).copy(textAlign = TextAlign.Center, lineHeight = 21.sp),
+    )
+    Spacer(Modifier.height(14.dp))
+}
+
+@Composable
+private fun CrashDetailsSection(
+    detailsShown: Boolean,
+    chevronTurn: Float,
+    report: String,
+    colors: LibraryColors,
+    onToggle: () -> Unit,
+) {
+    Row(
+        Modifier.clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onToggle)
+            .heightIn(min = 40.dp)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BasicText(
+            if (detailsShown) "오류 정보 접기" else "오류 정보 보기",
+            style = hintStyle(colors, 13).copy(fontWeight = FontWeight.SemiBold),
+        )
+        Spacer(Modifier.width(4.dp))
+        LibraryIconView(LibraryIcon.CHEVRON, colors.muted, Modifier.size(14.dp).rotate(chevronTurn))
+    }
+    AnimatedVisibility(
+        visible = detailsShown,
+        enter = fadeIn(tween(LibraryMotion.Fast)) + expandVertically(tween(LibraryMotion.Medium, easing = LibraryMotion.EaseOut)),
+        exit = fadeOut(tween(LibraryMotion.Fast)) + shrinkVertically(tween(LibraryMotion.Fast)),
+        label = "crashDetails",
+    ) {
+        Box(
+            Modifier.padding(top = 6.dp).fillMaxWidth().heightIn(max = 200.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.mutedSurface)
+                .padding(12.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            BasicText(
+                CrashReportText.preview(report),
+                style = bodyStyle(colors, 11).copy(
+                    color = colors.secondary,
+                    fontFamily = FontFamily.Monospace,
+                ),
+            )
         }
     }
 }

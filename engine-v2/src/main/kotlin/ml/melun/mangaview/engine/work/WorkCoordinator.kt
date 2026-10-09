@@ -51,6 +51,7 @@ class WorkCoordinator(
             registry.closed = value
         }
     private val execution = WorkExecution(this, registry, attemptTokens)
+    private val releaser = SubscriberReleaser(registry, execution)
     private val orderedAdmission = WorkOrderedAdmission(this, registry, execution, cleanupScope)
     private val schedulerJob: Job
 
@@ -220,7 +221,7 @@ class WorkCoordinator(
         cleanupScope.launch(start = CoroutineStart.UNDISPATCHED) {
             withContext(NonCancellable) {
                 try {
-                    release(record, subscriber)
+                    releaser.release(record, subscriber)
                 } catch (failure: Throwable) {
                     recordObserverFailure(failure)
                 }
@@ -337,69 +338,7 @@ class WorkCoordinator(
     }
 
     internal suspend fun detachAndAwait(record: WorkRecord, subscriber: WorkSubscriber) {
-        detach(record, subscriber)
-    }
-
-    private suspend fun detach(record: WorkRecord, subscriber: WorkSubscriber) {
-        val actions = mutex.withLock { detachLocked(record, subscriber) }
-        actions.job?.cancel()
-        actions.disposal?.let { execution.disposeRecord(it) }
-        subscriber.releaseDone.await()
-    }
-
-    private suspend fun release(record: WorkRecord, subscriber: WorkSubscriber) {
-        val actions = mutex.withLock { releaseLocked(record, subscriber) }
-        actions.job?.cancel()
-        actions.disposal?.let { execution.disposeRecord(it) }
-        subscriber.releaseDone.await()
-    }
-
-    private fun detachLocked(record: WorkRecord, subscriber: WorkSubscriber): TransitionActions {
-        if (subscriber.detached || subscriber.released) return TransitionActions()
-        subscriber.detached = true
-        subscriber.ready.cancel(CancellationException("Work subscription was closed"))
-        if (records[record.key] !== record || record.state == WorkRecordState.DONE) {
-            subscriber.releaseDone.complete(Unit)
-            return TransitionActions()
-        }
-        record.subscribers.remove(subscriber)
-        if (record.subscribers.isNotEmpty()) {
-            subscriber.releaseDone.complete(Unit)
-            signalLocked()
-            return TransitionActions()
-        }
-        record.cleanupSubscribers += subscriber
-        val actions = transitionLastSubscriberLocked(record, execution, canOrphanLocked(record))
-        if (actions.orphaned) {
-            record.cleanupSubscribers.remove(subscriber)
-            subscriber.releaseDone.complete(Unit)
-        }
-        signalLocked()
-        return actions
-    }
-
-    private fun releaseLocked(record: WorkRecord, subscriber: WorkSubscriber): TransitionActions {
-        if (subscriber.released) return TransitionActions()
-        if (subscriber.detached || !subscriber.delivered) return detachLocked(record, subscriber)
-        subscriber.released = true
-        if (records[record.key] !== record || record.state == WorkRecordState.DONE) {
-            subscriber.releaseDone.complete(Unit)
-            return TransitionActions()
-        }
-        record.subscribers.remove(subscriber)
-        if (record.subscribers.isNotEmpty()) {
-            subscriber.releaseDone.complete(Unit)
-            signalLocked()
-            return TransitionActions()
-        }
-        record.cleanupSubscribers += subscriber
-        val actions = transitionLastSubscriberLocked(record, execution, canOrphanLocked(record))
-        if (actions.orphaned) {
-            record.cleanupSubscribers.remove(subscriber)
-            subscriber.releaseDone.complete(Unit)
-        }
-        signalLocked()
-        return actions
+        releaser.detach(record, subscriber)
     }
 
     internal fun promoteLocked(record: WorkRecord, requested: WorkPriority) {
@@ -411,21 +350,6 @@ class WorkCoordinator(
             record.dependencies.values.forEach { promoteLocked(it, requested) }
             signalLocked()
         }
-    }
-
-    /**
-     * Eligibility for the opt-in orphan path, evaluated under the registry mutex when the last
-     * subscriber leaves. The record must be RUNNING, its request must have opted in, and one of its
-     * borrowed BODY children must already be past admission — RUNNING and holding its permit, so the
-     * body transfer is actually streaming. A record still waiting on its lookup (no BODY child yet),
-     * a BODY child still QUEUED for a permit, or a body whose permit was already released does not
-     * qualify and cancels as before. At most [ml.melun.mangaview.engine.api.WorkLimits.backgroundNetwork]
-     * records may be orphaned at once; once the cap is reached, the extra departure cancels too.
-     */
-    private fun canOrphanLocked(record: WorkRecord): Boolean {
-        if (record.state != WorkRecordState.RUNNING || !record.request.finishWhenOrphaned) return false
-        if (!record.hasStreamingBody()) return false
-        return records.values.count { it.orphaned } < registry.limits.backgroundNetwork
     }
 
     /**
@@ -470,6 +394,96 @@ class WorkCoordinator(
         }
     }
 
+}
+
+/**
+ * Subscriber departure bookkeeping split out of [WorkCoordinator]: what happens when one subscriber
+ * detaches or releases, and how the record's last subscriber is transitioned (including the opt-in
+ * orphan path). Admission and promotion stay in the coordinator.
+ */
+private class SubscriberReleaser(
+    private val registry: WorkRegistry,
+    private val execution: WorkExecution,
+) {
+    private val mutex get() = registry.mutex
+    private val records get() = registry.records
+
+    suspend fun detach(record: WorkRecord, subscriber: WorkSubscriber) {
+        val actions = mutex.withLock { detachLocked(record, subscriber) }
+        actions.job?.cancel()
+        actions.disposal?.let { execution.disposeRecord(it) }
+        subscriber.releaseDone.await()
+    }
+
+    suspend fun release(record: WorkRecord, subscriber: WorkSubscriber) {
+        val actions = mutex.withLock { releaseLocked(record, subscriber) }
+        actions.job?.cancel()
+        actions.disposal?.let { execution.disposeRecord(it) }
+        subscriber.releaseDone.await()
+    }
+
+    private fun detachLocked(record: WorkRecord, subscriber: WorkSubscriber): TransitionActions {
+        if (subscriber.detached || subscriber.released) return TransitionActions()
+        subscriber.detached = true
+        subscriber.ready.cancel(CancellationException("Work subscription was closed"))
+        if (records[record.key] !== record || record.state == WorkRecordState.DONE) {
+            subscriber.releaseDone.complete(Unit)
+            return TransitionActions()
+        }
+        record.subscribers.remove(subscriber)
+        if (record.subscribers.isNotEmpty()) {
+            subscriber.releaseDone.complete(Unit)
+            registry.signalLocked()
+            return TransitionActions()
+        }
+        record.cleanupSubscribers += subscriber
+        val actions = transitionLastSubscriberLocked(record, execution, canOrphanLocked(record))
+        if (actions.orphaned) {
+            record.cleanupSubscribers.remove(subscriber)
+            subscriber.releaseDone.complete(Unit)
+        }
+        registry.signalLocked()
+        return actions
+    }
+
+    private fun releaseLocked(record: WorkRecord, subscriber: WorkSubscriber): TransitionActions {
+        if (subscriber.released) return TransitionActions()
+        if (subscriber.detached || !subscriber.delivered) return detachLocked(record, subscriber)
+        subscriber.released = true
+        if (records[record.key] !== record || record.state == WorkRecordState.DONE) {
+            subscriber.releaseDone.complete(Unit)
+            return TransitionActions()
+        }
+        record.subscribers.remove(subscriber)
+        if (record.subscribers.isNotEmpty()) {
+            subscriber.releaseDone.complete(Unit)
+            registry.signalLocked()
+            return TransitionActions()
+        }
+        record.cleanupSubscribers += subscriber
+        val actions = transitionLastSubscriberLocked(record, execution, canOrphanLocked(record))
+        if (actions.orphaned) {
+            record.cleanupSubscribers.remove(subscriber)
+            subscriber.releaseDone.complete(Unit)
+        }
+        registry.signalLocked()
+        return actions
+    }
+
+    /**
+     * Eligibility for the opt-in orphan path, evaluated under the registry mutex when the last
+     * subscriber leaves. The record must be RUNNING, its request must have opted in, and one of its
+     * borrowed BODY children must already be past admission — RUNNING and holding its permit, so the
+     * body transfer is actually streaming. A record still waiting on its lookup (no BODY child yet),
+     * a BODY child still QUEUED for a permit, or a body whose permit was already released does not
+     * qualify and cancels as before. At most [ml.melun.mangaview.engine.api.WorkLimits.backgroundNetwork]
+     * records may be orphaned at once; once the cap is reached, the extra departure cancels too.
+     */
+    private fun canOrphanLocked(record: WorkRecord): Boolean {
+        if (record.state != WorkRecordState.RUNNING || !record.request.finishWhenOrphaned) return false
+        if (!record.hasStreamingBody()) return false
+        return records.values.count { it.orphaned } < registry.limits.backgroundNetwork
+    }
 }
 
 private fun <T : Any> validateCompatible(record: WorkRecord, request: WorkRequest<T>) {
