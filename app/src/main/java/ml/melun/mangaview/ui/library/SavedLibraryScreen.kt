@@ -255,7 +255,7 @@ private fun FavoriteSaved(
             val series = SourceSeries(item.id, item.title, thumbnailKey = item.thumbnailKey)
             SavedSourceSeriesCard(
                 series = series,
-                subtitle = if (item.id.sourceId.value == "ntk") "만화" else "웹툰",
+                subtitle = seriesKindLabel(item.id),
                 badge = null,
                 loader = loader,
                 colors = colors,

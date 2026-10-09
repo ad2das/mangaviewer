@@ -513,7 +513,7 @@ private fun DetailDescription(series: SourceSeries, details: SourceSeriesDetails
                     .padding(horizontal = 8.dp, vertical = 3.dp),
             ) {
                 BasicText(
-                    if (series.id.sourceId.value == "ntk") "만화" else "웹툰",
+                    seriesKindLabel(series.id),
                     style = microBadgeStyle(colors, 10).copy(color = Color.White),
                 )
             }

@@ -1,5 +1,6 @@
 package ml.melun.mangaview.ui.library
 
+import ml.melun.mangaview.core.SeriesId
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -43,3 +44,10 @@ internal fun shortEpisodeTitle(seriesTitle: String, episodeTitle: String): Strin
     if (matched == 0) return title
     return title.substring(i).trimStart { !it.isLetterOrDigit() && it != '(' && it != '[' }.trim().ifEmpty { title }
 }
+
+/**
+ * Comic or webtoon, read from the series key: NTK files comics under /manhwa/ and WFWF prefixes
+ * them with "comic:". Every other source serves webtoons only.
+ */
+internal fun seriesKindLabel(id: SeriesId): String =
+    if (id.remoteKey.startsWith("/manhwa/") || id.remoteKey.startsWith("comic:")) "만화" else "웹툰"

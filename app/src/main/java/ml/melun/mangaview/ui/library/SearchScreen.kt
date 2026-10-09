@@ -538,7 +538,7 @@ private fun SearchSeriesDescription(series: SourceSeries, colors: LibraryColors,
                     .padding(horizontal = 7.dp, vertical = 2.dp),
             ) {
                 BasicText(
-                    if (series.id.remoteKey.startsWith("/manhwa/") || series.id.remoteKey.startsWith("comic:")) "만화" else "웹툰",
+                    seriesKindLabel(series.id),
                     style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.Bold),
                 )
             }

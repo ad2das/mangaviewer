@@ -570,7 +570,7 @@ private fun HeroDescription(series: SourceSeries, colors: LibraryColors, modifie
                     .padding(horizontal = 8.dp, vertical = 3.dp),
             ) {
                 BasicText(
-                    if (series.id.sourceId.value == "ntk") "만화" else "웹툰",
+                    seriesKindLabel(series.id),
                     style = badgeStyle(colors, 10).copy(fontWeight = FontWeight.Bold),
                 )
             }
