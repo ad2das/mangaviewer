@@ -34,28 +34,23 @@ internal class WorkOrderedAdmission(
         }
     }
 
+    /**
+     * One pass over the queued set: the candidate list is filtered and sorted once, then walked in
+     * (priority ordinal, sequence) order, starting every record admission can take. The old loop
+     * rebuilt and re-sorted the whole list for every record it started (k*n*log n under the mutex);
+     * the walk order is the same because priorities cannot change under the registry mutex, and an
+     * unaffordable candidate is skipped so a later candidate of a cheaper domain still starts.
+     */
     private fun startAvailableLocked() {
-        while (true) {
-            val candidates = state.records.values
-                .asSequence()
-                .filter {
-                    it.state == WorkRecordState.QUEUED ||
-                        (it.state == WorkRecordState.RETRY_WAIT && it.retryReady)
-                }
-                .sortedWith(compareBy<WorkRecord> { it.priority.value.ordinal }.thenBy { it.sequence })
-                .toList()
-            var selected: WorkRecord? = null
-            var permit: PermitClaim? = null
-            for (candidate in candidates) {
-                val candidatePermit = state.admission.tryAcquire(candidate.requestDomain, candidate.priority.value)
-                if (candidatePermit != null) {
-                    selected = candidate
-                    permit = candidatePermit
-                    break
-                }
+        val candidates = state.records.values
+            .filter {
+                it.state == WorkRecordState.QUEUED ||
+                    (it.state == WorkRecordState.RETRY_WAIT && it.retryReady)
             }
-            val record = selected ?: return
-            record.permit = checkNotNull(permit)
+            .sortedWith(compareBy<WorkRecord> { it.priority.value.ordinal }.thenBy { it.sequence })
+        for (record in candidates) {
+            val permit = state.admission.tryAcquire(record.requestDomain, record.priority.value) ?: continue
+            record.permit = permit
             val retryContinuation = record.state == WorkRecordState.RETRY_WAIT
             record.retryReady = false
             record.state = WorkRecordState.RUNNING

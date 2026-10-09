@@ -88,6 +88,19 @@ internal class WorkAdmission(private val limits: WorkLimits) {
         verifyCounters()
     }
 
+    /** In-flight permits per domain; only read by tests and diagnostic assertions. */
+    internal fun usedPermits(domain: WorkDomain): Int = when (domain) {
+        WorkDomain.CONTROL -> 0
+        WorkDomain.NETWORK -> networkUsed
+        WorkDomain.BODY -> bodiesUsed
+        WorkDomain.DECODE -> decodeUsed + backgroundDecodeUsed
+        WorkDomain.STORAGE -> storageUsed
+        WorkDomain.STORAGE_READ -> storageReadUsed
+        WorkDomain.STORAGE_PUBLISH -> storagePublishUsed
+        WorkDomain.UPLOAD -> uploadUsed
+        WorkDomain.BROWSER -> browserUsed
+    }
+
     private fun verifyCounters() {
         check(networkUsed >= 0 && bodiesUsed >= 0 && backgroundNetworkUsed >= 0)
         check(

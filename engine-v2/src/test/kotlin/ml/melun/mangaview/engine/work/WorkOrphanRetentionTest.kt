@@ -299,6 +299,56 @@ class WorkOrphanRetentionTest {
         coordinator.close()
     }
 
+    @Test
+    fun aForegroundBodyWaiterEvictsTheStreamingOrphanAndIsGrantedWhenItsPermitReleases() = runTest {
+        val coordinator = WorkCoordinator(this, limits(network = 1, bodies = 1, background = 1))
+        val orphan = PageFixture("body-waiter")
+        val orphanSub = coordinator.submit(orphan.request())
+        val orphanAwait = async(start = CoroutineStart.UNDISPATCHED) { runCatching { orphanSub.await() } }
+        orphan.bodyStarted.await()
+        orphanSub.close()
+        orphanSub.awaitReleased()
+        runCurrent()
+        val retained = coordinator.registry.records[orphan.key]
+        assertTrue(retained != null && retained.orphaned && !retained.cancelRequested)
+
+        val granted = CompletableDeferred<Unit>()
+        val foreground = coordinator.submit(WorkRequest(
+            key = WorkKey("principal", "foreground-body", "content.foreground.body", "revision", String::class.java),
+            domain = WorkDomain.CONTROL,
+            priority = WorkPriority.FOCUS,
+            execute = { context ->
+                context.withDomainPermit(WorkDomain.BODY) {
+                    granted.complete(Unit)
+                    "foreground"
+                }
+            },
+        ))
+        runCurrent()
+
+        assertTrue("foreground demand must evict the orphan", retained!!.cancelRequested)
+        assertTrue(
+            "the foreground waiter must be granted by the evicted permit's release, with no lost wakeup",
+            granted.isCompleted,
+        )
+        assertTrue("the orphan await ended cancelled", orphanAwait.await().isFailure)
+        foreground.close()
+        foreground.awaitReleased()
+        runCurrent()
+        assertTrue(coordinator.registry.records.isEmpty())
+
+        val probe = coordinator.acquire(WorkRequest(
+            key = WorkKey("principal", "foreground-probe", "content.foreground.probe", "revision", String::class.java),
+            domain = WorkDomain.NETWORK,
+            priority = WorkPriority.VISIBLE,
+            execute = { "probe" },
+        ))
+        assertEquals("the sole network permit must be free again", "probe", probe.value)
+        probe.close()
+        probe.awaitReleased()
+        coordinator.close()
+    }
+
     private fun limits(
         network: Int,
         bodies: Int,

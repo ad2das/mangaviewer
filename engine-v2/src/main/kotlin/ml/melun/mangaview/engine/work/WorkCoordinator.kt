@@ -72,6 +72,24 @@ class WorkCoordinator(
 
     init {
         registry.admission.onForegroundPermitDenied = { evictOldestOrphanLocked(it) }
+        // A permit handed to a continuation that got cancelled before its coroutine received the
+        // value must come back into the pool. The handoff callback can run while the registry mutex
+        // is held (an already-cancelled continuation invokes it synchronously from resume), so the
+        // release is scheduled on the cleanup scope instead of locking there.
+        registry.claimReturn = { claim ->
+            cleanupScope.launch {
+                withContext(NonCancellable) {
+                    try {
+                        registry.mutex.withLock {
+                            registry.releaseClaimLocked(claim)
+                            registry.signalLocked()
+                        }
+                    } catch (failure: Throwable) {
+                        recordObserverFailure(failure)
+                    }
+                }
+            }
+        }
         schedulerJob = workerScope.launch(start = CoroutineStart.UNDISPATCHED) {
             val lane = schedulerDispatcher
             if (lane == null) orderedAdmission.schedulerLoop()

@@ -105,8 +105,8 @@ internal class WorkExecution(
 
     fun releasePermitLocked(record: WorkRecord) {
         record.permit?.let {
-            state.admission.release(it)
             record.permit = null
+            state.releaseClaimLocked(it)
         }
     }
 
@@ -187,8 +187,9 @@ internal class WorkExecution(
         return state.mutex.withLock {
             if (record.cancelRequested || state.closed || record.subscribers.isEmpty()) return@withLock false
             val permit = record.permit ?: return@withLock false
-            state.admission.release(permit)
             record.permit = null
+            // Hand the permit to the next eligible waiter before the record re-queues as RETRY_WAIT.
+            state.releaseClaimLocked(permit)
             record.retryReady = false
             record.state = WorkRecordState.RETRY_WAIT
             state.signalLocked()

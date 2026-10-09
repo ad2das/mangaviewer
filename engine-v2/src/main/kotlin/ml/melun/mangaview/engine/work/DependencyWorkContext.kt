@@ -1,10 +1,10 @@
 package ml.melun.mangaview.engine.work
 
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import ml.melun.mangaview.engine.api.WorkContext
@@ -116,34 +116,65 @@ internal class DependencyWorkContext(
         } finally {
             withContext(NonCancellable) {
                 state.mutex.withLock {
-                    // Signal even if an accounting check throws, or every waiter on this domain would
-                    // sleep for a wakeup that can no longer arrive.
-                    try { state.admission.release(claim) } finally { state.signalLocked() }
+                    // Release and grant in one critical section: the next ordered waiter is handed
+                    // this permit here, and a UPLOAD waiter the release unblocks is served now too.
+                    // Signal even if an accounting check throws, or every record waiter would sleep
+                    // for a wakeup that can no longer arrive.
+                    try { state.releaseClaimLocked(claim) } finally { state.signalLocked() }
                 }
             }
         }
     }
 
+    /**
+     * Direct, priority-ordered permit handoff. The fast path takes a permit only when no still
+     * eligible waiter of this domain at an equal-or-higher priority is in front of us; otherwise the
+     * caller is enrolled and suspended on its own continuation, which [WorkRegistry.grantLocked]
+     * resumes alone when this exact waiter wins the next ordered grant walk. A release never resumes
+     * waiters that did not win, so a drain costs one mutex round trip per granted permit instead of
+     * one per waiter.
+     */
     private suspend fun awaitDomainPermit(domain: WorkDomain): PermitClaim {
-        while (true) {
-            currentCoroutineContext().ensureActive()
-            var claim: PermitClaim? = null
-            var notification: CompletableDeferred<Unit>? = null
-            state.mutex.withLock {
-                if (parent.cancelRequested || parent.state != WorkRecordState.RUNNING || state.closed) {
-                    throw CancellationException("Parent work is no longer running")
-                }
-                claim = state.admission.tryAcquire(domain, parent.priority.value)
-                if (claim == null) notification = state.wakeup
+        var acquired: PermitClaim? = null
+        var waiter: DomainPermitWaiter? = null
+        state.mutex.withLock {
+            if (!runningLocked()) throw CancellationException("Parent work is no longer running")
+            // Fairness: a permit is taken directly only when no equal-or-higher priority waiter of
+            // this domain is ahead of us; otherwise the ordered grant walk owns the choice.
+            if (!state.hasBlockingWaiterLocked(domain, parent.priority.value)) {
+                acquired = state.admission.tryAcquire(domain, parent.priority.value)
             }
-            claim?.let {
-                if (domain == WorkDomain.UPLOAD) parent.request.probe?.let { probe ->
-                    EngineStageProbe.record(probe, EngineStageProbe.PERMIT_UPLOAD, System.nanoTime())
-                }
-                return it
+            if (acquired == null) {
+                waiter = state.registerWaiterLocked(domain, parent)
+                // A permit may already be free while the waiters ahead of us are blocked by their
+                // own sub-limit; the walk grants us now, or a later release does.
+                state.grantLocked()
             }
-            // No registry lock is held while waiting; a release signals this exact notification.
-            notification?.await()
+        }
+        acquired?.let {
+            recordUploadPermitProbe(domain)
+            return it
+        }
+        // Enrolled before the continuation exists; bind hands over a claim the walk already stored.
+        val enrolled = checkNotNull(waiter)
+        val claim = suspendCancellableCoroutine<PermitClaim> { continuation ->
+            continuation.invokeOnCancellation { enrolled.cancelled = true }
+            val pending = enrolled.bind(continuation)
+            if (pending != null) {
+                state.grantResumeCount += 1
+                continuation.resume(pending) { _, value, _ -> state.claimReturn?.invoke(value) }
+            }
+        }
+        recordUploadPermitProbe(domain)
+        return claim
+    }
+
+    private fun runningLocked(): Boolean =
+        !parent.cancelRequested && parent.state == WorkRecordState.RUNNING && !state.closed
+
+    private fun recordUploadPermitProbe(domain: WorkDomain) {
+        if (domain == WorkDomain.UPLOAD) parent.request.probe?.let { probe ->
+            EngineStageProbe.record(probe, EngineStageProbe.PERMIT_UPLOAD, System.nanoTime())
         }
     }
 
