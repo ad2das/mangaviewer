@@ -156,7 +156,11 @@ internal class EngineViewerRuntime(
         if (index < 0) return null
         return ViewerChromeState(manifest.id, manifest.title, index + 1, manifest.pages.size, position,
             manifest.previousEpisodeId, manifest.nextEpisodeId, runtime.session.splitMode,
-            runtime.unavailablePages.filterTo(linkedSetOf()) { it.episodeId == manifest.id })
+            runtime.unavailablePages.filterTo(linkedSetOf()) { it.episodeId == manifest.id },
+            runtime.pages.values.any { page ->
+                page.pageId.episodeId == manifest.id &&
+                    ml.melun.mangaview.engine.api.SpreadPages.isSpread(page.dimensions)
+            })
     }
 
     fun bookmarkSnapshot(): Pair<SourceAnchor, ReadingPosition>? = position()?.let {

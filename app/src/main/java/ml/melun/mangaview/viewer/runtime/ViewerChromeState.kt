@@ -15,6 +15,8 @@ internal data class ViewerChromeState(
     val splitMode: Boolean = false,
     /** Pages of this episode the engine renders from unavailable placeholder geometry. */
     val unavailablePageIds: Set<PageId> = emptySet(),
+    /** True once a measured page of this episode is a two-page spread, so splitting means something. */
+    val hasSpreads: Boolean = false,
 ) {
     init {
         require(title.isNotBlank())

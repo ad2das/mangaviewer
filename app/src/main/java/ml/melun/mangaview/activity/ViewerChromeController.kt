@@ -162,6 +162,12 @@ internal class ViewerChromeController(
         bookmark.enable(state != null)
         split.enable(state != null)
         val splitOn = state?.splitMode == true
+        // Only a comic's spread splits into two pages; webtoon strips are often cut into slices
+        // wider than tall, which would read as spreads. The control stays while split is on so it
+        // can always be turned back off.
+        val splittable = state != null && state.hasSpreads &&
+            ml.melun.mangaview.ui.library.isComicSeries(state.episodeId.seriesId)
+        split.visibility = if (splitOn || splittable) View.VISIBLE else View.GONE
         split.setActive(splitOn)
         split.contentDescription = if (splitOn) "단면 보기, 누르면 양면" else "양면 보기, 누르면 단면"
     }
