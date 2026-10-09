@@ -11,7 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NewxtoonAccessPlannerTest {
-    private val planner = NewxtoonAccessPlanner("test-agent")
+    private val planner = NewxtoonAccessPlanner { "test-agent" }
     private val series = SeriesId(planner.sourceId, "17974")
     private val episode = EpisodeId(series, "1062717")
 

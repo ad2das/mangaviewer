@@ -29,7 +29,7 @@ import ml.melun.mangaview.source.newxtoon.NewxtoonHtmlParser
 import ml.melun.mangaview.source.readBytes
 
 internal class EngineNewxtoonSessionWork(
-    userAgent: String,
+    userAgent: () -> String,
     private val origin: URI,
     private val transport: SourceTransport,
     storage: EngineStoragePort,

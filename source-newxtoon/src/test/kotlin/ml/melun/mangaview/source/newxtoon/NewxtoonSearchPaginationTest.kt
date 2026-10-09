@@ -14,7 +14,7 @@ class NewxtoonSearchPaginationTest {
     private val parser = NewxtoonHtmlParser("https://newxtoon1.com")
 
     @Test fun maintenanceResponseCannotBeReportedAsNoSearchResults() = runTest {
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"),
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = { "test" }),
             SearchPageTransport(1 to "<html><title>Maintenance</title><body>Try later</body></html>"))
         val failure = runCatching { source.search("생존") }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
@@ -36,7 +36,7 @@ class NewxtoonSearchPaginationTest {
 
     @Test fun oneCharacterQueryHasAnActionableFailureInsteadOfFalseNoResults() = runTest {
         val transport = SearchPageTransport()
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport)
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = { "test" }), transport)
         val failure = runCatching { source.search("나") }.exceptionOrNull()
         assertTrue(failure is IllegalArgumentException)
         assertTrue(failure!!.message!!.contains("2~100자"))
@@ -62,7 +62,7 @@ class NewxtoonSearchPaginationTest {
             1 to firstPage,
             2 to secondPage,
         )
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "MangaViewer test"), transport)
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = { "MangaViewer test" }), transport)
 
         val first = source.search("로맨스", cursor = null)
         assertTrue(transport.requests.first().url.contains("q=%EB%A1%9C%EB%A7%A8%EC%8A%A4"))

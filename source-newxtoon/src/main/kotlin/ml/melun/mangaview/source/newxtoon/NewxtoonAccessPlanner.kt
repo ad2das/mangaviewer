@@ -18,7 +18,7 @@ import ml.melun.mangaview.source.PageValidation
 import ml.melun.mangaview.source.SourceRequest
 
 /** Pure Newxtoon request construction and episode-plan parsing for the viewer engine. */
-class NewxtoonAccessPlanner(private val userAgent: String) : EpisodeDocumentPlanner {
+class NewxtoonAccessPlanner(private val userAgent: () -> String) : EpisodeDocumentPlanner {
     override val sourceId = SourceId("newxtoon")
     private val parser = NewxtoonHtmlParser(DEFAULT_NEWXTOON_ORIGIN)
 
@@ -103,13 +103,13 @@ class NewxtoonAccessPlanner(private val userAgent: String) : EpisodeDocumentPlan
         "/comics/${episodeId.seriesId.remoteKey}/chapters/${episodeId.remoteKey}"
 
     fun documentHeaders(): Map<String, String> = mapOf(
-        "User-Agent" to userAgent,
+        "User-Agent" to userAgent(),
         "Accept" to "text/html,application/xhtml+xml,*/*;q=0.8",
         "Accept-Language" to "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     )
 
     fun imageHeaders(referer: String): Map<String, String> = mapOf(
-        "User-Agent" to userAgent,
+        "User-Agent" to userAgent(),
         "Referer" to referer,
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
     )

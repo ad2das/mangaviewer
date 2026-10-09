@@ -34,7 +34,7 @@ class NewxtoonCatalogStatusTest {
     """.trimIndent()
 
     private fun source(transport: SourceTransport) =
-        NewxtoonContentSource(NewxtoonConfig(userAgent = "MangaViewer test"), transport)
+        NewxtoonContentSource(NewxtoonConfig(userAgent = { "MangaViewer test" }), transport)
 
     private fun query(status: SeriesStatus? = null) =
         CatalogQuery(SeriesKind.WEBTOON, CatalogOrder.LATEST, statusFilter = status)

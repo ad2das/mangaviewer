@@ -24,7 +24,7 @@ class OkHttpTransportFactory(
     ): SniRecoveryTransport =
         SniRecoveryTransport(
             primary,
-            createRecovery = { createRecovery(cookieJar, headers) },
+            createRecovery = { createRecovery(cookieJar) { headers } },
             sharedRecovery = true,
         )
 
@@ -37,11 +37,21 @@ class OkHttpTransportFactory(
     fun createRelayed(
         cookieJar: CookieJar = CookieJar.NO_COOKIES,
         headers: Map<String, String> = emptyMap(),
+    ): ml.melun.mangaview.source.SourceTransport = createRelayed(cookieJar) { headers }
+
+    /**
+     * The relayed client with per-request identity headers. The supplier runs on OkHttp's
+     * dispatcher — never while a lazy or registry lock is held — so a first-time resolution that
+     * must wait for main-thread WebView startup cannot deadlock against a blocked main thread.
+     */
+    fun createRelayed(
+        cookieJar: CookieJar = CookieJar.NO_COOKIES,
+        headers: () -> Map<String, String>,
     ): ml.melun.mangaview.source.SourceTransport = createRecovery(cookieJar, headers)
 
     private fun createRecovery(
         cookieJar: CookieJar,
-        headers: Map<String, String> = emptyMap(),
+        headers: () -> Map<String, String>,
     ): ml.melun.mangaview.source.SourceTransport {
         val dns = EncryptedSourceDns()
         val relay = LocalTlsRelay(dns)
@@ -99,6 +109,15 @@ class OkHttpTransportFactory(
     fun createForBunnyImages(
         cookieJar: CookieJar = CookieJar.NO_COOKIES,
         headers: Map<String, String> = emptyMap(),
+    ): OkHttpSourceTransport = createForBunnyImages(cookieJar) { headers }
+
+    /**
+     * The Bunny-zone client with per-request identity headers, for callers whose user agent may
+     * wait on main-thread WebView startup and therefore must not be resolved under any lock.
+     */
+    fun createForBunnyImages(
+        cookieJar: CookieJar = CookieJar.NO_COOKIES,
+        headers: () -> Map<String, String>,
     ): OkHttpSourceTransport {
         val dispatcher = Dispatcher(defaultPriorityExecutor("source-okhttp-bunny")).apply {
             maxRequestsPerHost = 16
@@ -174,10 +193,21 @@ class OkHttpTransportFactory(
 /** Fills in headers a request does not carry itself; source-set values always win. */
 private fun OkHttpClient.Builder.addBrowserIdentity(headers: Map<String, String>): OkHttpClient.Builder = apply {
     if (headers.isEmpty()) return@apply
+    addBrowserIdentity { headers }
+}
+
+/**
+ * The supplier variant: identity headers are resolved per request. The supplier runs on the
+ * OkHttp dispatcher, after every client-construction lock was released, so it may wait on
+ * main-thread work (WebView startup) without deadlocking a blocked main thread.
+ */
+private fun OkHttpClient.Builder.addBrowserIdentity(headers: () -> Map<String, String>): OkHttpClient.Builder = apply {
     addInterceptor { chain ->
+        val identity = headers()
         val request = chain.request()
+        if (identity.isEmpty()) return@addInterceptor chain.proceed(request)
         val enriched = request.newBuilder().apply {
-            headers.forEach { (name, value) ->
+            identity.forEach { (name, value) ->
                 if (request.header(name) == null) header(name, value)
             }
         }

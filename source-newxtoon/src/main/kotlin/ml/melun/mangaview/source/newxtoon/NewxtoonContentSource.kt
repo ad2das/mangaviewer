@@ -49,7 +49,12 @@ private val FALLBACK_NEWXTOON_GENRES = listOf(
 
 data class NewxtoonConfig(
     val origin: String = DEFAULT_NEWXTOON_ORIGIN,
-    val userAgent: String,
+    /**
+     * Resolved per request, never at construction: the app's user agent can wait on WebView
+     * startup on the main thread, and this source is built under registry and lazy locks the main
+     * thread can also take.
+     */
+    val userAgent: () -> String,
 )
 
 /** Server-rendered catalog, chapters and reader pages for newxtoon. */
@@ -373,7 +378,7 @@ class NewxtoonContentSource(
     ), validate)
 
     private fun baseHeaders(): Map<String, String> = mapOf(
-        "User-Agent" to config.userAgent,
+        "User-Agent" to config.userAgent(),
         "Accept" to "text/html,application/xhtml+xml,*/*;q=0.8",
         "Accept-Language" to "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     )

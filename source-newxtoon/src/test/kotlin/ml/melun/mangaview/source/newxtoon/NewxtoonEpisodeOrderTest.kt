@@ -17,7 +17,7 @@ class NewxtoonEpisodeOrderTest {
 
     @Test fun firstChapterHasTheSmallestSequenceEvenThoughTheListIsNewestFirst() = runBlocking {
         val source = NewxtoonContentSource(
-            NewxtoonConfig(userAgent = "MangaViewer test"),
+            NewxtoonConfig(userAgent = { "MangaViewer test" }),
             QueueTransport(fixture("series.html")),
         )
         val episodes = source.episodes(SeriesId(SourceId("newxtoon"), "17974"), cursor = null).items

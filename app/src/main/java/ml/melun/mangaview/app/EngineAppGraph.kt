@@ -50,11 +50,13 @@ internal class EngineAppGraph(
     private val offlineEpisodes: OfflineEpisodeStore,
     networkEvidenceObserver: () -> SourceExchangeObserver? = { null },
     private val origins: ProviderOriginDirectory = ProviderOriginDirectory(context, ioDispatcher, userAgent),
-    // Both are lazy: constructing the clearance resolves the WebView user agent, which loads the
-    // Chromium provider on the calling thread. Taking it eagerly here made every source's viewer
-    // open pay that load in its opening window (measured on the GPU AVD: the opening ntk tiles'
-    // demand->resident stages inflated 4-6x, FOCUS/VISIBLE p50 42ms against a 29ms gate), even for
-    // sources that never touch the clearance at all.
+    // Both are lazy: constructing the clearance no longer resolves the WebView user agent (that
+    // moved behind a lock-free holder), and the agent itself is only ever read per request,
+    // outside every lazy lock, so taking it here can wait on WebView startup without deadlocking.
+    // Eagerly reading it made every source's viewer open pay that WebView load in its opening
+    // window (measured on the GPU AVD: the opening ntk tiles' demand->resident stages inflated
+    // 4-6x, FOCUS/VISIBLE p50 42ms against a 29ms gate), even for sources that never touch the
+    // clearance at all.
     private val newxtoonClearance: Lazy<NewxtoonClearance>? = null,
     private val newxtoonUserAgent: () -> String = { userAgent },
 ) {
@@ -270,11 +272,16 @@ internal class EngineAppGraph(
         val jar = clearance?.cookieJar ?: okhttp3.CookieJar.NO_COOKIES
         // Cloudflare binds cf_clearance to the client hints the solving WebView sent, so the
         // engine repeats that browser identity on every native request just like the catalog.
-        val headers = clearance?.let { OkHttpTransportFactory.browserHeaders(it.clientHints) }.orEmpty()
+        // The hints and the UA resolve per request on OkHttp's dispatcher, never inside this
+        // synchronized lazy: the resolver can wait on WebView startup on main, and a wait on main
+        // while holding a lock main can take is the deadlock this graph must not reintroduce.
         val base = if (clearance == null) resilient(transportFactory.create(jar), jar)
         // The relay shapes the TLS record layer exactly like the challenge browser, so the edge
         // treats the engine's native requests as the same client that owns the clearance.
-        else ProviderOriginTransport(transportFactory.createRelayed(jar, headers), origins)
+        else ProviderOriginTransport(
+            transportFactory.createRelayed(jar) {
+                OkHttpTransportFactory.browserHeaders(clearance.clientHints)
+            }, origins)
         val guarded = if (clearance == null) base
         else NewxtoonClearanceTransport(base,
             ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN, clearance::solve,
@@ -288,9 +295,11 @@ internal class EngineAppGraph(
         // Artwork is served straight from the Bunny pull zone with the origin as referer, so an
         // image request never reaches the clearance route and never touches Cloudflare.
         val routed = if (clearance == null) documents else NewxtoonImageTransport(documents,
-            transportFactory.createForBunnyImages(headers = linkedMapOf(
-                "Referer" to ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN + "/",
-                "User-Agent" to newxtoonUserAgent())))
+            transportFactory.createForBunnyImages(headers = {
+                linkedMapOf(
+                    "Referer" to ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN + "/",
+                    "User-Agent" to newxtoonUserAgent())
+            }))
         ObservedSourceTransport(routed, "engine", networkEvidenceObserver)
     }
     private val ntkPageTransport = lazy {
@@ -331,7 +340,7 @@ internal class EngineAppGraph(
             "wfwf" -> EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
                 wfwfOriginProbe, { origins.remember("wfwf", it.toString()) }, documentStore = wfwfDocumentCache)
-            "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent(), URI(
+            "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent, URI(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
                 parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
                 documentStore = newxtoonDocumentCache)

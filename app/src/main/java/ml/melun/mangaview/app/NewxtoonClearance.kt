@@ -16,13 +16,11 @@ import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.Closeable
 import kotlin.coroutines.resume
@@ -106,6 +104,7 @@ internal fun applySpoofedUserAgentMetadata(webView: WebView, fullVersion: String
  */
 internal class NewxtoonClearance(
     context: Context,
+    engineUserAgentSource: EngineUserAgentSource,
 ) {
     private val appContext = context.applicationContext
     private val cookies = NewxtoonCookieStore(NEWXTOON_ORIGIN, context)
@@ -146,16 +145,22 @@ internal class NewxtoonClearance(
     private var solvedRelay: BrowserTlsRelay? = null
     private val fetcher = NewxtoonFetchBridge(main)
 
+    /**
+     * The UA-derived browser identity. Computed on first access, never in the constructor: the
+     * engine UA resolution can wait on WebView startup on the main thread, and doing that while
+     * holding this instance's construction lock is exactly the ANR this class avoids.
+     */
+    private val claims = NewxtoonUserAgentClaims(
+        engineUserAgentSource::get, spoofsDeviceIdentity, greaseBrand)
+
     /** The engine's own user agent; only the emulator's identity markers are rewritten from it. */
-    private val engineUserAgent: String = runCatching { WebSettings.getDefaultUserAgent(appContext) }
-        .getOrElse { fallbackUserAgent() }
+    private val engineUserAgent: String get() = claims.engineUserAgent
 
     /**
      * The full Chrome build the engine reports. Only the high-entropy client hints carry it: the
      * user agent is reduced to the major version, and a full version there matches no real Chrome.
      */
-    val engineChromeVersion: String = Regex("Chrome/([0-9.]+)").find(engineUserAgent)
-        ?.groupValues?.get(1) ?: "124.0.0.0"
+    val engineChromeVersion: String get() = claims.engineChromeVersion
 
     /**
      * On the emulator the engine's UA is replaced with the reduced user agent Chrome for Android
@@ -163,42 +168,28 @@ internal class NewxtoonClearance(
      * answers that with an interactive check this browser never finishes. Everywhere else the
      * engine's UA is kept byte for byte.
      */
-    val sourceUserAgent: String =
-        if (!spoofsDeviceIdentity) engineUserAgent else chromeUserAgent(engineChromeVersion)
+    val sourceUserAgent: String get() = claims.sourceUserAgent
 
     /** The client hints the challenge WebView actually sends, replayed on the OkHttp route. */
-    val clientHints: String = run {
-        val version = engineChromeVersion.substringBefore('.')
-        "\"$greaseBrand\";v=\"99\", \"Google Chrome\";v=\"$version\", \"Chromium\";v=\"$version\""
-    }
-
-    /** Builds the inert replay browser that hosts fetches under the proven browser identity. */
-    private val replayViews = NewxtoonReplayView(
-        appContext, cookies, fetcher, main, sourceUserAgent, spoofsDeviceIdentity, engineChromeVersion)
-
-    /** Challenge/replay browser machinery; only this class promotes a settled view. */
-    private val challengePage = NewxtoonChallengePage(
-        appContext, cookies, fetcher, main, sourceUserAgent, spoofsDeviceIdentity, engineChromeVersion,
-        onSettlingView = { settlingView = it },
-        onSettlingUsable = { settlingViewUsable = it },
-    )
+    val clientHints: String get() = claims.clientHints
 
     /**
-     * Chrome for Android freezes its user agent at Android 10 with a "K" model placeholder and
-     * reduces the Chrome version to its major component, so the emulator's model, build id, and
-     * engine build never appear; the full version only rides the high-entropy client hints.
+     * Builds the inert replay browser that hosts fetches under the proven browser identity. The
+     * factory is deferred so the captured identity is first read when a browser is actually built,
+     * outside the clearance constructor and its lock.
      */
-    private fun chromeUserAgent(fullVersion: String): String =
-        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/${fullVersion.substringBefore('.')}.0.0.0 Mobile Safari/537.36"
+    private val replayViews: NewxtoonReplayView by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        NewxtoonReplayView(
+            appContext, cookies, fetcher, main, sourceUserAgent, spoofsDeviceIdentity, engineChromeVersion)
+    }
 
-    private fun fallbackUserAgent(): String {
-        val version = runCatching {
-            WebViewCompat.getCurrentWebViewPackage(appContext)?.versionName
-        }.getOrNull() ?: "124.0.0.0"
-        return "Mozilla/5.0 (Linux; Android ${android.os.Build.VERSION.RELEASE}; " +
-            "$DEVICE_MODEL Build/$DEVICE_BUILD; wv) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Version/4.0 Chrome/$version Mobile Safari/537.36"
+    /** Challenge/replay browser machinery; only this class promotes a settled view. */
+    private val challengePage: NewxtoonChallengePage by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        NewxtoonChallengePage(
+            appContext, cookies, fetcher, main, sourceUserAgent, spoofsDeviceIdentity, engineChromeVersion,
+            onSettlingView = { settlingView = it },
+            onSettlingUsable = { settlingViewUsable = it },
+        )
     }
 
     /**
@@ -495,10 +486,6 @@ internal class NewxtoonClearance(
         const val SOLVE_FAILURE_COOLDOWN_MILLIS = 60_000L
         const val CHALLENGE_ATTEMPTS = 3
         const val CHALLENGE_RETRY_DELAY_MILLIS = 1_000L
-        // The emulator model and build id are the loudest "not a phone" markers left in the
-        // user agent; the Chrome identity replaces the whole UA, so only the fallback needs them.
-        const val DEVICE_MODEL = "SM-S918N"
-        const val DEVICE_BUILD = "UP1A.231005.007"
     }
 }
 

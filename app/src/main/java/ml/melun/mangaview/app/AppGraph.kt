@@ -66,6 +66,13 @@ internal class AppGraph(
     private val ioDispatcher: CoroutineDispatcher,
 ) : Closeable {
     private val appContext = context.applicationContext
+    /**
+     * One lock-free engine UA holder for the whole graph. Resolving the agent can wait on WebView
+     * startup (which runs on main), so no lock may be held across it: the clearance builds without
+     * touching it, and every header supplier reads it per request, outside every lazy and registry
+     * lock, which is what keeps the main thread from deadlocking behind a background resolver.
+     */
+    private val engineUserAgentSource = defaultEngineUserAgentSource(context)
     @Volatile var networkEvidenceObserver: SourceExchangeObserver? = null
     val offlineStore = OfflineEpisodeStore(
         File(appContext.applicationInfo.dataDir, "app_offline_episodes_v2"),
@@ -93,7 +100,7 @@ internal class AppGraph(
     private val ntkSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNtkSource)
     private val wfwfSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createWfwfSource)
     private val newxtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createNewxtoonSource)
-    private val newxtoonClearanceLazy = lazy { NewxtoonClearance(appContext) }
+    private val newxtoonClearanceLazy = lazy { NewxtoonClearance(appContext, engineUserAgentSource) }
     private val newxtoonClearance by newxtoonClearanceLazy
     internal val newxtoonClearanceState: NewxtoonClearance get() = newxtoonClearance
     private val goodtoonSource = lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createGoodtoonSource)
@@ -327,6 +334,10 @@ internal class AppGraph(
      */
     fun primeAfterFirstFrame() {
         account.activate()
+        // The engine UA load waits on WebView startup; resolve it once from the IO pool now that
+        // the launch frames are done, so the first challenged request never pays that wait inline.
+        // The holder holds no lock, so this could not have deadlocked on main even before the warm.
+        applicationScope.launch(ioDispatcher) { engineUserAgentSource.get() }
         // Building the engine graph creates the work coordinator, the OkHttp clients, a decode
         // thread and the native decoder before it can warm the GL renderer. That is warming work,
         // not launch work, so it is built off the main thread: the launch frames and the first
@@ -374,7 +385,8 @@ internal class AppGraph(
         coroutineContext.ensureActive()
         val transport = newxtoonTransport(newxtoonClearance, transportFactory) { networkEvidenceObserver }
         try {
-            val source = NewxtoonContentSource(NewxtoonConfig(userAgent = newxtoonClearance.sourceUserAgent), transport,
+            val source = NewxtoonContentSource(
+                NewxtoonConfig(userAgent = { newxtoonClearance.sourceUserAgent }), transport,
                 speculationScope = applicationScope)
             transport.warmConnections(listOf(ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), preferQuic = false)
             // No speculative challenge or replay browser is stood up: documents ride the worker
@@ -471,8 +483,10 @@ private fun newxtoonTransport(
     transportFactory: OkHttpTransportFactory,
     observer: () -> SourceExchangeObserver?,
 ): SourceTransport {
-    val hints = clearance.clientHints
-    val browserHeaders = OkHttpTransportFactory.browserHeaders(hints)
+    // The identity headers resolve per request on OkHttp's dispatcher instead of here: this
+    // function runs inside the newxtoon source's synchronized lazy, and the resolver can wait on
+    // WebView startup on main — a wait on main while holding a lock main can take is the deadlock.
+    val browserHeaders = { OkHttpTransportFactory.browserHeaders(clearance.clientHints) }
     val clearanceDocuments = NewxtoonClearanceTransport(
         // The relay shapes the TLS record layer exactly like the challenge browser, so the
         // edge treats the native request as the same client that owns the clearance instead
@@ -492,12 +506,15 @@ private fun newxtoonTransport(
     // chapter pages open without any clearance; the clearance route stays behind it as fallback.
     val documents = NewxtoonWorkerTransport(transportFactory.create(), clearanceDocuments)
     // Artwork never enters the clearance path: the pull zone serves it to the app directly as
-    // long as the origin rides along as the referer, so no Cloudflare hop is involved.
+    // long as the origin rides along as the referer, so no Cloudflare hop is involved. The UA is
+    // supplied per request for the same lock-freedom as the browser headers above.
     val images = transportFactory.createForBunnyImages(
-        headers = linkedMapOf(
-            "Referer" to ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN + "/",
-            "User-Agent" to clearance.sourceUserAgent,
-        ),
+        headers = {
+            linkedMapOf(
+                "Referer" to ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN + "/",
+                "User-Agent" to clearance.sourceUserAgent,
+            )
+        },
     )
     return ObservedSourceTransport(NewxtoonImageTransport(documents, images), "catalog-newxtoon", observer)
 }

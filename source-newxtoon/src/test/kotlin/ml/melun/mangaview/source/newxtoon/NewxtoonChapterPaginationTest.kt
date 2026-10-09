@@ -21,13 +21,13 @@ class NewxtoonChapterPaginationTest {
     ) { "Missing fixture $name" }.bufferedReader(Charsets.UTF_8).use { it.readText() }
 
     private fun source(transport: SourceTransport) =
-        NewxtoonContentSource(NewxtoonConfig(userAgent = "MangaViewer test"), transport)
+        NewxtoonContentSource(NewxtoonConfig(userAgent = { "MangaViewer test" }), transport)
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test fun publishesEmbeddedChaptersBeforeRequestingTheFeedAndKeepsTheCompleteOrder() = kotlinx.coroutines.test.runTest {
         val transport = PaginationTransport(fixture("series-paged.html"), fixture("chapters-page-2.json"),
             fixture("chapters-page-tail.json"))
-        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = "test"), transport, clock = { testScheduler.currentTime })
+        val source = NewxtoonContentSource(NewxtoonConfig(userAgent = { "test" }), transport, clock = { testScheduler.currentTime })
         val partialCounts = mutableListOf<Int>()
         val requestCounts = mutableListOf<Int>()
         val all = source.episodeCatalog(SeriesId(sourceId, "41")) { partial ->
