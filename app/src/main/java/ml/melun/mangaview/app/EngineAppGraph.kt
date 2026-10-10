@@ -343,12 +343,15 @@ internal class EngineAppGraph(
             "wfwf" -> {
                 // Image hosts are only known after a document, so the remembered hosts are the
                 // earliest hint available. The HEADs race the document fetch and are never awaited.
-                preconnectImageHosts(scope, ioDispatcher, transport, { wfwfImageHostStore.hosts("wfwf") },
+                // The same warmer fires just-in-time when a later episode switch reveals a host this
+                // session has not warmed, so its cold connect runs while the plan is being prepared.
+                val imageHostWarmer = WfwfImageHostWarmer(scope, ioDispatcher, transport,
                     ENGINE_IMAGE_HOST_PRECONNECT_TIMEOUT_MILLIS)
+                imageHostWarmer.warm(wfwfImageHostStore.hosts("wfwf"))
                 EngineWfwfSessionWork(userAgent, URI(DEFAULT_WFWF_ORIGIN), transport, storage, positions,
                     parsingDispatcher, library::readingPosition, spec.initialPosition, observations, spec.initialAnchor,
                     wfwfOriginProbe, { origins.remember("wfwf", it.toString()) }, documentStore = wfwfDocumentCache,
-                    imageHosts = wfwfImageHostStore)
+                    imageHosts = wfwfImageHostStore, onImageHosts = { hosts -> imageHostWarmer.warm(hosts) })
             }
             "newxtoon" -> EngineNewxtoonSessionWork(newxtoonUserAgent, URI(
                 ml.melun.mangaview.source.newxtoon.DEFAULT_NEWXTOON_ORIGIN), newxtoonTransport.value, storage, positions,
