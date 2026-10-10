@@ -311,6 +311,12 @@ internal class EngineAppGraph(
     }
     private val storage = EngineRawStorage(File(context.applicationInfo.dataDir, "app_engine_pages_v1"),
         RoomEnginePublicationIndex(database::database), ioDispatcher, positions)
+    // The first page lookup otherwise pays the storage recovery and full engine_pages load under
+    // the storage mutex (wfwf opening 650-925 ms). recover() is not initialized-gated, so this
+    // must stay the only production caller; a find racing it waits on the same mutex anyway.
+    init {
+        scope.launch(ioDispatcher) { runCatching { storage.recover() } }
+    }
     private val completeEpisodes = ml.melun.mangaview.data.engine.EngineCompleteEpisodeStore(
         File(context.applicationInfo.dataDir, "app_engine_episode_plans_v1"), storage, ioDispatcher,
         reportFailure = { android.util.Log.w("EngineEpisodeCache", "Cached episode metadata unavailable", it) })

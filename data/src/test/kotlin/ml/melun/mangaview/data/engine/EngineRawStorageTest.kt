@@ -469,6 +469,27 @@ class EngineRawStorageTest {
         assertEquals(0, restarted.ownership().fileLeases)
     }
 
+    @Test fun earlyRecoverBeforeAnyDemandLetsTheFirstFindReuseTheLoadedIndex() = runTest {
+        val root = temporary.newFolder()
+        val index = MemoryIndex()
+        val original = store(root, index)
+        original.publish(original.prepare(id, "v1", Body(bytes).opened())).close()
+        // A fresh process: the graph's prewarm runs exactly this recover() before any viewer demand.
+        val restarted = store(root, index)
+        restarted.recover()
+        val indexLoads = index.pageListReads
+        val lease = checkNotNull(restarted.find(id, "v1"))
+        // The process's first find must consume the prewarmed initialization, not repeat it.
+        assertEquals(indexLoads, index.pageListReads)
+        assertArrayEquals(bytes, lease.page.file.readBytes())
+        lease.close()
+        // Publishing and looking up again behave exactly as on a lazily initialized store.
+        restarted.publish(restarted.prepare(id, "v2", Body(bytes).opened())).close()
+        checkNotNull(restarted.find(id, "v2")).close()
+        assertEquals(indexLoads, index.pageListReads)
+        assertEquals(0, restarted.ownership().fileLeases)
+    }
+
     private fun TestScope.store(root: File, index: MemoryIndex,
         fileOps: EngineFilePublication = LocalFileOps(),
         nowMillis: () -> Long = { 100L },
